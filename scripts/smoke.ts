@@ -18888,7 +18888,7 @@ const recordDrive: CommandSource = (tick) => {
   check('browse: junk on the heartbeat is ignored, not thrown on', browseRooms([null, undefined, 3, 'x', {}, { listing: false }]).length === 0);
 }
 
-/** WATCHING A ROOM FROM ITS LOBBY (Browse rooms ▸ Watch, `WatchLobby`): what the server already gives a spectator. */
+/** WATCHING A ROOM FROM ITS LOBBY (`Lobby`'s Spectate and its full-room fallback): what the server already gives a spectator. */
 {
   const { coerceRoomSettings } = await import('../src/net/protocol');
   const mk = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
@@ -18919,9 +18919,150 @@ const recordDrive: CommandSource = (tick) => {
   check('watch lobby: ...and then the live snapshot stream', seen.some((m) => m.t === 'snapshot'));
   room.onMessage('w', { t: 'update', patch: { alliance: 'blue' } });
   check('watch lobby: a watcher cannot change the room', watcher.player.alliance === 'red' && room.listing()?.seats === 2);
-  const src = readFileSync('src/ui/WatchLobby.tsx', 'utf8').replace(/\r\n/g, '\n');
-  check('watch lobby: the screen closes its socket unless a session took it over', src.includes('if (!handedOver.current) transport.close()'));
-  check('watch lobby: Join is offered only while a seat is free', src.includes('disabled={!open}') && src.includes('seats < capacity'));
+}
+
+/**
+ * THE ROOM SCREENS (owner playtest, 2026-11-04): Browse rooms' Private / Public buttons and its code
+ * box, the create dialog's title and no toggle, Spectate in Your alliance and the full-room fallback,
+ * the host's move lock in both modes, the shrink button, and the labelled team badge. The decisions
+ * are in src/ui/lobbyRules.ts and are driven directly; the wiring is pinned in source.
+ */
+{
+  const rules = await import('../src/ui/lobbyRules');
+  const { coerceRoomSettings, ACCESS_GROUP_LABEL } = await import('../src/net/protocol');
+  const { TEAM_BADGES } = await import('../src/badges');
+  const src = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const lobby = src('src/ui/Lobby.tsx');
+  const browser = src('src/ui/RoomBrowser.tsx');
+  const app = src('src/ui/App.tsx');
+  const idx = src('server/index.ts');
+  const badge = src('src/ui/BadgeMark.tsx');
+
+  // ---- the create dialog: Private / Public, its title, and no toggle ---------------------------
+  check('rooms: the title says which room it is', rules.entryTitle(false, false, true) === 'Private room' && rules.entryTitle(false, true, true) === 'Public room');
+  check('rooms: ...a Public pick without an account is a Private room, as createRoom lists nobody signed out', rules.entryTitle(false, true, false) === 'Private room');
+  check('rooms: ...and a duo record keeps its own title', rules.entryTitle(true, true, true) === 'Duo record');
+  check('rooms: the screen uses it', lobby.includes('<ConsoleHead title={entryTitle(isRecord, listed, signedIn)} />'));
+  check('rooms: Browse rooms has a Private button that opens the dialog Private and a Public one that opens it Public',
+    /onClick=\{\(\) => onHost\(false\)\}\s*>\s*Private room\s*</.test(browser) && /onClick=\{\(\) => onHost\(true\)\}\s*>\s*Public room\s*</.test(browser));
+  check('rooms: Public is off signed out, with the reason on it', /disabled=\{!signedIn\}\s*title=\{signedIn \? undefined : 'Sign in to host a public room'\}/.test(browser));
+  check('rooms: the old Host a room button is gone', !browser.includes('Host a room'));
+  check('rooms: those buttons skip the choice dialog and open the create screen with the visibility set',
+    /onHost=\{\(listed\) =>\s*guardStart\(\(\) => \{\s*setRoomChoice\(\{ asking: false, listed \}\);\s*navigate\('lobby'\);/.test(app));
+  check('rooms: Play’s New room dialog still sets the same visibility',
+    /listed: false \}\);\s*navigate\('lobby'\);\s*\}\)\}\s*>\s*Private room/.test(app) && /listed: true \}\);\s*navigate\('lobby'\);\s*\}\)\}\s*>\s*Public room/.test(app));
+  const haveCode = lobby.match(/<span className="ot">Have a code<\/span>/g) ?? [];
+  check('⚠️ rooms: a new room only creates: the code toggle is on a duo-record entry alone',
+    haveCode.length === 1 && /\{isRecord && \(\s*<div className="ds-opts two">[\s\S]*?Have a code/.test(lobby));
+
+  // ---- joining by code, whatever kind of room it is ---------------------------------------------
+  check('rooms: Browse rooms has a code box that joins', /function JoinByCode/.test(browser) && /onJoinCode\(code, picker \? region : undefined\)/.test(browser));
+  check('rooms: a typed code joins as an ordinary room and says it was typed',
+    /onJoinCode=\{\(room, region\) =>\s*guardStart\(\(\) => \{[\s\S]*?kind: 'versus'[\s\S]*?typed: true/.test(app));
+  const kindSentence = idx.match(/message: '(That code is for a different game mode\.)'/)?.[1] ?? '';
+  check('rooms: the server’s kind-mismatch sentence is still the one the client matches', kindSentence !== '' && rules.retriesAsRecord(kindSentence, { typed: true, record: false, activity: false }), kindSentence);
+  check('⚠️ rooms: a typed code that names a duo-record room goes again as the record room',
+    rules.retriesAsRecord(kindSentence, { typed: true, record: false, activity: false }) &&
+      /onRecordCode=\{\(room, region\) => \{\s*setPendingAutoJoin\(\{ room, config: \{ kind: 'record', record: 'duo'/.test(app) &&
+      /navigate\('duorecord'\)/.test(app) && lobby.includes('retriesAsRecord(msg, { typed: autoJoinTyped, record: isRecord, activity: !!group })'));
+  check('rooms: ...but not a code nobody typed, not from the record screen (no loop), not in an activity, not another refusal',
+    !rules.retriesAsRecord(kindSentence, { typed: false, record: false, activity: false }) &&
+      !rules.retriesAsRecord(kindSentence, { typed: true, record: true, activity: false }) &&
+      !rules.retriesAsRecord(kindSentence, { typed: true, record: false, activity: true }) &&
+      !rules.retriesAsRecord('This room is full.', { typed: true, record: false, activity: false }) &&
+      !rules.retriesAsRecord('That room is playing BIOBUZZ, and you are set to DECODE. Switch to BIOBUZZ and try again.', { typed: true, record: false, activity: false }));
+  check('rooms: the record partner types the code on the duo-record screen itself', /joinWithCode/.test(lobby) && /onChange=\{\(e\) => setCode\(normalizeRoomCode/.test(lobby));
+
+  // ---- a full room, or one in its match, is watched ----------------------------------------------
+  const base = { inRoom: false, seatTry: false, spectating: false, activity: false, lan: false, creating: false, record: false };
+  check('⚠️ spectate: a full room and a running match are watched', rules.watchesOnRefusal('room_full', base) && rules.watchesOnRefusal('in_progress', base));
+  check('spectate: ...every other refusal stays an error', (['region_full', 'active_game', 'game_mismatch', 'email_unverified', 'match_gone', undefined] as const).every((c) => !rules.watchesOnRefusal(c, base)));
+  check('spectate: ...not in a Discord activity (its in_progress is a wait), a LAN room, a room just created, or a record run',
+    !rules.watchesOnRefusal('in_progress', { ...base, activity: true }) && !rules.watchesOnRefusal('room_full', { ...base, lan: true }) &&
+      !rules.watchesOnRefusal('room_full', { ...base, creating: true }) && !rules.watchesOnRefusal('room_full', { ...base, record: true }));
+  check('spectate: ...and a watcher that is refused again does not loop', !rules.watchesOnRefusal('room_full', { ...base, spectating: true }));
+  check('spectate: a refusal inside the room is a message, unless a seat was just asked for from the spectator view',
+    !rules.watchesOnRefusal('room_full', { ...base, inRoom: true }) && rules.watchesOnRefusal('room_full', { ...base, inRoom: true, seatTry: true }));
+  const refusal = idx.match(/if \(!r\.canJoin\(\)\) \{([\s\S]*?)\n    \}/)?.[1] ?? '';
+  check('⚠️ spectate: the server codes a RUNNING MATCH in_progress and a FULL room room_full, not the other way round',
+    /code: busy \? \('in_progress' as const\) : \('room_full' as const\)/.test(refusal) &&
+      /busy \?\s*'A match is already running in this room\. You can join when it finishes\.'\s*: 'This room is full\.'/.test(refusal) &&
+      /const busy = state === 'match' \|\| state === 'strategy';/.test(refusal));
+  check('spectate: Spectate is one of Your alliance’s options, off for the host, a record run and a LAN room',
+    /<span className="ot">Spectate<\/span>/.test(lobby) && lobby.includes('const canSpectate = !isRecord && !isHost && !lanActive();') && /\{canSpectate && \(\s*<button/.test(lobby));
+  check('spectate: it drops the seat and attaches as a spectator; a side takes a seat again',
+    /function watchRoom\(roomCode: string, inRoom: boolean\)[\s\S]*?join\(roomCode, hostRegionRef\.current, \{ spectate: true, inRoom \}\);/.test(lobby) &&
+      /function takeSeat\(alliance: Alliance\)[\s\S]*?join\(code, hostRegionRef\.current, \{ alliance, inRoom: true \}\);/.test(lobby) &&
+      lobby.includes('lobby.spectate(roomCode)'));
+  check('spectate: the refusal handler watches through the rule, and a started match goes to a read-only session',
+    /watchesOnRefusal\(code, \{[\s\S]*?\}\)\s*\) \{\s*watchRoom\(roomCode, phaseRef\.current === 'room'\);/.test(lobby) &&
+      /new ServerSession\(lobby\.transport, false, m, lobby\.clientId, roomCode, true\);\s*\(watchStartRef\.current \?\? onStart\)\(watch\);/.test(lobby));
+  const seats = coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' })!;
+  const two = [{ alliance: 'red' as const }];
+  check('spectate: a spectator is offered a side only while it has a free seat', !rules.seatFree(two, seats, 2, 'red') && rules.seatFree(two, seats, 2, 'blue'));
+  check('spectate: ...and a legacy room has a total, not a side', rules.seatFree([{ alliance: 'red' }, { alliance: 'red' }, { alliance: 'red' }], undefined, 4, 'blue') && !rules.seatFree([{ alliance: 'red' }, { alliance: 'red' }, { alliance: 'red' }, { alliance: 'blue' }], undefined, 4, 'red'));
+  const rows = browser.replace(/<WatchLive[^>]*>/, ''); // the live-matches panel below keeps its own Watch
+  check('spectate: no Watch button on a room row, and no onWatch prop to hand one', !/\bonWatch\b/.test(rows) && !/>\s*Watch\s*</.test(rows));
+  check('rooms: a row joins, or watches when there is no seat, and says which', /r\.state !== 'match' && r\.joinable \? 'Join →' : 'Spectate →'/.test(browser));
+  check('rooms: WatchLobby and its screen are gone', !readdirSync('src/ui').includes('WatchLobby.tsx') && !app.includes('watchlobby') && !app.includes('watchedRoom'));
+
+  // ---- "Drivers pick a side": the host cannot move a driver, in the room and on the screen ------
+  const set = (teamSwitch: boolean) => ({ ...seats, teamSwitch, perAlliance: { red: 2, blue: 2 } });
+  const host = { isHost: true, record: false };
+  check('⚠️ move lock: drivers pick a side ⇒ no Move button on a driver, one on a bot',
+    !rules.hostMoveOffered({}, set(true), host) && rules.hostMoveOffered({ bot: 'Easy' }, set(true), host));
+  check('move lock: host places drivers ⇒ a button on everybody', rules.hostMoveOffered({}, set(false), host) && rules.hostMoveOffered({ bot: 'Easy' }, set(false), host));
+  check('move lock: ...never for a guest, a record run or a legacy room',
+    !rules.hostMoveOffered({}, set(false), { isHost: false, record: false }) && !rules.hostMoveOffered({}, set(false), { isHost: true, record: true }) && !rules.hostMoveOffered({}, undefined, host));
+  check('move lock: the screen reads the rule', lobby.includes('hostMoveOffered(p, roomSet, { isHost, record: isRecord })'));
+  {
+    const sink: ServerMsg[] = [];
+    const mkc = (id: string, alliance: Alliance, to: ServerMsg[]): Client => ({
+      id, send: (m) => to.push(m), connected: true, disconnectAt: 0,
+      player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    });
+    const cfg = { kind: 'versus' as const, game: 'biobuzz' as const, settings: coerceRoomSettings('versus', undefined, { preset: 'custom' }) };
+    const room = new Room('move-lock', () => {}, cfg);
+    room.add(mkc('h', 'red', sink));
+    room.add(mkc('g', 'blue', []));
+    room.addBot();
+    const roster = (): Extract<ServerMsg, { t: 'roster' }>['players'] => ([...sink].reverse().find((m): m is Extract<ServerMsg, { t: 'roster' }> => m.t === 'roster')?.players ?? []);
+    const bot = roster().find((p) => p.bot);
+    const botWas = bot?.alliance;
+    room.onMessage('h', { t: 'moveMember', id: 'g', alliance: 'red' });
+    check('⚠️ move lock: the server refuses to move a driver while teams pick a side', roster().find((p) => p.clientId === 'g')?.alliance === 'blue');
+    if (bot) room.onMessage('h', { t: 'moveMember', id: bot.clientId, alliance: botWas === 'red' ? 'blue' : 'red' });
+    check('move lock: ...and still places a bot', !!bot && roster().find((p) => p.clientId === bot.clientId)?.alliance !== botWas);
+    room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: false } });
+    await new Promise((r) => setTimeout(r, 400));
+    room.onMessage('h', { t: 'moveMember', id: 'g', alliance: 'red' });
+    check('move lock: ...and host places drivers moves the driver', roster().find((p) => p.clientId === 'g')?.alliance === 'red');
+
+    // the shrink button follows the server's refusal exactly
+    const r2 = new Room('shrink', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'custom' }) });
+    const sink2: ServerMsg[] = [];
+    r2.add(mkc('h', 'red', sink2));
+    r2.add(mkc('a', 'red', []));
+    r2.add(mkc('g', 'blue', []));
+    const players2 = ([...sink2].reverse().find((m): m is Extract<ServerMsg, { t: 'roster' }> => m.t === 'roster')?.players ?? []);
+    const cur = r2.settings!;
+    const redBlocked = rules.shrinkState(players2, cur, 'red');
+    r2.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 2 } } });
+    check('⚠️ shrink: a side holding as many as it has seats is off, with the reason, and the server refuses it too',
+      redBlocked.disabled && redBlocked.reason === 'Every red seat is taken. Free one first.' && r2.settings?.perAlliance.red === 2);
+    const blueState = rules.shrinkState(players2, cur, 'blue');
+    r2.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 1 } } });
+    check('shrink: ...a side with a free seat can give it up, and the server agrees', !blueState.disabled && blueState.reason === null && r2.settings?.perAlliance.blue === 1);
+    check('shrink: ...no seats left is off without a reason', rules.shrinkState([], { ...cur, perAlliance: { red: 0, blue: 2 } }, 'red').disabled && rules.shrinkState([], { ...cur, perAlliance: { red: 0, blue: 2 } }, 'red').reason === null);
+    check('shrink: the button reads the rule', lobby.includes('const fewer = shrinkState(players, roomSet, a);') && lobby.includes('disabled={fewer.disabled}'));
+  }
+
+  // ---- the team badge says what it is -------------------------------------------------------------
+  check('badge: beside a name, each team badge is labelled with its access group’s own name',
+    ACCESS_GROUP_LABEL[TEAM_BADGES.beta === 'beta-tester' ? 'beta' : 'dev'] === 'Beta tester' && ACCESS_GROUP_LABEL.dev === 'Developer' && ACCESS_GROUP_LABEL.contributor === 'Contributor');
+  check('badge: the label comes from that table, for team badges only, and only where BadgeMarks draws it',
+    /ACCESS_GROUP_LABEL\[group\]/.test(badge) && /labelled && tier === 'team'/.test(badge) && /<BadgeArt key=\{b\.id\} id=\{b\.id\} n=\{b\.n\} labelled \/>/.test(badge));
+  check('badge: the chip has the words, a title and a name for assistive tech', /className="badge-label" aria-hidden="true"/.test(badge) && /title=\{words \?/.test(badge) && /aria-label=\{said\}/.test(badge));
 }
 
 /** THE RECORDS FEED (`server/recentRecords.ts`): a run's rank is replayed from the board's history. */
@@ -19016,7 +19157,7 @@ const recordDrive: CommandSource = (tick) => {
     crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
   check('crumbs: Import robot goes back to Configure’s Robot section, whose trail is Configure’s', parentOf(crumbsFor('robotimport')).screen === 'configure' && parentOf(crumbsFor('robotimport')).sub === 'robot' && crumbsFor('configure', 'robot').length === 1 && crumbsFor('configure', 'robot')[0].label === 'Configure' && crumbsFor('configure', 'controls').length === 1);
   check('crumbs: no crumb targets a full-screen surface (their Back leaves a live socket)',
-    shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'watchlobby', 'compmatch'].includes(c.to.screen))));
+    shellScreens.every((s) => crumbsFor(s, 'career', 'x').every((c) => !c.to || !['game', 'lobby', 'record', 'duorecord', 'matchmaking', 'replay', 'lan', 'compmatch'].includes(c.to.screen))));
   const shell = readFileSync('src/ui/AppShell.tsx', 'utf8').replace(/\r\n/g, '\n');
   const appSrc = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('crumbs: the bar has no Back button, so nothing left of the trail depends on the screen', !shell.includes('ds-bar-back') && !shell.includes('onBack'));

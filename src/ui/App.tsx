@@ -75,7 +75,6 @@ import { SoloSetup } from './SoloSetup';
 import { MenuStage, usePhone, type StageView } from './MenuStage';
 import { afterBoot } from './screenFade';
 import { RoomBrowser } from './RoomBrowser';
-import { WatchLobby } from './WatchLobby';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records } from './Records';
@@ -153,8 +152,6 @@ type Screen =
   | 'lobby'
   /** `/rooms`: Browse rooms, the Public rooms hosted right now */
   | 'rooms'
-  /** a Public room being watched from its lobby (no URL: it is a live socket, like `game`) */
-  | 'watchlobby'
   | 'discordlobbies'
   | 'record'
   | 'duorecord'
@@ -257,8 +254,6 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'lobby':
       return '/lobby';
     case 'rooms':
-      return '/rooms';
-    case 'watchlobby':
       return '/rooms';
     case 'discordlobbies':
       return '/discord-lobbies';
@@ -800,15 +795,8 @@ export function App() {
   const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
   /** Play's Solo setup popup (Match setup + Practice setup) */
   const [soloSetupOpen, setSoloSetupOpen] = useState(false);
-  /** the Public room being watched from its lobby (`WatchLobby`), or null */
-  const [watchedRoom, setWatchedRoom] = useState<{ room: string; game: GameId; region?: string } | null>(null);
-  // a history step onto the watch screen with nothing to watch (a reload, a forward button) lands on the list
-  useEffect(() => {
-    if (screen === 'watchlobby' && !watchedRoom) navigate('rooms');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, watchedRoom]);
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
-    { room: string; config: RoomConfig; region?: string } | null
+    { room: string; config: RoomConfig; region?: string; typed?: boolean } | null
   >(null);
 
   // DISCORD ACTIVITY: the home page offers a "Join Discord Lobby" button (with the
@@ -2194,37 +2182,6 @@ export function App() {
       />
     );
   }
-  if (screen === 'watchlobby' && watchedRoom) {
-    const w = watchedRoom;
-    return fullScreen(
-      <WatchLobby
-        code={w.room}
-        region={w.region}
-        game={w.game}
-        onBack={() => {
-          setWatchedRoom(null);
-          navigate('rooms');
-        }}
-        onJoin={() => {
-          // a seat is free: leave the spectator socket (WatchLobby closes it) and join as a driver
-          setWatchedRoom(null);
-          guardStart(() => {
-            selectGame(w.game);
-            setPendingAutoJoin({ room: w.room, config: { kind: 'versus', game: w.game }, region: w.region });
-            navigate('lobby');
-          });
-        }}
-        onMatch={(transport, lobby, m) => {
-          // the host started: the spectator session TAKES OVER this socket, exactly as `spectateRoom`'s does
-          const s = new ServerSession(transport, false, m, lobby.clientId, w.room, true);
-          setWatchedRoom(null);
-          setSession(s);
-          setSessionKind(null); // spectating: no run of our own to restart
-          navigate('game');
-        }}
-      />,
-    );
-  }
   if (screen === 'compmatch' && route.sub) {
     const slug = route.sub;
     return (
@@ -2526,6 +2483,12 @@ export function App() {
               autoJoin={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.room : undefined}
               autoJoinRegion={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.region : undefined}
               onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+              autoJoinTyped={pendingAutoJoin?.typed}
+              /* a typed code that is a duo-record room: the partner's way in from Browse rooms */
+              onRecordCode={(room, region) => {
+                setPendingAutoJoin({ room, config: { kind: 'record', record: 'duo', game: settings.game }, region });
+                navigate('duorecord');
+              }}
               discordActivity={inActivity}
               group={discordGroupId}
               resume={resumedRoom ?? undefined}
@@ -2622,7 +2585,7 @@ export function App() {
                 onJoinCode={(room, region) =>
                   guardStart(() => {
                     // a typed code names no season, so the room is joined in the one the player is on
-                    setPendingAutoJoin({ room, config: { kind: 'versus', game: settings.game }, region });
+                    setPendingAutoJoin({ room, config: { kind: 'versus', game: settings.game }, region, typed: true });
                     navigate('lobby');
                   })
                 }

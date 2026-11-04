@@ -28,7 +28,8 @@ import { ServerSession } from '../net/serverSession';
 import { coerceRoomSettings, roomCapacity, ROOM_CAPACITY, type RoomSettings, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
-import { generateRoomCode } from '../net/roomCode';
+import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
+import { entryTitle, hostMoveOffered, retriesAsRecord, seatFree, shrinkState, watchesOnRefusal } from './lobbyRules';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
@@ -98,6 +99,10 @@ interface Props {
   /** fired once `autoJoin` has been consumed, so the caller can clear its
    * one-shot pending state and a later normal visit doesn't re-trigger it */
   onAutoJoinConsumed?: () => void;
+  /** `autoJoin` is a code the player TYPED (Browse rooms), so nothing says what kind of room it is */
+  autoJoinTyped?: boolean;
+  /** the typed code turned out to be a duo-record room: the caller opens the record screen on it */
+  onRecordCode?: (room: string, region?: string) => void;
   /** running as a Discord Activity — surfaces the in-room name / robot-name editor
    * (the activity auto-join skips the entry screen that normally collects them).
    * Passed from App (captured stably at page load); NOT re-derived here, because
@@ -215,12 +220,21 @@ export function Lobby({
   autoJoin,
   autoJoinRegion,
   onAutoJoinConsumed,
+  autoJoinTyped = false,
+  onRecordCode,
   discordActivity = false,
   group = '',
   initialName,
 }: Props) {
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
+  /**
+   * A DUO RECORD ROOM IS THE ONE ENTRY SCREEN THAT STILL TAKES A CODE. A new ordinary room only
+   * creates (the Private / Public buttons chose its visibility, and Browse rooms is where a code is
+   * typed), but a record partner has no browser to go to: the host's screen says "Waiting for your
+   * partner to join with the code", so this is where the partner types it.
+   */
+  const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
   /**
    * THIS SCREEN WAS NEVER AN ENTRY FORM FOR THIS VISIT.
    *
@@ -405,6 +419,8 @@ export function Lobby({
   const startedRef = useRef(false);
   const watchStartRef = useRef(onWatchStart);
   watchStartRef.current = onWatchStart;
+  const onRecordCodeRef = useRef(onRecordCode);
+  onRecordCodeRef.current = onRecordCode;
   /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
   const refusedRef = useRef(false);
   /** `phase` for the handlers `wire` registers once, which would otherwise read the render that connected */
@@ -495,8 +511,7 @@ export function Lobby({
    */
   const canSpectate = !isRecord && !isHost && !lanActive();
   /** is there a free seat on `a`, for a spectator to take? (A legacy room has no per-side count.) */
-  const sideOpen = (a: Alliance): boolean =>
-    roomSet ? players.filter((p) => p.alliance === a).length < roomSet.perAlliance[a] : players.length < capacity;
+  const sideOpen = (a: Alliance): boolean => seatFree(players, roomSet, capacity, a);
 
   /**
    * ⚠️ THE ROOM CODE IS AN ARGUMENT, NEVER THE `code` STATE.
@@ -527,6 +542,17 @@ export function Lobby({
   function createRoom(): void {
     creatingRef.current = serverRooms2 && !isRecord;
     join(generateRoomCode());
+  }
+
+  /** a duo-record partner joins the room their host's code names */
+  function joinWithCode(): void {
+    const c = normalizeRoomCode(code);
+    if (!isValidRoomCode(c)) {
+      setError(`Enter a valid ${ROOM_CODE_LENGTH}-character room code.`);
+      setPhase('error');
+      return;
+    }
+    join(c);
   }
 
   /**
@@ -757,15 +783,27 @@ export function Lobby({
        * while a spectator is asking for it comes back to watching rather than to a dead socket.
        */
       if (
-        (code === 'room_full' || code === 'in_progress') &&
-        (phaseRef.current !== 'room' || seatTryRef.current) &&
-        !spectatingRef.current &&
-        !group &&
-        !lanActive() &&
-        !creatingRef.current &&
-        !isRecord
+        watchesOnRefusal(code, {
+          inRoom: phaseRef.current === 'room',
+          seatTry: seatTryRef.current,
+          spectating: spectatingRef.current,
+          activity: !!group,
+          lan: lanActive(),
+          creating: creatingRef.current,
+          record: isRecord,
+        })
       ) {
         watchRoom(roomCode, phaseRef.current === 'room');
+        return;
+      }
+      /**
+       * A TYPED CODE THAT IS A DUO-RECORD ROOM. Browse rooms joins as an ordinary room, the server
+       * answers "different game mode" for a room of another kind, and the join goes again on the
+       * record screen, which opens its own lobby on the same code. The record partner is the only
+       * person who can type one, and has no other way to say what the code is for.
+       */
+      if (onRecordCodeRef.current && retriesAsRecord(msg, { typed: autoJoinTyped, record: isRecord, activity: !!group })) {
+        onRecordCodeRef.current(roomCode, hostRegionRef.current || undefined);
         return;
       }
       // ⚠️ ONLY A REFUSAL AT THE DOOR marks the socket refused. In the room it is a message
@@ -1252,7 +1290,7 @@ export function Lobby({
               Private / Public buttons on Browse rooms and in the New room dialog), and it is not
               asked again here, so this is where it is read back. A Public room needs an account
               (`createRoom` lists only for a signed-in host), so signed out it is a Private one. */}
-          <ConsoleHead title={isRecord ? 'Duo record' : listed && signedIn ? 'Public room' : 'Private room'} />
+          <ConsoleHead title={entryTitle(isRecord, listed, signedIn)} />
           <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
@@ -1293,16 +1331,34 @@ export function Lobby({
                 </select>
               </label>
             )}
+            {isRecord && (
+              <div className="ds-opts two">
+                <button
+                  className={`ds-opt ${entryMode === 'create' ? 'on' : ''}`}
+                  aria-pressed={entryMode === 'create'}
+                  onClick={() => setEntryMode('create')}
+                >
+                  <span className="ot">New room</span>
+                </button>
+                <button
+                  className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
+                  aria-pressed={entryMode === 'join'}
+                  onClick={() => setEntryMode('join')}
+                >
+                  <span className="ot">Have a code</span>
+                </button>
+              </div>
+            )}
             {/* WHAT IS LEFT OF THE PICKER: a statement, not a control. Every room runs the 3D
                 physics, so the thing worth saying is the consequence for a machine that
                 struggles with it — practice is where the 2D solve still lives. */}
-            {physicsOffered && (
+            {entryMode === 'create' && physicsOffered && (
               <p className="ds-hint">
                 Online rooms run on the 3D physics, so everyone in the room loads it. Practice
                 can still run on the 2D physics.
               </p>
             )}
-            {serverRooms2 && !isRecord && (
+            {entryMode === 'create' && serverRooms2 && !isRecord && (
               <div className="ds-opts three" role="group" aria-label="Setup">
                 {(
                   [
@@ -1321,6 +1377,20 @@ export function Lobby({
                   </button>
                 ))}
               </div>
+            )}
+            {entryMode === 'join' && (
+              <label className="ds-field">
+                <span className="cap">Room code</span>
+                <input
+                  className="ds-input"
+                  value={code}
+                  onChange={(e) => setCode(normalizeRoomCode(e.target.value))}
+                  onKeyDown={(e) => e.key === 'Enter' && joinWithCode()}
+                  placeholder={`${ROOM_CODE_LENGTH} characters`}
+                  maxLength={ROOM_CODE_LENGTH}
+                  autoFocus
+                />
+              </label>
             )}
             {phase === 'error' && (
               <>
@@ -1358,9 +1428,19 @@ export function Lobby({
               </p>
             )}
             <div className="ds-actions">
-              <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
-                {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM'}
-              </button>
+              {entryMode === 'create' ? (
+                <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
+                  {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM'}
+                </button>
+              ) : (
+                <button
+                  className="ds-cta"
+                  disabled={phase === 'connecting' || code.length !== ROOM_CODE_LENGTH}
+                  onClick={joinWithCode}
+                >
+                  {phase === 'connecting' ? 'JOINING…' : 'JOIN ROOM'}
+                </button>
+              )}
             </div>
             {multiServer() && !regionLocked && (
               <p className="ds-hint">
@@ -1485,7 +1565,7 @@ export function Lobby({
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   {/* "Drivers pick a side" means the HOST DOES NOT MOVE THEM (the server refuses it too):
                       only a bot, which cannot pick, is placed by hand in that mode */}
-                  {isHost && roomSet && !isRecord && (p.bot || !roomSet.teamSwitch) && (
+                  {roomSet && hostMoveOffered(p, roomSet, { isHost, record: isRecord }) && (
                     <button
                       className="ds-btn small ghost"
                       disabled={
@@ -1579,12 +1659,17 @@ export function Lobby({
             <h2>Room settings</h2>
             {isHost ? (
               <>
-                {(['red', 'blue'] as const).map((a) => (
+                {(['red', 'blue'] as const).map((a) => {
+                  // a full side cannot shrink (the server refuses it), and in "Drivers pick a side" the
+                  // host cannot move a driver off to make room: the button says so instead of failing
+                  const fewer = shrinkState(players, roomSet, a);
+                  return (
                   <div key={a} className="ds-opts fill">
                     <button
                       className="ds-opt mini"
-                      aria-label={`Fewer ${a} seats`}
-                      disabled={roomSet.perAlliance[a] <= 0}
+                      aria-label={fewer.reason ? `Fewer ${a} seats. ${fewer.reason}` : `Fewer ${a} seats`}
+                      title={fewer.reason ?? undefined}
+                      disabled={fewer.disabled}
                       onClick={() =>
                         lobbyRef.current?.roomSettings({ perAlliance: { ...roomSet.perAlliance, [a]: roomSet.perAlliance[a] - 1 } })
                       }
@@ -1605,7 +1690,8 @@ export function Lobby({
                       <span className="ot">+</span>
                     </button>
                   </div>
-                ))}
+                  );
+                })}
                 <div className="ds-opts two">
                   <button
                     className={`ds-opt ${roomSet.teamSwitch ? 'on' : ''}`}
