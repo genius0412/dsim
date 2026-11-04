@@ -1396,6 +1396,107 @@
   color: var(--ds-ok-ink);
 }
 
+/* ---- friend profile preview (FriendPreview.tsx) ------------------------
+   What a press on a friends-panel row opens. A card BESIDE the sheet on a desktop: FriendPreview
+   sets --fr-pv-top (the row's top, clamped to the window) and --fr-pv-right (the sheet's left edge)
+   by measuring. Under 720px the sheet is nearly the whole width, so it is a bottom sheet instead and
+   the two measurements are ignored. Above the sheet (41) and its scrim (40), under the toasts (60). */
+.fr-pv {
+  position: fixed;
+  top: var(--fr-pv-top, 0px);
+  right: var(--fr-pv-right, 0px);
+  z-index: 42;
+  /* one-off geometry: wide enough for two stat tiles across, narrow enough to leave the page readable */
+  width: 304px;
+  max-width: calc(100vw - 2 * var(--ds-s-2));
+  max-height: calc(100dvh - 2 * var(--ds-s-2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block);
+}
+.fr-pv-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+  min-width: 0;
+}
+.fr-pv-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.fr-pv-name {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--ds-t-lg);
+  font-weight: 800;
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fr-pv-presence {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-mut);
+}
+.fr-pv-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* two tiles across at every width: `.ds-stats` auto-fits, which on the bottom sheet left a lone fourth tile */
+.fr-pv .ds-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/* the one-line slot above the tiles: the period, or the load failing, in the same space */
+.fr-pv-cap {
+  margin: 0;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  line-height: var(--ds-lh-prose);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.fr-pv-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-s-2);
+}
+@media (max-width: 720px) {
+  .fr-pv {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+    max-height: 80dvh;
+    border-width: 1px 0 0;
+    border-radius: var(--ds-round-lg) var(--ds-round-lg) 0 0;
+    padding-bottom: calc(var(--ds-s-4) + env(safe-area-inset-bottom, 0px));
+  }
+  /* thumb targets: .ds-btn.small is 30px */
+  .fr-pv-foot .ds-btn {
+    min-height: 40px;
+  }
+}
+
 /* ---- friend notifications (friendsContext.tsx FriendToasts) -----------
    A floating stack of transient cards: a new friend request or an incoming
    challenge announces itself even with the panel collapsed. Fixed to the

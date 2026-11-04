@@ -1267,3 +1267,20 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 - ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
   `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
   match `shell.css` by hand — change one, grep for the other.
+- **A PRESS ON A FRIENDS-PANEL ROW OPENS A PROFILE PREVIEW, NOT THE PROFILE** (owner, 2026-11-04: "add
+  profile previews on press for friendslist"). `FriendPreview.tsx`: avatar monogram, name and badges,
+  the presence line (friends only), 1v1 and 2v2 rating and rank, ranked W–L, playtime, and View profile.
+  It reads the profile page's own `fetchUserStatsByUsername` for the viewer's game (`friends.game`), so
+  there is no endpoint of its own. `PersonRow`'s `onPreview` wins over `onOpenProfile`; `UserSearchBar`'s
+  rows still navigate. In a room (`allowProfileNavigation` false) the preview opens but has no profile link.
+  - **Beside the sheet from 721px, a bottom sheet at 720px and under** (`--fr-pv-top`/`--fr-pv-right` are
+    measured off the row and the sheet and ignored by the phone rule). It is a `useDialog`: focus goes to
+    View profile, Tab stays in, Esc closes the preview ALONE (the sheet's `useEscape` yields to a consumed
+    Escape), focus returns to the row. An outside press closes the preview only; the scrim's click that
+    ends the same press is swallowed (`scrimSwallowAt`), so the second outside click closes the sheet.
+  - **Every state is one height**: tiles show a dash while loading, on an error and for a player with no
+    games, so the card never jumps when the numbers land.
+  - ⚠️ Two traps, both measured: React re-renders BETWEEN the preview's document-level `pointerdown` and the
+    scrim's own React `onPointerDown`, so the scrim cannot reset the swallow (it is a timestamp);
+    and `autoFocus` loses to the previous row's card when switching rows (its `useDialog` cleanup
+    runs after the new card mounts), so View profile is focused from an effect declared after `useDialog`.

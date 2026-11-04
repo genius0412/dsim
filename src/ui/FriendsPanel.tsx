@@ -15,6 +15,7 @@ import { challengeLine, formatLabel, isRetired } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
+import { FriendPreview, type PreviewPresence } from './FriendPreview';
 import type { GameId } from '../games/types';
 import { SITE_HOST } from '../lib/authFlows';
 import { inDiscordActivity } from '../net/discordActivity';
@@ -43,6 +44,21 @@ function canChallenge(f: FriendRow): boolean {
   return f.online && f.status !== 'dnd' && f.activity !== 'match' && !!f.username;
 }
 
+/** the dot an ONLINE friend carries: red for DND, amber while in a lobby or match, green otherwise */
+function presenceDot(f: FriendRow): 'dnd' | 'busy' | 'online' {
+  return f.status === 'dnd' ? 'dnd' : f.activity === 'match' || f.activity === 'lobby' ? 'busy' : 'online';
+}
+
+/** the preview's status line: a friend's presence, nothing for someone who is not (yet) one */
+function previewPresence(p: PublicProfile | FriendRow): PreviewPresence | null {
+  if (!('online' in p)) return null;
+  return p.online
+    ? { line: presenceLine(p), dot: presenceDot(p) }
+    : { line: offlineFor(p.offlineSeconds), dot: null };
+}
+
+/** how long after a press that dismissed the preview the scrim's click is still that press's */
+const SCRIM_SWALLOW_MS = 700;
 
 /** The room currently open beside this panel. Its region is the hosting region,
  * which may be different from the sender's currently preferred server. */
@@ -102,6 +118,17 @@ export function FriendsPanel({
   const [open, setOpen] = useState(false);
   const expanded = open;
   useEscape(() => setOpen(false), open);
+  // THE PROFILE PREVIEW a press on a row opens. Its own Escape is consumed before the sheet's sees it, and
+  // it goes with the sheet: a preview left in state would reopen over the next visit.
+  const [preview, setPreview] = useState<{ person: PublicProfile | FriendRow; anchor: HTMLElement } | null>(null);
+  useEffect(() => {
+    if (!open) setPreview(null);
+  }, [open]);
+  // An outside press that dismissed the preview on the scrim is the preview's alone: the click that
+  // follows it must not also close the sheet. A time, not a flag: the click is the same gesture's
+  // release, so a drag that never clicks cannot leave the next real click swallowed. (Not reset by the
+  // scrim's own pointerdown either: React re-renders between that listener and the preview's.)
+  const scrimSwallowAt = useRef(0);
   // THE SHEET STOPS AT THE FOOTER (owner, 2026-10-12). It is `position: fixed`, the footer scrolls with
   // `.ds-app` and wraps (no fixed height), so the part of the footer on screen is measured, not
   // assumed. A room screen has no footer and reads 0.
@@ -146,6 +173,15 @@ export function FriendsPanel({
 
   const openProfile = allowProfileNavigation ? onOpenProfile : undefined;
 
+  /** a row's press: its preview opens, a second press on the same row closes it. Focus is set by hand
+   * because Safari does not focus a button on click, and the dialog returns focus to what had it. */
+  const previewOf = (person: PublicProfile | FriendRow) => (anchor: HTMLElement) => {
+    anchor.focus();
+    setPreview((cur) => (cur?.person.userId === person.userId ? null : { person, anchor }));
+  };
+  // the live row, so the status line follows the poll; a person who is not a friend keeps the snapshot
+  const previewPerson = preview ? (list.find((f) => f.userId === preview.person.userId) ?? preview.person) : null;
+
   const toggleCard = (
       <aside className="ds-friends collapsed" aria-label="Friends">
         {/* LABELLED. Collapsed, this was a bare 38px glyph floating in a 56px column
@@ -174,7 +210,14 @@ export function FriendsPanel({
     <>
     {toggleCard}
     {/* a click anywhere outside closes it; the scrim is transparent, so the page stays readable behind the panel */}
-    <div className="fr-scrim" onClick={toggle} aria-hidden="true" />
+    <div
+      className="fr-scrim"
+      onClick={() => {
+        if (performance.now() - scrimSwallowAt.current < SCRIM_SWALLOW_MS) scrimSwallowAt.current = 0;
+        else toggle();
+      }}
+      aria-hidden="true"
+    />
     <aside className="ds-friends-overlay" aria-label="Friends">
       <div className="fr-head">
         {/* the heading the section h3s below nest under */}
@@ -260,7 +303,7 @@ export function FriendsPanel({
           {incoming.length > 0 && (
             <Section title="Requests" count={incoming.length}>
               {incoming.map((p) => (
-                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
+                <PersonRow key={p.userId} p={p} onPreview={previewOf(p)}>
                   <button
                     className="ds-btn small primary"
                     onClick={() => void friends.accept(p.username ?? '')}
@@ -288,19 +331,14 @@ export function FriendsPanel({
                 <PersonRow
                   key={f.userId}
                   p={f}
-                  onOpenProfile={openProfile}
+                  onPreview={previewOf(f)}
                   sub={presenceLine(f)}
                   // ANCHORED to the start of the row. As the first child of
                   // `.fr-actions` its x position was decided by however many buttons
                   // happened to follow it, so the dot sat in three different places
                   // down one list and MOVED when a friend's presence flipped
                   // mid-poll. A status indicator has to hold still.
-                  lead={
-                    <span
-                      className={`fr-dot${f.status === 'dnd' ? ' dnd' : f.activity === 'match' || f.activity === 'lobby' ? ' busy' : ''}`}
-                      aria-hidden
-                    />
-                  }
+                  lead={<span className={`fr-dot${presenceDot(f) === 'online' ? '' : ` ${presenceDot(f)}`}`} aria-hidden />}
                 >
                   {/* WATCH replaces Challenge rather than joining it: the two are
                       mutually exclusive by construction (`canChallenge` excludes a
@@ -352,7 +390,7 @@ export function FriendsPanel({
           {offline.length > 0 && (
             <FoldSection title="Offline" count={offline.length}>
               {offline.map((f) => (
-                <PersonRow key={f.userId} p={f} onOpenProfile={openProfile} sub={offlineFor(f.offlineSeconds)}>
+                <PersonRow key={f.userId} p={f} onPreview={previewOf(f)} sub={offlineFor(f.offlineSeconds)}>
                   <RowMenu username={f.username} friends={friends} />
                 </PersonRow>
               ))}
@@ -362,7 +400,7 @@ export function FriendsPanel({
           {outgoing.length > 0 && (
             <Section title="Sent requests" count={outgoing.length}>
               {outgoing.map((p) => (
-                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
+                <PersonRow key={p.userId} p={p} onPreview={previewOf(p)}>
                   <button
                     className="ds-btn small ghost"
                     onClick={() => void friends.cancel(p.username ?? '')}
@@ -382,7 +420,7 @@ export function FriendsPanel({
           {blocked.length > 0 && (
             <FoldSection title="Blocked" count={blocked.length}>
               {blocked.map((p) => (
-                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
+                <PersonRow key={p.userId} p={p} onPreview={previewOf(p)}>
                   <button
                     className="ds-btn small ghost"
                     // A blocked row can only exist if you named that account by
@@ -405,11 +443,32 @@ export function FriendsPanel({
             myUserId={myUserId}
             known={friends.data}
             onAdd={friends.add}
-            onOpenProfile={openProfile}
+            previewOf={previewOf}
           />
         </>
       )}
     </aside>
+    {previewPerson && preview && (
+      // keyed by person: pressing another row remounts it, so focus return and placement start over
+      <FriendPreview
+        key={previewPerson.userId}
+        person={previewPerson}
+        presence={previewPresence(previewPerson)}
+        game={friends.game}
+        anchor={preview.anchor}
+        onClose={(outside) => {
+          if (outside?.classList.contains('fr-scrim')) scrimSwallowAt.current = performance.now();
+          setPreview(null);
+        }}
+        onOpenProfile={
+          openProfile &&
+          ((username) => {
+            setPreview(null);
+            openProfile(username);
+          })
+        }
+      />
+    )}
     </>
   );
 }
@@ -447,12 +506,12 @@ function RecentlyPlayed({
   myUserId,
   known,
   onAdd,
-  onOpenProfile,
+  previewOf,
 }: {
   myUserId?: string | null;
   known: { friends: FriendRow[]; incoming: PublicProfile[]; outgoing: PublicProfile[]; blocked: PublicProfile[] };
   onAdd: (username: string) => Promise<'sent' | 'accepted'>;
-  onOpenProfile?: (username: string) => void;
+  previewOf: (person: PublicProfile) => (anchor: HTMLElement) => void;
 }) {
   const [people, setPeople] = useState<PublicProfile[]>([]);
   const [added, setAdded] = useState<Record<string, boolean>>({});
@@ -493,7 +552,7 @@ function RecentlyPlayed({
   return (
     <Section title="Recently played">
       {suggestions.map((p) => (
-        <PersonRow key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+        <PersonRow key={p.userId} p={p} onPreview={previewOf(p)}>
           <button
             className="ds-btn small"
             disabled={!!(p.username && added[p.username])}
@@ -584,14 +643,17 @@ function FoldSection({
  * child (CLAUDE.md; the name ellipsises on overflow and would truncate a nested
  * badge with it). The seventh copy is the one that forgets.
  *
- * `onOpenProfile` omitted ⇒ the STATIC variant: a name with nowhere to click
- * through to, which is all the old `.fr-who.static` ever meant.
+ * `onOpenProfile` and `onPreview` both omitted ⇒ the STATIC variant: a name with
+ * nowhere to click through to, which is all the old `.fr-who.static` ever meant.
+ * `onPreview` wins over `onOpenProfile`: the press opens the profile preview (which
+ * carries the link to the full page) and is handed the pressed button.
  */
 export function PersonRow({
   p,
   sub,
   lead,
   onOpenProfile,
+  onPreview,
   children,
 }: {
   p: PublicProfile | FriendRow;
@@ -599,6 +661,7 @@ export function PersonRow({
   /** a status indicator pinned to the START of the row, before the name */
   lead?: React.ReactNode;
   onOpenProfile?: (username: string) => void;
+  onPreview?: (anchor: HTMLElement) => void;
   children?: React.ReactNode;
 }) {
   const username = p.username;
@@ -618,12 +681,18 @@ export function PersonRow({
   return (
     <div className="fr-row">
       {lead}
-      {onOpenProfile ? (
+      {onPreview || onOpenProfile ? (
         <button
           className="fr-who"
-          onClick={() => username && onOpenProfile(username)}
+          data-uid={p.userId}
+          onClick={(e) => {
+            if (!username) return;
+            if (onPreview) onPreview(e.currentTarget);
+            else onOpenProfile?.(username);
+          }}
           disabled={!username}
-          title={username ? `View @${username}` : undefined}
+          aria-haspopup={onPreview ? 'dialog' : undefined}
+          title={username ? `${onPreview ? 'Preview' : 'View'} @${username}` : undefined}
         >
           {body}
         </button>
