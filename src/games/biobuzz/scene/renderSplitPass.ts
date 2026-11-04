@@ -216,6 +216,13 @@ export function createSplitPass(): BbSplitPass {
       decode.uniforms.invExposure.value = 0.6 / Math.max(1e-4, exposure);
       const auto = renderer.autoClear;
       const mask = camera.layers.mask;
+      // the late call sees the late layer alone, so a transparent mesh is on it only while THIS
+      // camera's own layers would show it (the top-down shots leave the venue's overhead layer out)
+      const lateBit = 1 << LATE_LAYER;
+      for (const mesh of lateMeshes) {
+        if ((mesh.layers.mask & mask & ~lateBit) !== 0) mesh.layers.enable(LATE_LAYER);
+        else mesh.layers.disable(LATE_LAYER);
+      }
       // step 1 brought every world matrix up to date; walking the whole graph again costs CPU
       const matrices = scene.matrixWorldAutoUpdate;
       renderer.autoClear = false;

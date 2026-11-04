@@ -704,6 +704,8 @@ class BiobuzzScene implements GameScene {
        camera stands at a driver station, side-on like the driver camera. */
     applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free, ...(this.xrRig ? [this.xrRig.camera] : [])]);
     this.scene.add(next);
+    // a venue that lands late (a modeled room, a splat capture) brings transparent objects of its own
+    this.split.collect(this.scene, [this.sun, this.hemi]);
   }
 
   /**
