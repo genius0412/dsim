@@ -30,6 +30,15 @@ MODELED VENUES. Runtime: `src/games/biobuzz/scene/renderModelVenue.ts`.
 
 `--placeholder` runs every step on a generated room into `scratch/venue-models/` (no download needed).
 
+## A generated venue (`grb`)
+
+A source row with a `generator` is built by a script in this folder instead of a download:
+`npx tsx scripts/venue-models/build.ts grb` runs `grb/generate.ts` (numbers in `grb/layout.ts`, pit cells
+in `grb/pits.ts`, textures in `grb/textures.ts`, geometry kit in `grb/mesh.ts`), writes the uncompressed
+source to the tools' work folder (`--source` stops there), then builds it like any other. The generator
+states a `keepClear` box (the sim's eyes plus the margin); the build fails if its clear box does not
+contain it. Research, sources and every estimate: `docs/venues/grb.md`.
+
 ## What the build does and why
 
 - **z up, inches, the field at the origin.** The scene is z up in inches; glTF is y up in metres.
@@ -45,3 +54,5 @@ MODELED VENUES. Runtime: `src/games/biobuzz/scene/renderModelVenue.ts`.
   the rest ETC1S linear. Geometry: meshopt (`EXT_meshopt_compression`, quantized).
 - **No decimation by rule.** Keep full detail where frame time and download allow; a simplified copy
   only for a tier that measurably needs it.
+- **Instancing**: after the clear box, every mesh placed twice or more becomes one
+  `EXT_mesh_gpu_instancing` draw (three builds an `InstancedMesh`).

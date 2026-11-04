@@ -214,7 +214,7 @@ export interface VenueSpec {
  * material, lit and shadowed by the row's `rig` like the procedural rooms. The row's `venue` is still
  * built first and stays on Low/Medium, while the file loads, and if it cannot.
  */
-export interface ModelVenue {
+interface ModelVenueFile {
   /** the processed GLB, relative to the app's base URL (`venueAssetUrl` versions it by `bytes`) */
   file: string;
   bytes: number;
@@ -223,14 +223,31 @@ export interface ModelVenue {
   /** the room the orbit and free eyes stay inside (`BbCameras.setRoom`): its walls, its ceiling
    * or the front of its stands, whichever is nearer, less a margin, field inches */
   cameraRoom: { min: readonly [number, number, number]; max: readonly [number, number, number] };
+  /** another credited work drawn inside this one (a model placed in the scene by its author) */
+  includes?: readonly { title: string; page: string; author: string }[];
+}
+
+/** a downloaded model: somebody's CC BY 4.0 work, credited on the Contributors page */
+export interface CreditedModelVenue extends ModelVenueFile {
   /** what the source is and who made it, for the credit line (CC BY 4.0 requires all four) */
   title: string;
   page: string;
   authors: readonly { name: string; role: string }[];
   license: 'CC BY 4.0';
   licenseUrl: string;
-  /** another credited work drawn inside this one (a model placed in the scene by its author) */
-  includes?: readonly { title: string; page: string; author: string }[];
+}
+
+/** a model GENERATED in this repo from researched numbers (`scripts/venue-models/<id>/`): nobody else's
+ * work, so nothing to credit; the row names the generator and the research it is built from */
+export interface GeneratedModelVenue extends ModelVenueFile {
+  generator: string;
+  research: string;
+}
+
+export type ModelVenue = CreditedModelVenue | GeneratedModelVenue;
+
+export function isGeneratedModel(m: ModelVenue): m is GeneratedModelVenue {
+  return 'generator' in m;
 }
 
 export const CC_BY_4 = 'https://creativecommons.org/licenses/by/4.0/';
@@ -390,6 +407,55 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       silhouette: { top: 0.52, bottom: 0.68, color: 0x080b10, alpha: 0.85, teeth: 26 },
       blur: 0.18,
       intensity: 0.85,
+    },
+  },
+  {
+    /**
+     * THE FTC CHAMPIONSHIP HALL (2026-11-04): Hall B3 of the George R. Brown Convention Center,
+     * Houston, as the FIRST Tech Challenge used it at the 2026 Championship — six divisions of two
+     * fields under lighting truss, a grandstand per division, the pits through the open airwall in
+     * A3. A MODEL GENERATED IN THIS REPO from measured numbers (`scripts/venue-models/grb/`; the
+     * research, its sources and every estimate are `docs/venues/grb.md`), drawn from High up; the
+     * arena-style procedural venue stands for it below that.
+     *
+     * The rig is a lit convention hall rather than a dark house: the 2025 and 2026 photographs show
+     * the house lights on over the stands and the truss lights on the fields, so the hemisphere
+     * carries more than the arena's and the ground bounce is concrete grey.
+     */
+    id: 'grb',
+    name: 'Championship hall',
+    note: 'Houston’s FTC hall, from High up. 2.0 MB',
+    rig: {
+      hemiSky: 0xe6ecf7,
+      hemiGround: 0x44464a,
+      hemiIbl: 1.7,
+      hemiNoIbl: 2.3,
+      sun: [30, -70, 180],
+      sunColor: 0xf6f8ff,
+      sunIntensity: 2.0,
+      exposure: 1.3,
+    },
+    venue: { kind: 'arena', floor: 0x5f5e5b, wall: 0x82858a, trim: 0x3b414a, lamp: 0xe8eeff, lampPower: 1.6, half: 760, ceil: 360, stands: true },
+    look: {
+      sky: [
+        [0, 0x16181c],
+        [0.34, 0x24272d],
+        [0.5, 0x4a4c50],
+        [0.62, 0x3a3b3e],
+        [1, 0x2e2f31],
+      ],
+      truss: { el: 26, h: 3, color: 0xe2e8f4 },
+      silhouette: { top: 0.52, bottom: 0.64, color: 0x26282c, alpha: 0.7, teeth: 30 },
+      blur: 0.2,
+      intensity: 0.85,
+    },
+    model: {
+      file: 'venues/grb.glb',
+      bytes: 2134776,
+      tris: 1818176,
+      cameraRoom: { min: [-325, -276, -1], max: [296, 129, 223] },
+      generator: 'scripts/venue-models/grb/generate.ts',
+      research: 'docs/venues/grb.md',
     },
   },
   {
@@ -797,7 +863,7 @@ export function environmentCredit(e: EnvironmentDef): {
     const h = e.hdri;
     return { source: 'Poly Haven', page: h.page, authors: h.authors, license: h.license, licenseUrl: h.licenseUrl, use: 'BIOBUZZ 3D environment lighting' };
   }
-  if (e.model) {
+  if (e.model && !isGeneratedModel(e.model)) {
     const m = e.model;
     return { title: m.title, source: 'Sketchfab', page: m.page, authors: m.authors, license: m.license, licenseUrl: m.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
   }

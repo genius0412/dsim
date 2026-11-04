@@ -511,6 +511,8 @@ export type RobotFamily = keyof typeof ROBOT_FAMILY_FINISH;
 export const VENUE_FLOOR_FINISH: Record<EnvironmentId, FinishId> = {
   room: 'sportsVinyl',
   arena: 'sportsVinyl',
+  // the procedural stand-in's ground (Low/Medium, and while the model loads): the GRB's slab
+  grb: 'sealedConcrete',
   gym: 'mapleFloor',
   workshop: 'sealedConcrete',
   overcast: 'outdoorAggregate',

@@ -282,14 +282,16 @@ export type PerfOverlay = 'off' | 'fps' | 'full';
  *
  * Nine are PROCEDURAL (2026-09-21): they are painted, they cost no download, and they are
  * therefore live on every tier including the two where image-based lighting is off. The tenth,
- * `monochrome-studio`, is a fetched HDRI. High's column (`gym`) is also what the fixed-High replay
- * export renders in, so it is a CONTRACT, not merely a default (`GFX_PRESETS.high`, and the RENDER
- * lane pins it). The five PHOTOGRAPHED venues (2026-10-10 to 2026-11-04) are retired: see
- * `RETIRED_ENVIRONMENTS`.
+ * `monochrome-studio`, is a fetched HDRI. The eleventh, `grb` (2026-11-04), is a MODEL generated in
+ * this repo (the GRB's FTC championship hall), drawn from High up over its procedural stand-in.
+ * High's column (`grb`) is also what the fixed-High replay export renders in, so it is a CONTRACT,
+ * not merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it). The five PHOTOGRAPHED
+ * venues (2026-10-10 to 2026-11-04) are retired: see `RETIRED_ENVIRONMENTS`.
  */
 export type EnvironmentId =
   | 'room'
   | 'arena'
+  | 'grb'
   | 'gym'
   | 'workshop'
   | 'overcast'
@@ -305,6 +307,7 @@ export type EnvironmentId =
 export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'room',
   'arena',
+  'grb',
   'gym',
   'workshop',
   'overcast',
@@ -320,12 +323,13 @@ export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
  * stand-in. They were Poly Haven panoramas projected onto an approximate room, correct only from the
  * photograph's own lens, so every camera warped them (`graphics/environments.ts`'s header). A stored
  * pick of one is a pick of that kind of place, so it keeps the kind: a hall reads as the gym, the
- * hangar as the workshop, the two open-air rows as the overcast day. High's column (was
- * `events-hall`) is `gym` too, so an untouched High still reads as High, not Custom.
+ * hangar as the workshop, the two open-air rows as the overcast day. The events hall was High's
+ * column, so it reads as High's column today, the GRB's championship hall (2026-11-04): an untouched
+ * High still reads as High, not Custom.
  */
 export const RETIRED_ENVIRONMENTS: Readonly<Record<string, EnvironmentId>> = {
   'school-hall': 'gym',
-  'events-hall': 'gym',
+  'events-hall': 'grb',
   hangar: 'workshop',
   court: 'overcast',
   quad: 'overcast',
@@ -514,9 +518,12 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    // the school gym, which is also every replay export's (see `EnvironmentId`): bleachers at this
-    // detail, and the room an FTC event is held in
-    environment: 'gym',
+    // THE CHAMPIONSHIP HALL (2026-11-04): the GRB's Hall B3 as the FTC used it in 2026, a model
+    // generated from measured numbers and drawn from this column up; also every replay export's (see
+    // `EnvironmentId`). It was the school gym until the same day (`GFX_MOVED_DEFAULTS`).
+    // Measured at 1920 × 1080 on the dev PC's RTX 4070 Ti SUPER: the whole frame 1.9–2.0 ms of GPU
+    // here against the gym's 0.6–0.8, 2.13 MB once (`docs/venues/grb.md`).
+    environment: 'grb',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -537,7 +544,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'gym',
+    environment: 'grb',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -561,7 +568,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'physical',
-    environment: 'gym',
+    environment: 'grb',
     envLighting: true,
     reflections: true,
     // OFF, not on (owner, 2026-09-27): the Extreme budget goes to what surfaces ARE, not to glow.
@@ -760,7 +767,7 @@ export const GFX_PRESETS_ALL: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS,
  * one) was written before a column default moved, so `GFX_MOVED_DEFAULTS` below applies to it ONCE;
  * every write after that carries this number, so a value the player picks again afterwards sticks.
  */
-export const GFX_STATE_REV = 3;
+export const GFX_STATE_REV = 4;
 
 /**
  * ⚠ COLUMN DEFAULTS THAT MOVED, MIGRATED ONCE ON LOAD (2026-10-11).
@@ -771,11 +778,13 @@ export const GFX_STATE_REV = 3;
  * revision stamp keeps whatever the player picks afterwards. Its first entry (`school-hall` → the
  * events hall on High and up) went on 2026-11-04: `RETIRED_ENVIRONMENTS` coerces every stored
  * photographed venue before this runs. Anti-aliasing moved the same day (revision 3): Low from off
- * to MSAA 2x, Medium from 2x to 4x.
+ * to MSAA 2x, Medium from 2x to 4x. And the environment of High and up moved from the school gym to
+ * the GRB's championship hall the same day again (revision 4).
  */
 export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [
   { key: 'aa', from: 'off', tiers: ['low'] },
   { key: 'aa', from: 'msaa2', tiers: ['medium'] },
+  { key: 'environment', from: 'gym', tiers: ['high', 'ultra', 'extreme'] },
 ];
 
 function migrateMovedDefaults(settings: GraphicsSettings, tier: GraphicsTier, rev: unknown): GraphicsSettings {

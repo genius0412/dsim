@@ -10,6 +10,15 @@ from 2026-10-10 (Poly Haven panoramas projected onto an approximate room) were r
 `vercel.json` serves `/venues` immutable for a year, so a rebuilt file needs a new URL (each row's
 URL carries its byte count).
 
+## Generated here
+
+| file | what | built by | research |
+|---|---|---|---|
+| `grb.glb` | George R. Brown Convention Center, Hall B3, 2026 FTC Championship layout | `scripts/venue-models/grb/` | `docs/venues/grb.md` |
+
+Nobody else's work is in it except the repo's own field model (`public/models/biobuzz/field-low.glb`,
+FIRST's field CAD, the same file the game draws), copied in for the neighbouring fields.
+
 ## Sources and credits
 
 Each file here is credited on the Contributors page (built from its row in

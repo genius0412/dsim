@@ -116,7 +116,7 @@ now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 **THE HOLDING BOX'S NECTAR ARE THE FIELD'S (2026-11-04).** Owner: "the nectar in the box should match the graphics of the nectar in the field." `renderField.ts` filled each box with plain spheres of its own, so on High a player saw smooth glossy balls beside the perforated field NECTAR. Now the box is only the tray, and `updateBiobuzzElements` draws each `stock` NECTAR in its slot (`bbNectarBoxSlot`, filled in order) through the field's own instanced mesh: same element detail, material, orientation and shadow mode. The 2D box takes a loose NECTAR's fill and rim (`elementInk.ts`, a leaf module because `draw.ts` imports `drawField.ts`). The RENDER lane drives the real `updateBiobuzzElements` for it.
 
-⚠️ **NO PHOTOGRAPH IS PROJECTED ONTO GEOMETRY, ANYWHERE (owner decision, 2026-11-04).** From 2026-10-10 five environments (`school-hall`, `events-hall`, `hangar`, `court`, `quad`) were Poly Haven panoramas projected onto an approximate room: a box, then MoGe-2 relief with furniture painted out, a keep-out shader, a stretch limit and a photographed floor tile. A projection is correct only from the lens that took it; every camera here (driver, chase, orbit, free, overhead, the menu stage, VR) stands somewhere else, so every one warped it. Five rounds of tuning (2026-10-21 to 2026-11-04) each came back "still distorted", then "EXTREMELY warped". The rows, `renderPhotoVenue.ts`, `scripts/venues/` and every file under `public/venues/` were deleted, not switched off. A stored pick reads as the painted room the row named as its stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`: halls → `gym`, hangar → `workshop`, court and quad → `overcast`), and High, Ultra and Extreme (the replay export's column) default to `gym`. A real place comes back as real geometry (a modeled room or a splat capture), never as a picture on a mesh. The RENDER lane's `retiredVenueChecks` holds all of it, including that no picture file is left in `public/venues/`.
+⚠️ **NO PHOTOGRAPH IS PROJECTED ONTO GEOMETRY, ANYWHERE (owner decision, 2026-11-04).** From 2026-10-10 five environments (`school-hall`, `events-hall`, `hangar`, `court`, `quad`) were Poly Haven panoramas projected onto an approximate room: a box, then MoGe-2 relief with furniture painted out, a keep-out shader, a stretch limit and a photographed floor tile. A projection is correct only from the lens that took it; every camera here (driver, chase, orbit, free, overhead, the menu stage, VR) stands somewhere else, so every one warped it. Five rounds of tuning (2026-10-21 to 2026-11-04) each came back "still distorted", then "EXTREMELY warped". The rows, `renderPhotoVenue.ts`, `scripts/venues/` and every file under `public/venues/` were deleted, not switched off. A stored pick reads as the painted room the row named as its stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`: the school hall → `gym`, the events hall → `grb`, hangar → `workshop`, court and quad → `overcast`), and High, Ultra and Extreme (the replay export's column) default to `grb`, the generated championship hall (below), since the same day. A real place comes back as real geometry (a modeled room or a splat capture), never as a picture on a mesh. The RENDER lane's `retiredVenueChecks` holds all of it, including that no picture file is left in `public/venues/`.
 
 ⚠️ **MODELED VENUES (2026-11-04): REAL GEOMETRY FROM HIGH UP** (`ModelVenue` on an environment row,
 `scene/renderModelVenue.ts`, `scripts/venue-models/`). A CC BY 4.0 Sketchfab glTF, built into one
@@ -146,8 +146,27 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
   Contributors page credits any work a model includes (`ModelVenue.includes`). `public/venues/README.md`
   lists every source.
 - **Adding one**: `scripts/venue-models/README.md` (inspect, place, build, add the row, sweep, capture).
-  As of 2026-11-04 no model row ships: the four sources wait on the owner's downloads (Sketchfab needs
-  a login).
+  The four Sketchfab sources still wait on the owner's downloads (Sketchfab needs a login).
+- ⚠️ **A MODEL CAN BE GENERATED IN THE REPO, AND `grb` IS** (2026-11-04; `GeneratedModelVenue`,
+  `scripts/venue-models/grb/`, research and every source in `docs/venues/grb.md`). The GRB's Hall B3 as
+  the FTC used it at the 2026 Championship, built from measured numbers (GRB's vector CAD, FIRST's 2026
+  floor plan) into a source document `build.ts` places, checks and compresses like a download. It is
+  **High, Ultra and Extreme's default** (and so the replay export's), migrated once from `gym`
+  (`GFX_MOVED_DEFAULTS`, revision 4). Rules it adds:
+  - **`KEEP_CLEAR` (`grb/generate.ts`)**: the box the sim's eyes need (a portrait phone's driver eye at
+    ±293 in, the menu home eye at y −205 / z 150, the chase eye at 126 in) plus the 24-in margin.
+    Anything of the real hall inside it is LEFT OUT and the build lists it; the build then refuses a
+    clear box that does not contain it. That is why FRANKLIN's second field stands 5.4 ft further than
+    the plan and our field's drive-team tables are not drawn.
+  - **The competition risers are not drawn**: the sim's driver and alliance tape stand on the mat's
+    plane, so the hall's floor is the mat's (`docs/venues/grb.md`, Deviations).
+  - **Repeated parts are GPU-instanced** (`instance()` after the clear box, for every source): 8,600
+    placements in 51 draws. The RENDER lane's `parseModelTris` expands `InstancedMesh` matrices, and
+    pins the row's `tris` to the parsed count, so a lane reading one instance per draw cannot pass.
+  - **A generated row is not credited** (`environmentCredit` returns null); the lane checks its
+    generator and research files exist instead.
+  - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 1.9–2.0 ms GPU on High (gym
+    0.6–0.8), 4.0–4.3 on Extreme (gym 2.1–2.7); 2.13 MB once.
 - ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
   file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
   no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB

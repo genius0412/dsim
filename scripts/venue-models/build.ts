@@ -65,7 +65,7 @@ async function tools() {
     'meshopt.decoder': meshopt.MeshoptDecoder,
     'meshopt.encoder': meshopt.MeshoptEncoder,
   });
-  return { core, fns, meshopt, sharp, ktx2, io };
+  return { core, ext, fns, meshopt, sharp, ktx2, io };
 }
 type Tools = Awaited<ReturnType<typeof tools>>;
 
@@ -174,7 +174,7 @@ async function inspect(t: Tools, src: VenueModelSource): Promise<void> {
   for (const l of doc.getRoot().listExtensionsUsed()) console.log(`  extension ${l.extensionName}`);
 }
 
-async function build(t: Tools, src: VenueModelSource, input: string | any, out: string): Promise<void> {
+async function build(t: Tools, src: VenueModelSource, input: string | any, out: string, keepClear: VenueBox | null = null): Promise<void> {
   if (!src.fieldAt || src.floor === null) throw new Error(`${src.id}: set fieldAt and floor in venues.ts first (run --inspect)`);
   const doc = typeof input === 'string' ? await t.io.read(input) : input;
   const root = doc.getRoot();
@@ -197,6 +197,18 @@ async function build(t: Tools, src: VenueModelSource, input: string | any, out: 
   }
   const clear = growClearBox(tris, obstacles, SEED, LIMIT);
   const cameraRoom = insetCameraRoom(clear, CAMERA_MARGIN_IN);
+  // a GENERATED source states the box its author kept clear for the sim's eyes; the grown box must
+  // contain it, or the generator let something stand where an eye goes
+  if (keepClear) {
+    const short = [0, 1, 2].flatMap((i) => [
+      ...(clear.min[i] > keepClear.min[i] + 0.5 && i < 2 ? [`min[${i}] ${clear.min[i].toFixed(1)} > ${keepClear.min[i]}`] : []),
+      ...(clear.max[i] < keepClear.max[i] - 0.5 ? [`max[${i}] ${clear.max[i].toFixed(1)} < ${keepClear.max[i]}`] : []),
+    ]);
+    if (short.length) throw new Error(`${src.id}: the clear box does not contain the generator's KEEP_CLEAR: ${short.join(', ')}`);
+  }
+  // 4b. one GPU-instanced draw per part placed twice or more (a generated venue places its columns,
+  // joists, truss sections and fixtures, and its neighbouring fields, as shared meshes)
+  await doc.transform(t.fns.instance({ min: 2 }));
   // 5. textures, then geometry
   await doc.transform(t.fns.textureCompress({ encoder: t.sharp, resize: [src.maxTexture, src.maxTexture] }));
   const imageDecoder = async (buffer: Uint8Array) => {
@@ -283,6 +295,22 @@ async function main(): Promise<void> {
   }
   const src = VENUE_MODEL_SOURCES.find((s) => s.id === args[0]);
   if (!src) throw new Error(`usage: build.ts <${VENUE_MODEL_SOURCES.map((s) => s.id).join('|')}> [--inspect] | --placeholder`);
+  if (src.generator) {
+    // a venue GENERATED in this repo: the generator builds the source document from its numbers; the
+    // source is also written, uncompressed, to the tools' work folder, so it can be opened in a viewer
+    const gen = await import(pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), src.generator)).href);
+    const { doc, notes } = await gen.generate(t, REPO);
+    for (const n of notes) console.log(`  ${n}`);
+    const srcOut = join(WORK, src.id, `${src.id}-source.glb`);
+    mkdirSync(dirname(srcOut), { recursive: true });
+    writeFileSync(srcOut, await t.io.writeBinary(doc));
+    console.log(`  source: ${srcOut}`);
+    if (args.includes('--source')) return;
+    const kc = gen.keepClear as { min: number[]; max: number[] };
+    // the generator's frame has the floor at 0; the build's at GROUND_Z
+    await build(t, src, doc, join(REPO, 'public', 'venues', `${src.id}.glb`), { min: [kc.min[0], kc.min[1], GROUND_Z], max: [kc.max[0], kc.max[1], kc.max[2] + GROUND_Z] });
+    return;
+  }
   if (args.includes('--inspect')) await inspect(t, src);
   else await build(t, src, sourceFile(src), join(REPO, 'public', 'venues', `${src.id}.glb`));
 }

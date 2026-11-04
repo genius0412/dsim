@@ -460,7 +460,7 @@ import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
 import type { SceneOverlayView } from '../../src/games/module';
 import { THIRD_PARTY } from '../../src/contributors';
 // -- the retired photographed venues (2026-11-04) and the venue sight lines (2026-11-01) -----------
-import { CC_BY_4, creditedEnvironments, environmentCredit, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
+import { CC_BY_4, creditedEnvironments, environmentCredit, isGeneratedModel, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
 // -- the modeled venues (2026-11-04) ----------------------------------------------------------------
 import { VENUE_MAX_TRIES, bbModelDetail, noteVenueFailure, venueAssetUrl, venueBlocked } from '../../src/games/biobuzz/graphics/venueFiles';
 import { SPLAT_FLOOR_KEEP_IN, growClearBox, inVenueBox, insetCameraRoom, obstacleTris, splatHiddenBoxes, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
@@ -13037,8 +13037,8 @@ function environmentAndReadoutChecks(check: Check): void {
     );
     check('every id resolves to a def with that id', BB_ENVIRONMENTS.every((e) => environmentDef(e.id) === e));
     check(
-      'ten environments since the five photographed venues were retired (2026-11-04), the room still first',
-      BB_ENVIRONMENTS.length === 10 && BB_ENVIRONMENTS[0].id === 'room',
+      'eleven environments: the five photographed venues retired, the GRB hall (a generated model) added (2026-11-04), the room still first',
+      BB_ENVIRONMENTS.length === 11 && BB_ENVIRONMENTS[0].id === 'room',
       String(BB_ENVIRONMENTS.length),
     );
 
@@ -13150,7 +13150,7 @@ function environmentAndReadoutChecks(check: Check): void {
     // none (three's own `RoomEnvironment` plus the THEMED letterbox) and neither does a fetched
     // HDRI (the HDRI is the surround).
     const painted = BB_ENVIRONMENTS.filter((e) => e.look);
-    check('eight painted domes were added', painted.length === 8, String(painted.length));
+    check('nine painted domes: the eight added on 2026-09-21 and the GRB hall’s', painted.length === 9, String(painted.length));
     check('no environment is both painted and fetched', BB_ENVIRONMENTS.every((e) => !(e.look && e.hdri)));
     check(
       'the room is neither: it is three’s RoomEnvironment on the themed backdrop',
@@ -13436,9 +13436,10 @@ function environmentAndReadoutChecks(check: Check): void {
     // HIGH so the file does not come out at whatever the machine that made it was set to, which
     // means `GFX_PRESETS.high.environment` is what every exported video is rendered in. Eight new
     // choices must not quietly become one of them.
-    // the school gym since 2026-11-04, when the photographed events hall it rendered in was retired
-    check('the fixed-High export tier renders in the school gym', GFX_PRESETS.high.environment === 'gym');
-    check('...and Ultra and Extreme with it', GFX_PRESETS.ultra.environment === 'gym' && GFX_PRESETS.extreme.environment === 'gym');
+    // the GRB's championship hall since 2026-11-04 (a generated model; the school gym for a few hours
+    // that day, after the photographed events hall it rendered in was retired)
+    check('the fixed-High export tier renders in the GRB championship hall', GFX_PRESETS.high.environment === 'grb');
+    check('...and Ultra and Extreme with it', GFX_PRESETS.ultra.environment === 'grb' && GFX_PRESETS.extreme.environment === 'grb');
     check(
       'Low and Medium still default to the generated room',
       GFX_PRESETS.low.environment === 'room' && GFX_PRESETS.medium.environment === 'room',
@@ -14790,11 +14791,19 @@ async function parseModelTris(file: string): Promise<VenueTris | null> {
     loader.setMeshoptDecoder(MeshoptDecoder);
     // the textures are not what this lane reads: any KTX2 image becomes an empty texture
     loader.setKTX2Loader({ load: (_u: string, onLoad: (t: THREE.Texture) => void) => onLoad(new THREE.Texture()), detectSupport() {} } as never);
-    const scene = await new Promise<THREE.Group | null>((res) => loader.parse(ab, '', (g) => res(g.scene), () => res(null)));
+    // a texture EMBEDDED in a GLB reaches the KTX2 loader as a blob URL, made with `self.URL`; Node has
+    // `URL.createObjectURL` but no `self`, so it is lent for the parse
+    const hadSelf = 'self' in globalThis;
+    if (!hadSelf) (globalThis as { self?: unknown }).self = globalThis;
+    const scene = await new Promise<THREE.Group | null>((res) => loader.parse(ab, '', (g) => res(g.scene), () => res(null))).finally(() => {
+      if (!hadSelf) delete (globalThis as { self?: unknown }).self;
+    });
     if (!scene) return null;
     scene.updateMatrixWorld(true);
     const pos: number[] = [];
     const v = new THREE.Vector3();
+    const each = new THREE.Matrix4();
+    const one = new THREE.Matrix4();
     scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
@@ -14802,9 +14811,20 @@ async function parseModelTris(file: string): Promise<VenueTris | null> {
       const p = g.getAttribute('position');
       const idx = g.getIndex();
       const n = idx ? idx.count : p.count;
-      for (let i = 0; i < n; i++) {
-        v.fromBufferAttribute(p, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld);
-        pos.push(v.x, v.y, v.z);
+      // ⚠️ AN INSTANCED MESH (EXT_mesh_gpu_instancing: the build makes every part placed twice or more
+      // one) draws its geometry once per instance matrix; reading it once at the node would test one
+      // column, one truss section, one neighbouring field, and miss the rest
+      const inst = m as unknown as THREE.InstancedMesh;
+      const count = inst.isInstancedMesh ? inst.count : 1;
+      for (let k = 0; k < count; k++) {
+        if (inst.isInstancedMesh) {
+          inst.getMatrixAt(k, one);
+          each.multiplyMatrices(m.matrixWorld, one);
+        } else each.copy(m.matrixWorld);
+        for (let i = 0; i < n; i++) {
+          v.fromBufferAttribute(p, idx ? idx.getX(i) : i).applyMatrix4(each);
+          pos.push(v.x, v.y, v.z);
+        }
       }
     });
     return { positions: pos, indices: null };
@@ -14979,11 +14999,20 @@ function modelVenueChecks(check: Check): void {
     const onDisk = existsSync(path) ? statSync(path).size : -1;
     check(`venue model ${e.id}: ${m.file} is the ${m.bytes} bytes its row states`, onDisk === m.bytes, String(onDisk));
     check(`venue model ${e.id}: its URL is versioned by those bytes`, venueFileBytes(m.file) === m.bytes && venueAssetUrl(m.file).endsWith(`?v=${m.bytes}`));
-    check(`venue model ${e.id}: CC BY 4.0, credited`, m.license === 'CC BY 4.0' && m.licenseUrl === CC_BY_4 && m.authors.length > 0 && /^https:\/\/sketchfab\.com\/3d-models\//.test(m.page));
+    if (isGeneratedModel(m)) {
+      // a venue GENERATED in this repo: nobody's work to credit, but its generator and the research
+      // its numbers come from must be here, so it can be rebuilt and checked against its sources
+      check(`venue model ${e.id}: generated here: its generator and its research are in the repo`, existsSync(join(root, m.generator)) && existsSync(join(root, m.research)));
+      check(`venue model ${e.id}: ...and it is not on the credits list (nothing of anybody else's is in it)`, environmentCredit(e) === null && !creditedEnvironments().includes(e));
+    } else {
+      check(`venue model ${e.id}: CC BY 4.0, credited`, m.license === 'CC BY 4.0' && m.licenseUrl === CC_BY_4 && m.authors.length > 0 && /^https:\/\/sketchfab\.com\/3d-models\//.test(m.page));
+    }
     check(`venue model ${e.id}: a painted dome lights it and a procedural venue stands in for it`, !!e.look && !e.hdri && !!e.venue);
     const tris = MODEL_FILES.get(e.id) ?? null;
     check(`venue model ${e.id}: the file parses`, tris !== null && tris.positions.length > 0);
     if (!tris) continue;
+    // the row's triangle count is the file's, instances counted (`parseModelTris` expands them)
+    check(`venue model ${e.id}: the row states the file's ${m.tris} triangles, every instance counted`, tris.positions.length / 9 === m.tris, String(tris.positions.length / 9));
     const v = modelRoomVerdict(tris, m.cameraRoom);
     check(`venue model ${e.id}: no triangle stands inside its camera room`, v.inside === 0, String(v.inside));
     check(`venue model ${e.id}: every in-match eye stands inside it`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
