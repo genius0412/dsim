@@ -317,6 +317,17 @@ async function seed(repo: any, db: PGlite): Promise<void> {
     userId: 'u-annie', mode: 'solo', drivetrain: 'tank', score: 169, balanceVersion: SEASON,
     replayId: null as unknown as string, game: 'decode', config: { spec: graceBot, assists: rc } as never,
   }).catch(() => {});
+  // A FULL BOARD for layout work: fourteen more DECODE solo runs, so the board runs past one screen
+  // (the Records redesign is measured on how many rows the first screen shows, 12+ at 1366x768)
+  for (let i = 0; i < 14; i++) {
+    const id = `u-fill${i}`;
+    await repo.ensureProfile(id, `Driver ${i + 7}`);
+    await repo.setUsername(id, `driver${i + 7}`);
+    await repo.submitRecord({
+      userId: id, mode: 'solo', drivetrain: (['mecanum', 'tank', 'swerve'] as const)[i % 3], score: 130 - i * 4, balanceVersion: SEASON,
+      replayId: null as unknown as string, game: 'decode', config: null,
+    }).catch(() => {});
+  }
   // a BIOBUZZ record with a long build (double turret, deployable ramp), for the record sheet's
   // widest rows, on the season the board reads
   {

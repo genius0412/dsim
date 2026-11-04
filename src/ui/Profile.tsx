@@ -12,7 +12,7 @@ import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
 import { ProfileFriendActions } from './ProfileFriendActions';
 import { useFriendsCtx } from './friendsContext';
-import type { CareerNav } from './Stats';
+import type { CareerNav } from './CareerView';
 import { fetchPlacements, type Placement } from '../net/myCompetitions';
 import { ordinal } from '../notices';
 import { seasonFor } from '../seasons';

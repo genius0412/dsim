@@ -127,6 +127,8 @@ export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
 export const HOME_STATS_KEY = 'decodesim.homeStats.v1';
 /** the reward grants a toast has already announced on this device, so a reload does not repeat one (`src/eventToasts.ts`) */
 export const TOASTS_SEEN_KEY = 'decodesim.toastsSeen.v1';
+/** the board Leaderboards last showed, per game, so a bare `/records` opens on it (`src/ui/boardMemory.ts`) */
+export const RECORDS_BOARD_KEY = 'decodesim.recordsBoard.v1';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -317,6 +319,13 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'local',
     category: 'preference',
     purpose: 'That the "prediction is off" explanation has already been shown once.',
+    retention: 'Until you clear your browser data.',
+  },
+  {
+    key: RECORDS_BOARD_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose: 'Which leaderboard you last looked at in each game (Solo, Duo, 1v1 or 2v2, and its filters), so Records opens on it.',
     retention: 'Until you clear your browser data.',
   },
   {

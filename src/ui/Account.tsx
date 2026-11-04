@@ -30,6 +30,8 @@ import { fmtDay } from './fmtDate';
 import { ProfileTabs, type ProfileTab } from './ProfileTabs';
 import { ServerMenu } from './ServerMenu';
 import { VerifyEmailBanner } from './VerifyEmailBanner';
+import { StandingCard } from './StandingCard';
+import { NoticeInbox } from './NoticeInbox';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
 import { trackEvent } from '../analytics';
@@ -88,6 +90,13 @@ export function Account({
       {showAuth && <VerifyEmailBanner />}
 
       {inActivity ? <AccountInDiscord /> : authEnabled ? <Identity /> : <IdentityDisabled />}
+
+      {/* ACCOUNT STANDING, MESSAGES AND YOUR REPORTS (they were on My records until 2026-11-04,
+          `docs/records-redesign.md`): the account's health and what moderators told it, so they live
+          with the account. My records' "Standing and messages" opens this page scrolled to them.
+          Self-only, and each renders nothing when it has nothing to say. */}
+      {showAuth && <StandingCard />}
+      {showAuth && <NoticeInbox />}
 
       {multiServer() && (
         // `ds-panel-open` drops the panel's `overflow: hidden` so the region

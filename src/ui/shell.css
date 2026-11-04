@@ -2245,9 +2245,7 @@ button.ds-key:where(:not(:disabled)):active,
 }
 .ds-sub.compact { margin: 0 0 var(--ds-s-4); }
 
-/* ---- Records: "look up a username" ----------------------------------- */
-/* Spans the full content column so it lines up with the `.ds-panel` board below
-   it (which has no max-width of its own). */
+/* ---- "look up a username" (Records' tab row, `.rb-search`) ---------------------------- */
 .ds-usersearch {
   margin: 0 0 var(--ds-s-4);
 }
@@ -3131,31 +3129,6 @@ button.ds-key:where(:not(:disabled)):active,
 .mh-table {
   min-width: 640px;
 }
-/* AND THE LEADERBOARD NEEDS THE FLOOR TOO, not just the scroller. `.mh-table` has had one
-   since its own sweep; the board went without, so on a phone the four columns squeezed
-   instead of scrolling and the Driver cell — the only one with prose in it — absorbed all
-   of it. A floor is what makes the scroller do its job. 520, not 640: this table has four
-   columns to match history's six, and the extra 120 would scroll on a phone for nothing. */
-.lb-table {
-  min-width: 520px;
-}
-/* the two FIXED columns, so a wide name can never take their width. `.rk` is already 34;
-   the value column is mono tabular and its widest content is a 5-digit Chain Reaction
-   score. Records add a third, the Watch button: its OWN column so the Score header sits
-   over the number (sharing the cell put it over the button). No left padding, so the gap
-   between number and button is the score cell's right padding. The width is EXACT, not
-   a minimum — the phone rule below pins the score this far from the right edge. */
-.lb-table .sc {
-  width: 88px;
-}
-.lb-table {
-  --lb-watch-w: 84px;
-}
-.lb-table .lb-watch {
-  width: var(--lb-watch-w);
-  padding-left: 0;
-  text-align: right;
-}
 /* the date + type sub-line inside the Players cell — shown only where those two columns
    are dropped (a phone, below) */
 .mh-sub {
@@ -3163,9 +3136,7 @@ button.ds-key:where(:not(:disabled)):active,
 }
 /* PHONES: THE SCORE IS WHAT PEOPLE CAME FOR (07-05). At 375px the panel is ~343px and the
    table floors pushed Score behind a sideways scroll. Match history drops When and Type
-   (folded into Players as a sub-line) and caps the Players cell so Score lands on screen;
-   the leaderboard pins its value column to the right edge instead of dropping Robot,
-   because the Robot button is the only way into the config detail row. */
+   (folded into Players as a sub-line) and caps the Players cell so Score lands on screen. */
 @media (max-width: 640px) {
   .ds-table th,
   .ds-table td {
@@ -3187,46 +3158,6 @@ button.ds-key:where(:not(:disabled)):active,
   }
   .mh-table .mh-players {
     max-width: 176px;
-  }
-  .lb-table .lb-val {
-    position: sticky;
-    right: 0;
-    /* the pinned edge is a 1px rule painted in the background, not a border (a collapsed
-       border stays behind with the table) and not a shadow (one depth model) */
-    background: linear-gradient(to right, var(--ds-line) 1px, var(--ds-panel) 1px);
-  }
-  /* records pin score AND Watch as one block: the button sits at the edge, the score
-     exactly one Watch column in from it */
-  .lb-table.rec .lb-val {
-    right: var(--lb-watch-w);
-  }
-  .lb-table .lb-watch {
-    position: sticky;
-    right: 0;
-    background: var(--ds-panel);
-  }
-  /* the pinned cells are opaque, so they repaint the row's hover tint themselves */
-  .lb-table tr.ds-clickable:hover > td.sc {
-    background:
-      linear-gradient(to right, var(--ds-line) 1px, transparent 1px),
-      linear-gradient(color-mix(in srgb, var(--ds-accent) 8%, transparent), color-mix(in srgb, var(--ds-accent) 8%, transparent)),
-      var(--ds-panel);
-  }
-  .lb-table tr.ds-clickable:hover > td.lb-watch {
-    background:
-      linear-gradient(color-mix(in srgb, var(--ds-accent) 8%, transparent), color-mix(in srgb, var(--ds-accent) 8%, transparent)),
-      var(--ds-panel);
-  }
-  .lb-table tr.lb-you > td.lb-watch {
-    background:
-      linear-gradient(color-mix(in srgb, var(--ds-accent) 12%, transparent), color-mix(in srgb, var(--ds-accent) 12%, transparent)),
-      var(--ds-panel);
-  }
-  .lb-table tr.lb-you > td.sc {
-    background:
-      linear-gradient(to right, var(--ds-line) 1px, transparent 1px),
-      linear-gradient(color-mix(in srgb, var(--ds-accent) 12%, transparent), color-mix(in srgb, var(--ds-accent) 12%, transparent)),
-      var(--ds-panel);
   }
 }
 .mh-when {
@@ -3364,9 +3295,6 @@ button.ds-key:where(:not(:disabled)):active,
   color: var(--ds-mut);
   font-size: 12px;
 }
-.lb-duo-tag {
-  margin-left: 2px;
-}
 .lb-name {
   font: inherit;
   background: none;
@@ -3418,104 +3346,14 @@ button.ds-key:where(:not(:disabled)):active,
   max-width: 16ch;
 }
 
-/* the viewer's own ranked standing (rank once placed, or placement progress) */
-.lb-standing {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--ds-line);
-  background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-panel));
-}
-.lb-standing.placed {
-  border-color: color-mix(in srgb, var(--ds-accent) 55%, var(--ds-line));
-}
-/* PROVISIONAL gold. --ds-gold is a FILL; where the same idea has to be TYPE it uses
-   --ds-warn (burnt amber on light, gold on dark) — the fill/text split, again. */
-.lb-standing.placing {
-  background: color-mix(in srgb, var(--ds-gold) 9%, var(--ds-panel));
-  border-color: color-mix(in srgb, var(--ds-gold) 45%, var(--ds-line));
-}
-.lb-standing-rank {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--ds-accent);
-  letter-spacing: var(--ds-track-tight);
-}
-.lb-standing-badge {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  font-weight: 800;
-  color: var(--ds-gold-ink);
-  background: var(--ds-gold);
-}
-.lb-standing-col {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-.lb-standing-text {
-  color: var(--ds-ink);
-  font-size: var(--ds-t-control);
-}
-.lb-standing-text strong {
-  color: var(--ds-accent);
-}
-/* TYPE, so --ds-warn — the raw gold is 1.98:1 on the tinted light panel */
-.lb-standing.placing .lb-standing-text strong {
-  color: var(--ds-warn);
-}
-.lb-standing-sub {
-  color: var(--ds-mut);
-  font-size: 12px;
-}
-.lb-standing-bar {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--ds-line);
-  overflow: hidden;
-  margin-top: 3px;
-}
-.lb-standing-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--ds-gold);
-}
 
-/* highlight the viewer's own row in the board */
+/* highlight the viewer's own row in the board: OPAQUE (mixed into the panel, not into transparent),
+   because the foot row that repeats it sticks over the rows scrolling under it */
 tr.lb-you > td {
-  background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--ds-accent) 12%, var(--ds-panel));
 }
 /* the row's YOU marker is `.ds-badge.accent` */
 
-/* leaderboard record config (expandable robot column) */
-.lb-robot {
-  font: inherit;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round-full);
-  padding: 4px 10px;
-  color: var(--ds-ink);
-  cursor: pointer;
-}
-.lb-robot:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-}
-.lb-robot .tw {
-  color: var(--ds-accent);
-  font-size: var(--ds-t-xs);
-}
 tr.lb-detail td {
   background: var(--ds-bg);
   padding: 0;
@@ -3530,17 +3368,6 @@ tr.lb-detail td {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   gap: var(--ds-s-3);
   padding: var(--ds-s-3) var(--ds-s-4);
-  /* ON A PHONE the table is wider than the screen and scrolls sideways, and this row's cell is as
-     wide as the table, so a sheet laid out to the cell ran off the right edge. It is as wide as
-     the scroller's VISIBLE width instead (`.lb-scroll` is the container), and stays in view
-     while the columns scroll under it. Capped at the cell (100%), because `cqw` counts the
-     desktop scroller's vertical scrollbar, and the 15px it adds was a horizontal scrollbar. */
-  position: sticky;
-  left: 0;
-  width: min(100%, 100cqw);
-}
-.lb-scroll {
-  container-type: inline-size;
 }
 
 /* ---- a robot's spec sheet (`RobotSheet`, `SpecList`) -----------------------------------
@@ -6526,7 +6353,6 @@ button.bb-cell:where(:not(:disabled)):active {
    new markup; the three hand-styled displays that predate it are enrolled by selector rather
    than by touching their JSX. Size and weight stay with each rule. */
 .ds-num,
-.lb-standing-rank,
 .ds-replay-score .rs-num,
 .adm-stat b {
   font-family: var(--ds-font-mono);
@@ -10503,10 +10329,6 @@ input.admin-months {
   border-radius: var(--ds-round-md);
 }
 
-/* ---- the Records hub: the page links, and the feed of new records ---------------------- */
-.ds-hub-pages {
-  margin: var(--ds-s-4) 0;
-}
 /* YOUR RANKED STANDING at the top of the ranked screen. The box keeps its height while the read is in
    flight (an empty frame), so the number arriving moves nothing below it. */
 .ds-rankedstanding {
@@ -10584,25 +10406,6 @@ input.admin-months {
 .ds-badge-row.earned .bd-state {
   color: var(--ds-ok-ink);
 }
-.ds-feed {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  /* the list scrolls inside its panel, so the hub's controls never leave the screen */
-  max-height: min(56dvh, 560px);
-  overflow-y: auto;
-}
-.ds-feed-row {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: var(--ds-s-3);
-  padding: var(--ds-s-2) var(--ds-s-4);
-  border-top: 1px solid var(--ds-line);
-}
-.ds-feed-row:first-child {
-  border-top: 0;
-}
 .rf-rank {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-sm);
@@ -10612,11 +10415,6 @@ input.admin-months {
 }
 .rf-rank.r1 {
   color: var(--ds-accent);
-}
-.rf-text {
-  min-width: 0;
-  font-size: var(--ds-t-control);
-  overflow-wrap: anywhere;
 }
 .rf-name {
   padding: 0;
@@ -10628,27 +10426,10 @@ input.admin-months {
   color: var(--ds-mut);
   white-space: nowrap;
 }
-/* the Watch cell keeps its width when a run has no replay, so the times line up down the list */
-.rf-nowatch {
-  display: block;
-  width: 64px;
-}
 @media (max-width: 640px) {
-  /* the page links stack: three narrow cards wrapped their own labels */
-  .ds-opts.ds-hub-pages {
-    grid-template-columns: minmax(0, 1fr);
-  }
   /* the season name repeats what Home says, and the title needs the room */
   .ds-bar-season {
     display: none;
-  }
-  .ds-feed-row {
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-  }
-  .rf-nowatch,
-  .ds-feed-row .ds-btn {
-    grid-column: 2 / 4;
-    justify-self: start;
   }
 }
 
@@ -12084,5 +11865,406 @@ button.ds-toast-main:disabled {
   .ds-toast {
     animation-duration: 1ms;
     animation-iteration-count: 1;
+  }
+}
+
+/* ==== RECORDS (`docs/records-redesign.md`, built 2026-11-04) ======================================
+   HEIGHT binds on this screen, not width: at 1366x768 the old board's first row sat at 503px under
+   seven stacked controls. Now it is the tab row, one control line and the table header, and the
+   first row is measured at most 230px down on a desktop and 300px on a phone (the capture in the
+   commit that built it). Anything added above the rows spends that budget. */
+.rb-records {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* THE TAB ROW: the three tabs, and the player search at the right. The row owns the rule under the
+   tabs, so the search sits on the same line without a second border. */
+.rb-top {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-s-3);
+  border-bottom: 1px solid var(--ds-line);
+}
+.ds-tabs.rb-tabs {
+  margin: 0;
+  border-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.rb-search {
+  position: relative;
+  width: 280px;
+  padding-bottom: var(--ds-s-2);
+}
+.rb-search .ds-usersearch {
+  margin: 0;
+}
+/* the control height (the selects' 32px), not a form field's: the tab row is no taller than its tabs */
+.rb-search .ds-input {
+  padding-block: var(--ds-s-1);
+}
+.rb-tab-short {
+  display: none;
+}
+/* the results drop OVER the page, so typing a name never pushes the board down */
+.rb-search .ds-usersearch-results {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  z-index: 5;
+  box-shadow: var(--ds-block);
+}
+.rb-search-toggle {
+  display: none;
+}
+.rb-search-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+/* the board and Latest records: one column, the list under the board in a closed disclosure... */
+.rb-layout {
+  display: grid;
+  gap: var(--ds-s-3);
+  align-items: start;
+}
+/* ...and beside it from 1200px, where there is room for both (`LatestRecords`' WIDE) */
+@media (min-width: 1200px) {
+  .rb-layout {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+}
+/* `clip`, not the panel's `hidden`: `hidden` makes the panel a scroll container, and the viewer's
+   foot row could not stick to the window's bottom edge inside one */
+.ds-panel.rb-board {
+  overflow: clip;
+}
+/* THE ONE CONTROL LINE: the board picker, then the filters at the right */
+.rb-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+.rb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin-left: auto;
+}
+.rb-filter-toggle {
+  display: none;
+}
+/* THE TABLE: four fixed columns and a name that ellipsizes, so a phone never scrolls it sideways */
+.rb-table {
+  table-layout: fixed;
+}
+/* ONE ROW HEIGHT, button or not: a row with a replay was 47px and one without 39, so the board's
+   rhythm stepped down the page. 36 shows 15 rows under the first at 768 tall; a finger gets 44. */
+.rb-table th {
+  padding-block: var(--ds-s-2);
+}
+.rb-table tbody tr,
+.rb-table tfoot tr {
+  height: 36px;
+}
+.rb-table tbody td,
+.rb-table tfoot td {
+  padding-block: 0;
+}
+.rb-table .rb-watch {
+  height: 26px;
+  padding-block: 0;
+  line-height: var(--ds-lh-tight);
+}
+@media (pointer: coarse) {
+  .rb-table tbody tr,
+  .rb-table tfoot tr {
+    height: 44px;
+  }
+  .rb-table .rb-watch {
+    height: 34px;
+  }
+}
+.rb-table .rk {
+  width: 52px;
+}
+.rb-table .sc {
+  width: 96px;
+}
+.rb-table .rb-games {
+  width: 80px;
+}
+.rb-table .rb-play {
+  width: 56px;
+  padding-left: 0;
+  text-align: right;
+}
+.rb-table .rb-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rb-table .lb-drivers {
+  flex-wrap: nowrap;
+  max-width: 100%;
+}
+.rb-row:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: -2px;
+}
+.rb-watch {
+  min-width: var(--ds-s-6);
+}
+.rb-detail-meta {
+  margin: 0;
+  padding: var(--ds-s-2) var(--ds-s-4) 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rb-detail-meta:last-child {
+  padding-bottom: var(--ds-s-3);
+}
+/* YOUR ROW when it is not among the rows: pinned to the bottom of the window while the board is on
+   screen, ruled off from the rows it floats over */
+.rb-foot td {
+  position: sticky;
+  bottom: 0;
+  border-top: 1px solid var(--ds-line);
+  font-weight: 700;
+}
+/* LATEST RECORDS, beside the board or under it */
+.rb-latest > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.rb-latest > summary::-webkit-details-marker {
+  display: none;
+}
+.rb-latest > summary::after {
+  content: '▾';
+  margin-left: auto;
+  color: var(--ds-mut);
+}
+.rb-latest[open] > summary::after {
+  content: '▴';
+}
+.rb-latest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rb-latest-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  grid-template-areas:
+    'rank what when'
+    '.    who  play';
+  align-items: center;
+  column-gap: var(--ds-s-2);
+  row-gap: var(--ds-s-1);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.rb-latest-row:first-child {
+  border-top: 0;
+}
+.rb-latest-row .rf-rank {
+  grid-area: rank;
+}
+.rb-latest-what {
+  grid-area: what;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rb-latest-what b {
+  color: var(--ds-ink);
+  font-family: var(--ds-font-mono);
+}
+.rb-latest-row .rf-when {
+  grid-area: when;
+}
+.rb-latest-who {
+  grid-area: who;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ds-t-control);
+}
+.rb-latest-row .rb-watch,
+.rb-watch-none {
+  grid-area: play;
+  height: 26px;
+  padding-block: 0;
+}
+.rb-watch-none {
+  width: var(--ds-s-6);
+}
+/* MY RECORDS: four tiles, each a door to its board at your row */
+.rb-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ds-s-3);
+}
+.rb-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  min-width: 0;
+  padding: var(--ds-s-3) var(--ds-s-4);
+  font: inherit;
+  text-align: left;
+  color: var(--ds-ink);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  cursor: pointer;
+  transition: border-color var(--ds-dur-fade);
+}
+.rb-tile:hover {
+  border-color: var(--ds-accent);
+}
+.rb-tile .sv {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  line-height: var(--ds-lh-tight);
+}
+.rb-tile .sl {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.rb-tile .sl.sub {
+  text-transform: none;
+  letter-spacing: 0;
+  min-height: 1lh;
+}
+.rb-wl {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rb-wl b {
+  font-family: var(--ds-font-mono);
+  color: var(--ds-ink);
+}
+/* Account, opened from My records' "Standing and messages": the two land under the bar, not behind it */
+.ds-standing,
+.nt-inbox {
+  scroll-margin-top: calc(var(--ds-bar-h) + var(--ds-s-4));
+}
+/* A PHONE: the search and the filter line each behind one button, so the tab row and the control line
+   stay one line each; the @username goes (the profile has it); the tiles go two across */
+@media (max-width: 640px) {
+  .rb-search-toggle {
+    display: inline-flex;
+    align-self: center;
+  }
+  .rb-search {
+    display: none;
+    width: 100%;
+  }
+  .rb-top {
+    flex-wrap: wrap;
+  }
+  .rb-top.searching .rb-search {
+    display: block;
+  }
+  /* the tab row and the control line are ONE line each: short tab labels, and the filter button takes
+     whatever the board picker leaves (a zero basis, so it shrinks onto the line instead of wrapping) */
+  .rb-tab-full {
+    display: none;
+  }
+  .rb-tab-short {
+    display: inline;
+  }
+  .rb-tabs .ds-tab {
+    padding: var(--ds-s-1) var(--ds-s-3);
+  }
+  .rb-controls {
+    padding: var(--ds-s-1) var(--ds-s-3);
+  }
+  .rb-table th {
+    padding-block: var(--ds-s-1);
+  }
+  .rb-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ds-s-1);
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .rb-filter-sum {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rb-filters {
+    display: none;
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .rb-filters.open {
+    display: flex;
+  }
+  .rb-table .lb-at {
+    display: none;
+  }
+  .rb-table .rk {
+    width: 40px;
+  }
+  .rb-table .sc {
+    width: 72px;
+  }
+  .rb-table .rb-games {
+    width: 56px;
+  }
+  .rb-table .rb-play {
+    width: 48px;
+  }
+  .rb-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* MY RECORDS' HISTORY FITS THE PHONE: no floor and no sideways scroll; the rating change goes (the
+     tiles above carry the rating), and the players cell ellipsizes */
+  .mh-table.slim {
+    min-width: 0;
+    table-layout: fixed;
+  }
+  .mh-table.slim th:nth-last-child(2),
+  .mh-table.slim td:nth-last-child(2) {
+    display: none;
+  }
+  /* the names wrap rather than ellipsize (an ellipsis left "RED …" and no name at all); the alliance
+     chips go, since each name is already in its alliance's ink */
+  .mh-table.slim .mh-players {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .mh-table.slim .mh-al {
+    display: none;
+  }
+  /* fixed widths for the short columns (Result, Score, the Watch button), so Players takes the rest */
+  .mh-table.slim th:nth-last-child(4) {
+    width: 64px;
+  }
+  .mh-table.slim th:nth-last-child(3) {
+    width: 80px;
+  }
+  .mh-table.slim th:last-child {
+    width: 76px;
   }
 }

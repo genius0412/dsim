@@ -378,7 +378,6 @@ const serverPairs = (t) => {
     ['UsernameField hint / available', t('--ds-ok-ink'), panel, AA],
     ['UsernameField hint / taken', t('--ds-danger'), panel, AA],
     ['Account id <code>', t('--ds-mut'), panel, AA],
-    ['Leaderboard .lb-standing-badge', t('--ds-gold-ink'), t('--ds-gold'), AA],
     ['HomeMenu .ds-discord-join (blurple fill, fixed ink)', t('--ds-blurple-ink'), t('--ds-blurple'), AA],
     // The supporter badge is a FILL with fixed ink for exactly this reason: it
     // renders on the leaderboard panel, the lobby roster tile, AND a profile
@@ -430,7 +429,6 @@ const serverPairs = (t) => {
     ['Reward item kind label on the recessed list', t('--ds-mut'), tile, AA],
     // .legal-warn paints --ds-warn as TEXT on a 9% tint of itself over the page
     ['Legal unfinished-terms warning', t('--ds-warn'), composite(t('--ds-warn'), 0.09, bg), AA],
-    ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],
     // a build tag (`BuildLine`) has no fill: its name and mount sit on the card itself
     ['Build tag name on a card', t('--ds-ink-dim'), panel, AA],
     ['Build tag mount on a card', t('--ds-mut'), panel, AA],

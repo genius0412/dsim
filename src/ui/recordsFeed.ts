@@ -1,14 +1,11 @@
 import type { RecentRecord } from '../net/protocol';
 
-/** the feed's time frames, in the board's own vocabulary (`server/boardWindow.ts`). `season` is the
- *  whole current season: a feed has no lifetime view, and the server reads `all` the same way. */
-export const FEED_WINDOWS = [
-  { key: 'day', label: 'Today' },
-  { key: 'week', label: 'This week' },
-  { key: 'month', label: 'This month' },
-  { key: 'season', label: 'This season' },
-] as const;
-export type FeedWindow = (typeof FEED_WINDOWS)[number]['key'];
+/**
+ * LATEST RECORDS, the Leaderboards tab's side column (`LatestRecords.tsx`): the season's new No.1s
+ * and top-3 scores, newest first. It had a time-frame picker (Today / This week / This month / This
+ * season); that went with the board's Window control, and the column always reads the season.
+ */
+export const LATEST_ROWS = 8;
 
 /** a short age, like every other "ago" in the app: "just now", "5m ago", "3h ago", "4d ago" */
 export function feedAgo(iso: string, now: number): string {

@@ -1,4 +1,4 @@
-import { RECORDS_HUB, RECORDS_PAGES, isRecordsPage } from './recordsPages';
+import { RECORDS_DEFAULT, RECORDS_PAGES, recordsViewOf } from './recordsPages';
 
 /**
  * THE BREADCRUMB TRAIL of a shell screen, and the ONE place that decides where "up" is.
@@ -27,7 +27,9 @@ export interface Crumb {
 
 const HOME: CrumbTarget = { screen: 'home' };
 const PLAY: Crumb = { label: 'Play', to: { screen: 'modes' } };
-const RECORDS: Crumb = { label: 'Records', to: { screen: 'records', sub: RECORDS_HUB } };
+const RECORDS: Crumb = { label: 'Records', to: { screen: 'records', sub: RECORDS_DEFAULT } };
+/** the root of a Records TAB: the tabs are siblings, so up from any of them is Home, not another tab */
+const RECORDS_ROOT: Crumb = { label: 'Records', to: HOME };
 const CONFIGURE: Crumb = { label: 'Configure', to: { screen: 'configure', sub: 'robot' } };
 const PROFILE: Crumb = { label: 'Profile', to: { screen: 'account', sub: 'appearance' } };
 
@@ -81,10 +83,11 @@ export function crumbsFor(screen: string, sub: string | null = null, username: s
       return [here('Configure')];
     case 'robotimport':
       return trail(CONFIGURE)('Import robot');
+    // three TABS under one root (2026-11-04: there is no hub). The root is what latches the bar's
+    // Records section and is dropped from the trail while it does; up from a tab is Home.
     case 'records': {
-      if (!isRecordsPage(sub)) return [here('Records')];
-      const page = RECORDS_PAGES.find((p) => p.key === sub);
-      return trail(RECORDS)(page?.label ?? 'Records');
+      const page = RECORDS_PAGES.find((p) => p.key === recordsViewOf(sub));
+      return trail(RECORDS_ROOT)(page?.label ?? 'Records');
     }
     // a public profile is reached from a leaderboard, the feed or the search, all of them Records
     case 'profile':

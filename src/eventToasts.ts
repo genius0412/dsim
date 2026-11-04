@@ -39,7 +39,9 @@ export type ToastScope = 'personal' | 'community';
 export type ToastKind = 'pb' | 'wr' | 'rating' | 'placed' | 'badge' | 'record' | 'ranked1' | 'supporter' | 'burst';
 
 /** where a click on the toast goes (`setToastNavigator`, registered by `App`) */
-export type ToastTarget = { to: 'leaderboard'; game: string } | { to: 'donate' } | { to: 'rewards' };
+/** where a toast opens. A leaderboard target names its BOARD where it knows it (a duo record opens the Duo
+ *  board, a 2v2 rating the 2v2 ladder); without one, Records opens on the board last shown in that game. */
+export type ToastTarget = { to: 'leaderboard'; game: string; board?: 'solo' | 'duo' | '1v1' | '2v2' } | { to: 'donate' } | { to: 'rewards' };
 
 export interface Toast {
   /** unique per event; a repeat of a key is dropped */
@@ -71,7 +73,7 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 export function recordToast(info: RecordRankInfo, game: string): Toast | null {
   const what = `${info.score} in ${gameName(game)} ${info.mode === 'duo' ? 'duo' : 'solo'}`;
   const key = `rec:${game}:${info.mode}:${info.drivetrain}:${info.score}`;
-  const target: ToastTarget = { to: 'leaderboard', game };
+  const target: ToastTarget = { to: 'leaderboard', game, board: info.mode === 'duo' ? 'duo' : 'solo' };
   if (info.isWR) {
     return { key, scope: 'personal', kind: 'wr', title: 'World record', detail: `${what} · ${drivetrainName(info.drivetrain)}`, target };
   }
@@ -95,7 +97,7 @@ export function ratingToast(results: readonly EloDelta[], robotId: number, game:
   const delta = after - Math.round(d.before);
   const need = RANKED_PLACEMENT[mode];
   const key = `elo:${game}:${mode}:${d.games}:${after}`;
-  const target: ToastTarget = { to: 'leaderboard', game };
+  const target: ToastTarget = { to: 'leaderboard', game, board: mode };
   if (d.games < need) return null;
   if (d.games === need) return { key, scope: 'personal', kind: 'placed', title: 'Placement done', detail: `Rated ${after} in ${where}`, target };
   if (delta === 0) return null;
@@ -125,14 +127,14 @@ export function communityToast(e: CommunityEvent): Toast | null {
     return {
       key, scope: 'community', kind: 'record', title: 'New world record',
       detail: `${nameOf(e)} · ${e.score} in ${gameName(e.game)} ${e.mode === 'duo' ? 'duo' : 'solo'}`,
-      target: { to: 'leaderboard', game: e.game ?? 'decode' },
+      target: { to: 'leaderboard', game: e.game ?? 'decode', board: e.mode === 'duo' ? 'duo' : 'solo' },
     };
   }
   if (e.kind === 'ranked1' && typeof e.score === 'number') {
     return {
       key, scope: 'community', kind: 'ranked1', title: 'New #1 in ranked',
       detail: `${nameOf(e)} · ${e.score} in ${gameName(e.game)} ${e.mode === '2v2' ? '2v2' : '1v1'}`,
-      target: { to: 'leaderboard', game: e.game ?? 'decode' },
+      target: { to: 'leaderboard', game: e.game ?? 'decode', board: e.mode === '2v2' ? '2v2' : '1v1' },
     };
   }
   if (e.kind === 'supporter') {

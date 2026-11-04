@@ -10,10 +10,20 @@ import { periodLabel } from '../seasons';
 import { CareerPanel } from './CareerPanel';
 import { MatchHistory } from './MatchHistory';
 import { PeriodPicker } from './PeriodPicker';
-import type { CareerNav } from './Stats';
+import type { GameId } from '../types';
+
+/** what a profile hands its career body: where a replay, another profile or a competition opens */
+export interface CareerNav {
+  onWatch?: (replayId: string) => void;
+  onOpenProfile?: (username: string) => void;
+  /** open a competition's page (the profile's placements list) */
+  onOpenCompetition?: (slug: string) => void;
+  /** which game's boards to show (DECODE default) — its own periods/records */
+  game?: GameId;
+}
 
 /**
- * The Career body shared by "My Stats" and the public profile page. Owns ONE
+ * The career body of the public profile page (My records has its own, slimmer one: `MyRecords.tsx`). Owns ONE
  * Act/Season period picker that drives BOTH the stats panel and the match-history
  * list, so selecting a PAST period shows that season's FINAL standings + its
  * matches (historical stats). Callers inject how to load stats (by user id or by

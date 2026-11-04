@@ -17871,8 +17871,10 @@ const forceRoomToPost = (room: Room): void => {
 // ---- the leaderboard must not label a Total board as Auto / Today (older server) ----
 {
   const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8').replace(/\r\n/g, '\n');
-  check('board: a category or window the server did not echo shows no rows, not the Total board under a wrong label',
-    /category !== 'total' && r\.category !== category/.test(board) && /win !== 'season' && r\.window !== win/.test(board) && /Not available yet/.test(board));
+  check('board: a category the server did not echo shows no rows, not the Total board under a wrong label',
+    /cat !== 'total' && r\.category !== cat/.test(board) && /Not available yet/.test(board));
+  check('board: the Window control is gone, and the client never asks for a window or an era (docs/records-redesign.md)',
+    !/window:/.test(board) && !/setWin|setEra/.test(board) && /fetchRecords\(board, dt, s, game, \{ category: cat \}\)/.test(board));
   const server = readFileSync('server/api.ts', 'utf8');
   check('board: the server echoes the category and window it answered', /category, window, windowStart: start, resetsAt/.test(server));
 }
@@ -19751,7 +19753,7 @@ const recordDrive: CommandSource = (tick) => {
 /** THE BREADCRUMB TRAIL (`src/ui/crumbs.ts`): what the app bar shows is also where "up" goes. */
 {
   const { crumbsFor, parentOf } = await import('../src/ui/crumbs');
-  const { RECORDS_PAGES, RECORDS_HUB } = await import('../src/ui/recordsPages');
+  const { RECORDS_PAGES } = await import('../src/ui/recordsPages');
   const shellScreens = ['modes', 'rooms', 'competitions', 'matchmaking', 'duorecord', 'lobby', 'lan', 'configure', 'robotimport', 'records', 'profile', 'account',
     'download', 'contributors', 'changelogs', 'privacy', 'terms', 'donate', 'accountreset', 'accountverify', 'admin', 'dev'];
   check('crumbs: home has no trail (the bar is the same markup minus it)', crumbsFor('home').length === 0);
@@ -19761,9 +19763,9 @@ const recordDrive: CommandSource = (tick) => {
   check('crumbs: an unknown screen shows no trail rather than a wrong one', crumbsFor('nope').length === 0);
   check('crumbs: Play pages go back to Play, and Play goes Home',
     parentOf(crumbsFor('rooms')).screen === 'modes' && ['matchmaking', 'duorecord', 'lobby', 'lan'].every((x) => parentOf(crumbsFor(x)).screen === 'modes') && parentOf(crumbsFor('modes')).screen === 'home');
-  check('crumbs: every Records page goes back to the hub, with the registry labels',
-    RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[1].label === p.label && parentOf(t).screen === 'records' && parentOf(t).sub === RECORDS_HUB; }));
-  check('crumbs: the Records hub is a top-level screen (up is Home)', crumbsFor('records', RECORDS_HUB).length === 1 && parentOf(crumbsFor('records', RECORDS_HUB)).screen === 'home');
+  check('crumbs: every Records tab sits under Records with its registry label, and up from one is Home (the tabs are siblings)',
+    RECORDS_PAGES.every((p) => { const t = crumbsFor('records', p.key); return t.length === 2 && t[0].label === 'Records' && t[1].label === p.label && parentOf(t).screen === 'home'; }));
+  check('crumbs: the old hub address (/records, /records/hub) reads as Leaderboards', crumbsFor('records', null)[1]?.label === 'Leaderboards' && crumbsFor('records', 'hub')[1]?.label === 'Leaderboards');
   check('crumbs: a public profile goes back to Records, and names the player', crumbsFor('profile', null, 'ada')[1].label === 'ada' && parentOf(crumbsFor('profile', null, 'ada')).screen === 'records');
   check('crumbs: the account page sits under Profile (Appearance), which is top-level',
     crumbsFor('account', 'appearance').length === 1 && parentOf(crumbsFor('account')).screen === 'account' && parentOf(crumbsFor('account')).sub === 'appearance');
@@ -19987,29 +19989,66 @@ const recordDrive: CommandSource = (tick) => {
     readFileSync('src/ui/shell.css', 'utf8').includes('.ds-main .ds-console-in:not(.ds-console > *) {'));
 }
 
-/** THE RECORDS HUB'S ROUTING (`recordsPages.ts`, `App.tsx`): the registry is the single list of pages. */
+/** RECORDS' ROUTING (`recordsPages.ts`, `recordsQuery.ts`, `App.tsx`): three tabs, no hub, the board in
+ *  the query string, and every old address landing on its new home (docs/records-redesign.md). */
 {
-  const { RECORDS_PAGES, RECORDS_HUB, isRecordsPage, recordsViewOf } = await import('../src/ui/recordsPages');
-  const { feedAgo, feedVerb, FEED_WINDOWS } = await import('../src/ui/recordsFeed');
+  const { RECORDS_PAGES, RECORDS_DEFAULT, isRecordsPage, recordsViewOf } = await import('../src/ui/recordsPages');
+  const { feedAgo, feedVerb, LATEST_ROWS } = await import('../src/ui/recordsFeed');
   const keys = RECORDS_PAGES.map((p) => p.key);
-  check('records: every page key is unique', new Set(keys).size === keys.length);
-  check('records: the hub is not a page key (it is what the pages hang off)', !keys.includes(RECORDS_HUB as never));
-  check('records: leaderboard, career and achievements are pages', ['leaderboard', 'career', 'achievements'].every((k) => isRecordsPage(k)));
-  check('records: there is no Players page, because the hub has the search', !isRecordsPage('players') && recordsViewOf('players') === RECORDS_HUB);
+  check('records: every tab key is unique', new Set(keys).size === keys.length);
+  check('records: the tabs are Leaderboards, My records and Achievements, in that order', keys.join() === 'leaderboard,career,achievements' && RECORDS_DEFAULT === 'leaderboard');
+  check('records: there is no Players page and no hub page; both old addresses open Leaderboards', !isRecordsPage('players') && !isRecordsPage('hub') && recordsViewOf('players') === 'leaderboard' && recordsViewOf('hub') === 'leaderboard');
   const { BADGE_KEYS: BK, BADGE_EARN: BE, BADGE_LABELS: BL } = await import('../src/badges');
   check('records: Achievements lists every badge with a name and how it is earned', BK.every((k) => !!BL[k] && !!BE[k]));
   const pagesSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
-  check('records: Achievements has a route', pagesSrc.includes('achievements: AchievementsRoute'));
-  check('records: a bare /records, or anything unknown, is the HUB', recordsViewOf(null) === RECORDS_HUB && recordsViewOf('hub') === RECORDS_HUB && recordsViewOf('nope') === RECORDS_HUB);
-  check('records: a known sub is its own page', recordsViewOf('career') === 'career' && recordsViewOf('leaderboard') === 'leaderboard');
+  check('records: Achievements has a route', pagesSrc.includes('achievements: AchievementsTab'));
+  check('records: a bare /records, or anything unknown, opens Leaderboards', recordsViewOf(null) === 'leaderboard' && recordsViewOf('nope') === 'leaderboard');
+  check('records: a known sub is its own tab', recordsViewOf('career') === 'career' && recordsViewOf('leaderboard') === 'leaderboard' && recordsViewOf('achievements') === 'achievements');
   const app = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
-  check('records: a bare /records parses to the hub, not to the leaderboard',
-    app.includes("at('records', { sub: records[1] ?? RECORDS_HUB })"));
+  check('records: /records parses to a TAB, never to a hub',
+    app.includes("at('records', { sub: recordsViewOf(records[1]) })"));
   check('records: the old /leaderboard and /stats links still resolve to their pages',
     app.includes("startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' })") &&
       app.includes("startsWith('/stats')) return at('records', { sub: 'career' })"));
-  check('records: a page builds /records/<key> and the hub builds /records',
-    app.includes("isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records'"));
+  check('records: every tab builds /records/<key> (the old /records canonicalizes to /records/leaderboard)',
+    app.includes('return `/records/${recordsViewOf(a.sub)}`;'));
+  // THE BOARD IS A LINK: the query string, canonical, with the retired Window and era dropped
+  const rq = await import('../src/ui/recordsQuery');
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  check('records query: no query is Solo, Total, Overall, the live period', same(rq.parseBoardQuery(''), rq.DEFAULT_BOARD_QUERY) && same(rq.parseBoardQuery(null), rq.DEFAULT_BOARD_QUERY));
+  const qs: import('../src/ui/recordsQuery').BoardQuery[] = [
+    { board: 'duo', cat: 'auto', dt: 'tank', season: 7, me: false },
+    { board: '2v2', cat: 'total', dt: 'overall', season: null, me: true },
+    { board: 'solo', cat: 'teleop', dt: 'xdrive', season: 0, me: false },
+    rq.DEFAULT_BOARD_QUERY,
+  ];
+  check('records query: every board survives its own address', qs.every((q) => same(rq.parseBoardQuery(rq.boardQueryString(q)), q)));
+  check('records query: one board, one address (fixed order, defaults omitted)',
+    rq.boardQueryString({ board: 'duo', cat: 'teleop', dt: 'tank', season: 7, me: true }) === 'board=duo&cat=teleop&dt=tank&season=7&me=1' && rq.boardQueryString(rq.DEFAULT_BOARD_QUERY) === '');
+  check('records query: an old ?window= or ?era= link opens the season board (the Window control is gone)',
+    rq.canonicalBoardQuery('?window=week&era=2d') === '' && rq.canonicalBoardQuery('board=duo&window=all&era=3d&cat=auto') === 'board=duo&cat=auto');
+  check('records query: unknown values fall back, and a ranked ladder drops category and drivetrain',
+    same(rq.parseBoardQuery('board=nope&cat=x&dt=y&season=-1'), rq.DEFAULT_BOARD_QUERY) && rq.canonicalBoardQuery('board=1v1&cat=auto&dt=tank') === 'board=1v1');
+  check('records query: the address carries the board in and out (start, Back/Forward, navigate, a filter in place)',
+    /query: routeQuery\(p\.screen, p\.sub, window\.location\.search\)/.test(app) && /query: routeQuery\(s\.screen, s\.sub, window\.location\.search\)/.test(app) &&
+      /const url = urlFor\(next, a, settingsRef\.current\.game\);/.test(app) && /window\.history\.replaceState\(null, '', url\)/.test(app) && /const canonical = urlFor\(startScreen, start/.test(app));
+  check('records: another game\'s boards keep the board and drop the period (a period is per game)',
+    /const q = \{ \.\.\.boardQuery, season: null, me: false \};\s*selectGame\(g\);/.test(app));
+  // EVERY TOAST LINK RESOLVES (065b71ed / 703348ab): the target names the board, and App opens it
+  const et2 = await import('../src/eventToasts');
+  const ri = (mode: 'solo' | 'duo') => ({ mode, drivetrain: 'mecanum', score: 412, rank: 1, total: 9, isPB: true, isWR: true });
+  const tgt = (t: { target?: import('../src/eventToasts').ToastTarget } | null) => (t?.target && t.target.to === 'leaderboard' ? t.target.board : null);
+  const evx = (over: Record<string, unknown>) => ({ id: 1, kind: 'record', game: 'decode', name: 'a', partner: null, mode: 'solo', score: 300, at: '2026-11-04T00:00:00Z', ...over }) as never;
+  const elo2 = [{ robotId: 1, before: 1500, after: 1530, rd: 80, games: 20 }];
+  check('records: a record toast opens its own board (Solo or Duo)', tgt(et2.recordToast(ri('solo'), 'decode')) === 'solo' && tgt(et2.recordToast(ri('duo'), 'decode')) === 'duo');
+  check('records: a rating toast opens its ladder (1v1 or 2v2)', tgt(et2.ratingToast(elo2, 1, 'decode', 2)) === '1v1' && tgt(et2.ratingToast(elo2, 1, 'decode', 4)) === '2v2');
+  check('records: a community record or No.1 opens its board, and a supporter opens Support',
+    tgt(et2.communityToast(evx({ mode: 'duo' }))) === 'duo' && tgt(et2.communityToast(evx({ kind: 'ranked1', mode: '2v2' }))) === '2v2' &&
+      et2.communityToast(evx({ kind: 'supporter', name: 'z' }))?.target?.to === 'donate');
+  check('records: every board a toast names is an address Leaderboards reads back',
+    rq.BOARD_KEYS.every((b) => rq.parseBoardQuery(rq.boardQueryString({ ...rq.DEFAULT_BOARD_QUERY, board: b })).board === b));
+  check('records: App opens the board a toast names (one that names none opens the board last shown)',
+    /openBoard\(t\.board \?\? null\);/.test(app));
   const recordsSrc = readFileSync('src/ui/Records.tsx', 'utf8').replace(/\r\n/g, '\n');
   check('records: every registry key has a component (Record<RecordsPageKey, ...>)', recordsSrc.includes('Record<RecordsPageKey, ComponentType<PageProps>>'));
   const now = Date.UTC(2026, 9, 10, 12);
@@ -20019,7 +20058,20 @@ const recordDrive: CommandSource = (tick) => {
   check('records feed: the verb names the place and the board',
     feedVerb({ rank: 1, mode: 'solo', score: 412, partnerHandle: null }) === 'took No.1 in Solo with 412' &&
       feedVerb({ rank: 2, mode: 'duo', score: 640, partnerHandle: 'x' }) === 'reached No.2 in Duo with 640');
-  check('records feed: the frames are the board vocabulary, season last', FEED_WINDOWS.map((w) => w.key).join() === 'day,week,month,season');
+  const latestSrc = readFileSync('src/ui/LatestRecords.tsx', 'utf8');
+  check('records: Latest records reads the season and lists the latest few (its time-frame picker went with the Window control)',
+    latestSrc.includes("fetchRecentRecords('season', game)") && LATEST_ROWS === 8 && !/FEED_WINDOWS|Time frame/.test(latestSrc));
+  // NOTHING CUT IS LOST: every panel My records gave up has a home, one click away
+  const myRec = readFileSync('src/ui/MyRecords.tsx', 'utf8');
+  const acct = readFileSync('src/ui/Account.tsx', 'utf8');
+  check('records: standing and messages moved to Account, and My records links straight to them',
+    /\{showAuth && <StandingCard \/>\}/.test(acct) && /\{showAuth && <NoticeInbox \/>\}/.test(acct) && /onClick=\{nav\.onStanding\}>\s*Standing and messages/.test(myRec) &&
+      /navigate\('account'\);[\s\S]{0,200}querySelector\('\.ds-standing, \.nt-inbox'\)/.test(app));
+  check('records: practice and LAN replays are types of My records\' one history list',
+    /type === 'practice' \? \(\s*<PracticeReplays [^>]*head=\{head\}/.test(myRec) && /type === 'lan' \? \(\s*<LanReplays [^>]*head=\{head\}/.test(myRec));
+  check('records: playtime and games played stay on the public profile, awards on Achievements',
+    /Games played/.test(readFileSync('src/ui/CareerPanel.tsx', 'utf8')) && /Playtime/.test(readFileSync('src/ui/CareerPanel.tsx', 'utf8')) &&
+      /<CareerView/.test(readFileSync('src/ui/Profile.tsx', 'utf8')) && /<AwardList awards=/.test(readFileSync('src/ui/AchievementsPage.tsx', 'utf8')));
   const mockSrc = readFileSync('src/ui/recordsFeedMock.ts', 'utf8');
   check('records feed: the review fixture is gated on a DEV build', mockSrc.includes('import.meta.env.DEV'));
 }
@@ -27161,7 +27213,8 @@ const dumperSetup = (): RobotSetup => {
     // the address bar when its first session request starts. App's mount effect strips every
     // query to canonicalize the path, and on some loads it won that race: the player came back
     // from Google signed out ("Sign in with Google just reloads the page", 2026-09-25).
-    const canon = app.slice(app.indexOf('const canonical = pathFor('), app.indexOf("window.history.replaceState(null, '', target"));
+    // (`urlFor` since 2026-11-04: the path, plus Records' board query, the one route that keeps one)
+    const canon = app.slice(app.indexOf('const canonical = urlFor('), app.indexOf("window.history.replaceState(null, '', target"));
     check(
       '⚠️ auth: URL canonicalization keeps the Google sign-in verifier for the SDK',
       /AUTH_VERIFIER_PARAM = 'neon_auth_session_verifier'/.test(app) &&
@@ -32027,7 +32080,7 @@ const dumperSetup = (): RobotSetup => {
     /if \(e\.key === 'Escape'\) exitRef\.current\(\);/.test(gv) && !/if \(e\.key === 'Escape'\) onExit\(\);/.test(gv),
   );
   for (const [file, gameExpr] of [
-    ['src/ui/Leaderboard.tsx', 'game'],
+    ['src/ui/MyRecords.tsx', 'game'],
     ['src/ui/CareerView.tsx', 'nav.game'],
   ] as const) {
     const src = rd(file);

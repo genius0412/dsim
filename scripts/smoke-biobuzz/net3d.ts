@@ -1460,14 +1460,10 @@ export function net3dChecks(check: Check): void {
 
     const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8');
     check(
-      // the owner's 2026-10-05 decision (rooms plan v3) added ONE exception: the ALL-TIME board spans
-      // seasons and both eras exist, so it picks one. The season board still has no picker, and the
-      // client sends `era` only with `window=all`.
-      'ruling: the record board has no era filter and no per-row 2D/3D chip, except on the all-time board',
-      !/physics\.toUpperCase\(\)/.test(board) &&
-        /\{win === 'all' && threeD && \([\s\S]{0,600}setEra/.test(board) &&
-        (board.match(/setEra\(/g) ?? []).length === 1 &&
-        /view\?\.window === 'all' && view\.era/.test(readFileSync('src/net/api.ts', 'utf8')),
+      // the all-time board (rooms plan v3, 2026-10-05) was the one place that picked an era; it went with
+      // the Window control in the Records redesign (2026-11-04), so the board has no era filter at all
+      'ruling: the record board has no era filter and no per-row 2D/3D chip',
+      !/physics\.toUpperCase\(\)/.test(board) && !/setEra|era:/.test(board) && !/window:/.test(board),
     );
     check(
       // the era is per season now (2026-09-24): keep the one the server echoes, 3D when an older

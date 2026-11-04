@@ -80,7 +80,9 @@ import { RoomBrowser } from './RoomBrowser';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records } from './Records';
-import { RECORDS_HUB, isRecordsPage, recordsViewOf, type RecordsView } from './recordsPages';
+import { recordsViewOf } from './recordsPages';
+import { DEFAULT_BOARD_QUERY, boardQueryString, canonicalBoardQuery, parseBoardQuery, type BoardKey, type BoardQuery } from './recordsQuery';
+import { rememberBoard, rememberedBoard } from './boardMemory';
 import { crumbsFor } from './crumbs';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
@@ -194,8 +196,25 @@ interface RouteArgs {
   sub: string | null;
   /** the matched `GameDevRoute.path` for `screen === 'dev'` */
   dev: string | null;
+  /** THE BOARD on Records' Leaderboards tab, as its query string without the `?` (`recordsQuery.ts`):
+   *  the one route that keeps a query, so a board is a link. Null when the address names none (the
+   *  tab then opens on the board last shown in that game, `boardMemory.ts`). */
+  query: string | null;
 }
-const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null, dev: null };
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null, dev: null, query: null };
+
+/** the board query a route keeps: only Records' Leaderboards has one, canonical (an old `window` or
+ *  `era`, or anything unknown, is dropped), and null when the address carries none */
+function routeQuery(screen: Screen, sub: string | null, search: string): string | null {
+  if (screen !== 'records' || sub !== 'leaderboard' || !search.replace(/^\?/, '')) return null;
+  return canonicalBoardQuery(search);
+}
+
+/** a route's full address: its path, and the board query where it has one */
+function urlFor(screen: Screen, a: RouteArgs, game: GameId): string {
+  const q = screen === 'records' && a.sub === 'leaderboard' && a.query ? `?${a.query}` : '';
+  return pathFor(screen, a, game) + q;
+}
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL, and every URL is
@@ -250,7 +269,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'robotimport':
       return `/configure/robot/import${a.sub ? `/${a.sub}` : ''}`;
     case 'records':
-      return isRecordsPage(a.sub) ? `/records/${a.sub}` : '/records';
+      // every tab has its own address; the old hub's `/records` canonicalizes to Leaderboards'
+      return `/records/${recordsViewOf(a.sub)}`;
     case 'profile':
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
@@ -335,8 +355,9 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
   const records = rest.match(/^\/records(?:\/([^/]+))?/);
-  // a bare `/records` is the HUB; `/records/<page>` is one page of it (`recordsPages.ts`)
-  if (records) return at('records', { sub: records[1] ?? RECORDS_HUB });
+  // THERE IS NO HUB (2026-11-04): a bare `/records`, the old `/records/hub` and anything unknown open
+  // Leaderboards; `/records/<tab>` is that tab (`recordsPages.ts`)
+  if (records) return at('records', { sub: recordsViewOf(records[1]) });
 
   // legacy paths kept alive so old links (and anything a player bookmarked
   // before the nav restructure) still resolve to their new home
@@ -580,7 +601,10 @@ export function App() {
     return visible;
   });
   const start = isWebHistory
-    ? parsePath(window.location.pathname, settings.game)
+    ? (() => {
+        const p = parsePath(window.location.pathname, settings.game);
+        return { ...p, query: routeQuery(p.screen, p.sub, window.location.search) };
+      })()
     : { screen: 'home' as Screen, game: settings.game, ...NO_ARGS };
   /**
    * A PAGE LOAD WITH A RANKED MATCH STILL WAITING GOES STRAIGHT TO IT.
@@ -674,7 +698,7 @@ export function App() {
     saveSettings(settingsRef.current);
     // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
     // URL (see above), and the address bar has to say where the player actually is
-    const canonical = pathFor(startScreen, start, settingsRef.current.game);
+    const canonical = urlFor(startScreen, start, settingsRef.current.game);
     // ⚠️ COMPARE THE SEARCH TOO, not just the pathname. `pathFor` never emits a query,
     // so anything in one is consumed-and-finished — including the `?token=` a reset or
     // verification link arrives with. Comparing pathnames alone meant a token sitting on
@@ -696,7 +720,7 @@ export function App() {
     // never sees Google's page, so it looked like "Sign in with Google just reloads the page".
     const verifier = new URLSearchParams(window.location.search).get(AUTH_VERIFIER_PARAM);
     const target = verifier
-      ? `${canonical}?${new URLSearchParams({ [AUTH_VERIFIER_PARAM]: verifier })}`
+      ? `${canonical}${canonical.includes('?') ? '&' : '?'}${new URLSearchParams({ [AUTH_VERIFIER_PARAM]: verifier })}`
       : canonical;
     if (window.location.pathname + window.location.search !== target) {
       window.history.replaceState(null, '', target + window.location.hash);
@@ -717,7 +741,7 @@ export function App() {
         saveSettings(ns);
       }
       setScreen(s.screen);
-      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub, dev: s.dev });
+      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub, dev: s.dev, query: routeQuery(s.screen, s.sub, window.location.search) });
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -769,10 +793,25 @@ export function App() {
       setReplayMatch(null); // ...and the moderation context it may have been opened with
     }
     if (isWebHistory) {
-      const path = pathFor(next, a, settingsRef.current.game);
-      if (window.location.pathname !== path) window.history.pushState(null, '', path);
+      const url = urlFor(next, a, settingsRef.current.game);
+      if (window.location.pathname + window.location.search !== url) window.history.pushState(null, '', url);
     }
   };
+
+  /** Leaderboards' board changed IN PLACE (a filter, not a page): the address is replaced, not pushed,
+   *  so Back leaves Records rather than stepping through every filter, and the pick is remembered */
+  const setBoard = (q: BoardQuery): void => {
+    const query = boardQueryString(q);
+    rememberBoard(settingsRef.current.game, q);
+    setRoute((r) => ({ ...r, query }));
+    if (isWebHistory) {
+      const url = urlFor('records', { ...NO_ARGS, sub: 'leaderboard', query }, settingsRef.current.game);
+      if (window.location.pathname + window.location.search !== url) window.history.replaceState(null, '', url);
+    }
+  };
+  /** a board opened from elsewhere (a toast, My records' tile): Leaderboards on it; `me` scrolls to your row */
+  const openBoard = (board: BoardKey | null, me = false): void =>
+    navigate('records', { sub: 'leaderboard', query: board ? boardQueryString({ ...DEFAULT_BOARD_QUERY, board, me }) : null });
 
   /** open a player's public profile page (/profile/<username>) */
   const openProfile = (username: string): void => navigate('profile', { username });
@@ -1206,7 +1245,8 @@ export function App() {
     }
     const g = (GAME_IDS as readonly string[]).includes(t.game) && gameVisible(t.game as GameId) ? (t.game as GameId) : null;
     if (g) selectGame(g);
-    navigate('records', { sub: 'leaderboard' });
+    // the toast names its board (a solo record, a 2v2 rating); one that does not opens the last board
+    openBoard(t.board ?? null);
   };
   useEffect(() => {
     setToastNavigator((t) => toastNavRef.current(t));
@@ -2268,7 +2308,9 @@ export function App() {
   // rail both already go there, and a third copy was the bar repeating nav (review 01-06).
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
-  const recordsView: RecordsView = recordsViewOf(route.sub);
+  const recordsView = recordsViewOf(route.sub);
+  /** the board on screen: the address's, or the one last shown in this game, or Solo */
+  const boardQuery = parseBoardQuery(route.query ?? rememberedBoard(settings.game));
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
   /** the claim and notice dialogs wait for every other modal this shell can raise, and for a popup:
@@ -2807,6 +2849,20 @@ export function App() {
           onView={(v) => navigate('records', { sub: v })}
           myUserId={accountUserId}
           game={settings.game}
+          board={boardQuery}
+          onBoard={setBoard}
+          onOpenBoard={(b) => openBoard(b, true)}
+          onGame={(g) => {
+            // another game's boards: the same board and filters, the live period (a period is per game)
+            const q = { ...boardQuery, season: null, me: false };
+            selectGame(g);
+            navigate('records', { sub: 'leaderboard', query: boardQueryString(q) });
+          }}
+          onStanding={() => {
+            navigate('account');
+            // after React has committed the page (rAF would not fire in a hidden tab; `ConsentLink` says why)
+            setTimeout(() => document.querySelector('.ds-standing, .nt-inbox')?.scrollIntoView({ block: 'start' }), 0);
+          }}
           onWatch={watchReplay}
           onWatchLocal={(r) => {
             // a local practice log has no server id — hand the container straight to the

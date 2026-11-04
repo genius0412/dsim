@@ -1,6 +1,9 @@
 # Records redesign plan
 
-Plan, not built (2026-11-04).
+Built 2026-11-04. Measured: first row at 217px on desktop (15 rows) and 280px on a phone, no sideways
+scroll. Two departures: the row expansion shows the robots and the date but no Auto/TeleOp split
+(the board's rows do not carry one, and the API is unchanged), and a phone's tabs read Boards ·
+My records · Badges.
 
 ## Purpose
 

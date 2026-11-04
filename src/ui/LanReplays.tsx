@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
 import { fetchLanRuns, type LanRun } from '../net/api';
@@ -92,6 +92,8 @@ interface LanReplaysProps {
   onWatchId?: (replayId: string) => void;
   /** watch a match only this DEVICE holds — the log is handed over directly */
   onWatchLocal?: (replay: Replay) => void;
+  /** the panel header's contents in place of "LAN matches" (My records' history picker) */
+  head?: ReactNode;
 }
 
 /**
@@ -112,7 +114,7 @@ export function LanReplays(props: LanReplaysProps) {
   return <LanReplaysPanel {...props} />;
 }
 
-function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplaysProps) {
+function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal, head }: LanReplaysProps) {
   const [remote, setRemote] = useState<LanRun[]>([]);
   const [local, setLocal] = useState<LanRunMeta[]>([]);
 
@@ -132,14 +134,24 @@ function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplays
 
   const rows = mergeRuns(remote, local);
   // no loading state on purpose: there is nothing to say while a list that is usually empty
-  // loads, and a spinner that resolves to nothing is worse than nothing
-  if (rows.length === 0) return null;
+  // loads, and a spinner that resolves to nothing is worse than nothing. PICKED in My records'
+  // history (`head`), it is what the player asked for, so it says it is empty instead.
+  if (rows.length === 0 && !head) return null;
+  if (rows.length === 0) {
+    return (
+      <div className="ds-panel">
+        <div className="ds-panel-h">{head}</div>
+        <div className="ds-empty">
+          <div className="big">No LAN matches</div>
+          Matches you host on a local network are kept here.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">LAN matches</span>
-      </div>
+      <div className="ds-panel-h">{head ?? <span className="ds-panel-title">LAN matches</span>}</div>
       <div className="ds-table-scroll">
         <table className="ds-table">
           <thead>

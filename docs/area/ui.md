@@ -1281,17 +1281,34 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   ellipsis, hidden under 721px. Home keeps it in its cluster (no sections to push). Anything new in the bar
   that comes and goes goes LEFT of the sections, or into a reserved box. `npm run shiftaudit` compares the
   sections across ten routes at 1920, 1366 and 390 in both themes (`DSIM_NAV=only` runs just that).
-- **RECORDS IS A HUB AND THE PAGES BEHIND IT (2026-10-10).** `/records` is `RecordsHub` (a player search, a
-  link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
-  season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`
-  (DOM-free, so the router and `npm test` read it): adding a page is ONE entry there plus one component in
-  `Records.tsx`'s `PAGES` (three now: Leaderboards, My records, Achievements: every badge, earned or dimmed, from `BADGE_EARN`, plus the awards; there is no Players page, the hub's search is how you find a player), which is typed `Record<RecordsPageKey, …>` so a missing component fails the
-  typecheck, and the hub's link cards, the URL and the routing all follow. No tab strip: the trail in the app bar (`Records › Achievements`) is how you go up to the hub, and the hub is a top-level screen (up is Home). `/leaderboard`, `/stats` and `/records/career` still resolve.
-  **`?mock=1` on a DEV build** fills the feed from `recordsFeedMock.ts` so the page can be reviewed with no
-  server (read once at load; a production bundle drops it).
-  **A REDESIGN IS PLANNED, NOT BUILT** (owner, 2026-11-04: "The entire records page is horrible"):
-  `docs/records-redesign.md` drops the hub, the Window control and most of My records. Read it before
-  changing anything here.
+- **RECORDS IS THREE TABS (2026-11-04, `docs/records-redesign.md`; it was a hub of link cards from
+  2026-10-10).** Leaderboards, My records, Achievements (`RECORDS_PAGES` in `recordsPages.ts`, DOM-free, one
+  entry plus one component in `Records.tsx`'s `PAGES`), with the player search at the right of the tab row.
+  ⚠️ **HEIGHT BINDS HERE, AND THE BUDGET IS MEASURED:** the first board row sits at most 230px down at 1366x768
+  (15 rows show) and 300px on a 390x844 phone, with nothing sideways-scrolling. The old page put it at 503px
+  under seven controls. Anything added above the rows spends that budget, so re-measure.
+  - **There is no hub.** `/records`, `/records/hub` and anything unknown open Leaderboards (`recordsViewOf`);
+    `/leaderboard` and `/stats` still resolve. The tabs are siblings, so up from any of them is Home.
+  - **The board is the address.** `?board=solo|duo|1v1|2v2&cat=&dt=&season=&me=1` (`recordsQuery.ts`, the one
+    route that keeps a query: `RouteArgs.query`, `urlFor`). Defaults are omitted, the order is fixed, a filter
+    change REPLACES the address (Back leaves Records), and the last board per game is remembered
+    (`boardMemory.ts`, `RECORDS_BOARD_KEY`). An old `?window=` or `?era=` is dropped: **THE WINDOW CONTROL IS
+    GONE** (Today to All time, and the 2D/3D switch only All time had). The server still answers both for
+    older clients. A toast names its board (`ToastTarget.board`).
+  - **A row has three targets with one job each:** the name opens the profile, ▶ plays the replay, the rest
+    of the row (or Enter) opens the robot sheets and the date. Rows are one height (36px, 44 on a coarse
+    pointer). Your row is highlighted; off the list it is a sticky foot row (`.rb-foot`, which is why the
+    board panel is `overflow: clip`): your Overall · Total best from `fetchUserStats`, or ranked placement
+    progress from `/api/elo`'s `me`. Latest records (the old feed, season only) is a column from 1200px and a
+    closed disclosure below.
+  - **My records is four tiles and one history list** (`MyRecords.tsx`). Each tile opens its board at your row
+    (`me=1`). The list's type covers Practice and LAN as well (their panels take a `head`). Account standing,
+    Messages and Your reports moved to Account (`Standing and messages` is one click to them); games played
+    and playtime stay on the public profile, which keeps `CareerView`; awards are on Achievements.
+  - On a phone the tabs read Boards · My records · Badges (the accessible name stays the full label), the
+    search and the filter line are each behind one button, and the history table drops its floor.
+  **`?mock=1` on a DEV build** fills Latest records from `recordsFeedMock.ts`; the admin harness seeds a
+  20-row DECODE solo board for layout work.
 - **BROWSE ROOMS: ONE CONTROL PER ROW, TWO BUTTONS TO HOST, ONE BOX FOR A CODE (2026-11-04, owner playtest).** A row is a single button: **Join →** while a seat is free, **Spectate →** when the room is full or in its match (the row names which). There is no Watch button. The header's **Private room** and **Public room** buttons open the create dialog already on that visibility (Public is disabled signed out), so the dialog is titled "Private room" / "Public room" and carries no New room / Have a code toggle: **Join with a code** (a code box, plus a region picker where there is more than one server) on Browse rooms is where a code is typed to take a seat in an ordinary room. A typed code names no kind, so it is joined as an ordinary room and, when the server answers "different game mode", goes again on the Duo record screen (`retriesAsRecord`, `onRecordCode`); that screen's own entry still has **New room | Have a code**, because a record partner has no browser to go to. ⚠️ **SPECTATING IS A SOCKET, NOT A ROSTER FLAG.** `Lobby` attaches a spectator (`LobbyClient.spectate`) when the join is refused with `room_full` (new code, same sentence) or `in_progress`, and "Spectate" in **Your alliance** drops the seat and re-attaches the same way (RED / BLUE take one again; the host cannot spectate, and a Discord activity keeps its wait-and-retry). A spectator's match hands off through `onWatchStart`. `WatchLobby` and its screen are deleted. With **Drivers pick a side**, the host has no Move buttons for drivers (bots keep theirs) and `Room.moveMember` refuses a human; **Host places drivers** is unchanged; a side with every seat taken cannot shrink (the "−" is off, with the reason), as the server refuses it. The decisions are `src/ui/lobbyRules.ts`, DOM-free so `npm test` drives them ("rooms:", "spectate:", "move lock:", "shrink:" in the room-screens block of `scripts/smoke.ts`).
 - **THE RANKED SCREEN OPENS ON YOUR STANDING** (`RankedStanding`, above the 1v1/2v2 pick): the rating for the picked format, its rank, the games it is over and the overall W–L, from the one `fetchUserStats` read, in a box that is RESERVED while the read is in flight and stays empty on failure.
 - ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real

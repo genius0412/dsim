@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
 import { fetchPracticeRuns, type PracticeRun } from '../net/api';
@@ -102,6 +102,7 @@ export function PracticeReplays({
   game,
   onWatchId,
   onWatchLocal,
+  head,
 }: {
   signedIn: boolean;
   game?: GameId;
@@ -110,6 +111,8 @@ export function PracticeReplays({
   /** watch a run only this DEVICE holds — the log is handed over directly, since there is
    *  no server id to fetch it by */
   onWatchLocal?: (replay: Replay) => void;
+  /** the panel header's contents in place of "Practice replays" (My records' history picker) */
+  head?: ReactNode;
 }) {
   const [remote, setRemote] = useState<PracticeRun[]>([]);
   const [local, setLocal] = useState<PracticeRunMeta[]>([]);
@@ -145,9 +148,7 @@ export function PracticeReplays({
 
   return (
     <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Practice replays</span>
-      </div>
+      <div className="ds-panel-h">{head ?? <span className="ds-panel-title">Practice replays</span>}</div>
       {loading && rows.length === 0 ? (
         <div className="ds-loading">Loading…</div>
       ) : rows.length === 0 ? (

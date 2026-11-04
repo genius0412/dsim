@@ -1,59 +1,47 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import {
   fetchElo,
   fetchRecords,
   fetchSeasons,
-  type Board,
-  type RecordCategory,
-  type RecordWindow,
-  type EloMode,
+  fetchUserStats,
   type EloRow,
   type EloStanding,
   type RecordConfig,
-  type RecordMode,
   type RecordRow,
   type SeasonInfo,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
-import { periodLabel } from '../seasons';
+import { periodLabel, seasonFor } from '../seasons';
 import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
-import { PeriodPicker } from './PeriodPicker';
+import { visibleGameIds } from '../seasonVisibility';
 import { DRIVETRAIN_LABELS } from './labelData';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
 import { RANKED_PLACEMENT } from '../config';
+import { RobotSheet, UnsavedSheet } from './RobotSheet';
+import { fmtDay } from './fmtDate';
+import { LatestRecords } from './LatestRecords';
+import {
+  BOARD_KEYS,
+  BOARD_LABELS,
+  CATEGORIES,
+  CATEGORY_LABELS,
+  DRIVETRAIN_BOARDS,
+  isScoreBoard,
+  type BoardQuery,
+} from './recordsQuery';
+import type { GameId } from '../types';
 
 /** what a server older than 2026-10-03 places at, for both modes (it sends no `minGames`) */
 const OLD_SERVER_PLACEMENT = 5;
-import { RobotSheet, UnsavedSheet } from './RobotSheet';
-import type { DrivetrainType, GameId } from '../types';
 
-type Kind = 'records' | 'ranked';
-
-/** "3h 12m" / "2d 4h" until `iso`; the board's own clock, so it is computed from the server's time */
-function resetsIn(iso: string, now: number): string {
-  const mins = Math.max(0, Math.round((Date.parse(iso) - now) / 60_000));
-  const d = Math.floor(mins / 1440);
-  const h = Math.floor((mins % 1440) / 60);
-  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
-}
-
-// RECORD boards are split by drivetrain (+ a cross-drivetrain Overall); the
-// picker shows for records only — ranked (rating) is a single board per mode.
-// ONE label map (design review 07-21): the pill said "X-Drive" and the Robot chip under it
-// "X-drive". Both read the shared builder labels now.
-const DT_LABEL: Record<DrivetrainType, string> = DRIVETRAIN_LABELS;
-const BOARD_ORDER: DrivetrainType[] = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'];
-const BOARDS: { id: Board; label: string }[] = [
-  { id: 'overall', label: 'Overall' },
-  ...BOARD_ORDER.map((id) => ({ id, label: DT_LABEL[id] })),
-];
+/** a drivetrain board's name: Overall, or the builder's own label (design review 07-21: one label map) */
+const dtName = (b: (typeof DRIVETRAIN_BOARDS)[number]): string => (b === 'overall' ? 'Overall' : DRIVETRAIN_LABELS[b]);
 
 /** a driver's name on a board: display handle + muted @username, clickable to
  * their public profile when they have a username (legacy rows without one render
- * as plain text). Stops propagation so clicking a name never triggers the row's
- * watch-replay handler. */
+ * as plain text). Stops propagation so clicking a name never opens the row. */
 function DriverName({
   handle,
   username,
@@ -81,10 +69,8 @@ function DriverName({
         }}
         title={`View @${username}`}
       >
-        {/* the badge is a SIBLING of the name, not a child of it. `.lb-name-h`
-            carries the hover underline, so a badge inside it got underlined
-            along with the name — and a badge is decoration beside a name, not
-            part of it. */}
+        {/* the badge is a SIBLING of the name, not a child of it: `.lb-name-h` carries the hover
+            underline, and a badge is decoration beside a name, not part of it */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
         <BadgeMarks badges={badges} />
@@ -96,8 +82,6 @@ function DriverName({
     <>
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
-      {/* a row without a username (an anonymous or unclaimed run) still shows whatever
-          badges it is wearing */}
       <BadgeMarks badges={badges} />
     </>
   );
@@ -128,118 +112,78 @@ function ConfigSummary({ cfg, game, driver, partner }: { cfg: RecordConfig; game
   );
 }
 
-/** the signed-in viewer's own standing on the selected ranked board: their rank
- * once PLACED, or a "matches until placement" progress line while still in
- * placements. Only placed players appear in the table above, so this is the one
- * place a not-yet-placed (or off-page) player sees where they stand. */
-function MyStanding({ me, need }: { me: EloStanding; need: number }) {
-  const placed = me.rank != null;
-  if (placed) {
-    return (
-      <div className="lb-standing placed">
-        <span className="lb-standing-rank">#{me.rank}</span>
-        <span className="lb-standing-text">
-          Your rating · <strong>{me.rating}</strong>
-        </span>
-      </div>
-    );
-  }
-  const remaining = Math.max(0, need - me.games);
-  return (
-    <div className="lb-standing placing">
-      <span className="lb-standing-badge">?</span>
-      <div className="lb-standing-col">
-        <span className="lb-standing-text">
-          <strong>{remaining}</strong> {remaining === 1 ? 'match' : 'matches'} until placement
-        </span>
-        <span className="lb-standing-sub">
-          {me.games}/{need} placement matches played
-        </span>
-        <span className="lb-standing-bar" aria-hidden>
-          <span style={{ width: `${Math.min(100, (me.games / need) * 100)}%` }} />
-        </span>
-      </div>
-    </div>
-  );
+/** the viewer's place when it is not among the rows the board returned: a rank and a value, or (on a
+ *  ranked ladder) how many matches are left before there is one */
+interface FootRow {
+  rank: number | null;
+  value: number | null;
+  /** ranked: matches still to play before placement */
+  toPlace?: number;
 }
 
 /**
- * Ranked + record leaderboards. Segmented by board type (records / ranked),
- * mode, and drivetrain, read live from the server's public API. Empty and error
- * states are first-class (the boards start empty and fill as matches are played).
+ * THE LEADERBOARDS TAB (`docs/records-redesign.md`). One picker for the board (Solo · Duo · 1v1 ·
+ * 2v2), one line of filters, then the rows, so the first row sits under three controls instead of
+ * seven. The board is the URL's query (`recordsQuery.ts`); this component reads it and hands every
+ * change back through `onQuery`, so the address is always the board on screen.
+ *
+ * A row is three targets with one job each: the name opens the profile, ▶ plays the replay, and the
+ * rest of the row (or Enter on it) opens the robot sheets and the date the run was set. Clicking a
+ * row used to play the replay, so a click meant for the robot left the page.
+ *
+ * GONE, deliberately: the Window control (Today / This week / This month / All time) and the 2D/3D
+ * switch only All time had. A day or week board is the season board's top few or empty at this
+ * player count, All time mixed balance versions the season boards keep apart, and it was a second
+ * time control that hid the period picker. The server still answers `window` for older clients.
  */
 export function Leaderboard({
   myUserId,
   game,
+  query,
+  onQuery,
+  onGame,
   onWatch,
   onOpenProfile,
 }: {
   myUserId?: string | null;
-  game?: GameId;
+  game: GameId;
+  query: BoardQuery;
+  /** a filter changed: the new board (written to the address in place) */
+  onQuery: (q: BoardQuery) => void;
+  /** another game's boards (the address's game prefix changes, as `/chain/records` does) */
+  onGame: (g: GameId) => void;
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
 }) {
-  const [kind, setKind] = useState<Kind>('records');
-  const [recMode, setRecMode] = useState<RecordMode>('solo');
-  const [eloMode, setEloMode] = useState<EloMode>('1v1');
-  const [board, setBoard] = useState<Board>('overall'); // record boards only
-  // what a record board ranks by, and over what span (rooms plan §5). Records only.
-  const [category, setCategory] = useState<RecordCategory>('total');
-  const [win, setWin] = useState<RecordWindow>('season');
-  // lifetime spans seasons but never mixes eras; BIOBUZZ has both, so it picks one
-  const [era, setEra] = useState<'2d' | '3d'>('3d');
-  const [resetsAt, setResetsAt] = useState<string | null>(null);
-  // the server answered but cannot rank by this category or window (an older deploy)
-  const [unsupported, setUnsupported] = useState(false);
-  // `now` for the "Resets in" line, refreshed once a minute and not announced
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(t);
-  }, []);
+  const { board, cat, dt, season } = query;
+  const score = isScoreBoard(board);
   /**
-   * THE ERA FILTER IS GONE (owner ruling, 2026-09-18), and so is the 2D/3D chip per row.
-   *
-   * There was an All / 3D / 2D segmented control here, because the two eras shared this board.
-   * They do not share it: every server-connected match of a game that can step 3D runs 3D
-   * (`serverPhysics`), so this board is the 3D board and the server filters it (`boardPhysics`
-   * in server/db/repo.ts) — a client-side picker could only ask for a second board that nothing
-   * new can ever be added to.
-   *
-   * ── WHAT HAPPENED TO THE 2D ROWS ──────────────────────────────────────────────────────────
-   * Nothing. They keep their row, their replay and their place in the player's own match
-   * history; a season was NOT reset over this (the owner's standing rule), and the column
-   * migration 0039 added is what makes hiding them possible without wiping anything.
-   *
-   * `threeD` is what `twoEras` became: it filters an older server's mixed response down to the
-   * rows this board is actually made of (see the `physics` filter below).
+   * ONE PHYSICS PER BOARD (owner ruling, 2026-09-18): every server-connected match of a game that can
+   * step 3D runs 3D, so the board is the 3D board and the server filters it. `threeD` filters an
+   * older server's mixed response down to the era the server names.
    */
   const threeD = serverPhysics(moduleFor(game)) === '3d';
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
-  // the games the shown board needs, as the server says (an archived season keeps its own)
-  const [minGames, setMinGames] = useState<number>(RANKED_PLACEMENT[eloMode]);
+  /** the viewer's own best on a score board, for the foot row (Overall · Total only: `fetchUserStats`) */
+  const [myBest, setMyBest] = useState<{ best: number | null; rank: number | null } | null>(null);
+  const [minGames, setMinGames] = useState<number>(RANKED_PLACEMENT['1v1']);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
+  // the server answered but cannot rank by this category (an older deploy)
+  const [unsupported, setUnsupported] = useState(false);
   /** bumped by Try again: re-runs the fetch effect */
   const [retry, setRetry] = useState(0);
   const [openRow, setOpenRow] = useState<string | null>(null);
+  /** a phone keeps the filter line behind one summary button */
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // seasons: null selection = the live season (server default)
+  // the periods of THIS game: a period number from another game is never offered or sent
   const [seasons, setSeasons] = useState<SeasonInfo[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
-  const [season, setSeason] = useState<number | null>(null);
-  /**
-   * A PERIOD BELONGS TO ONE GAME. Records stays mounted across /decode/records → /chain/records,
-   * so an archived DECODE period number rode along and was sent as a Chain Reaction query — an
-   * empty board, and a picker showing a value that is not in its list. Reset DURING RENDER
-   * (React's derived-state pattern) rather than in an effect, so the board's fetch effect never
-   * runs once with the other game's period first.
-   */
   const [periodGame, setPeriodGame] = useState(game);
   if (periodGame !== game) {
     setPeriodGame(game);
-    setSeason(null);
     setSeasons([]);
     setCurrent(null);
   }
@@ -261,196 +205,192 @@ export function Leaderboard({
     };
   }, [configured, game]);
 
-  // a different BOARD (records vs ELO, or another game) has other columns: its rows are
-  // not a stale view of this one, so they go rather than fading under the new header
+  // a different KIND of board (score vs ranked, or another game) has other columns: its rows are not
+  // a stale view of this one, so they go rather than fading under the new header
   useEffect(() => {
     setRows([]);
     setMe(null);
-  }, [kind, game]);
+    setOpenRow(null);
+  }, [score, game]);
 
   useEffect(() => {
     if (!configured) {
       setStatus('error');
-      // an unconfigured build (dev, self-host): the env-var name is a developer's next step,
-      // never a player's (design review 07-04 / 19-03)
       if (import.meta.env.DEV) console.warn('[leaderboard] VITE_GAME_SERVER_URL is not set');
       return;
     }
     let alive = true;
-    // the previous rows and standing STAY while this is in flight (see `refetching`)
+    // the previous rows STAY while this is in flight (see `refetching`)
     setStatus('loading');
     const s = season ?? undefined;
-    const req =
-      kind === 'records'
-        ? fetchRecords(recMode, board, win === 'season' ? s : undefined, game, { category, window: win, era }).then((r) => ({
-            /**
-             * TOLERATING AN OLDER SERVER. One Fly app serves every client version and the
-             * reverse is just as true — this page can be talking to a deploy that predates
-             * the ruling and still returns both eras. Such a response is filtered HERE, where
-             * the field is present; a row that carries no `physics` at all is older still and
-             * is kept, because dropping it would blank the board for a game whose rows are all
-             * 2D anyway (DECODE, Chain Reaction) and for pre-0039 rows that are what they are.
-             *
-             * The era kept is the one the server ECHOES, because it is per season now: an
-             * archived season is the solve it was played on (BIOBUZZ Act 1 is 2D). A server that
-             * echoes nothing predates the ruling; its board is the 3D one.
-             */
-            /**
-             * ⚠️ AN OLDER SERVER IGNORES `category` AND `window` AND ANSWERS THE TOTAL SEASON BOARD.
-             * The client deploys first, so for a while a new client talks to a server that cannot
-             * rank by period or window; showing those rows under "Auto" or "Today" would be a wrong
-             * board with the right label. A current server echoes both, so a missing or different
-             * echo means "not available here yet" and the board is left empty with a sentence.
-             */
-            unsupported:
-              (category !== 'total' && r.category !== category) || (win !== 'season' && r.window !== win),
-            rows:
-              (category !== 'total' && r.category !== category) || (win !== 'season' && r.window !== win)
-                ? []
-                : threeD
-                  ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
-                  : r.rows,
-            me: null as EloStanding | null,
-            resetsAt: r.resetsAt ?? null,
-          }))
-        : fetchElo(eloMode, s, myUserId, game);
+    const req = score
+      ? fetchRecords(board, dt, s, game, { category: cat }).then((r) => ({
+          /**
+           * ⚠️ AN OLDER SERVER IGNORES `category` AND ANSWERS THE TOTAL BOARD. A current server echoes
+           * it, so a missing or different echo means "not available here yet" and the board is left
+           * empty with a sentence rather than showing Total under an Auto label.
+           */
+          unsupported: cat !== 'total' && r.category !== cat,
+          rows: cat !== 'total' && r.category !== cat ? [] : threeD ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d')) : r.rows,
+          me: null as EloStanding | null,
+          minGames: undefined as number | undefined,
+        }))
+      : fetchElo(board, s, myUserId, game).then((r) => ({ ...r, unsupported: false }));
     req
       .then((r) => {
         if (!alive) return;
         setRows(r.rows);
-        setUnsupported('unsupported' in r && r.unsupported === true);
-        setResetsAt('resetsAt' in r && typeof r.resetsAt === 'string' ? r.resetsAt : null);
+        setUnsupported(r.unsupported);
         setMe(r.me);
-        setMinGames('minGames' in r && typeof r.minGames === 'number' ? r.minGames : OLD_SERVER_PLACEMENT);
+        setMinGames(typeof r.minGames === 'number' ? r.minGames : OLD_SERVER_PLACEMENT);
         setStatus('ok');
       })
       .catch((e: unknown) => {
         if (!alive) return;
-        // the raw text ("Failed to fetch", "HTTP 502") is for the console, not the board
         console.warn('[leaderboard] load failed:', e);
         setStatus('error');
       });
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, category, win, era, threeD, season, configured, myUserId, game, retry]);
+  }, [board, cat, dt, season, score, threeD, configured, myUserId, game, retry]);
 
-  const isRecords = kind === 'records';
-  /* A FILTER CHANGE KEEPS THE TABLE UP (design review 07-16). Blanking it for a 30px
-     "Loading…" collapsed the panel on every seg click and page turn; the old rows stay,
-     faded and `aria-busy`, and `.ds-loading` is the FIRST load's only. */
+  // YOUR BEST on a score board, for the foot row when you are not among the rows. Only Overall · Total
+  // has it: `fetchUserStats` ranks the overall season best, and `/api/records` sends no viewer row.
+  const footable = score && cat === 'total' && dt === 'overall' && !!myUserId && configured;
+  useEffect(() => {
+    setMyBest(null);
+    if (!footable) return;
+    let alive = true;
+    fetchUserStats(myUserId as string, season ?? undefined, game)
+      .then((st) => {
+        if (!alive) return;
+        const r = st.records.find((x) => x.mode === board);
+        setMyBest(r ? { best: r.best, rank: r.rank } : null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [footable, myUserId, season, game, board]);
+
+  const isMine = (r: RecordRow | EloRow): boolean =>
+    !!myUserId && (r.userId === myUserId || (score && (r as RecordRow).partnerId === myUserId));
+  const listed = rows.some(isMine);
+  const foot: FootRow | null =
+    status !== 'ok' || listed
+      ? null
+      : score
+        ? myBest && myBest.best != null
+          ? { rank: myBest.rank, value: myBest.best }
+          : null
+        : me
+          ? me.rank != null
+            ? { rank: me.rank, value: me.rating }
+            : { rank: null, value: null, toPlace: Math.max(0, minGames - me.games) }
+          : null;
+
+  // OPEN AT YOUR ROW (My records' tiles link with `me=1`): once, when the board lands, then the flag
+  // leaves the address so a reload does not scroll again
+  const tableRef = useRef<HTMLTableElement>(null);
+  useEffect(() => {
+    if (!query.me || status !== 'ok') return;
+    const el = tableRef.current?.querySelector('.lb-you, .rb-foot');
+    el?.scrollIntoView({ block: 'center' });
+    onQuery({ ...query, me: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.me, status, rows]);
+
+  /* A FILTER CHANGE KEEPS THE TABLE UP (design review 07-16): the old rows stay, faded and
+     `aria-busy`, and `.ds-loading` is the FIRST load's only. */
   const refetching = status === 'loading' && rows.length > 0;
-  const valueLabel = isRecords ? 'Score' : 'Rating';
   const viewing = season ?? current;
-  const viewingSeason = seasons.find((s) => s.season === viewing);
-  const seasonLabel = viewingSeason ? periodLabel(viewingSeason) : 'Current period';
-  const isArchived = viewing != null && current != null && viewing < current;
+  const archived = viewing != null && current != null && viewing < current;
+  const games = visibleGameIds();
+  const set = (patch: Partial<BoardQuery>): void => onQuery({ ...query, ...patch, me: false });
+  const viewingInfo = seasons.find((x) => x.season === viewing);
+  // the phone's filter button says what the line is set to, most-changed first (it ellipsizes from the end)
+  const summary = [
+    score ? CATEGORY_LABELS[cat] : null,
+    score ? dtName(dt) : null,
+    viewingInfo ? `${periodLabel(viewingInfo)}${archived ? ' (final)' : ''}` : null,
+    games.length > 1 ? seasonFor(game).name : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  /** both tables are four columns: #, who, the value, and the replay (score) or games (ranked) */
+  const cols = 4;
 
   return (
-    <>
-      {/* the page heading is owned by the Records host; the period heading is the same
-          one Career prints (07-08) */}
-      <h2 className="ds-h2 ds-period-head">
-        {seasonLabel}
-        {isArchived ? ' · final' : ''}
-      </h2>
-
-      {isRecords && (
-        <div className="ds-period">
-          <span className="ds-panel-title">Window</span>
-          <select className="ds-select" aria-label="Window" value={win} onChange={(e) => setWin(e.target.value as RecordWindow)}>
-            <option value="day">Today</option>
-            <option value="week">This week</option>
-            <option value="month">This month</option>
-            <option value="season">This season</option>
-            <option value="all">All time</option>
-          </select>
-          {win !== 'season' && (
-            <span className="ds-hint">
-              {win === 'all'
-                ? `All seasons · ${threeD ? era.toUpperCase() : '2D'}`
-                : `Best run ${win === 'day' ? 'today' : win === 'week' ? 'this week' : 'this month'}`}
-              {resetsAt ? ` · resets in ${resetsIn(resetsAt, now)}` : ''}
-            </span>
-          )}
-        </div>
-      )}
-      {(!isRecords || win === 'season') && (
-        <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
-      )}
-
-      <div className="ds-panel">
-        <div className="ds-panel-h">
-          <div className="ds-segs">
-            <button className={`ds-seg ${isRecords ? 'on' : ''}`} aria-pressed={isRecords} onClick={() => setKind('records')}>
-              High scores
-            </button>
-            <button className={`ds-seg ${!isRecords ? 'on' : ''}`} aria-pressed={!isRecords} onClick={() => setKind('ranked')}>
-              Ranked
-            </button>
+    <div className="rb-layout">
+      <div className="ds-panel rb-board">
+        <div className="rb-controls">
+          <div className="ds-segs rb-boards" role="group" aria-label="Board">
+            {BOARD_KEYS.map((b) => (
+              <button key={b} className={`ds-seg${board === b ? ' on' : ''}`} aria-pressed={board === b} onClick={() => set({ board: b })}>
+                {BOARD_LABELS[b]}
+              </button>
+            ))}
           </div>
-          <div className="ds-segs">
-            {isRecords ? (
-              <>
-                <button className={`ds-seg ${recMode === 'solo' ? 'on' : ''}`} aria-pressed={recMode === 'solo'} onClick={() => setRecMode('solo')}>
-                  Solo
-                </button>
-                <button className={`ds-seg ${recMode === 'duo' ? 'on' : ''}`} aria-pressed={recMode === 'duo'} onClick={() => setRecMode('duo')}>
-                  Duo
-                </button>
-              </>
-            ) : (
-              <>
-                <button className={`ds-seg ${eloMode === '1v1' ? 'on' : ''}`} aria-pressed={eloMode === '1v1'} onClick={() => setEloMode('1v1')}>
-                  1v1
-                </button>
-                <button className={`ds-seg ${eloMode === '2v2' ? 'on' : ''}`} aria-pressed={eloMode === '2v2'} onClick={() => setEloMode('2v2')}>
-                  2v2
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {isRecords && (
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Ranked by</span>
-            <div className="ds-segs">
-              {(['total', 'auto', 'teleop'] as const).map((c) => (
-                <button key={c} className={`ds-seg ${category === c ? 'on' : ''}`} aria-pressed={category === c} onClick={() => setCategory(c)}>
-                  {c === 'total' ? 'Total' : c === 'auto' ? 'Auto' : 'TeleOp'}
-                </button>
-              ))}
-            </div>
-            {win === 'all' && threeD && (
-              <div className="ds-segs">
-                {(['3d', '2d'] as const).map((e) => (
-                  <button key={e} className={`ds-seg ${era === e ? 'on' : ''}`} aria-pressed={era === e} onClick={() => setEra(e)}>
-                    {e.toUpperCase()}
-                  </button>
+          {/* a phone keeps the line behind this; the label is what the line is set to */}
+          <button
+            className="ds-btn small rb-filter-toggle"
+            aria-expanded={filtersOpen}
+            aria-controls="rb-filters"
+            onClick={() => setFiltersOpen((o) => !o)}
+          >
+            <span className="rb-filter-sum">{summary || 'Filters'}</span>
+            <span aria-hidden="true">{filtersOpen ? '▴' : '▾'}</span>
+          </button>
+          <div id="rb-filters" className={`rb-filters${filtersOpen ? ' open' : ''}`}>
+            {games.length > 1 && (
+              <select className="ds-select" aria-label="Game" value={game} onChange={(e) => onGame(e.target.value as GameId)}>
+                {games.map((g) => (
+                  <option key={g} value={g}>
+                    {seasonFor(g).name}
+                  </option>
                 ))}
-              </div>
+              </select>
             )}
+            {score && (
+              <select className="ds-select" aria-label="Ranked by" value={cat} onChange={(e) => set({ cat: e.target.value as BoardQuery['cat'] })}>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {CATEGORY_LABELS[c]}
+                  </option>
+                ))}
+              </select>
+            )}
+            {score && (
+              <select className="ds-select" aria-label="Drivetrain" value={dt} onChange={(e) => set({ dt: e.target.value as BoardQuery['dt'] })}>
+                {DRIVETRAIN_BOARDS.map((d) => (
+                  <option key={d} value={d}>
+                    {dtName(d)}
+                  </option>
+                ))}
+              </select>
+            )}
+            {seasons.length > 1 && (
+              <select
+                className="ds-select"
+                aria-label="Period"
+                value={viewing ?? ''}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  set({ season: current != null && n === current ? null : n });
+                }}
+              >
+                {/* the newest is the live one; a past one says Final beside the select */}
+                {seasons.map((x) => (
+                  <option key={x.season} value={x.season}>
+                    {periodLabel(x)}
+                  </option>
+                ))}
+              </select>
+            )}
+            {archived && <span className="ds-badge">Final</span>}
           </div>
-        )}
-
-        {isRecords && (
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Drivetrain</span>
-            {/* `.even` — six entries never fit a phone, so this one wraps into an even grid
-                rather than a ragged 4 + 2. See the rule in shell.css for why not a scroller. */}
-            <div className="ds-segs even">
-              {BOARDS.map((b) => (
-                <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} aria-pressed={board === b.id} onClick={() => setBoard(b.id)}>
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* not while refetching: the standing sits outside the faded rows and would name the old mode */}
-        {!isRecords && status === 'ok' && me && <MyStanding me={me} need={minGames} />}
+        </div>
 
         {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
         {status === 'error' &&
@@ -475,36 +415,30 @@ export function Leaderboard({
           ))}
         {status === 'ok' && rows.length === 0 && (
           <div className="ds-empty">
-            <div className="big">{isRecords ? (unsupported ? 'Not available yet' : 'No entries yet') : 'No placed players yet'}</div>
-            {isRecords && unsupported
-              ? 'This server can’t rank by period or time window yet. Try again after the next update.'
-              : isRecords
-              ? category === 'total'
-                ? 'Be the first to set a score on this board.'
-                : category === 'auto'
-                  ? 'No Auto scores yet. Run “Auto only” from Practice settings, then start a Solo record, to post here.'
-                  : 'No TeleOp scores yet. Runs set from now on are split by period and appear here.'
-              : `Players appear here after ${minGames} ranked matches.`}
+            <div className="big">{score ? (unsupported ? 'Not available yet' : 'No entries yet') : 'No placed players yet'}</div>
+            {score && unsupported
+              ? 'This server can’t rank by period yet. Try again after the next update.'
+              : score
+                ? cat === 'total'
+                  ? 'Be the first to set a score on this board.'
+                  : cat === 'auto'
+                    ? 'No Auto scores yet. Run “Auto only” from Practice settings, then start a Solo record, to post here.'
+                    : 'No TeleOp scores yet. Runs set from now on are split by period and appear here.'
+                : `Players appear here after ${minGames} ranked matches.`}
           </div>
         )}
-        {(status === 'ok' || refetching) && rows.length > 0 && (
-          /* SCROLL WRAPPER. `.ds-panel` is `overflow: hidden` for its rounded corners,
-             which on a phone did not shrink this table — it CUT it, ~200px of it, with
-             no way to scroll to the Score column and driver @usernames sliced mid-word.
-             The one table scroller (`.ds-table-scroll`), so every table degrades
-             identically; on a phone `.lb-table` pins the value column to the right.
-             `.lb-scroll` makes it the container an opened robot sheet sizes itself to. */
-          <div className="ds-table-scroll tall lb-scroll" aria-busy={refetching}>
-          <table className={`ds-table lb-table${isRecords ? ' rec' : ''}`}>
+        {/* the table also stands for an EMPTY board when you have a place on it (a ranked ladder nobody has
+            placed on yet, with your placement progress): the foot row alone, under the empty state */}
+        {(status === 'ok' || refetching) && (rows.length > 0 || foot) && (
+          <table ref={tableRef} className={`ds-table rb-table${score ? ' rec' : ' elo'}`} aria-busy={refetching}>
             <thead>
               <tr>
                 <th className="rk">#</th>
-                <th>Driver</th>
-                {isRecords && <th>Robot</th>}
-                {!isRecords && <th className="r">Games</th>}
-                <th className="r lb-val">{valueLabel}</th>
-                {isRecords && (
-                  <th className="lb-watch">
+                <th>{score ? 'Driver' : 'Player'}</th>
+                {!score && <th className="num rb-games">Games</th>}
+                <th className="sc">{score ? 'Score' : 'Rating'}</th>
+                {score && (
+                  <th className="rb-play">
                     <span className="ds-sr">Replay</span>
                   </th>
                 )}
@@ -513,32 +447,34 @@ export function Leaderboard({
             <tbody>
               {rows.map((r, i) => {
                 const rec = r as RecordRow;
-                const watchable = isRecords && !!rec.replayId && !!onWatch;
-                const cfg = isRecords ? rec.config : null;
                 // a duo board lists PAIRS, so one person can be on it twice (A+B, A+C)
-                const rowKey = isRecords && rec.partnerId ? `${r.userId}+${rec.partnerId}` : r.userId;
-                const isOpen = openRow === rowKey;
-                const isMe = !!myUserId && (r.userId === myUserId || (isRecords && rec.partnerId === myUserId));
+                const rowKey = score && rec.partnerId ? `${r.userId}+${rec.partnerId}` : r.userId;
+                const isOpen = score && openRow === rowKey;
+                const mine = isMine(r);
+                const toggle = (): void => setOpenRow(isOpen ? null : rowKey);
                 return (
                   <Fragment key={rowKey}>
                     <tr
-                      className={`${watchable ? 'ds-clickable' : ''}${isMe ? ' lb-you' : ''}`}
-                      onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
-                      title={watchable ? 'Watch replay' : undefined}
+                      className={`${score ? 'ds-clickable rb-row' : ''}${mine ? ' lb-you' : ''}`}
+                      tabIndex={score ? 0 : undefined}
+                      aria-expanded={score ? isOpen : undefined}
+                      onClick={score ? toggle : undefined}
+                      onKeyDown={
+                        score
+                          ? (e) => {
+                              if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+                              e.preventDefault();
+                              toggle();
+                            }
+                          : undefined
+                      }
                     >
                       {/* the server's rank, which a tie shares; the row number from an older server */}
-                      <td className="rk">{(isRecords && rec.rank) || i + 1}</td>
-                      <td>
+                      <td className="rk">{(score && rec.rank) || i + 1}</td>
+                      <td className="rb-who">
                         <span className="lb-drivers">
-                          <DriverName
-                            handle={r.handle}
-                            username={r.username}
-                            supporter={r.supporter}
-                            role={r.role}
-                            badges={r.badges}
-                            onOpenProfile={onOpenProfile}
-                          />
-                          {isRecords && rec.partnerId && (
+                          <DriverName handle={r.handle} username={r.username} supporter={r.supporter} role={r.role} badges={r.badges} onOpenProfile={onOpenProfile} />
+                          {score && rec.partnerId && (
                             <>
                               <span className="lb-amp">+</span>
                               <DriverName
@@ -549,68 +485,46 @@ export function Leaderboard({
                                 badges={rec.partnerBadges}
                                 onOpenProfile={onOpenProfile}
                               />
-                              <span className="ds-dt lb-duo-tag">DUO</span>
                             </>
                           )}
-                          {isMe && <span className="ds-badge accent">YOU</span>}
-                          {/* NO ERA CHIP. There was a 2D/3D tag here while the two eras shared
-                              this board; every row on it is now 3D, and a chip whose value never
-                              varies is furniture beside a name that has two real ones. */}
                         </span>
                       </td>
-                      {isRecords && (
-                        <td>
-                          {cfg ? (
+                      {!score && <td className="num rb-games">{(r as EloRow).games}</td>}
+                      <td className="sc">{score ? rec.score : (r as EloRow).rating}</td>
+                      {score && (
+                        <td className="rb-play">
+                          {/* the button is the keyboard and pointer path to the replay; it stops the
+                              click so it does not also open the row */}
+                          {rec.replayId && onWatch && (
                             <button
-                              className="lb-robot"
-                              aria-expanded={isOpen}
-                              aria-controls={`lb-detail-${rowKey}`}
+                              className="ds-btn small ghost rb-watch"
+                              aria-label={`Watch the replay, score ${rec.score}`}
+                              title="Watch replay"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenRow(isOpen ? null : rowKey);
+                                onWatch(rec.replayId!);
                               }}
                             >
-                              {DT_LABEL[cfg.spec.drivetrain]}
-                              {cfg.partnerSpec && ` + ${DT_LABEL[cfg.partnerSpec.drivetrain]}`}
-                              <span className="tw" aria-hidden="true">{isOpen ? '▴' : '▾'}</span>
-                            </button>
-                          ) : (
-                            <span className="ds-muted">—</span>
-                          )}
-                        </td>
-                      )}
-                      {!isRecords && <td className="num">{(r as EloRow).games}</td>}
-                      <td className="sc lb-val">{isRecords ? rec.score : (r as EloRow).rating}</td>
-                      {/* its OWN column, as in match history: sharing the score cell put the
-                          right-aligned Score header over the button, not the number */}
-                      {isRecords && (
-                        <td className="lb-watch">
-                          {/* the button is the keyboard path; the row click is a mouse convenience,
-                              so the button stops propagation or it would open the replay twice */}
-                          {watchable && (
-                            <button
-                              className="ds-btn ghost mh-watch"
-                              aria-label={`Watch replay, score ${rec.score}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onWatch!(rec.replayId!);
-                              }}
-                            >
-                              Watch
+                              <span aria-hidden="true">▶</span>
                             </button>
                           )}
                         </td>
                       )}
                     </tr>
-                    {isRecords && isOpen && cfg && (
-                      <tr className="lb-detail" id={`lb-detail-${rowKey}`}>
-                        <td colSpan={5}>
-                          <ConfigSummary
-                            cfg={cfg}
-                            game={moduleFor(game).id}
-                            driver={nameOf(r.handle, r.username)}
-                            partner={rec.partnerId ? nameOf(rec.partnerHandle, rec.partnerUsername) : null}
-                          />
+                    {isOpen && (
+                      <tr className="lb-detail">
+                        <td colSpan={cols}>
+                          <p className="rb-detail-meta">Set {fmtDay(rec.createdAt)}</p>
+                          {rec.config ? (
+                            <ConfigSummary
+                              cfg={rec.config}
+                              game={moduleFor(game).id}
+                              driver={nameOf(r.handle, r.username)}
+                              partner={rec.partnerId ? nameOf(rec.partnerHandle, rec.partnerUsername) : null}
+                            />
+                          ) : (
+                            <p className="rb-detail-meta">This run kept no robot.</p>
+                          )}
                         </td>
                       </tr>
                     )}
@@ -618,10 +532,29 @@ export function Leaderboard({
                 );
               })}
             </tbody>
+            {foot && (
+              <tfoot>
+                <tr className="rb-foot lb-you">
+                  <td className="rk">{foot.rank ?? '–'}</td>
+                  <td className="rb-who">
+                    {foot.toPlace != null ? (
+                      <>
+                        You · <b>{foot.toPlace}</b> {foot.toPlace === 1 ? 'match' : 'matches'} until placement
+                      </>
+                    ) : (
+                      'You'
+                    )}
+                  </td>
+                  {!score && <td className="num rb-games">{me?.games ?? ''}</td>}
+                  <td className="sc">{foot.value ?? '–'}</td>
+                  {score && <td className="rb-play" />}
+                </tr>
+              </tfoot>
+            )}
           </table>
-          </div>
         )}
       </div>
-    </>
+      <LatestRecords game={game} onOpenProfile={onOpenProfile} onWatch={onWatch} />
+    </div>
   );
 }

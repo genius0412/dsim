@@ -66,7 +66,7 @@ process.on('unhandledRejection', (e) => { log('UNHANDLED REJECTION:', (e && e.st
 process.on('uncaughtException', (e) => { log('UNCAUGHT:', (e && e.stack) || e); process.exit(3); });
 
 const ALL_PAGES = ['/', '/modes', '/configure/robot', '/configure/controls',
-               '/configure/audio', '/configure/network', '/records', '/records/career', '/account', '/download',
+               '/configure/audio', '/configure/network', '/records', '/records/career', '/records/achievements', '/account', '/download',
                // The routes roadmap rounds 1-2 added. They were NOT in this list when they
                // shipped, which is the failure mode the list has: a page nobody adds here is a
                // page this audit silently reports zero shifts for. `/privacy` earns its place
@@ -86,10 +86,13 @@ const PAGES = process.env.DSIM_PAGES
 const SEED = process.env.DSIM_SEED !== '0' && (!process.env.DSIM_PAGES || PAGES.includes('seeded'));
 // THE CROSS-ROUTE NAV COMPARISON (see the header). One route of each kind the bar is drawn over:
 // Play on the stage (no scroll track), two of its popups, a long and a short page of Configure and
-// of Records, and two footer pages. Home is not here: its sections are hidden, not placed.
+// of Records, and two footer pages. Home is not here: its sections are hidden, not placed. Records is
+// every tab and a board with a query (2026-11-04, the redesign): the old hub address, each tab, and a
+// Duo board with its filters, which is the tallest page the bar sits over.
 const NAV = process.env.DSIM_NAV || 'on'; // 'on' | 'only' | '0'
 const NAV_PAGES = ['/modes', '/rooms', '/ranked', '/configure/robot', '/configure/audio', '/records',
-  '/records/leaderboard', '/records/career', '/download', '/privacy'];
+  '/records/leaderboard', '/records/leaderboard?board=duo&cat=auto&dt=tank', '/records/leaderboard?board=2v2',
+  '/records/career', '/records/achievements', '/download', '/privacy'];
 const NAV_SIZES = [[1920, 1080], [1366, 768], [390, 844]];
 const NAV_MEASURE = `(() => [...document.querySelectorAll('.ds-bar-nav-btn')].map((b) => {
   const r = b.getBoundingClientRect();

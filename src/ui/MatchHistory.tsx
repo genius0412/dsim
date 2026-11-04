@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   type MatchHistoryEntry,
   type MatchHistoryOpts,
@@ -9,7 +9,7 @@ import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
 import { fmtDayTime } from './fmtDate';
 
-type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
+export type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
 type ResultFilter = NonNullable<MatchHistoryOpts['result']>;
 
 const TYPE_OPTS: { id: TypeFilter; label: string }[] = [
@@ -145,6 +145,9 @@ export function MatchHistory({
   seasonLabel,
   onWatch,
   onOpenProfile,
+  head,
+  type: typeProp,
+  slim = false,
 }: {
   fetchPage: (opts: MatchHistoryOpts) => Promise<MatchHistoryPage>;
   /** the selected period's balance_version, or null for the live season */
@@ -153,10 +156,17 @@ export function MatchHistory({
   seasonLabel: string;
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
+  /** the panel header's contents in place of "Match history" (My records puts its type picker here) */
+  head?: ReactNode;
+  /** the type, when the caller owns the picker (My records); the list's own select is then not drawn */
+  type?: TypeFilter;
+  /** MY RECORDS' FORM: no Result filter and no page-size select, 20 a page (`docs/records-redesign.md`) */
+  slim?: boolean;
 }) {
-  const [type, setType] = useState<TypeFilter>('all');
+  const [ownType, setType] = useState<TypeFilter>('all');
+  const type = typeProp ?? ownType;
   const [result, setResult] = useState<ResultFilter>('all');
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState(slim ? 20 : 25);
   const [offset, setOffset] = useState(0);
 
   const [page, setPage] = useState<MatchHistoryPage | null>(null);
@@ -164,10 +174,11 @@ export function MatchHistory({
   /** bumped by Try again: re-runs the fetch effect */
   const [retry, setRetry] = useState(0);
 
-  // a period switch resets to the first page (the old offset may exceed the count)
+  // a period switch resets to the first page (the old offset may exceed the count), and so does a
+  // type the caller changed
   useEffect(() => {
     setOffset(0);
-  }, [season]);
+  }, [season, typeProp]);
 
   useEffect(() => {
     let alive = true;
@@ -214,9 +225,8 @@ export function MatchHistory({
 
   return (
     <div className="ds-panel">
-      <div className="ds-panel-h">
-        <h2 className="ds-panel-title">Match history</h2>
-      </div>
+      <div className="ds-panel-h">{head ?? <h2 className="ds-panel-title">Match history</h2>}</div>
+      {!slim && (
       <div className="mh-filters">
           <select className="ds-select" aria-label="Match type" value={type} onChange={(e) => changeType(e.target.value as TypeFilter)}>
             {TYPE_OPTS.map((o) => (
@@ -245,6 +255,7 @@ export function MatchHistory({
             ))}
           </select>
       </div>
+      )}
 
       {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
       {status === 'error' && (
@@ -271,7 +282,7 @@ export function MatchHistory({
       {(status === 'ok' || refetching) && total > 0 && page && (
         <>
           <div className="ds-table-scroll tall" aria-busy={refetching}>
-            <table className="ds-table mh-table">
+            <table className={`ds-table mh-table${slim ? ' slim' : ''}`}>
               <thead>
                 <tr>
                   <th className="mh-when">When</th>

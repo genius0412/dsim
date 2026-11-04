@@ -103,7 +103,8 @@ const BASELINE = {
   // → 106, 2026-09-25: the patch-note modal and /changelogs on the spacing tokens.
   // → 105, 2026-09-25: the lockdown/banner merge put one more gap on the tokens.
   // → 99, 2026-11-01: the leaderboard's record detail (now the robot spec sheet) on the tokens.
-  'off-grid-gap': 99,
+  // → 96, 2026-11-04: the Records redesign retired the old board's standing strip, robot pill and hub feed.
+  'off-grid-gap': 96,
   // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
   // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
@@ -118,7 +119,8 @@ const BASELINE = {
   // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
   // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
   // → 11, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'off-scale-font-size': 10,
+  // → 9, 2026-11-04: the ranked standing strip's 22px rank went with the Records redesign.
+  'off-scale-font-size': 9,
   // 45 → 43, 2026-09-22: the builder hero's `24px` name and the `10px` CUSTOM chip beside it.
   // The name is `--ds-t-xl`, and the chip is gone: the preset cards right under the hero
   // already show whether the build is one of them.
@@ -129,7 +131,8 @@ const BASELINE = {
   // went elsewhere in the wave).
   // 9 → 3, 2026-09-22: design review wave 4 — the tutorial's private button went, and the keycap
   // families that had spelled their radius out now share the one block.
-  'literal-radius': 3,
+  // 3 → 2, 2026-11-04: the standing strip's 3px progress bar went with the Records redesign.
+  'literal-radius': 2,
   // 14 → 12, 2026-09-22: design review wave 4. The cinema button's glow and the presence dot's
   // halo are gone (No-Blur Rule); every keycap edge is one `--cap-edge` declaration.
   // 12 → 11, 2026-09-23: design review wave 6 — the `.ds-opt.real` stripe's shadow went with it.
