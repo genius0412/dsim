@@ -11,11 +11,14 @@ import { biobuzzPhysics } from './state';
  * them onto what holds them. The stage never steps its world, so it drew the staged poses: NECTAR
  * 7.9 in above the cell floor, and each FLOWER a straight column within 0.16 in of its axis (owner:
  * "floating", "too perfectly stacked"). Settled, the NECTAR lies on the floor against the cell's
- * inner wall and each column leans 0.5-0.7 in to alternate sides.
+ * inner wall and each column zig-zags ±0.55 in, against alternate walls of its bore.
  *
  * The poses are that physics, run once offline: the stage's own world (`STAGE_SEED`, `'3d'`)
  * stepped 6 s by the real `step3d`, in `scripts/smoke-biobuzz/menuStage.ts`, which also fails when
- * the table no longer matches a fresh settle. Baked rather than settled here because settling
+ * the table no longer matches a fresh settle. Each FLOWER's POLLEN start that settle rolling
+ * sideways, alternating, square to the stage camera that shows that flower: left to the staged
+ * scatter, Play's flower zig-zagged toward the camera, where it reads as a straight column (owner,
+ * the same day: "no side-to-side variation"). Baked rather than settled here because settling
  * needs the Rapier 3D chunk (~1.1 MB gzipped), which Home never otherwise loads.
  *
  * A `'3d'` world only: the table's `z` is a body's underside, the 3D convention (`sim3d/bodies.ts`),

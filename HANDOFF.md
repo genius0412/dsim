@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-03e (Menu stage: flowers zig-zag across the screen)
+
+**State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
+
+- **Owner, on c3705e46:** "The balls inside the flower are all uniformly stacked with no side-to-side variation." "Fix this."
+- **Measured:** the settled columns did zig-zag ±0.55 in (all the bore leaves a POLLEN), but the direction came from the staged scatter. In Play's flower (flower 1) it ran toward and away from the camera: steps across the screen 0.23 / 0.14 / 0.13 in, one way. Home's flower 0 was the same.
+- **Built:** the settle that bakes `menuRest.gen.ts` starts each FLOWER's POLLEN rolling 5 in/s sideways, alternating, square to the stage camera that shows that flower (`acrossScreen`, `ACROSS_PUSH` in `scripts/smoke-biobuzz/menuStage.ts`). Scanned 2-30 in/s: 3 leaves bottom POLLEN near the axis, 6-8 wedge pairs 0.13-0.22 in into each other, 30 throws three POLLEN out; 5 gives every flower steps of 0.70-1.13 in across the screen with 0.07 in overlap, the unpushed settle's. New STAGE checks: each flower zig-zags across its camera's screen (every step ≥ 0.6 in, alternating); they fail on the c3705e46 table.
+- **Checked:** offscreen Electron, Home and Play, original / c3705e46 / now.
+- **Limit:** ±0.55 in is the CAD bore's room for a 2.8 in POLLEN. More lean would put a ball through the cage.
+
 # HANDOFF — 2026-11-03d (Menu stage: hive and flower elements at rest)
 
 **State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
