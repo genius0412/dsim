@@ -88,7 +88,7 @@ export function prepareModelVenue(root: THREE.Object3D, anisotropy: number): THR
   g.userData.modelVenue = true;
   const live = liveScreen(root);
   if (live) {
-    textures.push(live.texture);
+    textures.push(...live.textures);
     g.userData.tick = live.tick;
   }
   // what `renderScene.ts` frees with the venue: `disposeObject3D` frees only `map`
@@ -101,34 +101,42 @@ export function prepareModelVenue(root: THREE.Object3D, anisotropy: number): THR
 export const LIVE_SCREEN_MS = 250;
 
 /**
- * THE LED WALL OVER OUR FIELD SHOWS OUR MATCH (2026-11-04). A generated venue names that wall's
- * material `screenLive` (`scripts/venue-models/grb/generate.ts`); its baked picture is the idle board.
- * Here a 512 × 288 canvas replaces it as the emissive map and is redrawn every `LIVE_SCREEN_MS` from
- * the world: each alliance's score in its colour, the clock and the phase. Plain shapes and numbers —
- * no logo, no season artwork. Null when the file has no such wall, or there is no DOM (the RENDER lane).
+ * THE LED WALL OVER OUR FIELD, AND OUR STAGE'S FASCIA, SHOW OUR MATCH (2026-11-04). A generated venue
+ * names them by material: `screenLive` (the wall) and `fasciaLive` (the LED strip on our stage's
+ * audience face, as the 2025 photographs show). Their baked pictures are the idle frames. Here a canvas
+ * replaces each as the emissive map and is redrawn every `LIVE_SCREEN_MS` from the world: each
+ * alliance's score in its colour, the clock and the phase. Plain shapes, numbers and the division's
+ * name; no logo, no season artwork. Null when the file has neither, or there is no DOM (the RENDER lane).
  */
-export function liveScreen(root: THREE.Object3D): { texture: THREE.CanvasTexture; tick: (world: World, now: number) => void } | null {
+export function liveScreen(root: THREE.Object3D): { textures: THREE.CanvasTexture[]; tick: (world: World, now: number) => void } | null {
   if (typeof document === 'undefined') return null;
-  const mats: THREE.MeshStandardMaterial[] = [];
+  const byName = new Map<string, THREE.MeshStandardMaterial[]>();
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
-    for (const m of materialsOf(mesh)) if (m.name === 'screenLive') mats.push(m as THREE.MeshStandardMaterial);
+    for (const m of materialsOf(mesh)) if (m.name === 'screenLive' || m.name === 'fasciaLive') byName.set(m.name, [...(byName.get(m.name) ?? []), m as THREE.MeshStandardMaterial]);
   });
-  if (!mats.length) return null;
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 288;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.flipY = false;
-  for (const m of mats) {
-    m.emissiveMap?.dispose();
-    m.emissiveMap = texture;
-    m.needsUpdate = true;
+  if (!byName.size) return null;
+  const surfaces: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; draw: (ctx: CanvasRenderingContext2D, red: string, blue: string, clock: string, phase: string) => void }[] = [];
+  for (const [name, mats] of byName) {
+    const canvas = document.createElement('canvas');
+    canvas.width = name === 'screenLive' ? 512 : 2048;
+    canvas.height = name === 'screenLive' ? 288 : 64;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) continue;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.flipY = false;
+    for (const m of mats) {
+      m.emissiveMap?.dispose();
+      m.emissiveMap = texture;
+      m.needsUpdate = true;
+    }
+    // the strip's division name rides on the material (glTF `extras.label`, the generator's)
+    const label = String((mats[0].userData as { label?: unknown }).label ?? '');
+    surfaces.push({ ctx, texture, draw: name === 'screenLive' ? drawWall : (c, r, b, k) => drawFascia(c, r, b, k, label) });
   }
+  if (!surfaces.length) return null;
   let last = -Infinity;
   let shown = '';
   const tick = (world: World, now: number): void => {
@@ -141,26 +149,62 @@ export function liveScreen(root: THREE.Object3D): { texture: THREE.CanvasTexture
     const key = `${sc.red.total}|${sc.blue.total}|${clock}|${phase}`;
     if (key === shown) return;
     shown = key;
-    ctx.fillStyle = '#0a0c12';
-    ctx.fillRect(0, 0, 512, 288);
-    ctx.fillStyle = '#7a1816';
-    ctx.fillRect(16, 40, 184, 140);
-    ctx.fillStyle = '#16327a';
-    ctx.fillRect(312, 40, 184, 140);
-    ctx.fillStyle = '#eef0f4';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '700 96px system-ui, sans-serif';
-    ctx.fillText(String(sc.red.total), 108, 112);
-    ctx.fillText(String(sc.blue.total), 404, 112);
-    ctx.font = '700 48px system-ui, sans-serif';
-    ctx.fillText(clock, 256, 104);
-    ctx.font = '600 22px system-ui, sans-serif';
-    ctx.fillStyle = '#e6c446';
-    ctx.fillText(phase, 256, 152);
-    texture.needsUpdate = true;
+    for (const sf of surfaces) {
+      sf.draw(sf.ctx, String(sc.red.total), String(sc.blue.total), clock, phase);
+      sf.texture.needsUpdate = true;
+    }
   };
-  return { texture, tick };
+  return { textures: surfaces.map((sf) => sf.texture), tick };
+}
+
+/** the big wall: two alliance panels, the clock and the phase between them */
+function drawWall(ctx: CanvasRenderingContext2D, red: string, blue: string, clock: string, phase: string): void {
+  ctx.fillStyle = '#0a0c12';
+  ctx.fillRect(0, 0, 512, 288);
+  ctx.fillStyle = '#7a1816';
+  ctx.fillRect(16, 40, 184, 140);
+  ctx.fillStyle = '#16327a';
+  ctx.fillRect(312, 40, 184, 140);
+  ctx.fillStyle = '#eef0f4';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 96px system-ui, sans-serif';
+  ctx.fillText(red, 108, 112);
+  ctx.fillText(blue, 404, 112);
+  ctx.font = '700 48px system-ui, sans-serif';
+  ctx.fillText(clock, 256, 104);
+  ctx.font = '600 22px system-ui, sans-serif';
+  ctx.fillStyle = '#e6c446';
+  ctx.fillText(phase, 256, 152);
+}
+
+/** the stage strip: a game area of colour blocks, the division, red score, clock, blue score */
+function drawFascia(ctx: CanvasRenderingContext2D, red: string, blue: string, clock: string, label: string): void {
+  ctx.fillStyle = '#06070a';
+  ctx.fillRect(0, 0, 2048, 64);
+  ctx.fillStyle = '#1e7896';
+  ctx.fillRect(8, 8, 112, 48);
+  ctx.fillStyle = '#c8a028';
+  ctx.fillRect(128, 8, 72, 48);
+  ctx.fillStyle = '#503278';
+  ctx.fillRect(208, 8, 28, 48);
+  ctx.fillStyle = '#eef0f4';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = '700 40px system-ui, sans-serif';
+  ctx.fillText(label, 270, 34);
+  ctx.fillStyle = '#961a18';
+  ctx.fillRect(820, 6, 380, 52);
+  ctx.fillStyle = '#18389a';
+  ctx.fillRect(1360, 6, 380, 52);
+  ctx.fillStyle = '#eef0f4';
+  ctx.textAlign = 'center';
+  ctx.font = '700 44px system-ui, sans-serif';
+  ctx.fillText(red, 1120, 34);
+  ctx.fillText(blue, 1660, 34);
+  ctx.fillText(clock, 1280, 34);
+  ctx.fillStyle = '#14182222';
+  ctx.fillRect(1760, 8, 280, 48);
 }
 
 /** one KTX2 loader for the page: it owns the transcoder's worker pool */

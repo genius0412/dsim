@@ -521,8 +521,8 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     // THE CHAMPIONSHIP HALL (2026-11-04): the GRB's Hall B3 as the FTC used it in 2026, a model
     // generated from measured numbers and drawn from this column up; also every replay export's (see
     // `EnvironmentId`). It was the school gym until the same day (`GFX_MOVED_DEFAULTS`).
-    // Measured at 1920 × 1080 on the dev PC's RTX 4070 Ti SUPER: the whole frame 2.6–3.5 ms of GPU
-    // here against the gym's 0.6–0.8, 3.75 MB once (`docs/venues/grb.md`).
+    // Measured at 1920 × 1080 on the dev PC's RTX 4070 Ti SUPER: the whole frame 2.2–2.8 ms of GPU
+    // here against the gym's 0.6–0.8, 4.80 MB once (`docs/venues/grb.md`).
     environment: 'grb',
     envLighting: true,
     reflections: true,

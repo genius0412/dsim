@@ -223,9 +223,23 @@ export function ellipsoid(hair: Geo, skin: Geo, c: V3, r: V3, seg = 10, rings = 
   }
 }
 
+/** a seeded hash in [0, 1) of a few numbers (the fabric's folds; deterministic, no Math.random) */
+function h01(a: number, b: number, c: number): number {
+  let h = Math.imul(Math.round(a * 8) ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(Math.round(b * 8) + Math.imul(c, 0x27d4eb2f), 0xc2b2ae35);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  h ^= h >>> 12;
+  return (h >>> 0) / 4294967296;
+}
+
 /**
- * PIPE-AND-DRAPE fabric along a straight run: a pleated sheet (alternating ±`depth`/2 every half
- * pleat), from `z0` to `z1`. One-sided triangles; the material is double-sided.
+ * HANGING FABRIC along a straight run (pipe and drape, a stage skirt), from `z0` to `z1`. Real velour
+ * is never a ruled zig-zag: each fold here takes its own width (0.55–1.5 × `pleat`) and depth
+ * (0.4–1.6 × `depth`) from a hash of where it hangs, the folds open out toward the hem (a hanging
+ * fold is shallow at the top, where the clips hold it, and deepest at the bottom), the top edge sags
+ * between clip points every ~12 in, and the hem wanders a little. Seeded by position, so two runs
+ * of the same length are not the same and a rebuild is identical. One-sided; the material is
+ * double-sided.
  */
 export function drapeSheet(g: Geo, x0: number, y0: number, x1: number, y1: number, z0: number, z1: number, pleat = 7, depth = 1.6): void {
   const L = Math.hypot(x1 - x0, y1 - y0);
@@ -234,14 +248,34 @@ export function drapeSheet(g: Geo, x0: number, y0: number, x1: number, y1: numbe
   const uy = (y1 - y0) / L;
   const nx = -uy;
   const ny = ux;
-  const n = Math.max(2, Math.round(L / (pleat / 2)));
-  let prev: V3 | null = null;
-  for (let i = 0; i <= n; i++) {
-    const s = (i / n) * L;
-    const off = (i % 2 ? 0.5 : -0.5) * depth;
-    const p: V3 = [x0 + ux * s + nx * off, y0 + uy * s + ny * off, z0];
-    if (prev) g.poly([prev, p, [p[0], p[1], z1], [prev[0], prev[1], z1]]);
-    prev = p;
+  const seed = Math.round(x0 * 3 + y1 * 7 + z0 * 11);
+  // the fold stations along the run, irregular
+  const st: { s: number; off: number }[] = [];
+  let at = 0;
+  let k = 0;
+  while (at < L) {
+    st.push({ s: at, off: (k % 2 ? 0.5 : -0.5) * depth * (0.4 + 1.2 * h01(at, seed, 1)) });
+    at += (pleat / 2) * (0.55 + 0.95 * h01(at, seed, 2));
+    k++;
+  }
+  st.push({ s: L, off: (k % 2 ? 0.5 : -0.5) * depth * 0.6 });
+  const clip = 12;
+  const sag = 0.25 + 0.5 * h01(seed, L, 3);
+  // three rows from the clips down: the fold opens toward the hem
+  const rows = [0, 0.35, 1];
+  const open = [0.35, 0.7, 1];
+  const point = (q: { s: number; off: number }, r: number): V3 => {
+    const t = rows[r];
+    const top = z1 - sag * Math.sin(Math.PI * ((q.s % clip) / clip)) ** 2;
+    const hem = z0 + (h01(q.s, seed, 4) - 0.5) * 0.8;
+    const z = top + (hem - top) * t;
+    const o = q.off * open[r];
+    return [x0 + ux * q.s + nx * o, y0 + uy * q.s + ny * o, z];
+  };
+  for (let i = 0; i + 1 < st.length; i++) {
+    for (let r = 0; r + 1 < rows.length; r++) {
+      g.poly([point(st[i], r + 1), point(st[i + 1], r + 1), point(st[i + 1], r), point(st[i], r)]);
+    }
   }
 }
 

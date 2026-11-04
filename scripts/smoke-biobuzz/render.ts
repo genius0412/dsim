@@ -461,6 +461,7 @@ import type { SceneOverlayView } from '../../src/games/module';
 import { THIRD_PARTY } from '../../src/contributors';
 // -- the retired photographed venues (2026-11-04) and the venue sight lines (2026-11-01) -----------
 import { CC_BY_4, creditedEnvironments, environmentCredit, isGeneratedModel, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
+import { neighbourFields } from '../venue-models/grb/generate';
 // -- the modeled venues (2026-11-04) ----------------------------------------------------------------
 import { VENUE_MAX_TRIES, bbModelDetail, noteVenueFailure, venueAssetUrl, venueBlocked } from '../../src/games/biobuzz/graphics/venueFiles';
 import { SPLAT_FLOOR_KEEP_IN, growClearBox, inVenueBox, insetCameraRoom, obstacleTris, splatHiddenBoxes, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
@@ -14860,6 +14861,108 @@ function modelRoomVerdict(tris: VenueTris, room: VenueBox): { inside: number; ey
   return { inside, eyesOut, eyes };
 }
 
+/** a generated model's scene, for the checks that need materials and instances, not only triangles */
+async function parseModelScene(file: string): Promise<THREE.Group | null> {
+  try {
+    const buf = readFileSync(join(root, 'public', file));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    loader.setKTX2Loader({ load: (_u: string, onLoad: (t: THREE.Texture) => void) => onLoad(new THREE.Texture()), detectSupport() {} } as never);
+    const hadSelf = 'self' in globalThis;
+    if (!hadSelf) (globalThis as { self?: unknown }).self = globalThis;
+    const scene = await new Promise<THREE.Group | null>((res) => loader.parse(ab, '', (g) => res(g.scene), () => res(null))).finally(() => {
+      if (!hadSelf) delete (globalThis as { self?: unknown }).self;
+    });
+    scene?.updateMatrixWorld(true);
+    return scene;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ⚠️ THE NEIGHBOURS' HIVES MUST STAND, AND BE SEEN TO (owner, 2026-11-04: "the fields nearby still
+ * have hives floating"). Walks the file per neighbouring field: the hive frame's lowest point on the
+ * field's mat (its stage deck, z 0), the trays inside the frame's reach, a carpet deck under the field
+ * at the venue floor's height and the hall's concrete a riser below, and the frame's black anodised
+ * metal drawn with enough DIFFUSE colour to read without the sim's own room reflections (a 70 % metal
+ * at 0.03 reflects a dark painted dome and vanishes against the black stage: what floated the trays).
+ * Returns a line per fault.
+ */
+function hiveSupportFaults(scene: THREE.Group, fields: readonly { x: number; y: number; label: string }[]): string[] {
+  const out: string[] = [];
+  const boxes: { mat: string; box: THREE.Box3 }[] = [];
+  const tris: { mat: string; a: THREE.Vector3; b: THREE.Vector3; c: THREE.Vector3 }[] = [];
+  const mats = new Map<string, THREE.MeshStandardMaterial>();
+  const one = new THREE.Matrix4();
+  const w = new THREE.Matrix4();
+  scene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const mat = m.material as THREE.MeshStandardMaterial;
+    mats.set(mat.name, mat);
+    const g = m.geometry as THREE.BufferGeometry;
+    g.computeBoundingBox();
+    const inst = m as unknown as THREE.InstancedMesh;
+    const n = inst.isInstancedMesh ? inst.count : 1;
+    for (let k = 0; k < n; k++) {
+      if (inst.isInstancedMesh) {
+        inst.getMatrixAt(k, one);
+        w.multiplyMatrices(m.matrixWorld, one);
+      } else w.copy(m.matrixWorld);
+      if (mat.name.startsWith('field:')) boxes.push({ mat: mat.name, box: g.boundingBox!.clone().applyMatrix4(w) });
+    }
+    if (mat.name === 'carpet' || mat.name === 'concrete') {
+      const p = g.getAttribute('position');
+      const idx = g.getIndex();
+      const cnt = idx ? idx.count : p.count;
+      const at = (i: number) => new THREE.Vector3().fromBufferAttribute(p, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld);
+      for (let i = 0; i < cnt; i += 3) tris.push({ mat: mat.name, a: at(i), b: at(i + 1), c: at(i + 2) });
+    }
+  });
+  const under = (mat: string, x: number, y: number): number | null => {
+    for (const t of tris) {
+      if (t.mat !== mat) continue;
+      const d = (t.b.y - t.c.y) * (t.a.x - t.c.x) + (t.c.x - t.b.x) * (t.a.y - t.c.y);
+      if (Math.abs(d) < 1e-9) continue;
+      const l1 = ((t.b.y - t.c.y) * (x - t.c.x) + (t.c.x - t.b.x) * (y - t.c.y)) / d;
+      const l2 = ((t.c.y - t.a.y) * (x - t.c.x) + (t.a.x - t.c.x) * (y - t.c.y)) / d;
+      if (l1 >= -1e-6 && l2 >= -1e-6 && 1 - l1 - l2 >= -1e-6) return l1 * t.a.z + l2 * t.b.z + (1 - l1 - l2) * t.c.z;
+    }
+    return null;
+  };
+  for (const f of fields) {
+    const near = (b: THREE.Box3) => Math.hypot((b.min.x + b.max.x) / 2 - f.x, (b.min.y + b.max.y) / 2 - f.y) < 30;
+    const frame = new THREE.Box3();
+    const trays = new THREE.Box3();
+    for (const b of boxes) {
+      if (!near(b.box)) continue;
+      if (/^field:(metal|plastic#4d4d4d)/.test(b.mat) && b.box.max.z > 20) frame.union(b.box);
+      if (/^field:plastic#(ff0000|0000ff)$/.test(b.mat) && b.box.min.z > 30) trays.union(b.box);
+    }
+    if (frame.isEmpty() || trays.isEmpty()) {
+      out.push(`${f.label}: no hive frame or trays found`);
+      continue;
+    }
+    if (Math.abs(frame.min.z) > 1.5) out.push(`${f.label}: the frame's foot is at z ${frame.min.z.toFixed(2)}, not on the mat`);
+    if (trays.min.z < frame.min.z || trays.max.z > frame.max.z + 3 || trays.min.x < frame.min.x - 3 || trays.max.x > frame.max.x + 3 || trays.min.y < frame.min.y - 3 || trays.max.y > frame.max.y + 3) {
+      out.push(`${f.label}: the trays reach outside their frame`);
+    }
+    const deck = under('carpet', f.x, f.y);
+    if (deck === null || Math.abs(deck + 0.75) > 0.3) out.push(`${f.label}: no stage deck under it at the venue floor (${deck})`);
+  }
+  const floor = under('concrete', fields[0].x + 0, fields[0].y - 400);
+  if (floor === null || Math.abs(floor + 0.75 + 24) > 0.3) out.push(`the hall floor is not a riser below the decks (${floor})`);
+  const metal = mats.get('field:metal#303030');
+  if (!metal || (1 - metal.metalness) * metal.color.r < 0.05) out.push(`the frame's dark metal reads only by reflection (metalness ${metal?.metalness}, colour ${metal?.color.r.toFixed(3)})`);
+  return out;
+}
+
+const MODEL_SCENES: Map<string, THREE.Group | null> = new Map(
+  await Promise.all(BB_ENVIRONMENTS.filter((e) => e.model && isGeneratedModel(e.model)).map(async (e) => [e.id, await parseModelScene(e.model!.file)] as const)),
+);
+
 const MODEL_FILES: Map<string, VenueTris | null> = new Map(
   await Promise.all(BB_ENVIRONMENTS.filter((e) => e.model).map(async (e) => [e.id, await parseModelTris(e.model!.file)] as const)),
 );
@@ -15019,6 +15122,15 @@ function modelVenueChecks(check: Check): void {
           (json.meshes ?? []).some((x) => x.primitives.some((pr) => 'COLOR_0' in pr.attributes)) &&
             (json.nodes ?? []).some((x) => !!x.extensions?.EXT_mesh_gpu_instancing?.attributes?._COLOR_0) &&
             !(json.extensionsUsed ?? []).includes('KHR_lights_punctual'),
+        );
+      }
+      const support = MODEL_SCENES.get(e.id);
+      if (support) {
+        const bad = hiveSupportFaults(support, neighbourFields());
+        check(
+          `venue model ${e.id}: every neighbouring hive rests on its frame, every frame on its stage, every stage on the hall floor, and the frame is drawn to be SEEN`,
+          bad.length === 0,
+          bad.slice(0, 4).join(' | '),
         );
       }
       const mv = readFileSync(join(SCENE_DIR, 'renderModelVenue.ts'), 'utf8');

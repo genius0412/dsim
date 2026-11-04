@@ -79,6 +79,10 @@ const MATS: Record<string, MatSpec> = {
   // OUR field's wall: the renderer draws the match's own score and clock into it (`renderModelVenue`)
   screenLive: { color: 0x000000, emissive: 0xffffff, strength: 1.15, rough: 0.3, emissiveTex: 'liveIdle' },
   wrapRed: { color: 0x7a201c, rough: 0.6 },
+  // THE STAGE FASCIA: LED panels on each stage's audience face (the 2025 photographs); ours is live
+  fasciaLive: { color: 0x000000, emissive: 0xffffff, strength: 0.9, rough: 0.35, emissiveTex: 'fasciaLive' },
+  ...Object.fromEntries(['edison', 'franklin', 'goodall', 'ross', 'lovelace', 'jackson'].map((n) => [`fascia:${n}`, { color: 0x000000, emissive: 0xffffff, strength: 0.9, rough: 0.35, emissiveTex: `fascia_${n}` as TexName }])),
+  stageRail: { color: 0x17181b, rough: 0.45, metal: 0.6 },
   wrapBlack: { color: 0x141416, rough: 0.7 },
   'crowd:shirt': { color: 0xffffff, rough: 0.85 },
   'crowd:skin': { color: 0xffffff, rough: 0.6 },
@@ -623,15 +627,27 @@ function stages(v: Venue): void {
   for (const d of L.DIVISIONS) {
     const c = d.carpet;
     const [x0, x1, y0, y1] = [f(c.x0), f(c.x1), f(c.y0), f(c.y1)];
-    const edges: [number, number, number, number][] = [[x0, y0, x1, y0], [x1, y0, x1, y1], [x1, y1, x0, y1], [x0, y1, x0, y0]];
-    for (const [ax, ay, bx, by] of edges) {
+    const front = d.facing > 0 ? y0 : y1; // the audience face
+    const back = d.facing > 0 ? y1 : y0;
+    // the audience face: LED fascia panels, floor to deck, their picture left to right as the
+    // audience sees it; ours is drawn live (`screenLive`'s sibling, `fasciaLive`)
+    const mat = d.name === 'franklin' ? 'fasciaLive' : `fascia:${d.name}`;
+    v.obj(`${d.name} stage fascia`, (g) => {
+      const yf = front - d.facing * 1.2;
+      const pts: V3[] = d.facing > 0 ? [[x0, yf, 0.5], [x1, yf, 0.5], [x1, yf, R - 0.5], [x0, yf, R - 0.5]] : [[x1, yf, 0.5], [x0, yf, 0.5], [x0, yf, R - 0.5], [x1, yf, R - 0.5]];
+      g(mat).polyUV(pts, [[0, 1], [1, 1], [1, 0], [0, 0]]);
+      box(g('black'), [x0 - 1, Math.min(front, yf) - 0.6, 0], [x1 + 1, Math.max(front, yf), 0.5]);
+      box(g('black'), [x0 - 1, Math.min(front, yf) - 0.6, R - 0.5], [x1 + 1, Math.max(front, yf), R]);
+    });
+    // the ends and the back: black velour skirting, clipped under the deck edge
+    const skirt: [number, number, number, number][] = [[x1, front, x1, back], [x1, back, x0, back], [x0, back, x0, front]];
+    for (const [ax, ay, bx, by] of skirt) {
       v.obj(`${d.name} stage`, (g) => {
-        // the skirt hangs 1.5 in outside the deck edge, floor to deck
-        const nx = Math.sign(by - ay) * 1.5;
-        const ny = -Math.sign(bx - ax) * 1.5;
-        drapeSheet(g('drape'), ax + nx, ay + ny, bx + nx, by + ny, 0, R - 2.5, 6, 1.2);
-        if (ax === bx) box(g('black'), [Math.min(ax, ax + nx * 1.4), Math.min(ay, by), R - 3], [Math.max(ax, ax + nx * 1.4), Math.max(ay, by), R]);
-        else box(g('black'), [Math.min(ax, bx), Math.min(ay, ay + ny * 1.4), R - 3], [Math.max(ax, bx), Math.max(ay, ay + ny * 1.4), R]);
+        const nx = ax === bx ? Math.sign(ax - (x0 + x1) / 2) * 1.5 : 0;
+        const ny = ay === by ? Math.sign(ay - (y0 + y1) / 2) * 1.5 : 0;
+        drapeSheet(g('drape'), ax + nx, ay + ny, bx + nx, by + ny, 0.3, R - 1.5, 6.5, 1.6);
+        if (ax === bx) box(g('black'), [Math.min(ax, ax + nx), Math.min(ay, by), R - 2.5], [Math.max(ax, ax + nx), Math.max(ay, by), R]);
+        else box(g('black'), [Math.min(ax, bx), Math.min(ay, ay + ny), R - 2.5], [Math.max(ax, bx), Math.max(ay, ay + ny), R]);
       });
     }
     // steps: three 8-in risers, 11-in treads, 4 ft wide, at both ends and at the back's middle
@@ -639,16 +655,41 @@ function stages(v: Venue): void {
       v.obj(`${d.name} stage steps`, (g) => {
         for (let k = 0; k < 2; k++) {
           const top = R - 8 * (k + 1);
-          const a = 11 * k;
-          const b = 11 * (k + 1);
-          const lo: V3 = dx ? [cx + dx * a, cy - 24, 0] : [cx - 24, cy + dy * a, 0];
-          const hi: V3 = dx ? [cx + dx * b, cy + 24, top] : [cx + 24, cy + dy * b, top];
+          const a2 = 11 * k;
+          const b2 = 11 * (k + 1);
+          const lo: V3 = dx ? [cx + dx * a2, cy - 24, 0] : [cx - 24, cy + dy * a2, 0];
+          const hi: V3 = dx ? [cx + dx * b2, cy + 24, top] : [cx + 24, cy + dy * b2, top];
           box(g('standDeck'), [Math.min(lo[0], hi[0]), Math.min(lo[1], hi[1]), 0], [Math.max(lo[0], hi[0]), Math.max(lo[1], hi[1]), top]);
         }
       });
     steps(x0 - 2, f(d.fieldY), -1, 0);
     steps(x1 + 2, f(d.fieldY), 1, 0);
-    steps((x0 + x1) / 2, d.facing > 0 ? y1 + 2 : y0 - 2, 0, d.facing > 0 ? 1 : -1);
+    steps((x0 + x1) / 2, back + d.facing * 2, 0, d.facing);
+    // the guard rail on the deck's audience edge and ends (the 2025 photographs), 39 in, posts every
+    // 8 ft, open where the steps are; near our field KEEP_CLEAR leaves it out
+    const hall = v.zOff;
+    v.zOff = 0;
+    const railRun = (ax: number, ay: number, bx: number, by: number) =>
+      v.obj(`${d.name} stage rail`, (g) => {
+        const Lr = Math.hypot(bx - ax, by - ay);
+        cyl(g('stageRail'), [ax, ay, 39], [bx, by, 39], 0.9, 8, false);
+        cyl(g('stageRail'), [ax, ay, 20], [bx, by, 20], 0.7, 6, false);
+        const n = Math.max(1, Math.round(Lr / 96));
+        for (let i = 0; i <= n; i++) {
+          const px = ax + ((bx - ax) * i) / n;
+          const py = ay + ((by - ay) * i) / n;
+          cyl(g('stageRail'), [px, py, 0], [px, py, 39], 0.9, 6, false);
+        }
+      });
+    const inset = -d.facing * 3;
+    const xm = (x0 + x1) / 2;
+    railRun(x0 + 3, front - inset, xm - 30, front - inset);
+    railRun(xm + 30, front - inset, x1 - 3, front - inset);
+    for (const xe of [x0 + 3, x1 - 3]) {
+      railRun(xe, front - inset, xe, f(d.fieldY) - d.facing * 30);
+      railRun(xe, f(d.fieldY) + d.facing * 30, xe, back + inset);
+    }
+    v.zOff = hall;
   }
 }
 
@@ -1086,6 +1127,8 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
       }
       m.setEmissiveTexture(tex);
     }
+    // our stage's live strip carries its division's name for the renderer to draw
+    if (name === 'fasciaLive') m.setExtras({ label: 'FRANKLIN' });
     materials.set(name, m);
     return m;
   };
@@ -1208,6 +1251,20 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
       // the CAD's tile grey (0.22) is the mat's flat stand-in; the sim paints its own field's tiles
       // charcoal, so the neighbours' mats take that charcoal rather than shining beside ours
       if (/^tile#/.test(m.getName())) m.setBaseColorFactor([0.045, 0.045, 0.047, 1]).setRoughnessFactor(0.9);
+      // ⚠️ THE HIVES FLOATED (owner, 2026-11-04): a CAD material carries glTF's default metallic 1 and
+      // roughness 1, so the frame's black anodised metal (`metal#303030`, 71 % of each hive frame) came
+      // out a black mirror of a dark room and vanished against the black stage and drape, leaving the
+      // trays and two light members in the air. The sim draws that metal with its finishes (`metal` at
+      // metalness 0.7 under the room's reflections); the copies take a dielectric-leaning finish at
+      // that colour, lifted to read, so the A-frame that holds each hive is seen
+      const nm = m.getName();
+      if (/^metal#/.test(nm)) {
+        m.setMetallicFactor(0.35).setRoughnessFactor(0.45);
+        if (nm === 'metal#303030') m.setBaseColorFactor([0.1, 0.104, 0.112, 1]);
+      } else if (/^plastic#/.test(nm)) {
+        m.setMetallicFactor(0).setRoughnessFactor(0.55);
+        if (nm === 'plastic#4d4d4d' || nm === 'plastic#303030') m.setBaseColorFactor([0.11, 0.113, 0.12, 1]);
+      } else if (/^(decal|tape|tile)#/.test(nm)) m.setMetallicFactor(0).setRoughnessFactor(0.7);
       // the CAD's polycarbonate is a flat 30 % white; ours is drawn clear, so the copies' is thinner
       if (/^glass#/.test(m.getName())) m.setBaseColorFactor([0.55, 0.6, 0.66, 0.14]).setRoughnessFactor(0.1);
       m.setName(`field:${m.getName()}`).setDoubleSided(true);

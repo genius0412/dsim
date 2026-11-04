@@ -29,6 +29,30 @@ elements and 12-ft fields, two per division.
 Layout, as the 2026 plan draws it: six divisions in a 2 × 3 grid (two rows of three, back to back
 across the centre aisle), each with two fields side by side. That is what the model has.
 
+## What the riser is clad in
+
+- **2025 (INTO THE DEEP)**: FIRST's photograph in the
+  [2026 updates post](https://www.firstinspires.org/community-blog/2026-first-cmp-updates) shows each
+  division on a black stage, and the stage's audience face is **LED panels, not fabric**. A continuous
+  strip runs the whole width with:
+  - the season's game logo at the left end, then "CHAMPIONSHIP";
+  - each alliance's team numbers and score in red and blue either side of the match clock.
+
+  The deck has a black pipe guard rail along its front and ends, and people stand on the stage. The
+  stage's ends and back are not visible in the published photographs.
+- **2026 (DECODE)**: the manual and coach orientation describe the
+  [riser](https://ftc-resources.firstinspires.org/ftc/archive/2026/game/manual-15) (24 in,
+  FTC.RoboSource Gen2) and its ladder, but not its cladding. No 2026 wide shot of a division stage was
+  found; the da Vinci stream thumbnail does not show one.
+- **The model follows 2025**:
+  - LED fascia on every stage's audience face. Ours shows our match live; the others show generated
+    scores.
+  - Black velour skirting on the ends and back, with seeded, irregular folds and sag between the clips.
+  - Steps at both ends and the back, and a black guard rail on the deck.
+
+  The fascia has a game area of plain colour blocks, the division name as plain text, and the red and
+  blue score blocks with the clock. No logo.
+
 ## Which hall, by year
 
 | year (season) | FTC location | source |
@@ -119,7 +143,7 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
 | LED walls | one 16 × 9 ft wall per field over the back drape, facing the audience | 2025 photographs; not on the 2026 plan |
 | drape | 8 ft black round competition zones; pits 8-ft back, 3-ft sides | the common kit (GES standard booth: 8-ft back, 3-ft sides) |
 | crowd | 72 % of seats; four poses, heights 0.86–1.06 | photographs range from well filled to packed |
-| stage | the division's whole carpet raised 24 in: black velour skirt, fascia, three-step stairs at both ends and the back | riser height measured; the skirt and stairs from the 2025 photograph |
+| stage | the division's whole carpet raised 24 in: LED fascia on the audience face, black velour skirt on the ends and back, three-step stairs, a 39-in guard rail on the deck | riser height measured; fascia and rail from the 2025 photograph; skirt, stairs and rail height estimated |
 | event light (baked) | B3's house at 26 % of albedo, A3's pits at 80 %, white light pooled on each division (falling off over 26 ft), stand spill over 70 ft, blue uplight wash on B3's roof steel | the 2025 photograph; the levels tuned on captures |
 | rigging | a second box-truss grid over the competition area at 28 ft, cross trusses, PAR cans and blue uplight cans on every division grid, a line array at each front corner, two main ducts across the hall | the 2025 photograph's roof |
 | LED walls | our field's wall shows our match (scores, clock, phase); the others show three generated scoreboard layouts | the photographs show scoreboards and brackets; the content is generic |
@@ -139,6 +163,14 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
   four drive-team tables and human-player stands, field 2's near station furniture, and the drape and
   queue lane on FRANKLIN's EDISON side. The queue carts in that gap are not drawn either.
 - **Blank signage.** Screens are lit blank panels; no FIRST, sponsor or season artwork anywhere.
+- **The neighbours' hives floated, and the cause was the material, not the geometry.** Each hive
+  frame is 71 % black anodised metal (`metal#303030`: 70 % metal at 0.03). The sim draws ours under its
+  room reflections, where it reads grey. The copies reflected only the dark painted dome. Against the
+  black stage, drape and house they vanished, leaving the trays and two light members in the air. The
+  copies now take a less metallic finish at a lifted colour, so the A-frame reads. The RENDER lane
+  walks the file for every neighbour and fails on 4e9507c4: hive frame on the mat, trays inside the
+  frame, a deck under the field, the hall floor a riser below, and the frame's diffuse colour.
+- **Our stage's front and left-end rail are left out**: they stand inside the clear room.
 - **The neighbouring fields are BIOBUZZ fields**, the repo's own full `field.glb`. It is the file
   our field is drawn from on High, so every hive stands on the same A-frame, foot bars and pads. Each
   sits on its own stage. Its mat is in the sim's charcoal and its polycarbonate is thinned to read as
@@ -161,13 +193,15 @@ Dev PC: RTX 4070 Ti SUPER, 1920 × 1080, DPR 1, offscreen Electron, the whole fr
 
 | | High | Ultra | Extreme |
 |---|---|---|---|
-| GRB, GPU p50 (driver / orbit / stand view), ms | 2.6–3.1 / 2.7–3.2 / 2.7–3.2 | 3.24 / 3.38 / 3.43 | 7.02 / 6.31 / 6.63 |
+| GRB, GPU p50 (driver / orbit / stand view), ms | 2.60 / 2.20 / 2.20 | 4.08 / 4.07 / 4.01 | 6.15 / 5.58 / 5.20 |
+| the second pass (4e9507c4), ms | 2.6–3.1 / 2.7–3.2 / 2.7–3.2 | 3.24 / 3.38 / 3.43 | 7.02 / 6.31 / 6.63 |
 | the first pass (1dad0605), ms | 1.90 / 2.00 / 1.94 | 1.81 / 1.91 / 1.86 | 4.33 / 4.08 / 4.04 |
 | school gym (the old default), ms | 0.79 / 0.62 / 0.57 | — | 2.66 / 2.37 / 2.14 |
 
 The High range spans two runs; other sessions were using the GPU at the time.
 
-The file is 3.75 MB (meshopt geometry, KTX2 textures) and holds 4,074,162 triangles:
+The file is 4.80 MB (meshopt geometry, KTX2 textures; the six fascia strips added a megabyte) and
+holds 4,130,330 triangles:
 - the 11 neighbouring fields, 268,892 each from the full `field.glb`;
 - the crowd, about 2,300 figures near our field at ~470 triangles and the rest at ~150;
 - the hall and the event.

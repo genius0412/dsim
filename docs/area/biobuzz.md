@@ -176,8 +176,17 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
     pins the row's `tris` to the parsed count, so a lane reading one instance per draw cannot pass.
   - **A generated row is not credited** (`environmentCredit` returns null); the lane checks its
     generator and research files exist instead.
-  - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 2.6–3.5 ms GPU on High (gym
-    0.6–0.8), 3.2–3.4 on Ultra, 6.3–7.0 on Extreme (gym 2.1–2.7); 3.75 MB once, 4.07M triangles.
+  - ⚠️ **A NEIGHBOUR'S HIVE MUST BE SEEN TO STAND** (owner, 2026-11-04: "hives floating"). The hive
+    frame is 71 % `metal#303030`, a 70 % metal at 0.03: ours reads grey under the sim's room
+    reflections, a copy reflecting only the dark dome vanished against the black stage and left its
+    trays in the air. The copies take a less metallic, lifted finish; `hiveSupportFaults` (RENDER lane)
+    walks the file for every neighbour (frame on the mat, trays inside the frame, deck under it, the
+    hall a riser below, the frame's diffuse colour) and fails on 4e9507c4.
+  - **Each stage's audience face is LED fascia** (the 2025 photographs): division name, red and blue
+    scores and the clock; ours is `fasciaLive`, drawn by the same `liveScreen` tick as the wall. Ends
+    and back are velour skirting with seeded irregular folds (`drapeSheet`).
+  - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 2.2–2.8 ms GPU on High (gym
+    0.6–0.8), 4.0–4.1 on Ultra, 5.2–6.2 on Extreme (gym 2.1–2.7); 4.80 MB once, 4.13M triangles.
 - ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
   file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
   no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB

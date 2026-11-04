@@ -16,6 +16,13 @@ export const TEX_TILE_IN = {
   board1: 0,
   board2: 0,
   liveIdle: 0,
+  fascia_edison: 0,
+  fascia_franklin: 0,
+  fascia_goodall: 0,
+  fascia_ross: 0,
+  fascia_lovelace: 0,
+  fascia_jackson: 0,
+  fasciaLive: 0,
 } as const;
 export type TexName = keyof typeof TEX_TILE_IN;
 
@@ -266,6 +273,73 @@ async function boards(sharp: any): Promise<Pick<Record<TexName, Uint8Array>, 'bo
   return { board0: await encodeBoard(sharp, b0), board1: await encodeBoard(sharp, b1), board2: await encodeBoard(sharp, b2), liveIdle: await encodeBoard(sharp, idle) };
 }
 
+
+// ── THE STAGE FASCIA (2026-11-04): the LED panels along a stage's audience face ───────────────────
+// The 2025 photographs show the front of each FTC stage clad in LED panels: the season's game area at
+// one end, "CHAMPIONSHIP", then each alliance's teams and score either side of the clock. Drawn here as
+// a 2048 × 64 strip in plain shapes: a game area of colour blocks (no game logo), the DIVISION NAME in
+// a 5 × 7 pixel face, red and blue score blocks and the clock. Our stage's strip is redrawn live.
+
+/** a 5 × 7 pixel face, the letters the division names need */
+const GLYPH: Record<string, string[]> = {
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  C: ['01111', '10000', '10000', '10000', '10000', '10000', '01111'],
+  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  G: ['01111', '10000', '10000', '10011', '10001', '10001', '01111'],
+  I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
+  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+};
+function word(c: Px, w: string, x: number, y: number, px: number, rgb: Rgb): number {
+  let cx = x;
+  for (const ch of w) {
+    const g = GLYPH[ch];
+    if (g) for (let r = 0; r < 7; r++) for (let q = 0; q < 5; q++) if (g[r][q] === '1') rect(c, cx + q * px, y + r * px, cx + (q + 1) * px - 0.5, y + (r + 1) * px - 0.5, rgb);
+    cx += 6 * px;
+  }
+  return cx;
+}
+/** one stage's strip */
+function fasciaStrip(name: string, red: string, blue: string, clock: string): Px {
+  const c = canvasOf(2048, 64);
+  rect(c, 0, 0, 2048, 64, [6, 7, 10]);
+  // the game area: colour blocks only
+  rect(c, 8, 8, 120, 56, [30, 120, 150]);
+  rect(c, 128, 8, 200, 56, [200, 160, 40]);
+  rect(c, 208, 8, 236, 56, [80, 50, 120]);
+  word(c, name.toUpperCase(), 270, 11, 6, WHITE);
+  // the alliance strip: red score, clock, blue score
+  rect(c, 820, 6, 1200, 58, [150, 26, 24]);
+  rect(c, 1360, 6, 1740, 58, [24, 56, 150]);
+  for (let k = 0; k < 3; k++) {
+    rect(c, 836 + k * 92, 18, 916 + k * 92, 46, [90, 18, 18]);
+    rect(c, 1376 + k * 92, 18, 1456 + k * 92, 46, [18, 34, 96]);
+  }
+  text7(c, red, 1120 - (red.length - 1) * 30, 12, 22, 40, WHITE);
+  text7(c, blue, 1660 - (blue.length - 1) * 30, 12, 22, 40, WHITE);
+  text7(c, clock, 1222, 12, 22, 40, WHITE);
+  rect(c, 1760, 8, 2040, 56, [20, 24, 34]);
+  return c;
+}
+async function fascias(sharp: any): Promise<Record<string, Uint8Array>> {
+  const out: Record<string, Uint8Array> = {};
+  const demo: Record<string, [string, string, string]> = {
+    edison: ['54', '61', '1:12'], franklin: ['0', '0', '2:30'], goodall: ['118', '97', '0:41'],
+    ross: ['33', '40', '1:58'], lovelace: ['142', '139', '0:09'], jackson: ['76', '88', '1:30'],
+  };
+  for (const [name, [r, b, t]] of Object.entries(demo)) out[`fascia_${name}`] = await encodeBoard(sharp, fasciaStrip(name, r, b, t));
+  out.fasciaLive = await encodeBoard(sharp, fasciaStrip('franklin', '0', '0', '2:30'));
+  return out;
+}
+
 export async function makeTextures(sharp: any): Promise<Record<TexName, Uint8Array>> {
   return {
     concrete: await concrete(sharp),
@@ -274,5 +348,6 @@ export async function makeTextures(sharp: any): Promise<Record<TexName, Uint8Arr
     deck: await deck(sharp),
     block: await block(sharp),
     ...(await boards(sharp)),
-  };
+    ...(await fascias(sharp)),
+  } as Record<TexName, Uint8Array>;
 }

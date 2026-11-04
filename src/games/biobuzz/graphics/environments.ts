@@ -426,7 +426,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      */
     id: 'grb',
     name: 'Championship hall',
-    note: 'Houston’s FTC hall, from High up. 3.7 MB',
+    note: 'Houston’s FTC hall, from High up. 4.8 MB',
     rig: {
       hemiSky: 0xe6ecf7,
       hemiGround: 0x44464a,
@@ -453,8 +453,8 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     },
     model: {
       file: 'venues/grb.glb',
-      bytes: 3748420,
-      tris: 4074162,
+      bytes: 4796064,
+      tris: 4130330,
       cameraRoom: { min: [-325, -276, -1], max: [296, 129, 188] },
       generator: 'scripts/venue-models/grb/generate.ts',
       research: 'docs/venues/grb.md',
