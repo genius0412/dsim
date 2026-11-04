@@ -237,6 +237,13 @@ export interface GameModule extends GameSimModule {
    */
   warmCards?(specs: readonly RobotSpec[], alliance: Alliance): void;
   /**
+   * THE MENU STAGE'S WORLD AT REST (2026-11-03). The stage draws a freshly staged match world and
+   * never steps it, so an element staging places by rule is drawn where the rule put it, not where
+   * a match's physics leaves it a second later. Called on that world once it is built; moves those
+   * elements to their resting pose. Absent: the world is drawn as staged.
+   */
+  restMenuWorld?(world: World): void;
+  /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
    * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────

@@ -10,6 +10,10 @@ export type StageView = 'home' | 'setup';
 // ponytail: hand-placed and tuned from screenshots; a game with its own 3D field adds its own row.
 export const SHOW = { x: -48, y: 30, heading: -Math.PI / 2 + 0.6 };
 
+/** the match seed the stage's world is built from. BIOBUZZ's settled stage poses are baked from a
+ * world with this seed (`src/games/biobuzz/menuRest.gen.ts`), so changing it means regenerating them. */
+export const STAGE_SEED = 1;
+
 /**
  * ⚠️ HOME IS A HIGH SHOT, 87 in above the panorama's lens, which a photographed venue drawn on its
  * box cannot take: everything in the photograph that is not floor or wall is drawn flat on the

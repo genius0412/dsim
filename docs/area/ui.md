@@ -420,6 +420,10 @@ rulings below are theirs, not defaults.
   PLAYER'S ROBOT IS ON THE 3D FIELD ON HOME TOO**, at Play's showcase spot (owner, 2026-11-03: "so that it
   doesn't just suddenly appear and disappear"): it used to join when the fly to Play began and leave
   when the camera was back at Home, so it popped in and out. The 2D stage's robot is still Play's page.
+- **The stage's world is never stepped, so the game rests it** (`GameModule.restMenuWorld`, 2026-11-03):
+  BIOBUZZ moves its hive NECTAR and flower POLLEN to where a match's physics leaves them, baked from a
+  real settle of the stage's `STAGE_SEED` world (`docs/area/biobuzz.md`, THE MENU STAGE'S HIVES AND
+  FLOWERS). A new `STAGE_SEED` needs that table regenerated; the STAGE smoke lane fails until it is.
 - ⚠️ **THE 3D STAGE HAS ITS OWN ROOM AND TIER, NOT THE PLAYER'S MATCH SETTINGS** (2026-11-01, owner:
   Home "still distorted and EXTREMELY laggy on some devices"). `MenuStage` passes
   `SceneOptions.quality` (Medium, or Low where the device's own tier is Low) and

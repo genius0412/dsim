@@ -1,3 +1,14 @@
+# HANDOFF — 2026-11-03d (Menu stage: hive and flower elements at rest)
+
+**State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
+
+- **Owner:** "The balls inside the hive are floating and the balls inside the flower are too perfectly stacked in the home/play screen."
+- **Measured:** the 3D stage draws a staged world it never steps. Staging writes CENTRE heights (up-cell NECTAR at the opening's mid-height, flower POLLEN at `flowerStackZ` on the bore axis), and a `'3d'` world's `z` is an underside the renderer lifts by `r`. Up-cell NECTAR drew 7.9 in above the cell floor; flower columns stood within 0.16 in of the axis, 1.76 in high. A real settle (`step3d`, 6 s) puts NECTAR on the floor against the cell's inner wall (gap -0.03 in) and steps each column ~1.1 in side to side with its bottom POLLEN on the tile.
+- **Built:** `GameModule.restMenuWorld`, called by `MenuStage.stageWorld`; BIOBUZZ moves its 22 hive/flower elements to `src/games/biobuzz/menuRest.gen.ts`, baked from that settle of the stage's own world (`STAGE_SEED` in `menuStagePoses.ts`). Not settled at runtime: that needs the Rapier 3D chunk, which Home never loads. New smoke lane STAGE (`scripts/smoke-biobuzz/menuStage.ts`, 0.4 s): the table matches a fresh settle, the settle is at rest, the robot at SHOW does not change it, NECTAR on its cell floor, flower contacts and lean, 2D worlds untouched. A no-op rest fails 5 of its checks. Regenerate with `npx tsx scripts/smoke-biobuzz/menuStage.ts --write`. Rules: `docs/area/biobuzz.md`, THE MENU STAGE'S HIVES AND FLOWERS.
+- **Checked:** offscreen Electron at 1920x1080, Home and Play, before and after (crops of both hives and a flower).
+- **Not changed:** match staging (`spawn.ts`). A real match settles in its first second, so staging is left alone; moving it would change 3D replays.
+- **Seen, not touched:** the bottom flower POLLEN settles onto the tile under 3D physics, 0.36 in below the lower-ring seat the 2D model (`flowerStackZ`) gives it.
+
 # HANDOFF — 2026-11-03c (Controls: hold or toggle per action)
 
 **State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).

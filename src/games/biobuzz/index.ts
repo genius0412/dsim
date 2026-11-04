@@ -16,6 +16,7 @@ import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
 import { drawBiobuzzRobot } from './drawRobot';
 import { bbSpecSheet, bbStatTiles } from './labels';
+import { restBiobuzzMenuWorld } from './menuRest';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 import { BiobuzzStartEditor } from './StartEditor';
@@ -72,6 +73,7 @@ export const BIOBUZZ_MODULE: GameModule = {
    * `GameModule.savedThumb` for why the GAME makes that choice and not the menu. */
   savedThumb: BiobuzzSavedThumb,
   warmCards: warmBiobuzzCards,
+  restMenuWorld: restBiobuzzMenuWorld,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
   pinnedNotice: BiobuzzPinnedNotice,

@@ -6,7 +6,7 @@ import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
 import { menuTier } from '../games/biobuzz/graphics/settings';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
-import { POSES, SHOW, type StageView } from './menuStagePoses';
+import { POSES, SHOW, STAGE_SEED, type StageView } from './menuStagePoses';
 import { holdBoot } from './screenFade';
 
 /**
@@ -176,7 +176,11 @@ function wants3d(game: GameId): boolean {
   return !window.matchMedia('(max-width: 640px) and (pointer: coarse)').matches;
 }
 
-/** the world on the stage: the field set for a match, plus the player's robot at the showcase */
+/**
+ * the world on the stage: the field set for a match and come to rest, plus the player's robot at
+ * the showcase. The stage never steps it, so the game moves what a match's first second of physics
+ * would (`restMenuWorld`): BIOBUZZ's hive NECTAR floated 7.9 in above its cell floor without it.
+ */
 function stageWorld(game: GameId, spec: RobotSpec | null, alliance: Alliance, physics: '2d' | '3d'): World {
   const setups = spec
     ? [
@@ -189,12 +193,14 @@ function stageWorld(game: GameId, spec: RobotSpec | null, alliance: Alliance, ph
         },
       ]
     : [];
-  const w = moduleFor(game).createWorld('match', 1, setups, undefined, physics);
+  const mod = moduleFor(game);
+  const w = mod.createWorld('match', STAGE_SEED, setups, undefined, physics);
   const r = w.robots[0];
   if (r) {
     r.pos = { x: SHOW.x, y: SHOW.y };
     r.heading = SHOW.heading;
   }
+  mod.restMenuWorld?.(w);
   return w;
 }
 
