@@ -12,6 +12,8 @@
  * RENDER lane sweeps every in-match eye (`sweepMatchEyes`) and fails if one stands outside it.
  */
 
+import { BB_HALF_X, BB_HALF_Y } from '../config';
+
 export interface VenueBox {
   min: readonly [number, number, number];
   max: readonly [number, number, number];
@@ -165,6 +167,23 @@ export function insetCameraRoom(box: VenueBox, margin: number): VenueBox {
     min: [box.min[0] + margin, box.min[1] + margin, box.min[2]],
     max: [box.max[0] - margin, box.max[1] - margin, box.max[2] - margin],
   };
+}
+
+/** how far above the floor (−0.75 in) a captured splat counts as standing; the floor's fuzz stays */
+export const SPLAT_FLOOR_KEEP_IN = 3;
+
+/**
+ * THE TWO BOXES A SPLAT VENUE HIDES (`scene/renderSplatVenue.ts`): the captured floor under the
+ * field's footprint (it would poke through the mat), and everything inside the camera room above the
+ * floor, so the convex-room rule holds for a capture by construction, as it does for a model.
+ */
+export function splatHiddenBoxes(cameraRoom: VenueBox): { min: number[]; max: number[] }[] {
+  const ground = -0.75;
+  const keep = ground + SPLAT_FLOOR_KEEP_IN;
+  return [
+    { min: [-(BB_HALF_X + 2), -(BB_HALF_Y + 2), ground - 40], max: [BB_HALF_X + 2, BB_HALF_Y + 2, keep] },
+    { min: [cameraRoom.min[0], cameraRoom.min[1], keep], max: [cameraRoom.max[0], cameraRoom.max[1], cameraRoom.max[2]] },
+  ];
 }
 
 /** is the point inside the box (closed) */

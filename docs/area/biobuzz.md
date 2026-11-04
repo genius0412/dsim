@@ -146,9 +146,21 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
   Contributors page credits any work a model includes (`ModelVenue.includes`). `public/venues/README.md`
   lists every source.
 - **Adding one**: `scripts/venue-models/README.md` (inspect, place, build, add the row, sweep, capture).
-  As of 2026-11-04 no model row ships: the four sources and the DFK Arena splat wait on the owner's
-  downloads (both sites need a login). The splat trial (Spark, a lazy chunk) is built when its file is
-  in `venue-sources/f5fa43b3/`.
+  As of 2026-11-04 no model row ships: the four sources wait on the owner's downloads (Sketchfab needs
+  a login).
+- ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
+  file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
+  no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB
+  gz: its sorter's wasm is inlined). Lighting is baked into a capture, so: a `ShadowMaterial` catcher
+  (±60 in round the field) takes the robots' shadows; one `SplatEdit` hides the captured floor under
+  the field's footprint (its fuzz pokes through the mat) and every splat inside `cameraRoom` above the
+  floor's fuzz (`splatHiddenBoxes`, `graphics/venueRoom.ts`), so the convex-room rule holds by
+  construction; and Spark's renderer is drawn FIRST among the transparents (`renderOrder` −1000)
+  because three sorts transparent objects whole, so the field's polycarbonate blends over the room.
+  ⚠️ A Spark box SDF reads its SCALE AS THE HALF-SIZE: a full-size scale hid the whole capture. Checked
+  in Chromium on a synthetic capture (floor, walls, a floater in the camera room): floor kept, floater
+  gone, mat clean, shadow on the captured floor; 4M splats cost 7.9 ms of GPU per frame at 1920 × 1080
+  on the dev PC's GPU. Waiting on the DFK Arena file (superspl.at needs a login); no splat row ships.
 
 **NOTHING A VENUE DRAWS STANDS IN FRONT OF THE PLAY (2026-11-01).** Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or just look weird." Captured offscreen from every in-match camera (driver fitted and height-accurate on 16:9, 21:9, 4:3 and both phone shapes, chase, orbit and free at their limits, overhead). The procedural venues' blockers and their fixes are below under the venue rules; the RENDER lane's `venueSightChecks` sweeps every in-match eye (`sweepMatchEyes`) through the real camera code against every part a venue builds.
 

@@ -460,9 +460,9 @@ import { THIRD_PARTY } from '../../src/contributors';
 // -- the retired photographed venues (2026-11-04) and the venue sight lines (2026-11-01) -----------
 import { CC_BY_4, creditedEnvironments, environmentCredit, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
 // -- the modeled venues (2026-11-04) ----------------------------------------------------------------
-import { bbModelDetail, venueAssetUrl } from '../../src/games/biobuzz/graphics/venueFiles';
-import { growClearBox, inVenueBox, insetCameraRoom, obstacleTris, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
-import { MODEL_MAX_TRIES, modelBlocked, modelTexturesOf, noteModelFailure, prepareModelVenue } from '../../src/games/biobuzz/scene/renderModelVenue';
+import { VENUE_MAX_TRIES, bbModelDetail, noteVenueFailure, venueAssetUrl, venueBlocked } from '../../src/games/biobuzz/graphics/venueFiles';
+import { SPLAT_FLOOR_KEEP_IN, growClearBox, inVenueBox, insetCameraRoom, obstacleTris, splatHiddenBoxes, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
+import { modelTexturesOf, prepareModelVenue } from '../../src/games/biobuzz/scene/renderModelVenue';
 import { POSES as MENU_POSES } from '../../src/ui/menuStagePoses';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
@@ -14922,11 +14922,11 @@ function modelVenueChecks(check: Check): void {
   {
     const url = 'venues/__smoke__.glb';
     const t = 1_000_000;
-    const fresh = !modelBlocked(url, t);
-    noteModelFailure(url, t);
-    const once = modelBlocked(url, t);
-    for (let i = 1; i < MODEL_MAX_TRIES; i++) noteModelFailure(url, t);
-    check('venue model: one failure is a blip, two stop the requests, and the count expires', fresh && !once && modelBlocked(url, t + 1) && !modelBlocked(url, t + 5 * 60_000 + 1));
+    const fresh = !venueBlocked(url, t);
+    noteVenueFailure(url, t);
+    const once = venueBlocked(url, t);
+    for (let i = 1; i < VENUE_MAX_TRIES; i++) noteVenueFailure(url, t);
+    check('venue model: one failure is a blip, two stop the requests, and the count expires', fresh && !once && venueBlocked(url, t + 1) && !venueBlocked(url, t + 5 * 60_000 + 1));
   }
 
   // ---- credits: CC BY 4.0 needs the title, the author, a link and the licence, and the same for a work inside
@@ -14954,10 +14954,16 @@ function modelVenueChecks(check: Check): void {
     const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
     check('venue model: the loader is a lazy chunk (renderScene imports it only dynamically)', /import\('\.\/renderModelVenue'\)/.test(sc) && !/from '\.\/renderModelVenue'/.test(sc));
     check('venue model: the procedural venue goes in first, the model is fetched only from High up', /this\.swapVenue\(buildBiobuzzVenue\(def\.venue, detail\), def\);\s*\n\s*this\.venueKey = key;\s*\n\s*if \(model\) this\.loadModel\(def, key\);/.test(sc) && /def\.model && bbModelDetail\(s, this\.tier\)/.test(sc));
-    check('venue model: the cameras are held in the model’s room from the moment it is picked', /this\.cameras\.setRoom\(model \? model\.cameraRoom : venueCameraRoom\(def\.venue, detail\)\)/.test(sc));
-    check('venue model: a swap frees the old venue’s model textures, and so does the scene', (sc.match(/freeModelTextures\(/g) ?? []).length >= 5);
+    check('venue model: the cameras are held in the model’s room from the moment it is picked', /this\.cameras\.setRoom\(model \? model\.cameraRoom : splat \? splat\.cameraRoom : venueCameraRoom\(def\.venue, detail\)\)/.test(sc));
+    check('venue model: a swap frees the old venue’s model textures and Spark objects, and so does the scene', (sc.match(/freeVenueExtras\(/g) ?? []).length >= 6);
     check('venue model: an export waits for the model like the light map', /this\.envLoading, this\.modelLoading\]/.test(sc));
-    check('venue model: the probe projects against the model’s room when it is live', /this\.modelLive && def\.model \? def\.model\.cameraRoom : undefined/.test(sc));
+    check('venue model: the probe projects against the model’s (or capture’s) room when it is live', /this\.modelLive \? \(def\.model \?\? def\.splat\)\?\.cameraRoom : undefined/.test(sc));
+    // the splat trial (Spark) rides the same seam
+    check('venue splat: Spark is a lazy chunk (renderScene imports the splat venue only dynamically)', /import\('\.\/renderSplatVenue'\)/.test(sc) && !/from '\.\/renderSplatVenue'/.test(sc) && !/@sparkjsdev/.test(sc));
+    check('venue splat: a capture is fetched from High up when the row has no model, and holds the cameras in its room', /const splat = !model && def\.splat && bbModelDetail\(s, this\.tier\)/.test(sc) && /model \? model\.cameraRoom : splat \? splat\.cameraRoom : venueCameraRoom/.test(sc));
+    const sv = readFileSync(join(SCENE_DIR, 'renderSplatVenue.ts'), 'utf8');
+    check('venue splat: the capture is drawn first among the transparents, under a shadow catcher, with both hiding edits', /spark\.renderOrder = SPLAT_RENDER_ORDER/.test(sv) && /SPLAT_RENDER_ORDER = -1000/.test(sv) && /new THREE\.ShadowMaterial/.test(sv) && /catcher\.receiveShadow = true/.test(sv) && /for \(const b of splatHiddenBoxes\(v\.cameraRoom\)\) edit\.addSdf/.test(sv));
+    check('venue splat: a box SDF is sized by HALF its extent (Spark reads scale as the half-size)', /sdf\.scale\.set\(\(max\[0\] - min\[0\]\) \/ 2, \(max\[1\] - min\[1\]\) \/ 2, \(max\[2\] - min\[2\]\) \/ 2\)/.test(sv));
     check('venue model: the minimap cuts at the model’s ceiling like the overhead camera', /this\.pipCamera\.near = Number\.isFinite\(top\) \? Math\.max\(1, 300 - top\) : 1;/.test(sc));
     const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
     check('venue model: the dev server serves KTX2Loader from node_modules, so its transcoder URL resolves', /optimizeDeps: \{ exclude: \['three\/examples\/jsm\/loaders\/KTX2Loader\.js'\] \}/.test(vite));
@@ -14978,6 +14984,28 @@ function modelVenueChecks(check: Check): void {
     const v = modelRoomVerdict(tris, m.cameraRoom);
     check(`venue model ${e.id}: no triangle stands inside its camera room`, v.inside === 0, String(v.inside));
     check(`venue model ${e.id}: every in-match eye stands inside it`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
+  }
+  // ---- the splat trial's two hidden boxes: the captured floor under the field, and the camera room above the floor
+  {
+    const room: VenueBox = { min: [-400, -380, -0.75], max: [420, 360, 300] };
+    const [under, inside] = splatHiddenBoxes(room);
+    check(
+      'venue splat: the captured floor is hidden under the whole field and no higher than the floor’s own fuzz',
+      under.min[0] < -BB_HALF_X && under.max[0] > BB_HALF_X && under.min[1] < -BB_HALF_Y && under.max[1] > BB_HALF_Y && under.max[2] === -0.75 + SPLAT_FLOOR_KEEP_IN,
+    );
+    check(
+      'venue splat: everything inside the camera room above the floor is hidden, so no capture can block a sight line',
+      inside.min[0] === room.min[0] && inside.max[0] === room.max[0] && inside.min[1] === room.min[1] && inside.max[1] === room.max[1] && inside.max[2] === room.max[2] && inside.min[2] === -0.75 + SPLAT_FLOOR_KEEP_IN,
+    );
+  }
+  for (const e of BB_ENVIRONMENTS.filter((x) => x.splat)) {
+    const sp = e.splat!;
+    const path = join(root, 'public', sp.file);
+    const onDisk = existsSync(path) ? statSync(path).size : -1;
+    check(`venue splat ${e.id}: ${sp.file} is the ${sp.bytes} bytes its row states`, onDisk === sp.bytes, String(onDisk));
+    check(`venue splat ${e.id}: CC BY 4.0, credited`, sp.license === 'CC BY 4.0' && sp.licenseUrl === CC_BY_4 && sp.authors.length > 0);
+    const v = modelRoomVerdict({ positions: [], indices: null }, sp.cameraRoom);
+    check(`venue splat ${e.id}: every in-match eye stands inside its camera room`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
   }
   check('venue model: a model file under public/venues is a row’s, and a row’s model is a file there', readdirSync(join(root, 'public', 'venues')).filter((f) => f.endsWith('.glb')).every((f) => BB_ENVIRONMENTS.some((e) => e.model?.file === `venues/${f}`)));
 }

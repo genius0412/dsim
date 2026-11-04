@@ -235,6 +235,33 @@ export interface ModelVenue {
 
 export const CC_BY_4 = 'https://creativecommons.org/licenses/by/4.0/';
 
+/**
+ * ── A SPLAT VENUE (2026-11-04, the trial) ──────────────────────────────────────────────────
+ *
+ * A real room captured as Gaussian splats, drawn by Spark (`scene/renderSplatVenue.ts`, a lazy chunk)
+ * from High up, in the file's own format (SOG, SPZ or PLY). The capture is placed by `transform`
+ * (inches, z up, its floor at the procedural ground's height). Its lighting is BAKED into the splats,
+ * so the field is lit by the row's `rig` and a shadow catcher puts the robots' shadows on the captured
+ * floor. Two edits hide splats: everything under the field's footprint (the captured floor would show
+ * through the mat), and everything inside `cameraRoom` above the floor, so nothing captured can stand
+ * between an eye and the field (the same convex-room rule as a model's).
+ */
+export interface SplatVenue {
+  /** the capture, relative to the app's base URL (`venueAssetUrl` versions it by `bytes`) */
+  file: string;
+  bytes: number;
+  splats: number;
+  /** the capture's placement: position (inches), rotation (a quaternion x, y, z, w) and uniform scale */
+  transform: { position: readonly [number, number, number]; quaternion: readonly [number, number, number, number]; scale: number };
+  /** the room the orbit and free eyes stay inside; every splat in it above the floor is hidden */
+  cameraRoom: { min: readonly [number, number, number]; max: readonly [number, number, number] };
+  title: string;
+  page: string;
+  authors: readonly { name: string; role: string }[];
+  license: 'CC BY 4.0';
+  licenseUrl: string;
+}
+
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -256,6 +283,8 @@ export interface EnvironmentDef {
   look?: EnvironmentLook;
   /** a MODELED venue (`ModelVenue`), drawn from High up; `venue` stands everywhere else */
   model?: ModelVenue;
+  /** a SPLAT venue (`SplatVenue`, the trial), drawn from High up; `venue` stands everywhere else */
+  splat?: SplatVenue;
   /** absent for a procedural entry: it is generated, it has no author and it costs nothing. */
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
@@ -772,6 +801,10 @@ export function environmentCredit(e: EnvironmentDef): {
     const m = e.model;
     return { title: m.title, source: 'Sketchfab', page: m.page, authors: m.authors, license: m.license, licenseUrl: m.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
   }
+  if (e.splat) {
+    const sp = e.splat;
+    return { title: sp.title, source: 'SuperSplat', page: sp.page, authors: sp.authors, license: sp.license, licenseUrl: sp.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
+  }
   return null;
 }
 
@@ -780,7 +813,11 @@ export function environmentCredit(e: EnvironmentDef): {
  * URL; the RENDER lane checks every row's byte count against the file on disk. */
 export function venueFileBytes(path: string): number | undefined {
   const clean = path.replace(/^\/+/, '');
-  return BB_ENVIRONMENTS.find((e) => e.model?.file === clean)?.model?.bytes;
+  for (const e of BB_ENVIRONMENTS) {
+    if (e.model?.file === clean) return e.model.bytes;
+    if (e.splat?.file === clean) return e.splat.bytes;
+  }
+  return undefined;
 }
 
 /** every environment that is somebody's photograph — what the Contributors page credits. */

@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { ModelVenue } from '../graphics/environments';
-import { venueAssetUrl } from '../graphics/venueFiles';
+import { noteVenueFailure, venueAssetUrl, venueBlocked } from '../graphics/venueFiles';
 
 /**
  * A MODELED VENUE (2026-11-04; `ModelVenue`, `graphics/environments.ts`) — a real room as real
@@ -23,28 +23,6 @@ import { venueAssetUrl } from '../graphics/venueFiles';
  * does the procedural ones), makes every mesh RECEIVE the sun's shadow and cast none (the shadow map
  * covers the field; a room casting into it only costs), and sets the anisotropy row on its textures.
  */
-
-/** a failed file is asked for twice, then not again for five minutes (same rule as the HDRI) */
-export const MODEL_MAX_TRIES = 2;
-export const MODEL_RETRY_MS = 5 * 60_000;
-const failed = new Map<string, { n: number; at: number }>();
-
-/** has `url` failed often enough, recently enough, not to be asked again */
-export function modelBlocked(url: string, now = Date.now()): boolean {
-  const f = failed.get(url);
-  if (!f) return false;
-  if (now - f.at >= MODEL_RETRY_MS) {
-    failed.delete(url);
-    return false;
-  }
-  return f.n >= MODEL_MAX_TRIES;
-}
-
-/** record a failed load of `url` (exported for the RENDER lane) */
-export function noteModelFailure(url: string, now = Date.now()): void {
-  const f = failed.get(url);
-  failed.set(url, { n: (f?.n ?? 0) + 1, at: now });
-}
 
 /** every texture slot a glTF material can fill */
 const TEXTURE_SLOTS = [
@@ -123,10 +101,10 @@ function ktx2For(renderer: THREE.WebGLRenderer): KTX2Loader {
   return ktx2;
 }
 
-/** FETCH AND PREPARE one modeled venue. Rejects on any failure and counts it (`modelBlocked`). */
+/** FETCH AND PREPARE one modeled venue. Rejects on any failure and counts it (`venueBlocked`). */
 export async function loadModelVenue(model: ModelVenue, renderer: THREE.WebGLRenderer, anisotropy: number): Promise<THREE.Group> {
   const url = venueAssetUrl(model.file);
-  if (modelBlocked(url)) throw new Error(`${model.file}: blocked after repeated failures`);
+  if (venueBlocked(url, Date.now())) throw new Error(`${model.file}: blocked after repeated failures`);
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   loader.setKTX2Loader(ktx2For(renderer));
@@ -134,7 +112,7 @@ export async function loadModelVenue(model: ModelVenue, renderer: THREE.WebGLRen
   try {
     scene = (await loader.loadAsync(url)).scene;
   } catch (err) {
-    noteModelFailure(url);
+    noteVenueFailure(url, Date.now());
     throw err;
   }
   return prepareModelVenue(scene, anisotropy);
