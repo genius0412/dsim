@@ -33,6 +33,7 @@
     "tune:ai": "node --import tsx scripts/aitune.mjs",
     "contrast": "node scripts/contrast.mjs",
     "shiftaudit": "electron scripts/shiftaudit.cjs",
+    "firstload": "electron scripts/firstload.cjs",
     "shots": "electron scripts/shots.cjs",
     "og": "electron scripts/og-image.cjs",
     "server": "tsx watch server/index.ts",

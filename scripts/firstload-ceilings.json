@@ -1,0 +1,11 @@
+{
+  "_": "npm run firstload -- --check holds each cell's MEDIAN of three cold runs to these (scripts/firstload.cjs). worst/over50: the first Play fly's longest frame and its frames over 50 ms; renders: frames the stage drew in it (~60 is every one); clickTask: the click's own task; reveal: how the stage must show in every run. Set 2026-11-04 on the dev PC (calibration ~78 ms). Medians before -> after: High x4 worst 133 -> 50, drew 44 -> 58, click 80 -> 37; Low x4 worst 100 -> 33, over50 2 -> 0, click 81 -> 33. The old build fails every cell.",
+  "high": {
+    "x1": { "reveal": "whole", "worst": 50, "over50": 0, "renders": 55, "clickTask": 50 },
+    "x4": { "worst": 100, "over50": 2, "renders": 48, "clickTask": 60 }
+  },
+  "low": {
+    "x1": { "reveal": "whole", "worst": 50, "over50": 0, "renders": 38, "clickTask": 50 },
+    "x4": { "worst": 80, "over50": 1, "renders": 38, "clickTask": 60 }
+  }
+}

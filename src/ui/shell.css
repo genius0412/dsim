@@ -10496,6 +10496,31 @@ input.admin-months {
 .ds-stage-3d.shown {
   opacity: 1;
 }
+/* shown under the boot screen (`MenuStage.tsx`, ONE REVEAL): the boot screen's own fade is the arrival */
+.ds-stage-3d.shown.now {
+  transition: none;
+}
+/* PLAY'S PAGE, REHEARSED while Home is idle (`PlayRehearsal.tsx`): laid out, never painted, never reached */
+.ds-rehearsal {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  visibility: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+/* A ROOM THAT LANDS AFTER THE STAGE IS SHOWN (`crossfade`): the last frame, over the new one, faded out */
+.ds-stage-veil {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.ds-stage-veil.out {
+  opacity: 0;
+  transition: opacity var(--ds-dur-fly) var(--ds-ease);
+}
 /* THE 3D FIELD IS STILL LOADING (`StageWait`, MenuStage.tsx): the boot screen's bar, placed by script in
    the middle of the free area the camera will frame. It shows after 600 ms, so a quick load never
    draws it; the sweep is the match's own (`game-loading-sweep`, styles.css). */
@@ -11711,6 +11736,7 @@ body:has(.ds-popup-host > :not(.ds-popup))
 
 @media (prefers-reduced-motion: reduce) {
   .ds-stage-3d,
+  .ds-stage-veil.out,
   .ds-stage-2d img,
   .ds-app.on-stage .ds-bar::before,
   .ds-app.on-stage .ds-bar > :not(.ds-bar-right) {

@@ -8281,7 +8281,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         const rv = readFileSync(join(root, 'src', 'net', 'roomView.ts'), 'utf8');
         check(
           'App warms the 3D scene chunk on idle through preloadRoomView, keyed on the game',
-          /requestIdleCallback\(warm[\s\S]{0,120}\}, \[settings\.game, warmAll\]\);/.test(app) &&
+          /requestIdleCallback\(warm[\s\S]{0,400}\}, \[settings\.game, warmAll\]\);/.test(app) &&
             app.includes('const warm = (): void => preloadRoomView(settings.game, warmAll);'),
         );
         // ...and the FULL warm (the 3D solve, the venue's ~1–2 MB) only where a match is a click
@@ -15754,7 +15754,14 @@ function displayResolveChecks(check: Check): void {
   );
   check(
     'display resolve: the warm-up compiles the variants a split frame draws (the flagged target, then the late objects)',
-    /flag\.isXRRenderTarget = true;\s*const opaque = this\.renderer\.compileAsync\(this\.scene, camera\);/.test(sceneSrc) && /this\.split\.lateObjects\(\)/.test(sceneSrc),
+    /flag\.isXRRenderTarget = true;\s*const opaque = this\.renderer\.compileAsync\(root, camera, into\);/.test(sceneSrc) &&
+      /return this\.compileAsDrawn\(this\.scene, this\.split\.lateObjects\(\)\);/.test(sceneSrc),
+  );
+  // 2026-11-04: the modeled room was compiled against the canvas, so the first frame with it in linked
+  // every one of its programs on the main thread (`npm run firstload`)
+  check(
+    '⚠️ display resolve: a late room is compiled the same way before it goes in (its transparent parts as late objects)',
+    /await this\.compileAsDrawn\(room, transparentDrawables\(room\)\);/.test(sceneSrc) && !/this\.renderer\.compileAsync\(room,/.test(sceneSrc),
   );
   check('display resolve: the late layer is one no camera enables', LATE_LAYER > 3 && LATE_LAYER < 32);
 
@@ -15799,6 +15806,54 @@ function displayResolveChecks(check: Check): void {
     sp.dispose();
     check('display resolve: dispose takes the late layer back off', !line.layers.isEnabled(LATE_LAYER) && !collar.layers.isEnabled(LATE_LAYER));
   }
+  // ── a STILL frame (`SceneFrame.still`: the menu stage keeps the sun's map) draws no shadow map, so a
+  // transparent caster muted in the opaque call would draw nothing there: it is left out (2026-11-04,
+  // the first Play fly at CPU ×4 drew 12 of its frames before this and the shadow reuse) ──
+  {
+    const sc = new THREE.Scene();
+    const sun = new THREE.DirectionalLight();
+    const glass = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ transparent: true }));
+    glass.castShadow = true;
+    sc.add(sun, glass);
+    const sp = createSplitPass();
+    sp.collect(sc, [sun]);
+    const cam = new THREE.PerspectiveCamera();
+    const target = new THREE.WebGLRenderTarget(4, 4, { samples: 4 });
+    /** is the caster in the opaque call, on a renderer whose shadow map is (not) due this call? */
+    const inOpaque = (needsUpdate: boolean): boolean | null => {
+      let first: boolean | null = null;
+      const r = {
+        shadowMap: { enabled: true, autoUpdate: false, needsUpdate },
+        toneMappingExposure: 1,
+        autoClear: true,
+        info: { render: { calls: 0, triangles: 0 } },
+        setRenderTarget: (): void => {},
+        render: (): void => {
+          if (first === null) first = glass.layers.isEnabled(0);
+        },
+      };
+      sp.render(r as unknown as THREE.WebGLRenderer, sc, cam, target);
+      return first;
+    };
+    check('display resolve: a frame that draws the sun’s map keeps a transparent caster in the opaque call (muted, for the map)', inOpaque(true) === true);
+    check('display resolve: a still frame (no map this call) leaves it out of the opaque call, and puts it back after', inOpaque(false) === false && glass.layers.isEnabled(0));
+    sp.dispose();
+    target.dispose();
+  }
+  const stageSceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+  check(
+    '⚠️ a still frame keeps the sun’s map only for the same world, the same element geometry and no rebuilt robot',
+    /if \(!frame\.still \|\| world !== this\.shadowWorld \|\| robotsRebuilt \|\| casters !== this\.shadowCasters\) this\.renderer\.shadowMap\.needsUpdate = true;/.test(stageSceneSrc),
+  );
+  check(
+    'a late room goes in through the host’s gate (SceneOptions.onLateSwap), committed exactly once, freed when stale',
+    /private lateSwap\(room: THREE\.Group, def: EnvironmentDef, stale: \(\) => boolean, after\?: \(\) => void\): void \{\s*let done = false;/.test(stageSceneSrc) &&
+      (stageSceneSrc.match(/this\.lateSwap\(room, def, stale/g) ?? []).length === 2,
+  );
+  check(
+    'a live scene starts its modeled room’s file and loader with the field (prefetchVenue), and reads the warm fetch’s body',
+    /if \(!opts\.quality\) prefetchVenue\(quality, getGraphics\(\)\.tier\);/.test(stageSceneSrc) && /\.then\(\(r\) => r\.body\?\.pipeTo\(new WritableStream\(\)\)\)/.test(stageSceneSrc),
+  );
   const previewSrc = readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8');
   check(
     "display resolve: a robot card draws at no fewer pixels than its own (Low's 75 % render scale drew 192 px at 144 and stretched it)",

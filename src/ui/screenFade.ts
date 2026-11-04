@@ -39,17 +39,33 @@ const bootWaiters: (() => void)[] = [];
  * with the first screen's own build waits for it */
 export const afterBoot = (): Promise<void> =>
   booted ? Promise.resolve() : new Promise<void>((resolve) => bootWaiters.push(resolve));
+const leaveWaiters: (() => void)[] = [];
 const finishBoot = (): void => {
   booted = true;
+  leaveWaiters.splice(0).forEach((f) => f());
   bootWaiters.splice(0).forEach((f) => f());
 };
+/** resolves once the boot screen has STARTED to leave, or there is none (at once if so) */
+export const afterBootLeave = (): Promise<void> =>
+  leaving || booted || !document.getElementById('seo-home') ? Promise.resolve() : new Promise<void>((resolve) => leaveWaiters.push(resolve));
+/** the boot screen is on the page and not leaving: whatever is under it is not seen yet */
+export const bootCovering = (): boolean => !leaving && !booted && !!document.getElementById('seo-home');
 
 /**
  * how long the boot screen waits for a picture the first screen is still making, after the app has
- * mounted: past it the screen shows with its own loading state. The 3D stage measured ~1.5 s from
- * mount on a fast line; on Slow 4G it is ~8 s, too long to keep the menu covered.
+ * mounted: past it the screen shows with its own loading state.
+ *
+ * ⚠️ IT WAITS FOR THE WHOLE STAGE, ROOM INCLUDED (2026-11-04, owner: "there is a loading screen, but
+ * then there is another loading animation for the field, and even when the field shows up, the
+ * background scene shows up even later"). It was 3 s and waited for the field's first frame only, so
+ * the modeled room swapped in after Home had appeared. Measured cold, offscreen, High at 1920×1080
+ * on the dev PC (`npm run firstload`, medians), the stage is whole (field, robot, room) 1.6 s after
+ * the app mounts at full speed and 3.4–3.7 s at CPU ×4, so 6 s covers a ×4 machine with room to
+ * spare; at ×6 it is about 6 s and the boot screen often leaves first. Past this it leaves anyway and the
+ * stage shows what it has (`MenuStage.tsx`): a room that lands later crossfades in. Nothing, a slow
+ * line included, keeps Home covered longer than this after the app is up.
  */
-const HOLD_MAX_MS = 3000;
+export const HOLD_MAX_MS = 6000;
 
 /**
  * KEEP THE BOOT SCREEN UP for a picture the first screen is still making (the 3D menu stage,
@@ -80,12 +96,15 @@ export function holdBoot(): () => void {
 export function dismissBoot(): void {
   if (asked) return;
   asked = true;
+  performance.mark?.('dsim:app-ready');
   const el = document.getElementById('seo-home');
   if (!el) return finishBoot();
   const go = (): void => {
     if (leaving) return;
     leaving = true;
     wake = null;
+    performance.mark?.('dsim:boot-leave');
+    leaveWaiters.splice(0).forEach((f) => f());
     // the page under it takes the pointer at once: it is mounted, and two frames from painted
     el.style.pointerEvents = 'none';
     const ms = reduced() ? 0 : screenFadeMs();

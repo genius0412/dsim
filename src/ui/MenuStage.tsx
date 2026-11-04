@@ -6,7 +6,7 @@ import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
 import { POSES, SHOW, STAGE_SEED, type StageView } from './menuStagePoses';
-import { holdBoot } from './screenFade';
+import { afterBootLeave, bootCovering, holdBoot } from './screenFade';
 
 /**
  * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to MoSim's) — the field
@@ -59,6 +59,37 @@ type StageMode = '2d' | '3d';
 
 /** fly time, Home ↔ Play (owner: "about 1 second"); zero under reduced motion */
 const FLY_MS = 1000;
+
+/**
+ * ONE REVEAL (2026-11-04, owner: "there is a loading screen, but then there is another loading
+ * animation for the field, and even when the field shows up, the background scene shows up even
+ * later"). Measured cold (`npm run firstload`, High, 1920×1080): the stage faded in on its FIRST
+ * frame and the modeled room swapped in 0.3 s (full speed) to 1.7 s (CPU ×6) after it, in front of
+ * the player. Now the stage draws hidden and shows once it is WHOLE: field, robot, the room its
+ * graphics ask for and its light (`assetsSettled`), every program linked. On the first load the boot
+ * screen waits for that (`holdBoot`, capped by `HOLD_MAX_MS`) with the stage already at full opacity
+ * under it, so the boot screen's own fade is the one reveal. Past the cap the stage shows what it has
+ * as the boot screen leaves; on a later mount (back from a match) it waits `PARTIAL_WAIT_MS` after its
+ * field. Either way a room that lands after that CROSSFADES in (`crossfade`), never pops.
+ */
+const PARTIAL_WAIT_MS = 2000;
+/** a forced draw keeps this far from the last one, past every frame cap (Low's 60 fps is 16 ms) */
+const DRAW_GAP_MS = 60;
+
+/**
+ * IS THE CAMERA FLYING? Work that would land inside the fly waits for it (App's match warm-up: the
+ * 3D physics chunk's evaluation was a 60–120 ms task in the middle of the first fly at CPU ×4–×6).
+ */
+let flying = false;
+const restWaiters: (() => void)[] = [];
+function setFlying(f: boolean): void {
+  flying = f;
+  if (!f) restWaiters.splice(0).forEach((r) => r());
+}
+/** resolves once the menu stage's camera is not flying (at once when it is not, or there is no stage) */
+export function stageAtRest(): Promise<void> {
+  return flying ? new Promise<void>((r) => restWaiters.push(r)) : Promise.resolve();
+}
 /** the orbit's drift back to the showcase angle after a drag, as a half-life */
 const ORBIT_RETURN_S = 0.35;
 
@@ -208,12 +239,12 @@ export function MenuStage({
   useEffect(() => setUse3d(wants3d(game)), [game]);
   useEffect(() => setMode(use3d ? '3d' : '2d'), [use3d]);
   /**
-   * WHILE THE 3D FIELD LOADS (2026-11-02). The scene boots on idle, then fetches its chunk and the
-   * field (~0.9 MB) and compiles its shaders: 1.3 s after mount on a fast line, 8 s on Slow 4G, on an
-   * empty dark backdrop. On the first load the boot screen stays up for it (`holdBoot`, capped), so
-   * Home appears once, whole. Past the cap, and after a match, a loading bar sits where the field will
-   * be. NOT the game's 2D field: drawn under the 3D as a placeholder, it was a second picture of the
-   * field that the 3D replaced a second later (owner: "the 2d field for a split second").
+   * WHILE THE 3D STAGE LOADS (2026-11-02). The scene boots on idle, then fetches its chunk, the field
+   * (~0.9 MB) and its room, and compiles its shaders, on an empty dark backdrop. On the first load the
+   * boot screen stays up until the stage is whole (`holdBoot`, capped; ONE REVEAL above), so Home
+   * appears once, whole. Past the cap, and after a match, a loading bar sits where the field will be.
+   * NOT the game's 2D field: drawn under the 3D as a placeholder, it was a second picture of the field
+   * that the 3D replaced a second later (owner: "the 2d field for a split second").
    */
   const [ready3d, setReady3d] = useState(false);
   useEffect(() => setReady3d(false), [game, use3d]);
@@ -276,11 +307,13 @@ function Stage3d({
   spec: RobotSpec;
   alliance: Alliance;
   onFail(): void;
-  /** the scene has drawn its first frame and is fading in */
+  /** the scene is shown (ONE REVEAL): at once under the boot screen, or fading in */
   onShown(): void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
+  const veilRef = useRef<HTMLCanvasElement>(null);
+  /** '' hidden; 'now' shown at once (under the boot screen, whose fade is the reveal); 'fade' fading in */
+  const [shown, setShown] = useState<'' | 'now' | 'fade'>('');
   // the live inputs, read by the frame loop without restarting it
   const live = useRef({ view, spec, alliance, onFail, onShown });
   live.current = { view, spec, alliance, onFail, onShown };
@@ -309,8 +342,20 @@ function Stage3d({
     let lastT = 0;
     let wasAnimating = false;
     let settle = 0;
-    // the first load's boot screen waits for this scene's first frame (or its failure)
+    // when the last frame was drawn (a forced draw keeps `DRAW_GAP_MS` from it), and the fly's target
+    // insets, read ONCE per fly: `insetsFor` reads the page's layout, and in the first fly that was a
+    // forced layout in every frame while Play's new page was still settling
+    let lastDraw = -Infinity;
+    let flyIns: SceneInsets | null = null;
+    // ONE REVEAL (above): the first load's boot screen waits for the whole stage (or its failure)
+    const underBoot = bootCovering();
     const releaseBoot = holdBoot();
+    let fieldDrawn = false;
+    let revealed = false;
+    let partialTimer = 0;
+    /** a room that landed after the reveal, waiting for the camera to rest (`crossfade`) */
+    let pendingSwap: (() => void) | null = null;
+    let veilTimer = 0;
 
     /**
      * THE ROBOT IS ON THE FIELD ON HOME TOO (owner, 2026-11-03: "so that it doesn't just suddenly appear
@@ -343,7 +388,12 @@ function Stage3d({
       const dt = lastT ? Math.min(0.1, (now - lastT) / 1000) : 0;
       lastT = now;
       const target = POSES[live.current.view];
-      const targetIns = insetsFor(live.current.view, size.w, size.h);
+      let targetIns: SceneInsets;
+      if (fly) targetIns = flyIns ??= insetsFor(live.current.view, size.w, size.h);
+      else {
+        flyIns = null;
+        targetIns = insetsFor(live.current.view, size.w, size.h);
+      }
       let moving = false;
       if (fly) {
         const t = fly.ms > 0 ? Math.min(1, (now - fly.t0) / fly.ms) : 1;
@@ -359,8 +409,10 @@ function Stage3d({
           bottom: mix(fly.fromIns.bottom, targetIns.bottom, k),
           left: mix(fly.fromIns.left, targetIns.left, k),
         };
-        if (t >= 1) fly = null;
-        else moving = true;
+        if (t >= 1) {
+          fly = null;
+          setFlying(false);
+        } else moving = true;
       } else {
         pose = target;
         ins = targetIns;
@@ -401,7 +453,11 @@ function Stage3d({
         dpr: size.dpr,
         insets: ins,
         pose: { ...drawn, fovDeg: fitFov(drawn.fovDeg, size.w, size.h, ins) },
+        // nothing on the stage's field ever moves: a world it handed over is never changed (a new
+        // robot is a new world), so the scene keeps the sun's shadow map between frames
+        still: true,
       });
+      lastDraw = performance.now();
       const animating = moving || orbit.held;
       if (animating) kick();
       else {
@@ -412,10 +468,104 @@ function Stage3d({
         if (wasAnimating) {
           clearTimeout(settle);
           settle = window.setTimeout(kick, 50);
+          // a room that landed during the move goes in now that the camera rests
+          if (pendingSwap) crossfade();
         }
       }
       wasAnimating = animating;
     };
+    /** draw the current pose now, cancelling a queued frame */
+    function drawNow(): void {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      frame(performance.now());
+    }
+    /** draw now, at least `DRAW_GAP_MS` after the last draw so no frame cap skips it, then `f` */
+    function drawThen(f: () => void): void {
+      if (dead) return;
+      const wait = lastDraw + DRAW_GAP_MS - performance.now();
+      if (wait > 0) {
+        window.setTimeout(() => drawThen(f), wait);
+        return;
+      }
+      drawNow();
+      f();
+    }
+    function reveal(kind: 'whole' | 'partial'): void {
+      if (revealed || dead) return;
+      revealed = true;
+      clearTimeout(partialTimer);
+      performance.mark?.(`dsim:stage-${kind}`);
+      // under the boot screen the stage is there at once: the boot screen's own fade is the reveal
+      setShown(bootCovering() ? 'now' : 'fade');
+      live.current.onShown();
+      releaseBoot();
+    }
+    /** short of whole: show what there is once the boot screen has gone (the first load), or
+     * `PARTIAL_WAIT_MS` after the field (a later mount) */
+    function partial(): void {
+      if (revealed || dead || !fieldDrawn) return;
+      if (underBoot) {
+        if (!bootCovering()) drawThen(() => reveal('partial'));
+        return;
+      }
+      if (!partialTimer) partialTimer = window.setTimeout(() => drawThen(() => reveal('partial')), PARTIAL_WAIT_MS);
+    }
+    /** `SceneOptions.onLateSwap`: a room that lands while the stage is hidden goes in at once (it is
+     * then part of the one reveal); after the reveal it crossfades */
+    const onLateSwap = (commit: () => void): void => {
+      if (dead || !revealed) return commit();
+      // an older room still waiting goes first (stale by now, it only frees itself)
+      pendingSwap?.();
+      pendingSwap = commit;
+      crossfade();
+    };
+    const inMotion = (): boolean => !!fly || orbit.held || !!orbit.yaw || !!orbit.pitch;
+    /**
+     * A ROOM THAT LANDS AFTER THE REVEAL FADES IN. The last frame is copied onto the veil (a canvas
+     * over the scene's, read in the task that drew it, before the browser clears it), the room goes
+     * in under it, the next frame is drawn, and the veil fades out over `--ds-dur-fly`. Only at rest:
+     * a moving camera under a frozen copy would smear, so a room that lands mid-move waits for the
+     * move's end (`frame`).
+     */
+    function crossfade(): void {
+      const veil = veilRef.current;
+      const s = scene;
+      if (!pendingSwap || dead || !s || inMotion()) return;
+      const commit = pendingSwap;
+      if (!veil || reducedMotion()) {
+        pendingSwap = null;
+        commit();
+        kick();
+        return;
+      }
+      drawThen(() => {
+        if (pendingSwap !== commit || dead || inMotion()) return;
+        pendingSwap = null;
+        veil.width = s.element.width;
+        veil.height = s.element.height;
+        veil.getContext('2d')?.drawImage(s.element, 0, 0);
+        clearTimeout(veilTimer);
+        veil.classList.remove('out');
+        veil.hidden = false;
+        commit();
+        drawThen(() =>
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              veil.classList.add('out');
+              veilTimer = window.setTimeout(() => {
+                veil.hidden = true;
+                veil.classList.remove('out');
+                veil.width = 0;
+                veil.height = 0;
+              }, FLY_MS + 100);
+            }),
+          ),
+        );
+      });
+    }
     const kick = (): void => {
       if (!raf && !dead) raf = requestAnimationFrame(frame);
     };
@@ -428,6 +578,8 @@ function Stage3d({
           t0: performance.now(),
           ms: reducedMotion() ? 0 : FLY_MS,
         };
+        // only a fly that is drawn holds back the work waiting for it (`stageAtRest`)
+        if (scene && fly.ms > 0) setFlying(true);
         kick();
       },
       rebuild() {
@@ -472,7 +624,7 @@ function Stage3d({
     // screen) stands in for it.
     const boot = (): Promise<void> =>
       load()
-        .then((factory) => factory(host, { interactive: false, tunesTier: false }))
+        .then((factory) => factory(host, { interactive: false, tunesTier: false, onLateSwap }))
         .then((s) => {
           if (dead) {
             s.dispose();
@@ -484,12 +636,18 @@ function Stage3d({
           s.element.addEventListener('webglcontextlost', () => live.current.onFail(), { once: true });
           ro.observe(host);
           resize();
-          frame(performance.now());
-          setShown(true);
-          live.current.onShown();
-          releaseBoot();
-          // an imported robot's mesh lands after the first frame
-          settleAssets();
+          // THE FIELD, DRAWN HIDDEN: what `warmShaders` did not link links here, out of sight
+          drawNow();
+          fieldDrawn = true;
+          performance.mark?.('dsim:stage-field');
+          // WHOLE once every asset of this world has settled: the room (committed at once while
+          // hidden), its light, an imported robot's mesh. `assetsSettled` never rejects.
+          const w = world;
+          const whole = w && s.assetsSettled ? s.assetsSettled(w) : Promise.resolve();
+          void whole.then(() => drawThen(() => reveal('whole')));
+          // short of whole: the first load's boot screen leaving at its cap, or the wait after the field
+          if (underBoot) void afterBootLeave().then(partial);
+          partial();
         })
         .catch(() => {
           releaseBoot();
@@ -508,13 +666,27 @@ function Stage3d({
       if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idle);
       else clearTimeout(idle);
       clearTimeout(settle);
+      clearTimeout(partialTimer);
+      clearTimeout(veilTimer);
       releaseBoot();
+      setFlying(false);
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       orbitSink = null;
       ctl.current = null;
       scene?.dispose();
+      // a room still waiting is committed into the disposed scene, which frees it
+      const waiting = pendingSwap;
+      pendingSwap = null;
+      waiting?.();
       host.replaceChildren();
+      const veil = veilRef.current;
+      if (veil) {
+        veil.hidden = true;
+        veil.classList.remove('out');
+        veil.width = 0;
+        veil.height = 0;
+      }
     };
   }, [game]);
 
@@ -529,7 +701,13 @@ function Stage3d({
   }, [view]);
   useEffect(() => ctl.current?.rebuild(), [spec, alliance]);
 
-  return <div ref={hostRef} className={`ds-stage-3d${shown ? ' shown' : ''}`} />;
+  return (
+    <>
+      <div ref={hostRef} className={`ds-stage-3d${shown ? ' shown' : ''}${shown === 'now' ? ' now' : ''}`} />
+      {/* the last frame, over the scene while a late room fades in (`crossfade`) */}
+      <canvas ref={veilRef} className="ds-stage-veil" hidden />
+    </>
+  );
 }
 
 /** the 2D field's drawn size in CSS px; `.ds-stage-2d img` scales it to the free area */

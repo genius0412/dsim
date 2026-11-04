@@ -1,4 +1,4 @@
-import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, startTransition, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
@@ -73,8 +73,9 @@ import {
 } from '../net/discordActivity';
 import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
+import { PlayRehearsal } from './PlayRehearsal';
 import { SoloSetup } from './SoloSetup';
-import { MenuStage, usePhone, type StageView } from './MenuStage';
+import { MenuStage, stageAtRest, usePhone, type StageView } from './MenuStage';
 import { afterBoot } from './screenFade';
 import { RoomBrowser } from './RoomBrowser';
 import { LanPanel } from './LanPanel';
@@ -142,6 +143,9 @@ import { startSelectionLegal } from './startPositions';
 import { setPadNavPrefs } from '../input/padNav';
 import { LoadBoundary } from './LoadBoundary';
 import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
+
+/** the rehearsed Play page's handlers (`PlayRehearsal`) */
+const noop = (): void => {};
 
 type Screen =
   | 'home'
@@ -937,13 +941,23 @@ export function App() {
    */
   const warmAll = screen === 'modes' || !!POPUPS[screen];
   useEffect(() => {
+    let dead = false;
+    let t = 0;
+    let h = 0;
     const warm = (): void => preloadRoomView(settings.game, warmAll);
-    if (typeof requestIdleCallback !== 'function') {
-      const t = setTimeout(warm, 2000);
-      return () => clearTimeout(t);
-    }
-    const h = requestIdleCallback(warm, { timeout: 5000 });
-    return () => cancelIdleCallback(h);
+    // NOT INSIDE THE CAMERA FLY (2026-11-04): an idle callback fires between the fly's frames, and the
+    // 3D physics chunk's evaluation was a 60–120 ms task in the middle of the first one at CPU ×4–×6
+    // (`npm run firstload`). Play's fly starts in the same commit, before this effect runs.
+    void stageAtRest().then(() => {
+      if (dead) return;
+      if (typeof requestIdleCallback !== 'function') t = window.setTimeout(warm, 2000);
+      else h = requestIdleCallback(warm, { timeout: 5000 });
+    });
+    return () => {
+      dead = true;
+      clearTimeout(t);
+      if (h && typeof cancelIdleCallback === 'function') cancelIdleCallback(h);
+    };
   }, [settings.game, warmAll]);
   /**
    * PLAY'S ROBOT CARDS ARE DRAWN WHILE HOME IS IDLE (2026-11-02, owner: "Extreme lag when clicking
@@ -969,6 +983,42 @@ export function App() {
       else clearTimeout(h);
     };
   }, [screen, settings.game, settings.spec, settings.savedRobots, settings.alliance]);
+  /**
+   * PLAY'S PAGE IS REHEARSED WHILE HOME IS IDLE (2026-11-04, `PlayRehearsal.tsx`): once per game a
+   * page, after the boot screen has gone and on idle, rendered in a transition so React yields between
+   * slices. The first click on Play then mounts a page the engine has already been through: its
+   * click task at CPU ×4 was 80–140 ms against under 50 for every later one, ~35 ms rehearsed
+   * (`npm run firstload`).
+   */
+  const [rehearsing, setRehearsing] = useState<GameId | null>(null);
+  const rehearsed = useRef(new Set<GameId>());
+  useEffect(() => {
+    if (screen !== 'home' || rehearsed.current.has(settings.game)) return;
+    const game = settings.game;
+    let dead = false;
+    let h = 0;
+    const go = (): void => {
+      if (!dead) startTransition(() => setRehearsing(game));
+    };
+    void afterBoot().then(() => {
+      if (dead) return;
+      h = typeof requestIdleCallback === 'function' ? requestIdleCallback(go, { timeout: 6000 }) : window.setTimeout(go, 2500);
+    });
+    return () => {
+      dead = true;
+      if (typeof cancelIdleCallback === 'function') cancelIdleCallback(h);
+      else clearTimeout(h);
+      // a rehearsal cut short by leaving Home is dropped, not resumed on the way back (mid-fly)
+      setRehearsing(null);
+    };
+  }, [screen, settings.game]);
+  const endRehearsal = useCallback((): void => {
+    performance.mark?.('dsim:play-rehearsed');
+    setRehearsing((g) => {
+      if (g) rehearsed.current.add(g);
+      return null;
+    });
+  }, []);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
    * the activity group so it shows in everyone else's lobby browser. `game` is the
@@ -2544,6 +2594,34 @@ export function App() {
           onCompetitions={() => navigate('competitions')}
           compete={!inActivity}
         />
+      )}
+      {/* PLAY'S PAGE, REHEARSED while Home is idle (`PlayRehearsal.tsx`): what the page shows, with
+          handlers that do nothing, so the first click on Play mounts a page the engine has seen */}
+      {screen === 'home' && rehearsing === settings.game && (
+        <PlayRehearsal onDone={endRehearsal}>
+          <ModeSelect
+            settings={shown}
+            activeGame={activeGame ? { kind: activeGame.kind } : null}
+            onRejoin={noop}
+            onTutorial={moduleFor(settings.game).tutorial ? noop : undefined}
+            onChange={noop}
+            onEditRobot={noop}
+            onImport={noop}
+            multiplayer={multiplayer}
+            signedIn={signedIn}
+            onFreeDrive={noop}
+            onSoloMatch={noop}
+            onRecordRun={noop}
+            onDuoRecord={noop}
+            onRanked={noop}
+            onCustomRoom={noop}
+            onSetup={noop}
+            onBrowse={noop}
+            onLan={noop}
+            onCompetitions={noop}
+            compete={!inActivity}
+          />
+        </PlayRehearsal>
       )}
       {/* THE POPUPS OVER PLAY (`POPUPS`). A state that was always full-screen (a joined room, the
           strategy window) does not call `popupShell`, and fills the host instead: the same component,

@@ -45,6 +45,7 @@ import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { createTokenCache, readAccountSettings, sendWithTokenRetry } from '../src/net/authFetch';
 import { startPollLoop } from '../src/ui/pollLoop';
+import { HOLD_MAX_MS } from '../src/ui/screenFade';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone, updateRobot, wheelLocals } from '../src/sim/robot';
 import { autoFireOn, autoIntakeOn } from '../src/sim/assists';
@@ -20129,7 +20130,7 @@ const recordDrive: CommandSource = (tick) => {
   // the user"): the player's own settings, room and pixel ratio, and menu frames never step their tier
   const sceneSrc = readFileSync('src/games/biobuzz/scene/renderScene.ts', 'utf8');
   check("stage: the 3D menu stage draws at the player's graphics, and its frames never step their tier",
-    /factory\(host, \{ interactive: false, tunesTier: false \}\)/.test(stageSrc) &&
+    /factory\(host, \{ interactive: false, tunesTier: false(, onLateSwap)? \}\)/.test(stageSrc) &&
       !/quality:|environment:|STAGE_ROOM|STAGE_MAX_DPR|menuTier/.test(stageSrc) &&
       stageSrc.includes('dpr: window.devicePixelRatio || 1,') &&
       sceneSrc.includes('this.tunesTier = !this.fixedTier && opts.tunesTier !== false;') &&
@@ -43134,6 +43135,50 @@ function fxImportFixed(): RobotSpec {
   check(
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
     /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,
+  );
+  // ONE REVEAL (owner, 2026-11-04: "there is a loading screen, but then there is another loading
+  // animation for the field, and even when the field shows up, the background scene shows up even
+  // later"). `npm run firstload` measures it; these hold the wiring.
+  check(
+    '⚠️ one reveal: the 3D stage draws its field hidden and shows once every asset of its world has settled',
+    /drawNow\(\);\s*fieldDrawn = true;/.test(stageSrc) &&
+      /const whole = w && s\.assetsSettled \? s\.assetsSettled\(w\) : Promise\.resolve\(\);\s*void whole\.then\(\(\) => drawThen\(\(\) => reveal\('whole'\)\)\);/.test(stageSrc) &&
+      !/frame\(performance\.now\(\)\);\s*setShown\(true\);/.test(stageSrc),
+  );
+  check(
+    'one reveal: the boot screen is let go only by the reveal, and under it the stage is shown at once (its fade is the reveal)',
+    /function reveal\(kind: 'whole' \| 'partial'\): void \{[\s\S]{0,400}?setShown\(bootCovering\(\) \? 'now' : 'fade'\);[\s\S]{0,100}?releaseBoot\(\);/.test(stageSrc) &&
+      /\.ds-stage-3d\.shown\.now \{\s*transition: none;/.test(css),
+  );
+  check(
+    'one reveal: short of whole, the first load shows what it has once the boot screen has gone, a later mount after PARTIAL_WAIT_MS',
+    /if \(underBoot\) void afterBootLeave\(\)\.then\(partial\);/.test(stageSrc) && /const PARTIAL_WAIT_MS = \d+;/.test(stageSrc),
+  );
+  check(
+    '⚠️ one reveal: a room that lands after the reveal goes in through the stage’s gate and crossfades under the veil, never pops',
+    /factory\(host, \{ interactive: false, tunesTier: false, onLateSwap \}\)/.test(stageSrc) &&
+      /if \(dead \|\| !revealed\) return commit\(\);/.test(stageSrc) &&
+      /veil\.getContext\('2d'\)\?\.drawImage\(s\.element, 0, 0\);[\s\S]{0,200}?commit\(\);/.test(stageSrc) &&
+      /\.ds-stage-veil\.out \{\s*opacity: 0;\s*transition: opacity var\(--ds-dur-fly\)/.test(css),
+  );
+  check('one reveal: the boot screen waits at most HOLD_MAX_MS (6 s) after the app is up, whatever the stage', HOLD_MAX_MS > 0 && HOLD_MAX_MS <= 6000, `${HOLD_MAX_MS}`);
+  // THE FIRST PLAY FLY (owner, 2026-11-04: "clicking 'play' for the first time lags during the
+  // animation and it looks like there is no animation at all")
+  check(
+    'first Play: the stage’s frames are still (the scene keeps the sun’s map), and the fly reads the page’s insets once',
+    /still: true,/.test(stageSrc) && /if \(fly\) targetIns = flyIns \?\?= insetsFor\(/.test(stageSrc),
+  );
+  const appSrcFly = readFileSync('src/ui/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    '⚠️ first Play: the match warm-up (the 3D physics chunk) waits for the camera fly to end',
+    /void stageAtRest\(\)\.then\(\(\) => \{\s*if \(dead\) return;[\s\S]{0,200}?requestIdleCallback\(warm, \{ timeout: 5000 \}\)/.test(appSrcFly),
+  );
+  check(
+    '⚠️ first Play: Play’s page is rehearsed once per game while Home is idle, after the boot screen, in a transition',
+    /if \(screen !== 'home' \|\| rehearsed\.current\.has\(settings\.game\)\) return;/.test(appSrcFly) &&
+      /startTransition\(\(\) => setRehearsing\(game\)\)/.test(appSrcFly) &&
+      /<PlayRehearsal onDone=\{endRehearsal\}>\s*<ModeSelect/.test(appSrcFly) &&
+      /\.ds-rehearsal \{[^}]*visibility: hidden;[^}]*pointer-events: none;/.test(css),
   );
   // THE GARAGE RAIL (owner, 2026-11-02, on an ultrawide: "the robot selectors are massive and the robot
   // in the background is tiny"): the robot's space is the page's full height from 1000px wide

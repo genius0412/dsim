@@ -550,6 +550,14 @@ export interface SceneFrame {
    * `insets`' safe rect, and `camera` is not consulted. Field inches, z up. Absent ⇒ unchanged.
    */
   pose?: ScenePose;
+  /**
+   * THIS HOST NEVER MOVES ANYTHING IN A WORLD IT HAS HANDED OVER: a world object it passed before is
+   * exactly as it was. A scene may then reuse, while the world OBJECT is the one it last drew, what
+   * depends only on the world (BIOBUZZ: the sun's shadow map, a quarter of a menu-stage frame's CPU
+   * on High). The menu stage sets it (`MenuStage.tsx`: it builds a new world for every change); a
+   * match, which steps one world in place, never does. Absent ⇒ false.
+   */
+  still?: boolean;
 }
 
 export interface ScenePose {
@@ -700,6 +708,15 @@ export interface SceneOptions {
    * see while their video encoded.
    */
   interactive?: boolean;
+  /**
+   * THE HOST SAYS WHEN A LATE ROOM GOES IN (the menu stage, 2026-11-04). A venue that loads after
+   * the scene is built (BIOBUZZ's modeled or captured room, uploaded and linked) is handed to this
+   * as `commit` instead of being swapped in at once, and goes in when the host calls it. The menu
+   * stage commits at once while it is still hidden, and crossfades a room that lands after it has
+   * been shown (owner: "the background scene shows up even later"). `commit` must be called
+   * exactly once, also after `dispose` (it then frees the room). Absent ⇒ swapped at once.
+   */
+  onLateSwap?(commit: () => void): void;
 }
 
 /** builds a `GameScene` inside `host` (the DOM node the controller mounts it in). May be

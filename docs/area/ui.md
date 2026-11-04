@@ -442,9 +442,12 @@ rulings below are theirs, not defaults.
   50 ms after a move ends, and once when `assetsSettled` resolves for EVERY world it builds: 2026-11-02, it was only the boot's, so an import picked on Play stayed on its outline until another robot was picked and back), not every frame.
   DECODE and Chain Reaction, and BIOBUZZ when the device's view pref is 2D, it is a coarse-pointer
   phone, or the scene fails: the game's own 2D `drawField`/`drawBalls`, drawn once and shown FLAT.
-  The scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty backdrop. On the first
-  load the boot screen waits for it (`holdBoot`, capped); otherwise, and past the cap, a loading bar
-  stands where the field will be (`StageWait`, after 600 ms). ⚠️ **NOT THE 2D FIELD UNDER IT**: tried
+  The scene took 1.3 s (fast line) to 8 s (Slow 4G) to appear, on a dark empty backdrop. ⚠️ **ONE
+  REVEAL** (2026-11-04): the stage shows once it is WHOLE (field, robot, the room its tier draws, its
+  light), and on the first load the boot screen waits for that (`holdBoot`, capped); otherwise, and
+  past the cap, a loading bar stands where the field will be (`StageWait`, after 600 ms), and a room
+  that lands after the stage is shown crossfades in. Rules and numbers: `docs/area/biobuzz.md`, THE
+  MENU STAGE LOADS IN ONE REVEAL. ⚠️ **NOT THE 2D FIELD UNDER IT**: tried
   the same day, it was a second picture of the field that the 3D replaced a second later (owner: "the 2d
   field for a split second before switching to 3d"). The 3D fades in at `--ds-dur-screen`. ⚠️ **THE
   PLAYER'S ROBOT IS ON THE 3D FIELD ON HOME TOO**, at Play's showcase spot (owner, 2026-11-03: "so that it
@@ -725,8 +728,9 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   a bar that shows after 600 ms. Its ground is the screen it hands over to: `stage` (the menu stage's
   colours, pinned to the tokens by `npm test`) or `shell` (themed `--ds-bg`), from the path and the
   phone breakpoint. React mounts under it and `dismissBoot` (`screenFade.ts`) fades it once the first
-  screen has painted, and once a 3D stage has drawn its first frame (`holdBoot`; at most `HOLD_MAX_MS`
-  3 s after mount, past which the stage shows its bar), so Home appears once, whole. The menu, game
+  screen has painted, and once a 3D stage is whole, its room included (`holdBoot`; at most
+  `HOLD_MAX_MS`, 6 s after mount since 2026-11-04, past which the stage shows what it has), so Home
+  appears once, whole. The menu, game
   links and footer are hidden in that look, not removed: they are still what a crawler and a no-JS
   client get, and the sponsor line is a contracted placement.
 - **A baked-closed build (the alpha) waits on the boot screen for its first access answer**
@@ -760,6 +764,12 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   (`GameModule.warmCards`), so the click does none of it and no card swaps a schematic for a render
   under the cursor. After, same session: no task over 100 ms after the click even at 4x CPU, worst fly
   frame gap 58 ms (70 at 4x). What is left is the fly's own per-frame rendering.
+  **2026-11-04, the rest of it** (owner: "it looks like there is no animation at all"): Play's page is
+  rehearsed on Home idle (`PlayRehearsal.tsx`), the match warm-up waits for the fly (`stageAtRest`),
+  and the stage's frames keep the sun's shadow map (`SceneFrame.still`). `npm run firstload -- --check`
+  holds it; numbers in `docs/area/biobuzz.md`, THE MENU STAGE LOADS IN ONE REVEAL. ⚠️ **ANYTHING NEW
+  ON PLAY'S PAGE IS IN THE REHEARSAL FOR FREE; ANYTHING NEW THAT RUNS ON ITS MOUNT RUNS THERE TOO**:
+  a mount effect with a side effect (a fetch, a focus, a log) must tolerate a hidden, inert mount.
 - Not changed, measured: the 3D scene's build costs two long tasks (~690 and ~460 ms on this machine)
   right after the first load, under the boot screen now; the sponsor logo (two 30 KB PNGs) lands about
   a second after Home on Slow 4G, into its reserved box.

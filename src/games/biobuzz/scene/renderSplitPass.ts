@@ -205,8 +205,11 @@ export function createSplitPass(): BbSplitPass {
       // because VSM draws casters and receivers into the sun's map inside this call. A COLOUR
       // background is a clear, which no material tone-maps, so it is cleared to its own display
       // value here. (A material made opaque since `collect` keeps drawing in this half.)
+      // ...and when this call draws no shadow map (a still frame keeps the last one: `SceneFrame.still`),
+      // a muted mesh would draw nothing at all, so it is left out like the rest (the menu stage's fly)
+      const shadows = renderer.shadowMap.enabled && (renderer.shadowMap.autoUpdate || renderer.shadowMap.needsUpdate);
       for (const mesh of lateMeshes) {
-        if (mesh.castShadow || mesh.receiveShadow || !mesh.layers.isEnabled(0)) continue;
+        if ((shadows && (mesh.castShadow || mesh.receiveShadow)) || !mesh.layers.isEnabled(0)) continue;
         mesh.layers.disable(0);
         hidden.push(mesh);
       }

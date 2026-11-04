@@ -234,6 +234,12 @@ class BiobuzzScene implements GameScene {
   private readonly sun: THREE.DirectionalLight;
   private readonly host: HTMLElement;
   private readonly onQualityEvent?: (line: string) => void;
+  /** the world and the element geometry the sun's map was last drawn with (a still frame of the
+   * same world reuses the map) */
+  private shadowCasters = '';
+  private shadowWorld: World | null = null;
+  /** the host's say over when a late room goes in (`SceneOptions.onLateSwap`; the menu stage) */
+  private readonly onLateSwap?: (commit: () => void) => void;
   /** a FIXED tier (exports run at High regardless of the device) — when set, the settings store
    * is not read and not subscribed to at all. */
   private readonly fixedTier: GraphicsTier | null;
@@ -345,6 +351,7 @@ class BiobuzzScene implements GameScene {
     this.gpuName = gpuName;
     this.host = host;
     this.onQualityEvent = opts.onQualityEvent;
+    this.onLateSwap = opts.onLateSwap;
     this.fixedTier = (opts.quality as GraphicsTier | undefined) ?? null;
     this.interactive = opts.interactive !== false;
     const gfx = getGraphics();
@@ -658,27 +665,40 @@ class BiobuzzScene implements GameScene {
 
   /** link the first frame's programs off the main thread (`createBiobuzzScene` awaits it, capped) */
   warmShaders(): Promise<unknown> {
+    return this.compileAsDrawn(this.scene, this.split.lateObjects());
+  }
+
+  /**
+   * LINK `root`'s PROGRAMS AS THE FRAME WILL DRAW THEM, off the main thread. `late` are its drawables
+   * the split's late call draws again (`renderSplitPass.ts`); `root` other than the scene is compiled
+   * lit by the scene, for a room about to go in.
+   *
+   * ⚠️ THE PROGRAMS A FRAME USES DEPEND ON WHAT IS BOUND (three keys them on tone mapping and the
+   * output colour space). Compiled against the canvas, a multisampled column linked variants it
+   * never draws with and compiled its real ones on the first frame anyway. So: the opaque half
+   * as the split draws it (tone-mapped into the target), then its late half (the clear panels in
+   * linear HDR, and the decode). The modeled room's warm-up compiled against the canvas until
+   * 2026-11-04, so the first frame with the room in linked every one of its programs on the main
+   * thread (`npm run firstload`).
+   */
+  private compileAsDrawn(root: THREE.Object3D, late: readonly THREE.Object3D[]): Promise<unknown> {
     const camera = this.cameras.active;
     const target = this.target;
-    // ⚠️ THE PROGRAMS A FRAME USES DEPEND ON WHAT IS BOUND (three keys them on tone mapping and the
-    // output colour space). Compiled against the canvas, a multisampled column linked variants it
-    // never draws with and compiled its real ones on the first frame anyway. So: the opaque half
-    // as the split draws it (tone-mapped into the target), then its late half (the clear panels in
-    // linear HDR, and the decode).
+    const into = root === this.scene ? null : this.scene;
     if (!target || !canSplit(this.renderer, target)) {
       this.renderer.setRenderTarget(target);
-      return this.renderer.compileAsync(this.scene, camera).catch(() => undefined);
+      return this.renderer.compileAsync(root, camera, into).catch(() => undefined);
     }
     const flag = target as unknown as { isXRRenderTarget: boolean };
     this.renderer.setRenderTarget(target);
     flag.isXRRenderTarget = true;
-    const opaque = this.renderer.compileAsync(this.scene, camera);
+    const opaque = this.renderer.compileAsync(root, camera, into);
     flag.isXRRenderTarget = false;
     // three compiles every material under the object it is handed, whatever the layers, so the
     // late half is handed its own objects (lit and environment-mapped by the scene)
-    const late = this.split.lateObjects().map((o) => this.renderer.compileAsync(o, camera, this.scene));
+    const lates = late.map((o) => this.renderer.compileAsync(o, camera, this.scene));
     this.renderer.setRenderTarget(null);
-    return Promise.all([opaque, ...late]).catch(() => undefined);
+    return Promise.all([opaque, ...lates]).catch(() => undefined);
   }
 
   /** PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed, `next`'s twins
@@ -729,7 +749,7 @@ class BiobuzzScene implements GameScene {
         }
         try {
           for (const t of m.modelTexturesOf(room)) this.renderer.initTexture(t);
-          await this.renderer.compileAsync(room, this.cameras.active, this.scene);
+          await this.compileAsDrawn(room, transparentDrawables(room));
         } catch {
           /* the first draw pays instead */
         }
@@ -739,15 +759,42 @@ class BiobuzzScene implements GameScene {
           freeVenueExtras(room);
           return;
         }
-        this.swapVenue(room, def);
-        this.tuneMaterials();
-        this.renderer.shadowMap.needsUpdate = true;
+        this.lateSwap(room, def, stale, () => this.tuneMaterials());
       })
       .catch((err: unknown) => {
         if (stale()) return;
         console.warn(`BIOBUZZ 3D: the ${def.name} model failed to load; keeping the generated room.`, err);
         this.onQualityEvent?.(`Couldn’t load the ${def.name} model. Showing a generated room instead.`);
       });
+  }
+
+  /**
+   * PUT A LATE ROOM IN, when the host says (`SceneOptions.onLateSwap`), or at once with no host
+   * gate. The room is uploaded and linked already; a host that waits (the menu stage crossfades a
+   * room that lands after it is shown) keeps the procedural one standing until it commits. Stale by
+   * then (another venue picked, the scene disposed): the room is freed instead.
+   */
+  private lateSwap(room: THREE.Group, def: EnvironmentDef, stale: () => boolean, after?: () => void): void {
+    let done = false;
+    const commit = (): void => {
+      if (done) return;
+      done = true;
+      if (stale()) {
+        disposeObject3D(room);
+        freeVenueExtras(room);
+        return;
+      }
+      this.swapVenue(room, def);
+      after?.();
+      this.renderer.shadowMap.needsUpdate = true;
+      if (room.userData.modelVenue === true && typeof performance !== 'undefined') performance.mark?.('dsim:venue-model');
+    };
+    if (!this.onLateSwap) return commit();
+    try {
+      this.onLateSwap(commit);
+    } catch {
+      commit();
+    }
   }
 
   /** FETCH a splat venue (the trial) and swap it in when it lands, on the same terms as `loadModel`.
@@ -764,8 +811,7 @@ class BiobuzzScene implements GameScene {
           freeVenueExtras(room);
           return;
         }
-        this.swapVenue(room, def);
-        this.renderer.shadowMap.needsUpdate = true;
+        this.lateSwap(room, def, stale);
       })
       .catch((err: unknown) => {
         if (stale()) return;
@@ -1313,7 +1359,8 @@ class BiobuzzScene implements GameScene {
     (this.venue?.userData.tick as ((w: World, now: number) => void) | undefined)?.(world, t0);
     // a robot appeared, left or was rebuilt: its materials are new and have never been tuned (or
     // swapped onto their physical twins — idempotent, so the whole group is simply walked again)
-    if (this.robotsChanged()) {
+    const robotsRebuilt = this.robotsChanged();
+    if (robotsRebuilt) {
       this.withSurfaces('could not be applied', (sf) => sf.applyRobots(this.robots.group));
       this.tuneMaterials();
     }
@@ -1357,8 +1404,17 @@ class BiobuzzScene implements GameScene {
     // average tone-mapped samples, or every dark-on-bright edge keeps a hard step. Not where three
     // renders it to the texture directly (`canSplit`: mobile GPUs), which keeps nothing to decode.
     this.renderer.setRenderTarget(this.target);
-    // the sun's map, once for this frame (see `shadowMap.autoUpdate` in the constructor)
-    this.renderer.shadowMap.needsUpdate = true;
+    // the sun's map, once for this frame (see `shadowMap.autoUpdate` in the constructor). A STILL
+    // frame (`SceneFrame.still`: the menu stage, whose field never moves) keeps the last map: the
+    // sun is fixed, so the map depends only on the casters, and redrawing it was a quarter of a
+    // stage frame's CPU on High. A rebuilt robot, a settings change (`applyQuality`) and a late
+    // room (`lateSwap`) still raise it.
+    // The elements' CAD can land after the first frame (`setElementDetail`), so their geometry is
+    // part of what the map was drawn from.
+    const casters = `${this.elements.pollen.geometry.id}:${this.elements.nectar.geometry.id}`;
+    if (!frame.still || world !== this.shadowWorld || robotsRebuilt || casters !== this.shadowCasters) this.renderer.shadowMap.needsUpdate = true;
+    this.shadowCasters = casters;
+    this.shadowWorld = world;
     const post = this.post !== null && wantsPost(this.settings) ? this.post : null;
     const glow = post !== null && this.settings.bloom ? post.emissiveGain : 1;
     if (post !== null && glow !== 1) {
@@ -1673,6 +1729,8 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
   canvas.style.width = '100%';
   canvas.style.height = '100%';
   const quality = opts.quality ? GFX_PRESETS[opts.quality as GraphicsTier] : getGraphics().settings;
+  // a live scene's modeled room starts loading now, beside the field (`prefetchVenue`)
+  if (!opts.quality) prefetchVenue(quality, getGraphics().tier);
   // THE ELEMENT CAD RIDES ALONG WITH THE FIELD'S OWN AWAIT, and is allowed to fail. 22 KB
   // against `field.glb`'s 754 adds nothing measurable to a load that is already happening, and
   // it is what makes the REPLAY EXPORT (a fixed-High scene, §4.7) draw perforated balls on its
@@ -1723,20 +1781,53 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
  * scene's own load is the error path. Only where a match is a click away (`preloadRoomView`).
  */
 const warmed = new Set<string>();
+/**
+ * one low-priority fetch per URL a page, into the HTTP cache the real load then reads. ⚠️ THE BODY IS
+ * READ (and dropped as it streams): a response nobody reads stops downloading once its pipe is full,
+ * and holds the cache entry the real load then waits on.
+ */
+function warmFetch(url: string): void {
+  if (warmed.has(url)) return;
+  warmed.add(url);
+  void fetch(url, { priority: 'low' } as RequestInit)
+    .then((r) => r.body?.pipeTo(new WritableStream()))
+    .catch(() => {});
+}
 export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().settings): void {
   const tier = getGraphics().tier;
   if (wantsPost(settings)) void import('./renderPost').catch(() => {});
   if (surfacesOn(settings)) void import('./renderSurfaces').catch(() => {});
   if (bbWantsBay(settings, tier)) void bbLoadBay();
-  const get = (url: string): void => {
-    if (warmed.has(url)) return;
-    warmed.add(url);
-    void fetch(url, { priority: 'low' } as RequestInit).catch(() => {});
-  };
-  get(resolveGlbUrl('models/biobuzz', settings.meshDetail));
+  warmFetch(resolveGlbUrl('models/biobuzz', settings.meshDetail));
+  prefetchVenue(settings, tier);
+}
+
+/**
+ * THE ROOM STARTS LOADING WITH THE FIELD (2026-11-04). A modeled venue was fetched only once the
+ * scene was built, i.e. after the field's file had been fetched and parsed, so on a cold load it
+ * swapped in 0.3 s (a fast desktop) to 1.7 s (CPU ×6) after the menu stage showed the field
+ * (owner: "the background scene shows up even later"). Its file and its loader's chunk now start
+ * beside the field's (`createBiobuzzScene`); `loadModel` then reads both from cache.
+ */
+function prefetchVenue(settings: GraphicsSettings, tier: GraphicsTier): void {
   const def = environmentDefFor(settings.environment);
   const file = def.model?.file ?? def.splat?.file;
-  if (file && bbModelDetail(settings, tier)) get(venueAssetUrl(file));
+  if (!file || !bbModelDetail(settings, tier)) return;
+  warmFetch(venueAssetUrl(file));
+  if (def.model) void import('./renderModelVenue').catch(() => {});
+}
+
+/** the drawables under `root` the split's late call draws again (any transparent material), as
+ * `renderSplitPass.ts`'s `collect` picks them */
+function transparentDrawables(root: THREE.Object3D): THREE.Object3D[] {
+  const out: THREE.Object3D[] = [];
+  root.traverse((o) => {
+    const d = o as THREE.Mesh & { isLine?: boolean; isPoints?: boolean; isSprite?: boolean };
+    if (!(d.isMesh || d.isLine || d.isPoints || d.isSprite) || !d.material) return;
+    const list = Array.isArray(d.material) ? d.material : [d.material];
+    if (list.some((m) => m.transparent)) out.push(d);
+  });
+  return out;
 }
 
 /** what a modeled or captured venue holds that `disposeObject3D` does not free: a model's textures
