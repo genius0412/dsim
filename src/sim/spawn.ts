@@ -77,7 +77,7 @@ import {
   shooterMountOf,
 } from '../games/chain/mounts';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
-import { COSMETIC_AXES, clampCosmetics, type Cosmetics } from '../cosmetics';
+import { COSMETIC_AXES, COSMETIC_DEFAULTS, clampCosmetics, type Cosmetics } from '../cosmetics';
 import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
 import { coerceImported, polyBounds } from './imported';
@@ -285,7 +285,7 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
     ? (sp.chainIntake as RobotSpec['chainIntake'])
     : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
-  // COSMETICS: chassisColor/accent/decal/plate — four closed axes, `src/cosmetics.ts`. SHAPE
+  // COSMETICS: chassisColor/accent/decal/plate/plateFont — five closed axes, `src/cosmetics.ts`. SHAPE
   // ONLY, never entitlement (plan §3.3, docs/cosmetics-plan.md): this coercer also runs over
   // REPLAY RE-SIMULATION, which must always reproduce the look a run was recorded with,
   // whoever is watching it today or what their supporter/earned status is now — baking a tier
@@ -296,12 +296,16 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   // that axis IF IT IS ITSELF a legal key (never propagate an invalid/spoofed base forward);
   // `clampCosmetics` then folds whatever survives onto its closed set, defaulting anything
   // still unrecognised — the same "unknown falls back to base, else default" rule the old
-  // single-axis chassisColor clamp used, now shared by all four. Idempotent: re-running this
+  // single-axis chassisColor clamp used, now shared by all five. Idempotent: re-running this
   // on its own output changes nothing, since every surviving value is already a legal key.
   const cosmeticIn: Cosmetics = {};
   for (const axis of Object.keys(COSMETIC_AXES) as (keyof Cosmetics)[]) {
     const v = sp[axis];
-    const bv = base[axis];
+    // the plate font's default is ABSENT (below), so an absent font IS a choice and never falls
+    // back to `base`: switching back to the default sends a spec with no font, and the server
+    // coerces that over the spec the player had (`sanitizePlayerPatch`), which still holds the
+    // old face. An UNRECOGNISED font still falls back to a legal base, like every other axis.
+    const bv = axis === 'plateFont' && v === undefined ? undefined : base[axis];
     cosmeticIn[axis] =
       typeof v === 'string' && COSMETIC_AXES[axis].includes(v)
         ? v
@@ -314,6 +318,13 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.accent = cosmetics.accent;
   out.decal = cosmetics.decal;
   out.plate = cosmetics.plate;
+  // ⚠️ THE PLATE FONT IS WRITTEN ONLY WHEN IT IS NOT THE DEFAULT. Absent already reads as
+  // `standard` (`clampCosmetics`), and writing it on every spec would put a field on the wire, in
+  // every replay and in the golden world hash for every robot that never picked a face, and a
+  // sign's typeface is not sim state. So a default pick and an older client's spec are the same
+  // bytes they always were.
+  if (cosmetics.plateFont !== COSMETIC_DEFAULTS.plateFont) out.plateFont = cosmetics.plateFont;
+  else delete out.plateFont;
   // MECHANISM MOUNTS. Enum-checked, with the legacy `intakeSide`/`shooterRear` booleans as the
   // fallback so old saves + older peers migrate (see games/chain/mounts.ts). `intakeMountOf`/
   // `shooterMountOf` do exactly that resolution, so run them on the RAW input first, then fall

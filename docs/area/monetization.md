@@ -71,8 +71,15 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   or scores. That is a product rule AND a statement in the terms. All four advertised
   perks are BUILT (badge, ads-off, 6 saved starts, and — since the cosmetics registry,
   `src/cosmetics.ts` — the six premium chassis colours, every accent, the four patterned
-  decals, and the bold plate); **do not list a perk on the Donate page before it
-  exists.**
+  decals, the bold plate, and since 2026-11-04 the four alternative plate-number fonts); **do
+  not list a perk on the Donate page before it exists.**
+- **PLATE FONTS: THE DEFAULT IS FREE, THE OTHER FOUR ARE THE SUPPORTER'S** (`plateFont`, the fifth
+  cosmetic axis; faces and layout in `src/plateFonts.ts`, the tier call explained at `SUPPORTER` in
+  `src/cosmetics.ts`). Every face prints the number at R403's height and margin, so a paid font
+  buys a look, never a more readable sign, and the free default is itself the heavier sport face
+  the owner asked for. It rides `RobotSpec` like the other axes (roster and replays, never a
+  snapshot) and is stripped at the server's ingress like them, so it needs a game-server deploy:
+  until then the live server's `coerceSpec` drops the field and other players see the default.
 - **The saved-start PERSIST cap is the SUPPORTER ceiling**
   (`MAX_SAVED_STARTS_SUPPORTER`), in `coerceSettings` AND `saveStart`. Only the editor's
   Save button applies the free cap. Sanitizing to the free cap would DELETE a supporter's

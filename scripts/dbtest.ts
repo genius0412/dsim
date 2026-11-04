@@ -24,7 +24,7 @@ import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
 // a LEAF module (no imports, no env read at module scope — see its own header), so unlike
 // `server/db/repo` this is safe to import up front rather than after the pool swap.
-import { stripUnentitledCosmetics, cosmeticTier, type CosmeticId } from '../src/cosmetics';
+import { clampCosmetics, stripUnentitledCosmetics, cosmeticTier, type CosmeticId } from '../src/cosmetics';
 
 /** the repo root — the few checks below read SOURCE, because what they guard is a call
  *  being deleted while tidying, not a behaviour this suite can drive. */
@@ -4697,6 +4697,30 @@ async function main(): Promise<void> {
       JSON.stringify({ supporter: earnSupporter, decal: earnOut.decal }),
     );
     check('strip: ...but the same account still loses the gold chassis it never earned or paid for', earnOut.chassisColor === 'default');
+
+    // PLATE FONTS (2026-11-04) — the fifth axis, gated by the same account state the room reads.
+    // The default face is free; the other four are the supporter tier's (`src/cosmetics.ts`).
+    const fontSpoof = { ...spoofed, plateFont: 'racing' };
+    check(
+      'strip: a non-supporter declaring a supporter plate font is printed in the default face',
+      !freeSupporter && stripUnentitledCosmetics(fontSpoof, freeSupporter, freeEarned).plateFont === 'standard',
+    );
+    check(
+      'strip: ...a supporter keeps it',
+      supSupporter && stripUnentitledCosmetics(fontSpoof, supSupporter, await repo.getCosmeticsUnlocks('cos-sup')).plateFont === 'racing',
+    );
+    // an unknown key is the SHAPE step's to drop (`coerceSpec` → `clampCosmetics`, before the strip
+    // on every server path); the strip then has nothing to downgrade
+    check(
+      'strip: ...and an unknown face falls back to the default, supporter or not',
+      stripUnentitledCosmetics(clampCosmetics({ ...spoofed, plateFont: 'wingdings' }), supSupporter, []).plateFont === 'standard',
+    );
+    check('cosmetics: grantCosmetic refuses a plate font that does not exist', !(await repo.grantCosmetic('cos-earn', 'plateFont:wingdings', 'admin-1')));
+    check('cosmetics: ...and accepts a real one (the axis is in COSMETIC_AXES)', await repo.grantCosmetic('cos-earn', 'plateFont:mono', 'admin-1', 'plate font grant'));
+    check(
+      'strip: ...an EARNED plate font survives with no membership',
+      !earnSupporter && stripUnentitledCosmetics({ ...spoofed, plateFont: 'mono' }, earnSupporter, await repo.getCosmeticsUnlocks('cos-earn')).plateFont === 'mono',
+    );
 
     // ⚠️ IT MUST NEVER THROW INTO A ROUTE. A moderator who has just pardoned somebody must
     // not see the pardon fail because a logging insert did — the same rule server/standing.ts

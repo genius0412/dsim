@@ -9,12 +9,13 @@
  * keeps its name), `src/sim/spawn.ts` clamps against it, and `server/room.ts` strips against it —
  * so anything this file pulled in would be pulled into all of them.
  *
- * ── FOUR AXES, EVERY ONE A CLOSED SET OF KEYS ───────────────────────────────────────────────
+ * ── FIVE AXES, EVERY ONE A CLOSED SET OF KEYS ───────────────────────────────────────────────
  *   chassisColor  the chassis FILL (existing field)
  *   accent        the DRIVE wheels / intake rollers fill; `'match'` = the chassis colour. Never
  *                 the shooter: a flywheel is black in both games (owner, 2026-09-21)
  *   decal         a vector shape drawn over the fill, under the edge line
  *   plate         a frame drawn AROUND the sign placard — the placard's own fill stays alliance
+ *   plateFont     the typeface of the team number ON the placard (`src/plateFonts.ts`)
  * The KEY goes over the wire and into replays, never a hex, a path or an image: the wire never
  * parses a colour, nothing can name the artifact green/purple, and every hex here can be retuned
  * without touching a saved robot.
@@ -102,16 +103,29 @@ export type Decal = (typeof DECAL_KEYS)[number];
 export const PLATE_KEYS = ['classic', 'bold', 'rounded'] as const;
 export type Plate = (typeof PLATE_KEYS)[number];
 
+/**
+ * PLATE FONTS — the typeface the team number is printed in on both robot signs (owner,
+ * 2026-11-04: "give users the option to choose font, depending on supporter tier obviously").
+ * A key names a STYLE, not a font file: the face behind a key, its licence and its measured
+ * metrics live in `src/plateFonts.ts`, so a face can be swapped without touching a saved robot.
+ * `standard` is the default and is free; the other four are the supporter tier's (see `SUPPORTER`
+ * below for why). Every one prints R403's solid white numerals at the same ruled size, so a font
+ * changes how a sign looks and never how readable it is.
+ */
+export const PLATE_FONT_KEYS = ['standard', 'block', 'racing', 'angular', 'mono'] as const;
+export type PlateFont = (typeof PLATE_FONT_KEYS)[number];
+
 /** the choice a spec carries; every field optional so every old save and replay stays valid. */
 export interface Cosmetics {
   chassisColor?: string;
   accent?: string;
   decal?: string;
   plate?: string;
+  plateFont?: string;
 }
 
 /** `"<axis>:<key>"` — the unit the tier table and `profiles.cosmetics` speak. */
-export type CosmeticId = `${'chassisColor' | 'accent' | 'decal' | 'plate'}:${string}`;
+export type CosmeticId = `${'chassisColor' | 'accent' | 'decal' | 'plate' | 'plateFont'}:${string}`;
 
 /** WHICH TIER EACH KEY SITS IN. Absent from both lists ⇒ `earned`. Free is deliberately WIDE
  * (owner: "giving more to free users"): the whole basic palette, a plain stripe, a rounded
@@ -129,7 +143,19 @@ const FREE: ReadonlySet<CosmeticId> = new Set<CosmeticId>([
   'decal:stripe',
   'plate:classic',
   'plate:rounded',
+  'plateFont:standard',
 ]);
+/**
+ * ⚠️ THE FOUR ALTERNATIVE PLATE FONTS ARE THE SUPPORTER TIER'S, AND THE DEFAULT IS NOT A
+ * CONSOLATION. The owner asked for the choice "depending on supporter tier", and it fits the
+ * rules `docs/area/monetization.md` holds every perk to: it is cosmetic only (the font is pixels
+ * in a texture; no collider, no sim and no wire field per tick reads it), it is a visible locked
+ * option rather than a hidden one, and it is the same shape as `plate:bold`. What keeps the free
+ * tier whole is that the DEFAULT face is the upgrade the same request asked for (a heavy sport
+ * sans in place of `system-ui`), given to everyone, and that every font prints the number at the
+ * same ruled height and margin, so nobody pays for a more readable sign. No font is `earned`
+ * yet: an earned key nobody can earn would be a locked swatch with no way to unlock it.
+ */
 const SUPPORTER: ReadonlySet<CosmeticId> = new Set<CosmeticId>([
   ...(['gold', 'lime', 'magenta', 'cyan', 'lavender', 'ember'] as const).map((k): CosmeticId => `chassisColor:${k}`),
   ...CHASSIS_COLOR_KEYS.map((k): CosmeticId => `accent:${k}`),
@@ -138,6 +164,10 @@ const SUPPORTER: ReadonlySet<CosmeticId> = new Set<CosmeticId>([
   'decal:hazard',
   'decal:checker',
   'plate:bold',
+  'plateFont:block',
+  'plateFont:racing',
+  'plateFont:angular',
+  'plateFont:mono',
 ]);
 
 export function cosmeticTier(id: CosmeticId): CosmeticTier {
@@ -147,7 +177,7 @@ export function cosmeticTier(id: CosmeticId): CosmeticTier {
 }
 
 /** the default on each axis — what a stripped or absent choice reads as. */
-export const COSMETIC_DEFAULTS: Required<Cosmetics> = { chassisColor: 'default', accent: 'match', decal: 'none', plate: 'classic' };
+export const COSMETIC_DEFAULTS: Required<Cosmetics> = { chassisColor: 'default', accent: 'match', decal: 'none', plate: 'classic', plateFont: 'standard' };
 
 /** the closed set each axis is clamped to (`coerceSpec`). */
 export const COSMETIC_AXES: { [K in keyof Required<Cosmetics>]: readonly string[] } = {
@@ -155,6 +185,7 @@ export const COSMETIC_AXES: { [K in keyof Required<Cosmetics>]: readonly string[
   accent: ACCENT_KEYS,
   decal: DECAL_KEYS,
   plate: PLATE_KEYS,
+  plateFont: PLATE_FONT_KEYS,
 };
 
 /** SHAPE: fold every axis onto its closed set, unknown ⇒ the default. Pure; no entitlement. */

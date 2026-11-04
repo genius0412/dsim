@@ -202,8 +202,8 @@ const CODE_CREDITS: ThirdPartyAsset[] = [
   },
 ];
 
-/** The two variable typefaces (`--ds-font-ui` / `--ds-font-mono`), both OFL-1.1 and
- * both loaded from Fontsource in `src/main.tsx`. */
+/** The two variable UI typefaces (`--ds-font-ui` / `--ds-font-mono`), both OFL-1.1 and both
+ * loaded from Fontsource in `src/main.tsx`, then the five OFL-1.1 plate fonts. */
 const FONT_CREDITS: ThirdPartyAsset[] = [
   {
     name: 'Plus Jakarta Sans',
@@ -225,6 +225,27 @@ const FONT_CREDITS: ThirdPartyAsset[] = [
     use: 'Mono/HUD typeface (--ds-font-mono)',
     source: 'Fontsource',
   },
+  // THE PLATE FONTS (`src/plateFonts.ts`): the robot signs' numerals, subset to the eleven glyphs a
+  // sign prints and shipped in `src/assets/plateFonts/` with their licence
+  ...(
+    [
+      ['Barlow Semi Condensed', 'Jeremy Tribby', 'https://github.com/jpt/barlow', 'Robot sign numerals (default)'],
+      ['Archivo Black', 'Omnibus-Type', 'https://github.com/Omnibus-Type/ArchivoBlack', 'Robot sign numerals (Block)'],
+      ['Saira', 'Omnibus-Type', 'https://github.com/Omnibus-Type/Saira', 'Robot sign numerals (Racing)'],
+      ['Chakra Petch', 'Cadson Demak', 'https://github.com/m4rc1e/Chakra-Petch', 'Robot sign numerals (Angular)'],
+      ['JetBrains Mono', 'JetBrains', 'https://github.com/JetBrains/JetBrainsMono', 'Robot sign numerals (Mono)'],
+    ] as const
+  ).map(
+    ([name, by, page, use]): ThirdPartyAsset => ({
+      name,
+      credits: [{ name: by, role: 'Type design' }],
+      license: 'OFL-1.1',
+      licenseUrl: OFL,
+      page,
+      use,
+      source: 'Google Fonts, subset and self-hosted',
+    }),
+  ),
 ];
 
 /**

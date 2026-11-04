@@ -6322,6 +6322,18 @@ button.bb-cell:where(:not(:disabled)):active {
   height: 100%;
   display: block;
 }
+/* a plate-font swatch is a little ROBOT SIGN: the alliance-red chip with two numerals in that face
+   (the family is the swatch's inline `font-family`, from `src/plateFonts.ts`). Wider than the
+   square swatches because two numerals at a legible size do not fit 26px, and wide enough that a
+   locked swatch's badge (bottom right, 12px) clears them. The chip is a fill with fixed ink, so it
+   does not invert with the theme, the same as the real sign. */
+.chassis-sw.font-sw {
+  width: 48px;
+  background: var(--ds-red-chip);
+  color: var(--ds-red-chip-ink);
+  font-size: var(--ds-t-control);
+  line-height: var(--ds-lh-tight);
+}
 
 /* the offscreen host the saved-robot thumbnails render through. Off to the side rather than
    `display: none`, which would give the canvas no size at all. */

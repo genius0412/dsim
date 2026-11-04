@@ -195,8 +195,8 @@ import {
   WHEEL_PERIMETER,
 } from '../src/config';
 import {
-  CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
-  cosmeticTier, stripUnentitledCosmetics,
+  CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, PLATE_FONT_KEYS, COSMETIC_DEFAULTS,
+  clampCosmetics, cosmeticTier, stripUnentitledCosmetics,
 } from '../src/cosmetics';
 import {
   pointDepthInRobot,
@@ -1243,7 +1243,10 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
       coerceSpec({ decal: 'chevron' }).decal === 'chevron' &&
       coerceSpec({ decal: '<img onerror=x>' }).decal === COSMETIC_DEFAULTS.decal &&
       coerceSpec({ plate: 'bold' }).plate === 'bold' &&
-      coerceSpec({ plate: 'nope' }).plate === COSMETIC_DEFAULTS.plate,
+      coerceSpec({ plate: 'nope' }).plate === COSMETIC_DEFAULTS.plate &&
+      coerceSpec({ plateFont: 'mono' }).plateFont === 'mono' &&
+      // the plate font's default is ABSENT, not written (see `coerceSpec`): same reading either way
+      coerceSpec({ plateFont: 'url(https://evil/x.woff2)' }).plateFont === undefined,
   );
   check(
     'cosmetics: an unrecognised value falls back to a LEGAL base value before the hard default',
@@ -1254,13 +1257,15 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   check(
     'cosmetics: coerceSpec is idempotent over its own output',
     (() => {
-      const once = coerceSpec({ chassisColor: 'gold', accent: 'lime', decal: 'hazard', plate: 'bold' });
+      const once = coerceSpec({ chassisColor: 'gold', accent: 'lime', decal: 'hazard', plate: 'bold', plateFont: 'racing' });
       const twice = coerceSpec(once, once);
       return (
         once.chassisColor === twice.chassisColor &&
         once.accent === twice.accent &&
         once.decal === twice.decal &&
-        once.plate === twice.plate
+        once.plate === twice.plate &&
+        once.plateFont === 'racing' &&
+        twice.plateFont === 'racing'
       );
     })(),
   );
@@ -1273,13 +1278,14 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   check(
     'cosmetics: coerceSpec on a replay-style spec (no DB) keeps recorded cosmetics unchanged',
     (() => {
-      const recorded: RobotSpec = { ...DEFAULT_SPEC, chassisColor: 'gold', accent: 'magenta', decal: 'checker', plate: 'bold' };
+      const recorded: RobotSpec = { ...DEFAULT_SPEC, chassisColor: 'gold', accent: 'magenta', decal: 'checker', plate: 'bold', plateFont: 'block' };
       const replayed = coerceSpec(recorded, DEFAULT_SPEC, 'decode');
       return (
         replayed.chassisColor === 'gold' &&
         replayed.accent === 'magenta' &&
         replayed.decal === 'checker' &&
-        replayed.plate === 'bold'
+        replayed.plate === 'bold' &&
+        replayed.plateFont === 'block'
       );
     })(),
   );
@@ -1303,6 +1309,47 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
     stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, []).decal === COSMETIC_DEFAULTS.decal);
   check('...and one that EARNED it keeps it, with no membership at all',
     stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, ['decal:star']).decal === 'star');
+
+  /**
+   * PLATE FONTS (owner, 2026-11-04: "give users the option to choose font, depending on supporter
+   * tier obviously"). The default face is free; the other four are the supporter tier's, the same
+   * shape as `plate:bold`. The live server strips with this function at join, at the ranked queue
+   * and on every re-pick, so what it answers here is what another player sees.
+   */
+  check('plate fonts: the default is free and every other face is a supporter key (none is an unearnable `earned`)',
+    cosmeticTier('plateFont:standard') === 'free' &&
+      PLATE_FONT_KEYS.filter((k) => k !== 'standard').every((k) => cosmeticTier(`plateFont:${k}`) === 'supporter') &&
+      PLATE_FONT_KEYS.length >= 4 && PLATE_FONT_KEYS.length <= 6 && COSMETIC_DEFAULTS.plateFont === 'standard');
+  check('plate fonts: a free account declaring a supporter font is stripped to the default',
+    PLATE_FONT_KEYS.filter((k) => k !== 'standard').every((k) => stripUnentitledCosmetics({ ...DEFAULT_SPEC, plateFont: k }, false, []).plateFont === 'standard'));
+  check('...a supporter keeps it, and an account that earned one keeps it with no membership',
+    stripUnentitledCosmetics({ ...DEFAULT_SPEC, plateFont: 'mono' }, true, []).plateFont === 'mono' &&
+      stripUnentitledCosmetics({ ...DEFAULT_SPEC, plateFont: 'mono' }, false, ['plateFont:mono']).plateFont === 'mono');
+  // an unknown key is dropped by the SHAPE step every server path runs first (`coerceSpec`), so the
+  // strip that follows has nothing to downgrade; what is left reads as the default face
+  check('...an unknown font (a newer client, a spoofed wire) falls back to the default, free or not',
+    [true, false].every((sup) => clampCosmetics(stripUnentitledCosmetics(coerceSpec({ plateFont: 'papyrus' }), sup, [])).plateFont === 'standard') &&
+      !('plateFont' in coerceSpec({ plateFont: 'papyrus' })));
+  /**
+   * ⚠️ THE DEFAULT FONT IS NOT WRITTEN. `coerceSpec` leaves `plateFont` absent unless a face other
+   * than the default was picked, so a robot that never opened the picker is the same spec, the
+   * same wire bytes, the same replay and the same golden world hash as before the axis existed
+   * (the hash walks every spec field). Writing `'standard'` moved every BIOBUZZ golden row.
+   */
+  // ...which makes ABSENT a choice: a player switching back to the default sends a spec with no
+  // font, and the room coerces it over the spec they had (`sanitizePlayerPatch`'s base)
+  check('...so switching back to the default face in a room sticks (absent does not fall back to the old face), while an unknown face still falls back to a legal one',
+    !('plateFont' in coerceSpec({ ...DEFAULT_SPEC }, { ...DEFAULT_SPEC, plateFont: 'mono' })) &&
+      coerceSpec({ ...DEFAULT_SPEC, plateFont: 'papyrus' }, { ...DEFAULT_SPEC, plateFont: 'mono' }).plateFont === 'mono');
+  check('...and a spec with no font at all (an older client, an old replay) reads as the default, gains no field, and is not stripped of anything',
+    !('plateFont' in coerceSpec({})) &&
+      !('plateFont' in coerceSpec({ plateFont: 'standard' })) &&
+      clampCosmetics(coerceSpec({})).plateFont === 'standard' &&
+      (() => {
+        const old: RobotSpec = { ...DEFAULT_SPEC };
+        delete old.plateFont;
+        return !('plateFont' in stripUnentitledCosmetics(old, false, []));
+      })());
 
   /**
    * ⚠️ **THE PICKER MUST READ A REAL EARNED LIST, AND FOR ONE BUILD IT DID NOT.**
@@ -1339,7 +1386,7 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   // lists in lockstep so every key on every axis is exercised at least once, without a
   // several-thousand-entry cartesian product.
   {
-    const axisLens = [CHASSIS_COLOR_KEYS.length, ACCENT_KEYS.length, DECAL_KEYS.length, PLATE_KEYS.length];
+    const axisLens = [CHASSIS_COLOR_KEYS.length, ACCENT_KEYS.length, DECAL_KEYS.length, PLATE_KEYS.length, PLATE_FONT_KEYS.length];
     const n = Math.max(...axisLens);
     const hashesFor = (game: GameId): number[] =>
       Array.from({ length: n }, (_, i) => {
@@ -1349,6 +1396,7 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
             accent: ACCENT_KEYS[i % ACCENT_KEYS.length],
             decal: DECAL_KEYS[i % DECAL_KEYS.length],
             plate: PLATE_KEYS[i % PLATE_KEYS.length],
+            plateFont: PLATE_FONT_KEYS[i % PLATE_FONT_KEYS.length],
           },
           DEFAULT_SPEC,
           game,
@@ -1360,13 +1408,13 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
       });
     const decodeHashes = hashesFor('decode');
     check(
-      'cosmetics never move worldHash: DECODE, every chassisColor/accent/decal/plate value',
+      'cosmetics never move worldHash: DECODE, every chassisColor/accent/decal/plate/plateFont value',
       decodeHashes.every((h) => h === decodeHashes[0]),
       JSON.stringify(decodeHashes),
     );
     const bbHashes = hashesFor('biobuzz');
     check(
-      'cosmetics never move worldHash: BIOBUZZ 2D, every chassisColor/accent/decal/plate value',
+      'cosmetics never move worldHash: BIOBUZZ 2D, every chassisColor/accent/decal/plate/plateFont value',
       bbHashes.every((h) => h === bbHashes[0]),
       JSON.stringify(bbHashes),
     );

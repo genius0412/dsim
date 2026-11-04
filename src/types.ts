@@ -211,6 +211,11 @@ export interface RobotSpec {
    * the placard's own fill stays alliance. Closed set, `src/cosmetics.ts`;
    * optional so every existing spec, save, and replay stays valid. */
   plate?: string;
+  /** COSMETIC: a `PLATE_FONT_KEYS` key for the typeface of the team number on the
+   * sign placard. Closed set, `src/cosmetics.ts`; optional so every existing spec,
+   * save, and replay stays valid (absent reads as `standard`). Rides the spec, so it
+   * reaches other players with the roster, never per tick. */
+  plateFont?: string;
   /** Chain Reaction: how many Particles the robot's hopper holds (1–30 slider).
    * Optional so DECODE specs/old saves omit it (defaulted in coerceSpec). */
   ballStorage?: number;

@@ -1,5 +1,5 @@
 import type { RobotSpec } from '../../types';
-import { clampCosmetics } from '../../cosmetics';
+import { COSMETIC_DEFAULTS, clampCosmetics } from '../../cosmetics';
 import { bbDeployedHeightIn } from './config';
 import { bbIntakeKindOf, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
 
@@ -36,9 +36,9 @@ import { bbIntakeKindOf, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mech
  * the exact "a key the generator does not rebuild on" failure this module exists to prevent. It
  * is the one entry here that is not a shape, and that is why it carries this note.
  *
- * ⚠️ **`accent`/`decal`/`plate` ARE IN IT TOO, FOR THE SAME REASON `chassisColor` IS.** All four
- * are baked into build-time materials/textures (the frame skin, the roller/wheel tint, the deck
- * decal texture, the sign plate frame) — a change to any of them with no matching rebuild would
+ * ⚠️ **`accent`/`decal`/`plate`/`plateFont` ARE IN IT TOO, FOR THE SAME REASON `chassisColor` IS.**
+ * All of them are baked into build-time materials/textures (the frame skin, the roller/wheel tint,
+ * the deck decal texture, the sign plate frame, the sign's numerals) — a change to any of them with no matching rebuild would
  * leave the OLD cosmetic on the group. `clampCosmetics` is the one shape-safe reader, same as
  * every renderer uses, so a key computed here and a fill computed in `buildRobotGroup` can never
  * disagree about what an unrecognised or absent value defaults to.
@@ -68,7 +68,11 @@ export function bbSpecKey(spec: RobotSpec): string {
   // a NECTAR BAR is hardware on the mouth (`buildIntake`); appended only when there is one, so
   // every other build's key is the bytes it always was
   const bar = bbIntakeKindOf(spec) !== 'ramp' && bbNectarRejectOf(spec) === 'bar' ? '|bar' : '';
-  return spec.imported ? `${key}${bar}|${importedDigest(spec)}` : `${key}${bar}`;
+  // the PLATE FONT is painted into the sign texture at build time, so it is in the key for the
+  // `teamNumber` reason above; appended only when it is not the default, so every build that never
+  // picked one keeps the key it had
+  const font = cosm.plateFont !== COSMETIC_DEFAULTS.plateFont ? `|font:${cosm.plateFont}` : '';
+  return spec.imported ? `${key}${bar}${font}|${importedDigest(spec)}` : `${key}${bar}${font}`;
 }
 
 /**

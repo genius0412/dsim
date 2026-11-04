@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Alliance, ImportedRobot, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, COLORS, INTAKE_RAIL_T, WHEEL_CORNERS } from '../../../config';
-import { accentFill, clampCosmetics } from '../../../cosmetics';
+import { accentFill, clampCosmetics, type PlateFont } from '../../../cosmetics';
+import { PLATE_FONTS, loadPlateFont, plateFontOf, plateFontReady } from '../../../plateFonts';
+import { PLATE_FONT_METRICS, plateInkOf, plateTextLayout, type PlateInk } from '../../../plateLayout';
 import { starPoints } from '../../../render/drawRobot';
 import { robotsEnabled } from '../../../sim/match';
 import { importedWheels } from '../../../sim/imported';
@@ -2375,12 +2377,76 @@ export function bbRobotSignText(spec: Pick<RobotSpec, 'teamNumber'>): string {
   return Number.isFinite(n) && n > 0 ? String(n) : '-';
 }
 
-/** px per inch the sign canvas is rasterized at — 2.25-in digits land at 108 px. */
-const SIGN_PX_PER_IN = 48;
+/** px per inch the sign canvas is rasterized at — 2.25-in digits land at 144 px. Raised from 48
+ *  (2026-11-04) so a driver-camera close-up does not magnify the numerals' edges into a blur. */
+const SIGN_PX_PER_IN = 64;
+/**
+ * ⚠️ THE SIGN CANVAS HAS THE PLATE'S OWN ASPECT, EXACTLY: 416 × 176 px for 6.5 × 2.75 in. The
+ * plane's UVs run 0–1 across the whole canvas, so any other ratio would stretch every numeral on
+ * one axis. Both products are whole numbers at this density (`npm test` holds the ratio).
+ */
+export const BB_SIGN_TEX_W = Math.round(BB_SIGN_W * SIGN_PX_PER_IN);
+export const BB_SIGN_TEX_H = Math.round(BB_SIGN_H * SIGN_PX_PER_IN);
+
+/** the bold system face a sign paints in until its own face has loaded */
+const SIGN_FALLBACK_FONT = 'system-ui, sans-serif';
 
 /**
- * The plate's artwork, cached by (text, alliance): TWO signs on one robot are the SAME texture,
- * and a robot's team number and alliance do not change inside a `bbSpecKey` rebuild.
+ * PAINT ONE SIGN: the alliance rectangle and the number, laid out by `plateTextLayout`
+ * (`src/plateLayout.ts`; `src/plateFonts.ts` says what was wrong with the old one). In the plate's face
+ * once it has loaded; until then in the bold system face, measured, through the same layout, so
+ * the number is centred and at true proportions either way.
+ */
+function paintSign(ctx: CanvasRenderingContext2D, text: string, alliance: 'red' | 'blue', font: PlateFont): void {
+  const w = BB_SIGN_TEX_W;
+  const h = BB_SIGN_TEX_H;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // R402 — the whole plate is the solid, opaque alliance rectangle, and nothing else is on it.
+  ctx.fillStyle = alliance === 'blue' ? BLUE : RED;
+  ctx.fillRect(0, 0, w, h);
+  // R403 — solid opaque WHITE Arabic numerals, one line (R403.C forbids stacking them), at most a
+  // 2.25-in cap height and kept the 0.25-in margin clear of the edges. On the ruled-minimum 6.5-in
+  // plate a five-digit number cannot be 2.25 in tall at any face's own proportions, so it is
+  // SMALLER (about 1.75 in in the default face), never condensed: R403 says "approximately", and
+  // a squeezed numeral is not something a team prints.
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const face = PLATE_FONTS[font];
+  let ink: PlateInk = plateInkOf(PLATE_FONT_METRICS[font], text);
+  let family = `"${face.family}"`;
+  let weight = 400;
+  if (!plateFontReady(font)) {
+    family = SIGN_FALLBACK_FONT;
+    weight = 700;
+    ctx.font = `${weight} 100px ${family}`;
+    const m = ctx.measureText(text);
+    const cap = ctx.measureText('0123456789');
+    // a canvas without ink metrics keeps the table's, which is close enough for one frame
+    if (typeof m.actualBoundingBoxAscent === 'number' && typeof cap.actualBoundingBoxAscent === 'number') {
+      ink = {
+        cap: cap.actualBoundingBoxAscent / 100,
+        x0: -m.actualBoundingBoxLeft / 100,
+        x1: m.actualBoundingBoxRight / 100,
+        y0: -m.actualBoundingBoxDescent / 100,
+        y1: m.actualBoundingBoxAscent / 100,
+        digits: ink.digits,
+      };
+    }
+  }
+  const lay = plateTextLayout(ink, w, h, BB_SIGN_DIGIT_H * SIGN_PX_PER_IN, BB_SIGN_MARGIN * SIGN_PX_PER_IN);
+  ctx.font = `${weight} ${lay.size}px ${family}`;
+  // the table's advances carry no kerning (the subsets have none), so neither may the canvas
+  if ('fontKerning' in ctx) ctx.fontKerning = 'none';
+  ctx.fillText(text, lay.x, lay.baseline);
+}
+
+/**
+ * The plate's artwork, cached by (text, alliance, font): TWO signs on one robot are the SAME
+ * texture, and a robot's team number, alliance and plate font do not change inside a `bbSpecKey`
+ * rebuild. A face that has not loaded yet is fetched here, the first time a sign needs it, and
+ * the canvas is repainted in place when it lands (`needsUpdate`), which every scene drawing the
+ * texture picks up on its next frame.
  *
  * ⚠️ IT IS NOT PRE-MIRRORED ANY MORE. The old comment here claimed no proper rotation could get
  * the outward normal, a vertical "up" AND un-mirrored text at once, so the canvas was drawn
@@ -2390,37 +2456,26 @@ const SIGN_PX_PER_IN = 48;
  * serving both signs is both the legal answer and the cheap one.
  */
 const SIGN_TEXTURE_CACHE = new Map<string, THREE.CanvasTexture>();
-function getSignTexture(text: string, alliance: 'red' | 'blue'): THREE.CanvasTexture {
-  const key = `${text}|${alliance}`;
+function getSignTexture(text: string, alliance: 'red' | 'blue', font: PlateFont): THREE.CanvasTexture {
+  const key = `${text}|${alliance}|${font}`;
   const cached = SIGN_TEXTURE_CACHE.get(key);
   if (cached) return cached;
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(BB_SIGN_W * SIGN_PX_PER_IN);
-  canvas.height = Math.round(BB_SIGN_H * SIGN_PX_PER_IN);
+  canvas.width = BB_SIGN_TEX_W;
+  canvas.height = BB_SIGN_TEX_H;
   const ctx = canvas.getContext('2d')!;
-  // R402 — the whole plate is the solid, opaque alliance rectangle, and nothing else is on it.
-  ctx.fillStyle = alliance === 'blue' ? BLUE : RED;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // R403.A — solid opaque WHITE Arabic numerals at a 2.25-in cap height, on ONE line (R403.C
-  // forbids stacking them). `system-ui` reports a cap height near 0.72 em, so the em size that
-  // puts the caps at 2.25 in is 2.25 / 0.72.
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `700 ${Math.round((BB_SIGN_DIGIT_H / 0.72) * SIGN_PX_PER_IN)}px system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  // R403.B — the numerals stay inside the 0.25-in background margin. A five-digit team number is
-  // wider than 6.0 in at natural proportions, so it is CONDENSED rather than allowed to run into
-  // the margin: R403 fixes the height and the margin and specifies no font or width.
-  const inner = (BB_SIGN_W - BB_SIGN_MARGIN * 2) * SIGN_PX_PER_IN;
-  const natural = ctx.measureText(text).width;
-  const squeeze = natural > inner ? inner / natural : 1;
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.scale(squeeze, 1);
-  ctx.fillText(text, 0, 0);
+  paintSign(ctx, text, alliance, font);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   SIGN_TEXTURE_CACHE.set(key, tex);
+  if (!plateFontReady(font)) {
+    void loadPlateFont(font).then((ok) => {
+      if (!ok) return;
+      paintSign(ctx, text, alliance, font);
+      tex.needsUpdate = true;
+    });
+  }
   return tex;
 }
 
@@ -4252,7 +4307,7 @@ function buildRobotGroupParts(spec: RobotSpec, id: number, alliance: Alliance, d
   // surfaces"). Both side plates is the OPPOSITE case, and it is the one that reads from either
   // side of the FIELD — the header above has the rule text and every dimension's citation. ONE
   // texture and ONE geometry serve both; only the orientation differs, and neither is mirrored.
-  const signTex = getSignTexture(bbRobotSignText(spec), alliance);
+  const signTex = getSignTexture(bbRobotSignText(spec), alliance, plateFontOf(spec).key);
   const signGeo = new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H);
   const signMat = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.6 });
   // THE PLATE — a frame round the sign placard (`docs/cosmetics-plan.md` §3.4). `'classic'` is no
@@ -4479,7 +4534,7 @@ function buildImportedRobot(spec: RobotSpec, imp: ImportedRobot, id: number, all
   group.userData.turretPitches = pitches;
 
   // THE TWO ROBOT SIGNS (R401) — the alliance, on the hull's two flank-most edges, facing out
-  const signTex = getSignTexture(bbRobotSignText(spec), alliance);
+  const signTex = getSignTexture(bbRobotSignText(spec), alliance, plateFontOf(spec).key);
   const signGeo = new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H);
   const signMat = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.6 });
   for (const [side, where] of [[1, 'left'], [-1, 'right']] as const) {
@@ -5498,8 +5553,8 @@ export function buildBiobuzzRobots(): BbRobots {
  * Free what ONE robot group owns, and nothing that is shared.
  *
  * The per-robot half is every mesh built inline in `buildRobotGroup` — the two
- * ROBOT SIGN planes and their one shared material (their TEXTURE is cached per team number and
- * alliance, is shared with every other robot carrying it, and is not touched), the turret ring,
+ * ROBOT SIGN planes and their one shared material (their TEXTURE is cached per team number,
+ * alliance and plate font, is shared with every other robot carrying it, and is not touched), the turret ring,
  * axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve
  * pod's drive all come from `framePart` and are SHARED. Anything from `solidMat`,
  * `getRollerMat`, `wheelGeometry` or `framePart` is left alone: see

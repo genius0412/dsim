@@ -6,6 +6,7 @@ import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS, ch
 import {
   ACCENT_KEYS,
   DECAL_KEYS,
+  PLATE_FONT_KEYS,
   PLATE_KEYS,
   OUTLINE_HALO,
   accentFill,
@@ -17,6 +18,7 @@ import {
   type Plate,
 } from '../cosmetics';
 import { useAds } from '../ads/AdsProvider';
+import { PLATE_FONTS, loadPlateFont } from '../plateFonts';
 import { CHAIN_PRESETS } from '../games/chain/config';
 import { intakeMountOf, shooterMountOf } from '../games/chain/mounts';
 import { butterflyTankRpm, butterflyTankRpmLimits, driveParams, rpmLimits } from '../sim/drivetrain';
@@ -148,7 +150,7 @@ function lockReason(id: CosmeticId, supporter: boolean, earned: readonly string[
   return EARN_HINT[id] ?? 'Earned — see Career';
 }
 
-/** one swatch button, shared by all four axis rows below: same size, hover, ring and
+/** one swatch button, shared by all five axis rows below: same size, hover, ring and
  * disabled behavior the chassis row always had (`.chassis-sw`), whatever it paints
  * inside. A swatch with `children` (a decal/plate preview) also gets `.cosmetic-sw`,
  * which clips the SVG to the same rounded square. */
@@ -158,6 +160,7 @@ function CosmeticSwatch({
   title,
   label,
   style,
+  variant,
   children,
   onClick,
 }: {
@@ -166,13 +169,15 @@ function CosmeticSwatch({
   title?: string;
   label: string;
   style?: CSSProperties;
+  /** `font`: the wider plate-font swatch (`.font-sw`), numerals instead of an SVG */
+  variant?: 'font';
   children?: ReactNode;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
-      className={`chassis-sw${children ? ' cosmetic-sw' : ''}${active ? ' on' : ''}`}
+      className={`chassis-sw${children ? ' cosmetic-sw' : ''}${variant === 'font' ? ' font-sw' : ''}${active ? ' on' : ''}`}
       style={style}
       // A locked swatch is `disabled`, not hidden: the browser skips it in the tab
       // order and announces it as unavailable, which is the right story for "you
@@ -270,7 +275,7 @@ function plateShape(plate: Plate, accentHex: string): ReactNode {
 }
 
 /**
- * ROBOT COSMETICS: four rows — chassis colour, accent, decal, plate (`src/cosmetics.ts`).
+ * ROBOT COSMETICS: five rows — chassis colour, accent, decal, plate, plate numbers (`src/cosmetics.ts`).
  *
  * Shown to EVERYONE, with the options an account isn't entitled to `disabled`. A perk
  * that is invisible until you pay for it sells nothing and, worse, makes the tier feel
@@ -299,6 +304,11 @@ function CosmeticsRows({
    * anything, so the one surface where you choose a cosmetic was the one that said no.
    */
   const { supporter, earnedCosmetics: earned } = useAds();
+  // the plate-font row shows each face, so this is the one place every face is fetched (about
+  // 6.6 KB for all five); everywhere else a face loads only when a robot wears it
+  useEffect(() => {
+    for (const key of PLATE_FONT_KEYS) void loadPlateFont(key);
+  }, []);
   const current = clampCosmetics(spec);
   const chassisHex = chassisFill(current.chassisColor);
   const accentHex = accentFill(current.accent, current.chassisColor);
@@ -406,6 +416,35 @@ function CosmeticsRows({
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   {plateShape(key, accentHex)}
                 </svg>
+              </CosmeticSwatch>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="ds-field wide">
+        <span className="cap">
+          Plate numbers <span className="val">{PLATE_FONTS[current.plateFont as keyof typeof PLATE_FONTS].label}</span>
+        </span>
+        <div className="chassis-swatches">
+          {PLATE_FONT_KEYS.map((key) => {
+            const id: CosmeticId = `plateFont:${key}`;
+            const locked = !cosmeticAllowed(id, supporter, earned);
+            const face = PLATE_FONTS[key];
+            return (
+              <CosmeticSwatch
+                key={key}
+                active={current.plateFont === key}
+                locked={locked}
+                title={lockReason(id, supporter, earned)}
+                label={`Plate numbers ${face.label}`}
+                variant="font"
+                // the face's own family, registered by `loadPlateFont`; the UI face stands in for
+                // the moment before it lands
+                style={{ fontFamily: `"${face.family}", var(--ds-font-ui)` }}
+                onClick={() => onPick({ plateFont: key })}
+              >
+                <span aria-hidden="true">12</span>
               </CosmeticSwatch>
             );
           })}

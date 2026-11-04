@@ -391,7 +391,7 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   the cascade) and `npm test` (keys, words, cards, queue order).
 
 **COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
-`accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;
+`accent` / `decal` / `plate` / `plateFont` (`src/cosmetics.ts`) are five closed-set axes on `RobotSpec`;
 `coerceSpec` clamps their SHAPE only (see `docs/area/physics.md`). Entitlement is enforced
 separately, at the server's live ingress: `stripUnentitledCosmetics(spec, supporter, earned)`
 runs AFTER `coerceSpec`, at every point a client DECLARES a spec — `server/index.ts` (join,

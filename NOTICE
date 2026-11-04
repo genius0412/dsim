@@ -41,3 +41,8 @@ license, including but not limited to:
 
 Those components remain under their respective licenses; this project's license does
 not modify them.
+
+The robot-sign plate fonts in src/assets/plateFonts/ are subsets of Barlow Semi
+Condensed, Archivo Black, Saira, Chakra Petch and JetBrains Mono, each under the SIL
+Open Font License 1.1; their copyright notices and the license are in
+src/assets/plateFonts/OFL.txt.

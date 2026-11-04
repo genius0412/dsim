@@ -220,7 +220,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
               {MAX_SAVED_STARTS_SUPPORTER} saved start positions per side, up from{' '}
               {MAX_SAVED_STARTS}
             </li>
-            <li>Six premium chassis colours, every accent, patterned decals, the bold plate</li>
+            <li>Six premium chassis colours, every accent, patterned decals, the bold plate, four plate-number fonts</li>
           </ul>
           <a
             className="ds-cta"

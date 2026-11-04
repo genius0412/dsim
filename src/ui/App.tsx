@@ -1214,7 +1214,7 @@ export function App() {
     const i = id.indexOf(':');
     const axis = id.slice(0, i);
     const key = id.slice(i + 1);
-    if (axis !== 'decal' && axis !== 'chassisColor' && axis !== 'accent' && axis !== 'plate') return;
+    if (axis !== 'decal' && axis !== 'chassisColor' && axis !== 'accent' && axis !== 'plate' && axis !== 'plateFont') return;
     // the robot on screen: where the importer is closed, the standard one standing in for an import
     const cur = shownOf(settingsRef.current);
     update({ ...cur, spec: { ...cur.spec, [axis]: key } });

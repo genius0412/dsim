@@ -12,6 +12,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { PLATE_FONT_KEYS } from '../../src/cosmetics';
+import { PLATE_FONTS, plateFontOf } from '../../src/plateFonts';
+import { PLATE_FONT_METRICS, plateInkOf, plateTextLayout } from '../../src/plateLayout';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
@@ -227,6 +230,8 @@ import {
   BB_INTAKE_ARM_INSET,
   BB_SIGN_DIGIT_H,
   BB_SIGN_H,
+  BB_SIGN_TEX_H,
+  BB_SIGN_TEX_W,
   BB_SIGN_MARGIN,
   BB_SIGN_MIN_H,
   BB_SIGN_MIN_W,
@@ -2665,6 +2670,12 @@ function cosmeticsChecks(check: Check): void {
     check('bbSpecKey changes when accent changes', bbSpecKey(withCosm({ accent: 'red' })) !== base);
     check('bbSpecKey changes when decal changes', bbSpecKey(withCosm({ decal: 'stripe' })) !== base);
     check('bbSpecKey changes when plate changes', bbSpecKey(withCosm({ plate: 'bold' })) !== base);
+    // the plate FONT is painted into the sign at build time, so it must rebuild too — and a build
+    // that never picked one (or picked the default) keeps the key it always had
+    check(
+      'bbSpecKey changes when the plate font changes, and the default font is the key a build always had',
+      bbSpecKey({ ...BB_DEFAULT_SPEC, plateFont: 'mono' } as RobotSpec) !== base && bbSpecKey({ ...BB_DEFAULT_SPEC, plateFont: 'standard' } as RobotSpec) === base,
+    );
   }
 
   // ---- buildIntake: the roller hub tints with the accent; a default (no argument) call is a
@@ -7513,7 +7524,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         '...and the ALLIANCE is the ROBOT SIGNS only: no edge line round the chassis, never the fill',
         !/new THREE\.LineSegments\(/.test(robotsSrc) &&
           !/outlineHalo|:outline`/.test(robotsSrc) &&
-          robotsSrc.includes('getSignTexture(bbRobotSignText(spec), alliance)') &&
+          robotsSrc.includes('getSignTexture(bbRobotSignText(spec), alliance, plateFontOf(spec).key)') &&
           !/chassisGeometry\([^)]*\), solidMat\(color/.test(robotsSrc),
       );
 
@@ -7578,12 +7589,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // The old 6-px white `strokeRect` is not one of R402's four permitted markings. Scoped
         // to the texture builder, because the file legitimately strokes other things.
         {
-          const at = robotsSrc.indexOf('function getSignTexture(');
+          // the painting lives in `paintSign` since 2026-11-04 (the texture builder calls it, and
+          // calls it again when the plate's face lands)
+          const at = robotsSrc.indexOf('function paintSign(');
           const body = at < 0 ? '' : robotsSrc.slice(at, robotsSrc.indexOf('\n}', at));
           check('R402: the sign texture strokes nothing (the white border was a prohibited marking)', body.length > 0 && !/stroke/i.test(body));
-          check('R402: ...and the whole plate is the solid alliance fill', body.includes("alliance === 'blue' ? BLUE : RED") && body.includes('ctx.fillRect(0, 0, canvas.width, canvas.height)'));
+          check('R402: ...and the whole plate is the solid alliance fill', body.includes("alliance === 'blue' ? BLUE : RED") && body.includes('ctx.fillRect(0, 0, w, h)'));
           check('R403.A: ...with WHITE numerals on it', body.includes("ctx.fillStyle = '#ffffff'"));
           check('R403.C: ...on ONE line, never stacked', (body.match(/fillText\(/g) ?? []).length === 1);
+          // the owner's "stretched vertically, making the numbers really thin": a five-digit number
+          // was fitted with `ctx.scale(squeeze, 1)`. The layout scales one way for both axes now.
+          check(
+            'R403: the numerals are never condensed — the sign painter scales nothing, and centres by `plateTextLayout`, not `textBaseline = \'middle\'`',
+            body.length > 0 && !/ctx\.scale\(/.test(body) && !/textBaseline = 'middle'/.test(body) && body.includes('plateTextLayout('),
+          );
         }
 
         // -- Fig 12-10: NOT MIRRORED ----------------------------------------------------------
@@ -7618,6 +7637,118 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           "...and that is the same test the 2D card makes (`teamNumber ? '#'+n : '-'`)",
           readFileSync(join(root, 'src', 'ui', 'GameView.tsx'), 'utf8').includes("{p.teamNumber ? `#${p.teamNumber}` : '-'}"),
         );
+
+        // -- (4) THE NUMBER IS CENTRED, AT ITS FACE'S OWN PROPORTIONS (owner, 2026-11-04) -------
+        // "The number inside the number plate is not vertically centered ... it looks like the
+        // number is stretched vertically, making the numbers really thin." Two causes, both in the
+        // old `getSignTexture`: `textBaseline = 'middle'` centred the EM BOX (the digits landed
+        // high: 5 px above "788" and 31 px below it on a capture), and a five-digit number was
+        // fitted with `ctx.scale(squeeze, 1)`. `plateTextLayout` is what paints now; held here on
+        // the measured tables of every face, at the texture's own pixel box.
+        {
+          check(
+            `the sign texture has the plate's own aspect, so its UVs stretch nothing (${BB_SIGN_TEX_W} x ${BB_SIGN_TEX_H} px for ${BB_SIGN_W} x ${BB_SIGN_H} in)`,
+            Number.isInteger(BB_SIGN_TEX_W) &&
+              Number.isInteger(BB_SIGN_TEX_H) &&
+              Math.abs(BB_SIGN_TEX_W / BB_SIGN_TEX_H - BB_SIGN_W / BB_SIGN_H) < 1e-9 &&
+              Math.abs(BB_SIGN_TEX_W / BB_SIGN_W - BB_SIGN_TEX_H / BB_SIGN_H) < 1e-9,
+            `${(BB_SIGN_TEX_W / BB_SIGN_TEX_H).toFixed(6)} vs ${(BB_SIGN_W / BB_SIGN_H).toFixed(6)}`,
+          );
+          const pxIn = BB_SIGN_TEX_H / BB_SIGN_H;
+          const W = BB_SIGN_TEX_W;
+          const H = BB_SIGN_TEX_H;
+          const digitPx = BB_SIGN_DIGIT_H * pxIn;
+          const marginPx = BB_SIGN_MARGIN * pxIn;
+          const off: string[] = [];
+          const over: string[] = [];
+          let laid = 0;
+          let fiveDigitMinIn = Infinity;
+          for (const key of PLATE_FONT_KEYS) {
+            const face = PLATE_FONT_METRICS[key];
+            for (const text of ['-', '7', '42', '788', '1234', '11111', '19745', '23511', '88888', '99999']) {
+              const lay = plateTextLayout(plateInkOf(face, text), W, H, digitPx, marginPx);
+              laid++;
+              const cx = (lay.box.x0 + lay.box.x1) / 2;
+              const cy = (lay.box.y0 + lay.box.y1) / 2;
+              // ±2 % of the plate, on each axis
+              if (Math.abs(cx - W / 2) > 0.02 * W || Math.abs(cy - H / 2) > 0.02 * H)
+                off.push(`${key} "${text}": centre ${(((cx - W / 2) / W) * 100).toFixed(2)} %, ${(((cy - H / 2) / H) * 100).toFixed(2)} %`);
+              // the margin kept on the left and right, and no numeral over the ruled height
+              if (lay.box.x0 < marginPx - 1e-6 || lay.box.x1 > W - marginPx + 1e-6 || lay.size * face.cap > digitPx + 1e-6) over.push(`${key} "${text}"`);
+              if (text.length === 5) fiveDigitMinIn = Math.min(fiveDigitMinIn, (lay.size * face.cap) / pxIn);
+            }
+          }
+          check(`R403: every face's number is centred on the plate within ±2 % (${laid} layouts, ${PLATE_FONT_KEYS.length} faces)`, off.length === 0 && laid > 40, off.slice(0, 4).join('; '));
+          check('R403.A+B: ...the numerals at most 2.25 in, with the 0.25-in margin clear on both sides', over.length === 0, over.slice(0, 6).join(', '));
+          {
+            const std = PLATE_FONT_METRICS.standard;
+            const short = plateTextLayout(plateInkOf(std, '788'), W, H, digitPx, marginPx);
+            const long = plateTextLayout(plateInkOf(std, '23511'), W, H, digitPx, marginPx);
+            check(
+              'R403.A: a short number is the full 2.25 in; a five-digit one is SMALLER at the same proportions (not condensed), and still at least 1.6 in in the default face',
+              Math.abs(short.size * std.cap - digitPx) < 1e-6 && long.size < short.size && (long.size * std.cap) / pxIn >= 1.6,
+              `${((short.size * std.cap) / pxIn).toFixed(2)} in / ${((long.size * std.cap) / pxIn).toFixed(2)} in`,
+            );
+          }
+          check('...and no face drops a five-digit number under 1.2 in', fiveDigitMinIn >= 1.2, `${fiveDigitMinIn.toFixed(2)} in`);
+          // optical centring: digits sit on their CAP BAND, the hyphen on its own ink
+          {
+            const std = PLATE_FONT_METRICS.standard;
+            const lay = plateTextLayout(plateInkOf(std, '77'), W, H, digitPx, marginPx);
+            const capTop = lay.baseline - lay.size * std.cap;
+            check(
+              '...digits centred on the cap band: the space above the cap height equals the space under the baseline',
+              Math.abs(capTop - (H - lay.baseline)) < 1e-6,
+              `${capTop.toFixed(3)} above, ${(H - lay.baseline).toFixed(3)} below`,
+            );
+          }
+        }
+
+        // -- (5) THE PLATE FONTS: self-hosted, subset, licensed, and the fallback ----------------
+        {
+          const dir = join(root, 'src', 'assets', 'plateFonts');
+          const ofl = existsSync(join(dir, 'OFL.txt')) ? readFileSync(join(dir, 'OFL.txt'), 'utf8') : '';
+          const bad: string[] = [];
+          let bytes = 0;
+          for (const key of PLATE_FONT_KEYS) {
+            const file = join(dir, `${key}.woff2`);
+            if (!existsSync(file)) {
+              bad.push(`${key}: no file`);
+              continue;
+            }
+            const buf = readFileSync(file);
+            bytes += buf.length;
+            if (buf.subarray(0, 4).toString('latin1') !== 'wOF2') bad.push(`${key}: not WOFF2`);
+            // a subset to the eleven glyphs a sign prints: a whole face is 40-480 KB
+            if (buf.length > 4096) bad.push(`${key}: ${buf.length} bytes`);
+            if (!ofl.includes(`${key}.woff2: ${PLATE_FONTS[key].typeface}`)) bad.push(`${key}: not credited in OFL.txt`);
+            if (!PLATE_FONTS[key].url.includes(`plateFonts/${key}.woff2`)) bad.push(`${key}: url ${PLATE_FONTS[key].url}`);
+            for (const ch of '0123456789-') if (!PLATE_FONT_METRICS[key].glyphs[ch]) bad.push(`${key}: no '${ch}' measured`);
+          }
+          check(
+            `plate fonts: ${PLATE_FONT_KEYS.length} subset WOFF2 files, self-hosted, credited under the SIL OFL, each measured for every glyph a sign prints (${bytes} bytes in all)`,
+            bad.length === 0 && ofl.includes('SIL OPEN FONT LICENSE Version 1.1') && PLATE_FONT_KEYS.length >= 4 && PLATE_FONT_KEYS.length <= 6,
+            bad.join('; '),
+          );
+          check(
+            'plate fonts: an absent or unknown key prints in the default face (an older client, a spoofed spec)',
+            plateFontOf({}).key === 'standard' && plateFontOf({ plateFont: 'comic-sans' }).key === 'standard' && plateFontOf({ plateFont: 'mono' }).key === 'mono',
+          );
+          check(
+            "plate fonts: nothing fetches a face from a font CDN — the canvas reads the bundle's own files",
+            !/fonts\.(googleapis|gstatic)\.com/.test(readFileSync(join(root, 'src', 'plateFonts.ts'), 'utf8')) && !/fonts\.(googleapis|gstatic)\.com/.test(robotsSrc),
+          );
+          // the table rides only in the scene chunk: the main chunk's registry must not import it
+          check(
+            'plate fonts: the glyph table and the layout stay out of the main chunk (`plateFonts.ts` does not import `plateLayout.ts`)',
+            !/from '\.\/plateLayout'/.test(readFileSync(join(root, 'src', 'plateFonts.ts'), 'utf8')) &&
+              !/plateLayout/.test(readFileSync(join(root, 'src', 'ui', 'Menu.tsx'), 'utf8')),
+          );
+          check(
+            'plate fonts: a face is fetched by the sign that needs it (not at module load), and the sign repaints in place when it lands',
+            robotsSrc.includes('void loadPlateFont(font).then((ok) => {') && robotsSrc.includes('tex.needsUpdate = true;') && !/^loadPlateFont\(/m.test(robotsSrc),
+          );
+        }
       }
 
       // ══ ITEM A -- "THE INTAKE SIDE PLATE IS MESHING WITH CHASSIS" ════════════════════════

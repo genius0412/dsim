@@ -507,7 +507,13 @@ const BASELINE = {
   // already measures 1052.63 (+18.14 of drift since the last raise, inside the 2% tolerance), and
   // the opponent-NECTAR work adds +2.83 — the intake feed and sorter vocabulary, `nectarReject.ts`,
   // G408, the builder's two new pickers, the NECTAR bar sprite and the REV touch button.
-  main: { gzip: 1055.46 * 1000 },
+  // 2026-11-04: 1055.46 -> 1080.27, RAISED on purpose and measured: alpha's own base (f1dd6053,
+  // built from a clean export) already measures 1079.25, past the tolerance by itself (+23.79 of
+  // drift since the last raise, not attributed here), and the plate fonts add +1.02 — the face
+  // registry and loader (`src/plateFonts.ts`), the builder's Plate numbers row and the five font
+  // credits. The glyph table and the sign's layout are in the scene chunk (+1.17 there), and the
+  // fonts themselves are separate files: inlined, Vite's 4 KB default had put +10 KB here.
+  main: { gzip: 1080.27 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.

@@ -229,4 +229,11 @@ export default defineConfig({
   // worker evaluates the SPA's HTML (a modeled venue, `renderModelVenue.ts`). Served from
   // node_modules, the path holds; the production build emits the transcoder as hashed assets either way.
   optimizeDeps: { exclude: ['three/examples/jsm/loaders/KTX2Loader.js'] },
+  build: {
+    // ⚠️ THE PLATE FONTS ARE NEVER INLINED. Each is 1.1–1.6 KB, under Vite's 4 KB default, so they
+    // were being written into the MAIN chunk as base64 (+10 KB gzipped for every player of every
+    // game, measured) — and base64 of a compressed file does not gzip. As files they are fetched
+    // only when a robot sign or the builder's picker shows a face (`src/plateFonts.ts`).
+    assetsInlineLimit: (file: string) => (/[\\/]plateFonts[\\/][^\\/]+\.woff2$/.test(file) ? false : undefined),
+  },
 });

@@ -10,6 +10,7 @@ import { getGraphics, menuTier } from './graphics/settings';
 type CardTier = ReturnType<typeof menuTier> | null;
 import { BiobuzzRobotPreview } from './RobotPreview';
 import { bbSpecKey } from './specKey';
+import { loadPlateFont, plateFontOf } from '../../plateFonts';
 
 /**
  * THE BUILDER'S ROBOT PREVIEW (`docs/roadmap.md` item 1) — the 2D schematic, the live 3D
@@ -170,6 +171,9 @@ async function drain(): Promise<void> {
       // a scene of our own takes the build early so `ready` compiles ITS shaders; the turntable is
       // on screen, so it is handed the build only inside `capture`'s one task
       own?.setSpec(req.spec, req.alliance);
+      // the sign's face first: a capture is one synchronous frame, and a face that lands after it
+      // repaints a live sign but never a picture already taken
+      await loadPlateFont(plateFontOf(req.spec).key);
       await scene.ready();
       await idle();
       const url = scene.capture(THUMB_CAPTURE_PX, req.spec, req.alliance);
