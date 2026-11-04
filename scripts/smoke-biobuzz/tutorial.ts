@@ -6,7 +6,7 @@ import { rot } from '../../src/math';
 import type { Alliance, Physics, RobotCommand, RobotSpec, RobotState, World } from '../../src/types';
 import { DEFAULT_ASSISTS, coerceSpec, type RobotSetup } from '../../src/sim/spawn';
 import { moduleFor } from '../../src/games';
-import { DEFAULT_BINDINGS, cloneBindings } from '../../src/input/bindings';
+import { DEFAULT_BINDINGS, cloneBindings, setActionMode } from '../../src/input/bindings';
 import { TutorialRunner } from '../../src/tutorial/runner';
 import { markTutorialSeen, tutorialSeen } from '../../src/tutorial/flag';
 import { TUTORIAL_SEEN_KEY } from '../../src/storageKeys';
@@ -310,6 +310,40 @@ export function tutorialChecks(check: Check): void {
     const pad: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: true, touch: false };
     check('hint: with a pad connected it names the pad button (RT)', hintText(shoot.hint(pad)).includes('RT'), hintText(shoot.hint(pad)));
     check('hint: …and does not also name the key', !hintText(shoot.hint(pad)).includes('SPACE'));
+    // HOLD OR TOGGLE (`ControlBindings.modes`): a player who set Shoot or Intake to Toggle is told to
+    // press it, not hold it. The on-screen pad's buttons are always held, so touch keeps "held".
+    {
+      const capture = BIOBUZZ_TUTORIAL.steps.find((s) => s.id === 'capture')!;
+      const tip = BIOBUZZ_TUTORIAL.steps.find((s) => s.id === 'tip')!;
+      const dIntake = DECODE_TUTORIAL.steps.find((s) => s.id === 'intake')!;
+      const dScore = DECODE_TUTORIAL.steps.find((s) => s.id === 'score')!;
+      const tog = setActionMode(setActionMode(DEFAULT_BINDINGS, 'fire', 'toggle'), 'intake', 'toggle');
+      const ctx = (gamepad: boolean, touch: boolean): TutorialHintCtx => ({ bindings: tog, gamepad, touch });
+      const t = (s: TutorialStep, c: TutorialHintCtx): string => hintText(s.hint(c));
+      check(
+        'hint: on the native Hold the copy is unchanged (hold SPACE, SHIFT held)',
+        t(shoot, kb).includes('hold SPACE') && t(tip, kb).includes('Hold SPACE') && t(capture, kb).includes('with SHIFT held') &&
+          t(dScore, kb).startsWith('Hold SPACE') && t(dIntake, kb).includes('with SHIFT held'),
+        `${t(shoot, kb)} | ${t(capture, kb)}`,
+      );
+      check(
+        'hint: Shoot on Toggle says press, on the keyboard and on a pad',
+        t(shoot, ctx(false, false)).includes('press SPACE') && t(tip, ctx(false, false)).includes('Press SPACE') &&
+          t(dScore, ctx(false, false)).startsWith('Press SPACE') && t(shoot, ctx(true, false)).includes('press RT') &&
+          !/hold/i.test(t(shoot, ctx(false, false)) + t(tip, ctx(false, false))),
+        `${t(shoot, ctx(false, false))} | ${t(tip, ctx(true, false))}`,
+      );
+      check(
+        'hint: Intake on Toggle says "toggled on" instead of "held"',
+        t(capture, ctx(false, false)).includes('with SHIFT toggled on') && t(dIntake, ctx(false, false)).includes('with SHIFT toggled on'),
+        t(capture, ctx(false, false)),
+      );
+      check(
+        'hint: the on-screen pad keeps the hold wording whatever the mode (its buttons are held)',
+        t(capture, ctx(false, true)).includes('with INTAKE held') && t(tip, ctx(false, true)).includes('Hold SHOOT'),
+        `${t(capture, ctx(false, true))} | ${t(tip, ctx(false, true))}`,
+      );
+    }
     // An UNBOUND action says so rather than printing `undefined`.
     const unbound = cloneBindings(DEFAULT_BINDINGS);
     unbound.keys.fire = [];

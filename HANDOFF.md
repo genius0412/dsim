@@ -7,7 +7,7 @@
 - **How:** `src/input/pressModes.ts`. Held → Toggle is a client latch. Sim toggle → Hold (`HoldFollower`) presses for the player when the held level and the local robot disagree, once per change, so a ramp the swing guard reverses is not pressed into the flower again. Both ignore a release under 42 ms. Flip/Park on Hold invert the toggle while the button is down. Rules: `docs/area/ui.md`, "HOLD OR TOGGLE".
 - **Checked:** smoke (model, latch, follower against the real butterfly swap and the real ramp step incl. a blocked swing and a press held through pre-match, `InputManager` on synthetic keys); offscreen Electron in a live Free drive: Intake on Toggle stays on with Shift up and goes off on the second tap, Flip front on Hold shows REVERSED only while F is down.
 - **Not checked:** Hold mode on the ramp, bar or wheel set in an online room (the follower reads the predicted robot; on a 3D Light/Balanced room it reads the snapshot, so a press can land one round trip late but cannot double-toggle). A pad in a live match.
-- **Known gap:** tutorial hints still say "Hold Space" / "with Shift held" for a player who set that action to Toggle.
+- **Tutorial hints follow the mode** (owner asked, same day): "press SPACE" and "with SHIFT toggled on" for a player on Toggle; touch keeps "held" (`holdControl` / `withHeld`, `src/tutorial/hints.ts`).
 
 # HANDOFF — 2026-11-03b (the robot on Home's stage)
 

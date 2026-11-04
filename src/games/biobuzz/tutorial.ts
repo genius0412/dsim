@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotSpec, RobotState, Vec2, World } from '../../types';
 import type { TutorialSpec, TutorialStep } from '../../tutorial/types';
-import { control, driveHint, say } from '../../tutorial/hints';
+import { control, driveHint, holdControl, say, withHeld } from '../../tutorial/hints';
 import { robotIntersectsRect } from '../../sim/physics';
 import { datan2, hyp } from '../../math';
 import {
@@ -304,7 +304,7 @@ const steps: TutorialStep[] = [
     id: 'capture',
     title: 'Pick up a pollen',
     hint: (c) =>
-      say`Drive onto a pollen with ${control(c, 'intake', 'intake')} held.`,
+      say`Drive onto a pollen ${withHeld(c, 'intake', 'intake')}.`,
     stage: (w, id) => {
       place(w, id, 58, 50, Math.PI / 2);
       const r = me(w, id);
@@ -328,7 +328,7 @@ const steps: TutorialStep[] = [
     id: 'shoot',
     title: 'Shoot into your hive',
     hint: (c) =>
-      say`Line up on the open side of the up cell and hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
+      say`Line up on the open side of the up cell and ${holdControl(c, 'fire', 'fire')}. The turret aims for you.`,
     stage: (w, id) => place(w, id, BB_HIVE_X + 6, BB_HIVE_CELL_DY + 38, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -346,7 +346,7 @@ const steps: TutorialStep[] = [
     id: 'tip',
     title: 'Tip the hive',
     hint: (c) =>
-      say`One more pollen tips it. Hold ${control(c, 'fire', 'fire')}.`,
+      say`One more pollen tips it. ${holdControl(c, 'fire', 'fire', true)}.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (r) loadCell(w, r.alliance, 2);
@@ -395,7 +395,7 @@ const steps: TutorialStep[] = [
     // ≤ 25 WORDS, like every hint (design review 12-05): this one was 55, and on a phone the
     // bottom-anchored card grew up across the joysticks. The smoke lane holds the cap.
     hint: (c) =>
-      say`This lesson lends you side rollers. Line one end of the intake up on the flower’s opening and drive in with ${control(c, 'intake', 'intake')} held.`,
+      say`This lesson lends you side rollers. Line one end of the intake up on the flower’s opening and drive in ${withHeld(c, 'intake', 'intake')}.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;

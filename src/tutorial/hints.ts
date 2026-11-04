@@ -1,4 +1,13 @@
-import { keyLabel, keyName, livePadBinds, padBindLabel, type KeyAction, type PadAction } from '../input/bindings';
+import {
+  actionMode,
+  keyLabel,
+  keyName,
+  livePadBinds,
+  padBindLabel,
+  type KeyAction,
+  type ModeAction,
+  type PadAction,
+} from '../input/bindings';
 import { ACTION_LABELS } from '../ui/controlsLayout';
 import type { Hint, HintKey, HintPart, TutorialHintCtx } from './types';
 
@@ -74,6 +83,27 @@ export function control(ctx: TutorialHintCtx, key: KeyAction, pad?: PadAction): 
   // on-screen pad is what they stopped using.
   if (ctx.touch && TOUCH_LABELS[key]) return { key: TOUCH_LABELS[key]! };
   return keyFor(ctx, key);
+}
+
+/**
+ * IS THIS HELD ACTION A TOGGLE FOR THIS PLAYER (`ControlBindings.modes`)? "Hold SPACE" is wrong for
+ * a player who set Shoot to Toggle: a press turns it on and it stays on. The on-screen pad's buttons
+ * are always held, so wherever `control` names a touch button the answer is no.
+ */
+function toggled(ctx: TutorialHintCtx, key: ModeAction, pad?: PadAction): boolean {
+  const touchButton = !(ctx.gamepad && pad) && ctx.touch && !!TOUCH_LABELS[key];
+  return !touchButton && actionMode(ctx.bindings, key) === 'toggle';
+}
+
+/** "hold SPACE", or "press SPACE" when Shoot is a toggle. `capital` opens a sentence. */
+export function holdControl(ctx: TutorialHintCtx, key: ModeAction, pad?: PadAction, capital = false): Hint {
+  const verb = toggled(ctx, key, pad) ? 'press' : 'hold';
+  return say`${capital ? verb[0].toUpperCase() + verb.slice(1) : verb} ${control(ctx, key, pad)}`;
+}
+
+/** "with SHIFT held", or "with SHIFT toggled on" when Intake is a toggle */
+export function withHeld(ctx: TutorialHintCtx, key: ModeAction, pad?: PadAction): Hint {
+  return say`with ${control(ctx, key, pad)} ${toggled(ctx, key, pad) ? 'toggled on' : 'held'}`;
 }
 
 /**

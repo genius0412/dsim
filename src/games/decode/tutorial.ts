@@ -1,6 +1,6 @@
 import type { Alliance, RobotState, World } from '../../types';
 import type { TutorialSpec, TutorialStep } from '../../tutorial/types';
-import { control, driveHint, say } from '../../tutorial/hints';
+import { control, driveHint, holdControl, say, withHeld } from '../../tutorial/hints';
 import { baseZone, driverSide, footprintExtents, loadZone } from '../../sim/field';
 import { decodeImportMouth } from '../../sim/importedMech';
 import { BALL_RADIUS } from '../../config';
@@ -136,7 +136,7 @@ const steps: TutorialStep[] = [
     applies: (spec) => spec.intake !== 'none',
     title: 'Pick up an artifact',
     hint: (c) =>
-      say`Drive onto the artifact with ${control(c, 'intake', 'intake')} held. The hopper holds three.`,
+      say`Drive onto the artifact ${withHeld(c, 'intake', 'intake')}. The hopper holds three.`,
     stage: (w, id) => {
       place(w, id, 34, -22, Math.PI / 2);
       const r = me(w, id);
@@ -178,7 +178,7 @@ const steps: TutorialStep[] = [
   {
     id: 'score',
     title: 'Score in your goal',
-    hint: (c) => say`Hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
+    hint: (c) => say`${holdControl(c, 'fire', 'fire', true)}. The turret aims for you.`,
     stage: (w, id) => place(w, id, 30, 12, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);

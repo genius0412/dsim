@@ -248,7 +248,9 @@ that season has none) — then the bind panels —
   `TOGGLE_DEBOUNCE_S`). Flip front and Park mode were client toggles already: on Hold the button
   inverts the toggle while down (`flippedNow` / `parkedNow`), and a touch tap still flips it. No
   server, replay or SIM_VERSION change: the commands are what the sim always read.
-  Known gap: the tutorial still says "Hold Space" for a player who set Shoot to Toggle.
+  Tutorial hints follow the mode: `holdControl` ("hold SPACE" / "press SPACE") and `withHeld`
+  ("with SHIFT held" / "toggled on") in `src/tutorial/hints.ts`. A touch button is always held, so
+  the on-screen pad keeps the hold wording.
 - **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`) ARE NOT CONFIGURE SECTIONS**
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
   STARTS straight away (behind `guardStart`). Since 2026-11-01 the two cards are Play's **Solo setup
