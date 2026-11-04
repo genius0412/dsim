@@ -1,6 +1,6 @@
-import type { RobotSpec } from '../types';
+import type { RobotCommand, RobotSpec } from '../types';
 import * as C from '../config';
-import { activeDrive } from './drivetrain';
+import { activeDrive, arcadeTank } from './drivetrain';
 import { clamp, dcos, dsin } from '../math';
 
 /**
@@ -10,6 +10,17 @@ import { clamp, dcos, dsin } from '../math';
  * not come here for it, so it steps bit for bit as before. COAST changes only the wheels whose
  * power is exactly zero this tick (`C.ZERO_POWER_EPS`); a wheel with any power drives the same in
  * both modes, and so does a robot with every wheel powered.
+ *
+ * ...AND A WHEEL FLOATS WHEN THE DRIVER LETS GO, NOT WHEN TWO KEYS CANCEL (`floatingWheels`).
+ * A motor on any voltage, zero included, is damped by its own back-EMF; BRAKE is exactly that at
+ * 0 V and FLOAT is the only state without it. A gamepad puts a wheel at an EXACT zero mid-drive
+ * only if two analog axes cancel to the hub's 1/32767, which they essentially never do, while
+ * DSIM's keys land on the cancellation every time: W plus a turn key zeroes a mecanum's inner
+ * pair, and coasting they let the robot run on straight (113° of turn in half a second became
+ * 21°; a tank's 132° became 0°). So a mixed drivetrain floats only when its whole drive command
+ * is zero. A tank's two sides can each be a stick of their own ("Traditional" control), and a
+ * released stick is a real zero, so a tank side floats on its own unless the command is the
+ * arcade mix cancelling (`arcadeCancel`).
  *
  * THE DRIVE MODEL IS CHASSIS-LEVEL, SO THE WHEELS ARE RECOVERED FROM IT. `motorStepVec` and
  * `motorStep` give the chassis velocity the drivetrain reaches this tick. In the chassis's
@@ -24,7 +35,9 @@ import { clamp, dcos, dsin } from '../math';
  * A TRACTION CHASSIS CANNOT SPIN WITHOUT SCRUBBING ITS TYRES SIDEWAYS (`scrub`), and that is
  * friction, not the motors: a coasting tank stops turning about as fast as a braked one. Roller
  * drivetrains have no such limit: with the hub free, a mecanum or omni wheel rolls in every
- * direction, which is also why a coasting roller wheel holds nothing sideways (`updateRobot`).
+ * direction, so a coasting roller wheel has no tyre grip sideways (`updateRobot`). What it has is
+ * FRICTION every way it moves: its hub's (the rows above) and its rollers' (`rollerForce`), which
+ * turn whenever the wheel moves off its hub's line — strafing, spinning, or being shoved.
  */
 
 export type ZeroPowerMode = 'brake' | 'coast';
@@ -43,6 +56,32 @@ export function rollerDrive(saturation: 'sum' | 'tank' | 'vec'): boolean {
   return saturation === 'sum';
 }
 
+/** is this tank command the arcade mix of one forward and one turn axis (`arcadeTank`, "Normal"
+ *  control), so a side at zero is the mix cancelling with both sticks still held, rather than two
+ *  independent sides. One command step (1/127, `quantizeCommand`) of slack on each side. */
+export function arcadeCancel(cmd: Pick<RobotCommand, 'driveY' | 'rotate' | 'leftDrive' | 'rightDrive'>): boolean {
+  if (cmd.driveY === 0 && cmd.rotate === 0) return false;
+  const { left, right } = arcadeTank(cmd.driveY, cmd.rotate);
+  const tol = 1.01 / 127;
+  return Math.abs((cmd.leftDrive ?? 0) - left) <= tol && Math.abs((cmd.rightDrive ?? 0) - right) <= tol;
+}
+
+/**
+ * WHICH WHEELS ARE POWERED THIS TICK, or null when every one is (the brake step, unchanged). The
+ * header says why only a tank side floats on its own: on a mixed drivetrain a single wheel at zero
+ * is two of the driver's axes cancelling, a motor still driven at 0 V, so it floats only with all
+ * the others.
+ */
+export function floatingWheels(
+  saturation: 'sum' | 'tank' | 'vec',
+  power: readonly number[],
+  arcade: boolean,
+): boolean[] | null {
+  if (!power.some(wheelOff)) return null;
+  if (saturation === 'tank' && !arcade) return power.map((p) => !wheelOff(p));
+  return power.every(wheelOff) ? power.map(() => false) : null;
+}
+
 /**
  * THE FULL-ROBOT DECELERATION of four freewheeling drive wheels, in/s². Two terms:
  *  • motor friction through the gearbox: the no-load current is the torque a free-spinning motor
@@ -50,6 +89,8 @@ export function rollerDrive(saturation: 'sum' | 'tank' | 'vec'): boolean {
  *    reduction (`MOTOR_FREE_RPM / rpm`) it reaches the wheel multiplied — so a torquier gearing
  *    coasts shorter, and a heavier robot carries further against the same friction;
  *  • rolling resistance, a fraction of weight (`COAST_ROLL_*`).
+ * MEASURED, this is right: 498 FTC robots' FLOAT roll-outs (`config.ts`, `COAST_ROLL_ROLLER`) put a
+ * mecanum's forward deceleration at 35 in/s² (median), and this gives 34 for the median robot.
  */
 export function coastDecel(spec: RobotSpec, tankMode = false): number {
   const { p, rpm } = activeDrive(spec, tankMode);
@@ -146,7 +187,36 @@ export interface CoastInput {
   mOverI: number;
   /** rad/s² of spin a traction chassis's tyres can stop by scrubbing; 0 on rollers */
   scrub: number;
+  /** a roller drivetrain's wheels (`wheelLocals`) and whether they are omnis at 45° (x-drive)
+   *  rather than mecanums; absent on traction wheels */
+  rollers?: { pos: readonly { x: number; y: number }[]; omni: boolean };
   dt: number;
+}
+
+/**
+ * ONE FREE ROLLER WHEEL'S ROLLER FRICTION, per unit robot mass, robot frame, for a wheel at `p`
+ * whose contact moves at `(ux, uy)`. `COAST_ROLLER_FRICTION` of this wheel's share of the weight,
+ * Coulomb, fading out under `COAST_STICTION_SPEED` of roller speed like the hub's.
+ *  • MECANUM: the hub rolls along x and the rollers take the rest, so the rollers turn at √2·uy
+ *    whatever the hub does; by virtual work their friction is a pure SIDEWAYS force of √2 times
+ *    the roller's own. Driving straight turns no roller, which is why a mecanum coasts further
+ *    forward than sideways.
+ *  • OMNI at 45° (x-drive): hub and rollers are square to each other, so the roller friction acts
+ *    along the roller's rolling line, (1, ±1)/√2 — the line a mecanum's rollers roll on too.
+ */
+export function rollerForce(i: number, ux: number, uy: number, omni: boolean, wheels: number): { x: number; y: number } {
+  const f = (C.COAST_ROLLER_FRICTION * C.GRAVITY) / wheels;
+  // FL and BR roll freely toward forward-left, FR and BL toward forward-right (`ROWS_SUM`)
+  const s = i === 0 || i === 3 ? 1 : -1;
+  if (!omni) {
+    const roll = Math.SQRT2 * uy;
+    if (roll === 0) return { x: 0, y: 0 };
+    return { x: 0, y: -Math.SQRT2 * f * Math.sign(roll) * Math.min(1, Math.abs(roll) / C.COAST_STICTION_SPEED) };
+  }
+  const roll = (ux + s * uy) / Math.SQRT2;
+  if (roll === 0) return { x: 0, y: 0 };
+  const k = (-f * Math.sign(roll) * Math.min(1, Math.abs(roll) / C.COAST_STICTION_SPEED)) / Math.SQRT2;
+  return { x: k, y: k * s };
 }
 
 /** The coast answer to the brake step, robot frame. Called only with a wheel at zero power. */
@@ -182,11 +252,20 @@ export function coastStep(c: CoastInput): { x: number; y: number; w: number } {
     if (c.powered[k]) continue;
     const r = c.roll[k];
     const u = (r[0] * q0[0] + r[1] * q0[1] + r[2] * q0[2]) * c.vf;
-    if (u === 0) continue;
-    const f = (Math.sign(u) * c.decel * Math.min(1, Math.abs(u) / C.COAST_STICTION_SPEED)) / c.roll.length;
-    dx -= r[0] * f * c.dt;
-    dy -= ((r[1] * f * c.vf) / vs) * c.dt;
-    dw -= ((r[2] * f * c.vf) / c.wf) * c.mOverI * c.dt;
+    if (u !== 0) {
+      const f = (Math.sign(u) * c.decel * Math.min(1, Math.abs(u) / C.COAST_STICTION_SPEED)) / c.roll.length;
+      dx -= r[0] * f * c.dt;
+      dy -= ((r[1] * f * c.vf) / vs) * c.dt;
+      dw -= ((r[2] * f * c.vf) / c.wf) * c.mOverI * c.dt;
+    }
+    // ...and its rollers', at the wheel's contact (they turn even where the hub does not)
+    if (c.rollers) {
+      const p = c.rollers.pos[k];
+      const g = rollerForce(k, c.vx - c.w * p.y, c.vy + c.w * p.x, c.rollers.omni, c.roll.length);
+      dx += g.x * c.dt;
+      dy += g.y * c.dt;
+      dw += (p.x * g.y - p.y * g.x) * c.mOverI * c.dt;
+    }
   }
   // a traction chassis's spin is stopped by its tyres scrubbing, up to what brake would do
   if (c.scrub > 0) {

@@ -3,7 +3,7 @@ import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
-import { coastDecel, coastStep, rollerDrive, wheelOff, wheelRows } from './zeroPower';
+import { arcadeCancel, coastDecel, coastStep, floatingWheels, rollerDrive, wheelRows } from './zeroPower';
 import { robotIntersectsConvex } from './physics';
 import { importedInertia, importedWheels } from './imported';
 import { decodeImportLaunchZ, decodeImportMouth, decodeImportTurret } from './importedMech';
@@ -437,13 +437,15 @@ export function updateRobot(
 
   /**
    * ...AND A COASTING WHEEL AT ZERO POWER IS NOT HELD (`src/sim/zeroPower.ts`). Everything above
-   * is BRAKE, the model as it always was; a coast robot with a wheel at zero power has the brake
-   * step re-split across its wheels, the unpowered ones' parts replaced by their friction. Brake,
-   * a spec without the field, never gets here.
+   * is BRAKE, the model as it always was; a coast robot with floating wheels (`floatingWheels`:
+   * the whole drive let go, or a tank side on its own) has the brake step re-split across its
+   * wheels, the unpowered ones' parts replaced by their friction. Brake, a spec without the
+   * field, never gets here.
    */
-  let powered: boolean[] | null = null;
-  if (wheelPower && wheelPower.some(wheelOff)) {
-    powered = wheelPower.map((p) => !wheelOff(p));
+  const powered = wheelPower
+    ? floatingWheels(dp.saturation, wheelPower, dp.saturation === 'tank' && arcadeCancel(cmd))
+    : null;
+  if (powered) {
     const pos = wheelLocals(r.spec);
     const pods = dp.saturation === 'vec' ? r.moduleAngles : undefined;
     let levers = 0;
@@ -468,6 +470,7 @@ export function updateRobot(
       scrub: rollerDrive(dp.saturation)
         ? 0
         : ((C.LATERAL_GRIP[r.spec.drivetrain] ?? 0.5) * tractionAccel * (m / inertia) * levers) / pos.length,
+      rollers: rollerDrive(dp.saturation) ? { pos, omni: r.spec.drivetrain === 'xdrive' } : undefined,
       dt,
     });
     const want = rot({ x: next.x - velRobot.x, y: next.y - velRobot.y }, r.heading);

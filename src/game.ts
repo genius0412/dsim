@@ -82,6 +82,7 @@ import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
 import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
+import { arcadeTank } from './sim/drivetrain';
 import { flyPresetIndex, flyReady, flySetpoint } from './sim/flywheel';
 import { InputManager } from './input/input';
 import { actionMode, effectiveBindings, type ControlBindings } from './input/bindings';
@@ -1948,8 +1949,9 @@ export class GameController {
     const drivingTank =
       lr.spec.drivetrain === 'tank' || (lr.spec.drivetrain === 'butterfly' && lr.butterflyTank);
     if (drivingTank && this.settings.tankControlMode === 'normal') {
-      cmd.leftDrive = clamp(cmd.driveY - cmd.rotate, -1, 1);
-      cmd.rightDrive = clamp(cmd.driveY + cmd.rotate, -1, 1);
+      const { left, right } = arcadeTank(cmd.driveY, cmd.rotate);
+      cmd.leftDrive = left;
+      cmd.rightDrive = right;
     }
     this.lastCmd = cmd;
 

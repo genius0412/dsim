@@ -469,11 +469,30 @@ step, all three games, allowed in ranked.
   an old replay contains can reach the new branch. It is spec, not per-tick state, so no snapshot
   bytes. A server without the field drops it in `coerceSpec`, so on an old deploy a coast robot
   drives as brake online (its client predicts from the roster spec, which is the server's).
-- **ZERO POWER IS PER WHEEL AND EXACT**: a wheel is off when its command is under one count of the
-  hub's 16-bit power (`ZERO_POWER_EPS`). A wheel with any power drives the same in both modes, as
-  on the hub, and the existing model already agrees: `MOTOR_BRAKE_MULT` is chosen by "the command
-  opposes the motion", which is the motor driven against itself, not the zero-power state. The
-  hub's PWM decay at partial power is not modeled; both modes treat partial power alike.
+- **ZERO POWER IS EXACT**: a wheel is off when its command is under one count of the hub's 16-bit
+  power (`ZERO_POWER_EPS`). A wheel with any power drives the same in both modes, as on the hub,
+  and the existing model already agrees: `MOTOR_BRAKE_MULT` is chosen by "the command opposes the
+  motion", which is the motor driven against itself, not the zero-power state. The hub's PWM decay
+  at partial power is not modeled; both modes treat partial power alike.
+- **...AND A WHEEL FLOATS WHEN THE DRIVER LETS GO (`floatingWheels`), NOT WHEN TWO KEYS CANCEL.**
+  A motor on any voltage, 0 V included, is damped by its own back-EMF; BRAKE is that damping at
+  0 V and FLOAT is the only state without it. A stick puts a mecanum wheel at an exact zero
+  mid-drive only if two analog axes cancel to 1/32767; DSIM's keys land on the cancellation every
+  time (W + a turn key zeroes the inner pair, W + D a diagonal pair). Floating those wheels, a
+  coaster at speed given a full turn barely turned: in half a second mecanum 113° braked / 21°
+  coasting, x-drive 76 / 32, butterfly 102 / 25, tank 132 / 0. That was the "hard to control".
+  So a mecanum, x-drive, swerve or butterfly floats only when its WHOLE drive command is zero. A
+  tank side can be a stick of its own ("Traditional"), where a released stick is a real zero, so
+  a tank side floats alone unless the command is the arcade mix (`arcadeTank`, `arcadeCancel`).
+  ⚠️ The one real case this gives up: a gamepad with BOTH sticks pegged gives exactly ±1 and the
+  usual mix cancels to an exact 0, which floats on a real robot. DSIM cannot tell that from a key.
+- **THE STICK'S RETURN IS NOT ADDED.** A released stick sweeps back through the deadzone and for
+  those milliseconds the motors are below their back-EMF. A DSIM gamepad already samples its own
+  stick doing that every frame. No measured return time was found, the hub's partial-power decay
+  mode is undocumented, and the FLOAT data below is taken with an instant zero, so the keyboard
+  stays an instant zero. Measured sensitivity, for the record: a 33 ms ramp cuts the default
+  mecanum's roll-out 131 → 105 in, but that is DSIM's full-authority `motorStep` brake, which
+  overstates a real motor's braking at partial power.
 - **THE WHEELS ARE RECOVERED FROM THE CHASSIS MODEL.** The drive is chassis-level, so `coastStep`
   splits the brake answer across wheel rows in normalised chassis coordinates (each axis over its
   own free speed, where a wheel's power is a row of signs times the command). It keeps the powered
@@ -483,24 +502,56 @@ step, all three games, allowed in ranked.
   would drive motion: a coasting tank or swerve is held sideways exactly as a braked one, and a
   coasting tank stops spinning on its tread scrub (`scrub`, capped at brake's answer). ROLLER
   wheels (mecanum, omni, butterfly's mecanum set) roll every way once the hub is free, so a
-  coasting roller wheel also gives up its sideways grip (traction loop and cornering force).
+  coasting roller wheel has no tyre grip sideways (traction loop and cornering force), only
+  FRICTION every way: its hub's and its rollers' (`rollerForce`, below).
   ⚠️ The tyre row's rank test failed first: with swerve pods almost parallel, sideways counted as
   "rollable" and a coasting swerve kept a 2 in/s sideways creep. Explicit tyre rows fixed it.
-- **THE FRICTION (`coastDecel`)**: motor friction from goBILDA's 5203 datasheet (0.25 A no-load
-  of 9.2 A stall, i.e. `kt · I0`) back-driven through the reduction `MOTOR_FREE_RPM / rpm`, four
-  motors, over the robot's weight; plus rolling resistance `COAST_ROLL_TRACTION` 0.03 /
-  `COAST_ROLL_ROLLER` 0.05 of weight (estimates: no FTC measurement exists that we found; wheelchair
-  data puts rubber on carpet at 0.01-0.03, mats two to three times a hard floor). At 26 lb and
-  435 rpm that is 25.0 in/s² on traction wheels and 32.7 on rollers, and `DRIVE_EFFICIENCY` 0.95
-  independently implies 24.7 (5% of stall holds a powered robot under free speed). Constant
-  (Coulomb) above `COAST_STICTION_SPEED` 2 in/s, fading to zero below it.
-- **MEASURED** (open floor, the `updateRobot` wrench integrated as the free-space solve does; brake
-  then coast, from loaded top speed): default 500 rpm builds — mecanum 11 in / 130 in (3.0 s),
-  tank 11 / 228 (4.5 s), swerve 8 / 134, x-drive 14 / 84, butterfly 12 / 120; at 435 rpm and
-  26 lb — mecanum 8 / 101, tank 8 / 176, swerve 6 / 104, x-drive 11 / 65. Roll-outs match
-  v²/2a to the inch. PUSH, an idle robot shoved head-on by its identical twin for 1.5 s from
-  touching: mecanum 33 → 69 in, tank 40 → 80, swerve 32 → 69, x-drive 22 → 38, butterfly 30 →
-  61. Side-on by a tank: a tank 3.9 → 3.9 (treads), a mecanum 10 → 80 (free rollers). A tank at
-  speed releasing one side for 0.5 s turns 135° braked, 17° coasting. A mecanum on a pure
-  diagonal (FL and BR at zero) drives it identically in both modes.
+- **THE FRICTION, HUB (`coastDecel`)**: motor friction from goBILDA's 5203 datasheet (0.25 A
+  no-load of 9.2 A stall, i.e. `kt · I0`) back-driven through the reduction `MOTOR_FREE_RPM / rpm`,
+  four motors, over the robot's weight; plus rolling resistance `COAST_ROLL_TRACTION` 0.03 /
+  `COAST_ROLL_ROLLER` 0.05 of weight. At 26 lb and 435 rpm: 25.0 in/s² on traction wheels, 32.7 on
+  rollers; `DRIVE_EFFICIENCY` 0.95 independently implies 24.7. Coulomb above
+  `COAST_STICTION_SPEED` 2 in/s, fading to zero below it.
+- **THE EVIDENCE: REAL ROBOTS' FLOAT ROLL-OUT.** Pedro Pathing's Forward/Lateral Zero Power
+  Acceleration tuners set the drive motors to FLOAT, drive at full power to 30 in/s, `setPower(0)`
+  and average the deceleration to rest — exactly this setting. Teams commit the results; a GitHub
+  code search (2026-11-04) gave 498 distinct pairs once the library defaults (−41.278 / −59.7819)
+  and copies were dropped:
+  | | median | quartiles |
+  |---|---|---|
+  | forward decel, in/s² | 35.2 | 30.1 / 43.8 |
+  | lateral decel, in/s² | 67.1 | 60.0 / 76.0 |
+  | lateral ÷ forward | 1.87 | 1.54 / 2.15 |
+  | robot mass (committed), kg | 12.0 | |
+  | measured top speed `xVelocity`, in/s | 71.9 | |
+  | roll-out from that top speed, v²/2a, in | 68 | 49 / 98 |
+
+  The datasheet-and-estimate model above gives the median robot (mecanum, 26.5 lb, 353 rpm ≈ 72
+  in/s) 34.2 forward: it stands, unfitted. Sideways it gave 43.4 against 67.1: a free mecanum
+  strafing turns its ROLLERS as well as its hubs (driving straight turns no roller), and that
+  friction was missing, so a coasting mecanum skated sideways. Upper bound, a different
+  measurement: Road Runner's tuned static friction `kS`, 321 distinct robots, median 1.24 V of 12
+  (about 10% of stall, 50-70 in/s² at FTC gearings), is the breakaway of a DRIVEN drivetrain.
+  No data exists for tank or swerve coast; their traction rolling stays an estimate.
+- **THE FRICTION, ROLLERS (`rollerForce`, `COAST_ROLLER_FRICTION` 0.0416 of each free wheel's share
+  of the weight)**, fitted to the lateral median. A mecanum's rollers turn at √2·(the wheel's
+  sideways speed) whatever the hub does, so by virtual work their friction is a pure sideways
+  force of √2 times the roller's; an x-drive's omnis roll square to their hubs, so theirs acts
+  along the roll line (1, ±1)/√2 and also slows it driving straight. Spinning engages both.
+- **MEASURED** (open floor, brake / coast from loaded top speed, coast unchanged forward except
+  x-drive): default 500 rpm builds — mecanum 12 / 131 in (2.9 s), tank 13 / 228 (longer than the
+  field: 106 in/s on the least friction), swerve 10 / 150, x-drive 15 / 63 (was 85), butterfly
+  13 / 121; at 435 rpm and 26 lb — mecanum 9 / 101, tank 9 / 176, swerve 7 / 108, x-drive 11 / 49
+  (was 66). The median robot rolls 62 in
+  from its 66 in/s, against the data's 68. STRAFE from top speed, mecanum: default 8 / 43 in (was
+  67), 435 rpm 6 / 33 (was 52). STOP ON A MARK (let go where the braked robot stops on it),
+  default mecanum: full forward 81 in past, half stick 29, full strafe 35 (was 59). Let go
+  spinning at full turn: mecanum 45° / 235° (was ~315°), x-drive 41 / 126, butterfly 43 / 190,
+  tank 46 / 46 (scrub), swerve 48 / 624 (pods tangent, nothing but rolling friction). PUSH, an
+  idle robot shoved head-on by its identical twin for 1.5 s from touching: mecanum 33 → 69 in,
+  tank 40 → 80, swerve 32 → 69, x-drive 22 → 34, butterfly 30 → 61; side-on by a tank: a tank
+  3.9 → 3.9 (treads), a mecanum 10 → 65 (was 80). A "Traditional" tank releasing one side at
+  speed for 0.5 s turns 135° braked, 17° coasting; W + a turn key now turns every coaster exactly
+  as braked. Smoke pins the median-robot decels (±5%), the ratio's quartiles, and 13 coast scenes
+  at hash + distance.
 

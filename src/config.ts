@@ -1364,19 +1364,36 @@ export const MOTOR_NO_LOAD_AMPS = 0.25;
 export const DRIVE_MOTORS = 4;
 /**
  * ROLLING RESISTANCE of a freewheeling drive wheel on the foam field tiles, as a fraction of
- * weight. No FTC measurement exists that we could find, so these are estimates in the range
- * wheelchair studies give for rubber on carpet (0.01-0.03, with soft carpet and mats two to three
- * times a hard floor), the small rollers of a mecanum or omni wheel higher than a solid tyre
- * because small wheels roll harder and each roller turns on its own bushing.
+ * weight. First estimated in the range wheelchair studies give for rubber on carpet (0.01-0.03,
+ * mats two to three times a hard floor), the small rollers of a mecanum or omni wheel higher.
  *
- * Cross-check against the model's own numbers: at the reference build (26 lb, 435 rpm, traction
- * wheels) motor friction (`MOTOR_NO_LOAD_AMPS` through the gearbox, 13.4 in/s²) plus 0.03 g
- * rolling (11.6) is 25.0 in/s² of coast deceleration, and `DRIVE_EFFICIENCY` 0.95 says the same
- * thing from the other side: 5% of stall force holds a powered robot under its geometric free
- * speed, 24.7 in/s².
+ * MEASURED SINCE, for rollers: Pedro Pathing's zero-power tuners set the drive motors to FLOAT,
+ * drive at full power to 30 in/s, set power to exactly 0 and average the deceleration to a stop —
+ * this setting's own case. Teams commit the result, and 498 distinct pairs of values across
+ * GitHub (2026-11-04, the library defaults and copies dropped) put a mecanum's FORWARD
+ * deceleration at 35.2 in/s² median (quartiles 30.1 / 43.8) on robots with a median 12 kg and a
+ * measured top speed of 72 in/s (353 wheel rpm here). This model gives that robot 34.2: the
+ * estimate stands, unfitted. For traction wheels there is no such data; 0.03 stays an estimate.
+ *
+ * Cross-check: at the reference build (26 lb, 435 rpm, traction wheels) motor friction
+ * (`MOTOR_NO_LOAD_AMPS` through the gearbox, 13.4 in/s²) plus 0.03 g rolling (11.6) is 25.0 in/s²,
+ * and `DRIVE_EFFICIENCY` 0.95 says the same from the other side: 5% of stall force holds a powered
+ * robot under its geometric free speed, 24.7 in/s². And an upper bound: Road Runner's tuned
+ * static friction `kS` (321 distinct robots, median 1.24 V of 12, about 10% of stall) is 50-70
+ * in/s² at FTC gearings — the breakaway of a DRIVEN drivetrain, gearbox losses under load included.
  */
 export const COAST_ROLL_TRACTION = 0.03;
 export const COAST_ROLL_ROLLER = 0.05;
+/**
+ * A FREE ROLLER WHEEL'S ROLLERS' OWN FRICTION, as a fraction of that wheel's share of the weight
+ * (`rollerForce`): bushings and the rollers' rolling resistance. The same Pedro data measures it,
+ * sideways: a mecanum strafing turns its rollers as well as its hubs, and its LATERAL
+ * deceleration is 67.1 in/s² median (quartiles 60.0 / 76.0), 1.87x its forward one (quartiles
+ * 1.54 / 2.15). The hubs alone gave the median robot 43.4; this is fitted so it strafes to rest
+ * from 30 in/s at 67.1, measured the tuner's way. The one number then sets an x-drive's forward
+ * roll (its omnis' rollers turn driving straight) and every roller drivetrain's spin.
+ */
+export const COAST_ROLLER_FRICTION = 0.0416;
 /** in/s of hub speed under which a coasting wheel's friction fades out linearly, so a robot
  * rolling to rest settles instead of reversing on the friction's sign. */
 export const COAST_STICTION_SPEED = 2;

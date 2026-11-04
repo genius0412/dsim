@@ -45,6 +45,12 @@ export function activeDrive(
   return { p: C.DRIVETRAIN_PRESETS[spec.drivetrain], rpm: spec.driveRpm };
 }
 
+/** "Normal" (arcade) tank control: each side from one forward and one turn axis. `GameController`
+ *  applies it to a local tank's command; the coast model reads it back (`arcadeCancel`). */
+export function arcadeTank(driveY: number, rotate: number): { left: number; right: number } {
+  return { left: clamp(driveY - rotate, -1, 1), right: clamp(driveY + rotate, -1, 1) };
+}
+
 /** a butterfly's TANK-set rpm, clamped to the traction envelope. Defaults to the
  * mecanum slider's value (clamped) when a spec predates the second slider. */
 export function butterflyTankRpm(spec: RobotSpec): number {
