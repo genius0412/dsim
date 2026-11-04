@@ -678,22 +678,30 @@ rules, the queue and the copy are `src/eventToasts.ts` (DOM-free, held by `npm t
     read, the top `players + 1` placed rows after the match; `newRankedTop` rebuilds the board
     before it from those rows and the players' own rows from before the match (nothing else moved).
     The new #1 can be someone who did not play. A board with under two placed players is skipped.
-  - `supporter` (`supporterAnnouncement`): a Ko-fi payment that bought at least one month and is not
-    a subscription renewal. NAMED by DSIM @username only when Ko-fi marks it public AND it is linked
-    to an account (`profiles.kofi_email`); otherwise "A new supporter joined DSIM". A FIRST payment is
-    not linked yet (the claim links it, later), so it is anonymous and the claim announces nothing:
-    one payment, one toast.
+  - `supporter` (`supporterAnnouncement`): a person's FIRST payment that bought at least one month.
+    A subscription renewal, a repeat tip and a resubscription after a lapse are not news
+    (`hadEarlierSupport`: any other months-buying payment from that email or claimed by that account,
+    or any membership grant on it other than the one this payment made; a failed read counts as
+    "seen", so nobody is announced twice). NAMED by DSIM @username only when Ko-fi marks it public
+    AND it is linked to an account (`profiles.kofi_email`); otherwise "A new supporter joined DSIM".
+    A first payment is not linked yet (the claim links it, later), so it is anonymous and the claim
+    announces nothing: one person, one toast.
   An event naming you is skipped on your own client (`uid`/`pid`): the personal toast said it. A
   season hidden on the client's channel never toasts.
 - **TRANSPORT: the status poll every page already makes.** `GET /api/status?ev=<cursor>`
   (`NoticePoller`, 20 s while somebody is at the keyboard). The PARAMETER IS THE CAPABILITY: no
   parameter, no `ev` key, so an older client sees nothing new, and an older server ignores the
   parameter. A first read (empty cursor) gets the head alone, so nothing from before the page
-  opened replays; a cursor at the head gets no key at all; behind it, the newer events younger than
-  15 min; ahead of it (a lagging machine), the head, and the client dedupes by id. Each machine
-  caches the newest 20 rows, re-read at most every 10 s (the banners' TTL) and only when a poll
-  asks; the machine that wrote an event re-reads at once. That is what crosses Fly machines,
-  satellites and room workers: persistence, and so every emission, is on the socket thread.
+  opened replays; a cursor at the head, or ahead of a lagging machine's head, gets no key at all;
+  behind it, the newer events younger than 15 min. ⚠️ **THE CURSOR NEVER MOVES BACKWARDS** (the client
+  keeps the larger of itself and any head), and a machine whose reads have all failed (a cold Neon
+  wake) answers no `ev` rather than a head of 0: either one let the next healthy machine hand a page
+  fifteen minutes of history as news. Each machine caches the newest 20 rows, re-read at most every
+  10 s (the banners' TTL) and only when a poll asks. ⚠️ **A ROW IS READ ONLY ONCE IT IS 2 s OLD**
+  (`COMMUNITY_SETTLE_MS`): a bigserial id is taken at insert and visible at commit, so a reader past
+  id 11 would never see an id 10 that committed late; the insert + prune transaction takes
+  milliseconds. That is what crosses Fly machines, satellites and room workers: persistence, and so
+  every emission, is on the socket thread.
 - **THE TABLE STAYS TINY.** Every insert prunes to the newest 200 rows and the last 24 h, in the
   same transaction. Both foreign keys (`user_id`, `partner_id`) cascade and lead an index. It is
   NOT `announcements` (0008), which is the "What's new" patch notes.

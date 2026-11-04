@@ -13,7 +13,8 @@ import { COMMUNITY_KINDS, type CommunityEvent, type CommunityFeed, type Communit
  * small cache, re-read at most once per `TTL_MS` and ONLY when a status poll asks
  * (`refreshCommunityEvents`), the way `siteState.ts` caches the banners beside it. Clients already
  * poll `GET /api/status` (boot, then every 20 s while somebody is at the keyboard) and now add
- * `?ev=<cursor>`; the answer carries what came after the cursor (`feedSince`). So an event crosses
+ * `?ev=<cursor>`; the answer carries what came after the cursor (`feedSince`). A row is read
+ * only once it is `COMMUNITY_SETTLE_MS` old, so ids that commit out of order are never skipped. So an event crosses
  * Fly machines, satellites and room worker threads through the database alone, nothing new is
  * held open, and nothing runs per tick. Rooms on workers never see this: persistence, and so
  * every emission, is on the socket thread.
@@ -40,6 +41,13 @@ export const MAX_AGE_MS = 15 * 60_000;
 
 let ring: CommunityEvent[] = [];
 let head = 0;
+/**
+ * A READ HAS SUCCEEDED ON THIS MACHINE, so `head` is a real answer. Until then (a cold machine whose
+ * first read failed on a Neon wake) the machine answers no `ev` at all: a head of 0 there would read
+ * to a client as "the feed starts at 0", and the next healthy machine would hand it fifteen minutes
+ * of history as news.
+ */
+let known = false;
 let readAt = 0;
 let inFlight: Promise<void> | null = null;
 
@@ -71,24 +79,23 @@ export function mergeRing(prev: readonly CommunityEvent[], rows: readonly Commun
 /**
  * WHAT A STATUS POLL IS TOLD, given its cursor (the raw `ev` parameter). Pure, so smoke holds it.
  *  - `null` (no parameter): an older client. Nothing — the parameter IS the capability.
+ *  - `h` null (this machine has never read the table): nothing, whatever the cursor.
  *  - `''` (no cursor yet, a first read): the head alone, so nothing that happened before the page
  *    opened is replayed.
- *  - the head itself: nothing (the common poll costs no bytes).
+ *  - the head itself, or AHEAD of it (this machine's copy lags another's): nothing. A head is never
+ *    reported below a cursor; the client keeps the larger of the two anyway (`CommunityCursor`).
  *  - behind the head: the head and the events after the cursor that are younger than `MAX_AGE_MS`.
- *  - AHEAD of the head (this machine's copy lags another's, or a database-less dev server was
- *    restarted): the head alone, and the client re-syncs to it, deduping by id.
  */
 export function feedSince(
   since: string | null,
   events: readonly CommunityEvent[],
-  h: number,
+  h: number | null,
   now = Date.now(),
 ): CommunityFeed | undefined {
-  if (since === null) return undefined;
+  if (since === null || h === null) return undefined;
   const cur = since === '' ? NaN : Number(since);
   if (!Number.isFinite(cur) || cur < 0) return { h };
-  if (cur === h) return undefined;
-  if (cur > h) return { h };
+  if (cur >= h) return undefined;
   const items = events.filter((e) => e.id > cur && now - e.at <= MAX_AGE_MS);
   return items.length ? { h, items } : { h };
 }
@@ -104,6 +111,7 @@ export async function refreshCommunityEvents(force = false): Promise<void> {
       const events = rows.map(eventOf).filter((e): e is CommunityEvent => !!e);
       ring = mergeRing(ring, events);
       for (const r of rows) head = Math.max(head, r.id);
+      known = true;
     } catch (e) {
       // keep the last copy; the next poll after the TTL tries again
       console.error('[community] read failed, keeping last copy:', e);
@@ -121,7 +129,7 @@ export async function refreshCommunityEvents(force = false): Promise<void> {
 
 /** this machine's answer for one poll (call after `refreshCommunityEvents`) */
 export const communityFeed = (since: string | null, now = Date.now()): CommunityFeed | undefined =>
-  feedSince(since, ring, head, now);
+  feedSince(since, ring, known || !dbEnabled ? head : null, now);
 
 /** WITHOUT A DATABASE (local dev, a LAN box) the ring is the store, as banners are */
 let memId = 0;
@@ -158,9 +166,9 @@ export async function announce(a: CommunityNews, now = Date.now()): Promise<void
     const id = await insertCommunityEvent({
       kind: a.kind, game: a.game, userId: a.userId ?? null, partnerId: a.partnerId ?? null, data,
     });
+    // NOT read back at once: a cursor read takes only SETTLED rows (`COMMUNITY_SETTLE_MS`), so this
+    // machine's pollers get it with everyone else's, within the TTL
     console.log(`[community] #${id} ${a.kind} ${a.game ?? ''} ${a.name ?? '(anonymous)'}`);
-    // this machine's own pollers see it on their next poll, not after the TTL
-    await refreshCommunityEvents(true);
   } catch (e) {
     console.error('[community] write failed (the result it describes is unaffected):', e);
   }
@@ -221,14 +229,17 @@ export interface SupporterPayment {
   linkedUserId: string | null;
   /** that account's @username, if it has one */
   linkedUsername: string | null;
+  /** an earlier payment or membership grant for this email or account (`hadEarlierSupport`) */
+  earlierSupport?: boolean;
 }
 
 /**
  * IS THIS PAYMENT A NEW SUPPORTER, and may they be named? (owner's privacy rule, 2026-11-04)
  *
- * A NEW supporter is a payment that bought at least one month and is not a subscription's second
- * or later month: a renewal is the same supporter, not a new one. A $1 tip below the tier is
- * thanks, not a membership, and is not announced.
+ * A NEW supporter is a person's FIRST payment that bought at least one month: not a subscription's
+ * later month, and not anyone with an earlier payment or membership grant (`earlierSupport`), so a
+ * second tip or a resubscription after a lapse is not "joined DSIM's supporters" twice. A $1 tip
+ * below the tier is thanks, not a membership, and is not announced.
  *
  * NAMED only when Ko-fi marks the payment public AND it is linked to a DSIM account with a
  * @username — and then by that @username, never by anything Ko-fi sent (a Ko-fi display name is
@@ -239,6 +250,7 @@ export interface SupporterPayment {
 export function supporterAnnouncement(p: SupporterPayment): CommunityNews | null {
   if (!p.fresh || p.months <= 0) return null;
   if (p.isSubscription && p.isFirstSubscriptionPayment === false) return null;
+  if (p.earlierSupport) return null;
   const named = !!(p.isPublic && p.linkedUserId && p.linkedUsername);
   return {
     kind: 'supporter',
@@ -252,6 +264,7 @@ export function supporterAnnouncement(p: SupporterPayment): CommunityNews | null
 export function resetCommunityEventsForTests(): void {
   ring = [];
   head = 0;
+  known = false;
   readAt = 0;
   inFlight = null;
   memId = 0;

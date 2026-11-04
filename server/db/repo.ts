@@ -3298,6 +3298,15 @@ export interface CommunityEventRow {
 /** how many rows the table keeps, and for how long: a page of history, never a log */
 export const COMMUNITY_KEEP_ROWS = 200;
 export const COMMUNITY_KEEP_HOURS = 24;
+/**
+ * HOW OLD A ROW MUST BE BEFORE A CURSOR READ SEES IT. A bigserial id is handed out at INSERT and
+ * becomes visible at COMMIT, so two writers can commit out of order: a reader that saw id 11 and
+ * moved its head past it would never see an id 10 that committed a moment later (`id > head`). A
+ * row is only read once its transaction has had this long to commit, and the insert + prune
+ * transaction takes milliseconds, so the window holds by a wide margin. The cost is that a toast
+ * reaches people up to two seconds later, which nobody can see beside a 20-second poll.
+ */
+export const COMMUNITY_SETTLE_MS = 2000;
 
 /**
  * Write one community event and prune the table, in one transaction. Returns the new id. The prune
@@ -3328,23 +3337,27 @@ export async function insertCommunityEvent(a: {
 }
 
 /**
- * The rows after `afterId`, oldest first, at most `limit`. With `afterId` 0 (a machine's first
- * read) the NEWEST `limit` rows, still oldest first, so a cold cache starts at the head rather than
- * walking a day of history. Either way a primary-key range scan.
+ * The SETTLED rows (`COMMUNITY_SETTLE_MS`) after `afterId`, oldest first, at most `limit`. With
+ * `afterId` 0 (a machine's first read) the NEWEST `limit` rows, still oldest first, so a cold cache
+ * starts at the head rather than walking a day of history. Either way a primary-key range scan.
  */
-export async function listCommunityEvents(afterId: number, limit = 20): Promise<CommunityEventRow[]> {
+export async function listCommunityEvents(afterId: number, limit = 20, settleMs = COMMUNITY_SETTLE_MS): Promise<CommunityEventRow[]> {
   const rows = await q<{
     id: string; kind: string; game: string | null; user_id: string | null; partner_id: string | null;
     data: Record<string, unknown> | string | null; at: string | number;
   }>(
     afterId > 0
       ? `select id, kind, game, user_id, partner_id, data, (extract(epoch from created_at) * 1000)::float8 as at
-           from community_events where id > $1 order by id asc limit $2`
+           from community_events
+          where id > $1 and created_at <= now() - ($3::int * interval '1 millisecond')
+          order by id asc limit $2`
       : `select * from (
            select id, kind, game, user_id, partner_id, data, (extract(epoch from created_at) * 1000)::float8 as at
-             from community_events where $1::bigint = 0 order by id desc limit $2
+             from community_events
+            where $1::bigint = 0 and created_at <= now() - ($3::int * interval '1 millisecond')
+            order by id desc limit $2
          ) t order by id asc`,
-    [afterId, limit],
+    [afterId, limit, Math.max(0, Math.round(settleMs))],
   );
   return rows.map((r) => ({
     id: Number(r.id),
@@ -3355,6 +3368,28 @@ export async function listCommunityEvents(afterId: number, limit = 20): Promise<
     data: typeof r.data === 'string' ? (JSON.parse(r.data) as Record<string, unknown>) : (r.data ?? {}),
     at: Number(r.at),
   }));
+}
+
+/**
+ * HAS THIS PAYER SUPPORTED BEFORE? Any OTHER Ko-fi payment that bought months, from the same email
+ * or claimed by the linked account, or any membership grant on that account (a Ko-fi month, an
+ * admin comp) other than the one this payment just made. Asked once per webhook that could be a new
+ * supporter, so a repeat tip or a resubscription after a lapse is not announced as a newcomer.
+ */
+export async function hadEarlierSupport(p: { messageId: string; email: string | null; userId: string | null }): Promise<boolean> {
+  const email = p.email ? p.email.trim().toLowerCase() : null;
+  const rows = await q<{ seen: boolean }>(
+    `select (
+       exists (select 1 from kofi_payments
+                where message_id <> $1 and months > 0
+                  and (($2::text is not null and email = $2::text) or ($3::text is not null and claimed_by = $3::text)))
+       or exists (select 1 from supporter_grants
+                   where $3::text is not null and user_id = $3::text and months > 0
+                     and note is distinct from ('auto: ' || $1::text))
+     ) as seen`,
+    [p.messageId, email, p.userId],
+  );
+  return !!rows[0]?.seen;
 }
 
 // --------------------------------------------------- admin moderation -------

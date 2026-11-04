@@ -341,8 +341,12 @@ export interface ToastPrefs {
 /**
  * The cursor protocol, separate from the queue so smoke can hold it: `null` until the first answer,
  * which carries only the head (nothing from before the page opened is replayed); after that every
- * answer's newer items are delivered once, by id. A head BELOW the cursor (a lagging machine, a
- * restarted dev server) re-syncs down, and the id set keeps that from delivering anything twice.
+ * answer's newer items are delivered once, by id.
+ *
+ * ⚠️ THE CURSOR NEVER MOVES BACKWARDS. It keeps the larger of itself and any head it is told. A
+ * lagging machine, or a cold one whose first read failed, could otherwise drop it, and the next
+ * healthy machine would hand the page events from before it opened as news. (A database-less dev
+ * server that restarts hands out ids from 1 again; reload the page there.)
  */
 export class CommunityCursor {
   cursor: number | null = null;
@@ -356,12 +360,12 @@ export class CommunityCursor {
   /** an answer's `ev`: the events to deliver, oldest first */
   accept(feed: CommunityFeed | undefined): CommunityEvent[] {
     if (!feed || typeof feed.h !== 'number' || !Number.isFinite(feed.h)) return [];
-    const first = this.cursor === null;
-    this.cursor = feed.h;
-    if (first || !Array.isArray(feed.items)) return [];
+    const prev = this.cursor;
+    this.cursor = prev === null ? feed.h : Math.max(prev, feed.h);
+    if (prev === null || !Array.isArray(feed.items)) return [];
     const out: CommunityEvent[] = [];
     for (const e of feed.items) {
-      if (!e || typeof e.id !== 'number' || this.seen.has(e.id)) continue;
+      if (!e || typeof e.id !== 'number' || e.id <= prev || this.seen.has(e.id)) continue;
       this.seen.add(e.id);
       out.push(e);
     }

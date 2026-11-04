@@ -19468,7 +19468,9 @@ const recordDrive: CommandSource = (tick) => {
   const behind = ce.feedSince('3', ring, 6, T);
   check('community: a cursor behind the head gets the newer events, oldest first, minus stale ones',
     behind?.h === 6 && behind.items?.map((e) => e.id).join() === '4,5', JSON.stringify(behind));
-  check('community: a cursor AHEAD of this machine (a lagging copy) re-syncs to the head', JSON.stringify(ce.feedSince('9', ring, 6, T)) === '{"h":6}');
+  check('community: a cursor AHEAD of this machine (a lagging copy) is told nothing, never a lower head', ce.feedSince('9', ring, 6, T) === undefined);
+  check('community: a machine that has never read the table (a failed cold read) answers nothing at all, not a head of 0',
+    ce.feedSince('', ring, null, T) === undefined && ce.feedSince('3', ring, null, T) === undefined);
   check('community: a junk cursor is treated as a first read', JSON.stringify(ce.feedSince('abc', ring, 6, T)) === '{"h":6}');
   check('community: a stored row of a kind this build does not know is skipped',
     ce.eventOf({ id: 1, kind: 'mystery', game: null, userId: null, partnerId: null, data: {}, at: T }) === null &&
@@ -19517,6 +19519,8 @@ const recordDrive: CommandSource = (tick) => {
   check('supporter: a subscription RENEWAL is not a new supporter', pay({ isSubscription: true, isFirstSubscriptionPayment: false }) === null);
   check('supporter: a subscription’s first payment is', pay({ isSubscription: true, isFirstSubscriptionPayment: true }) !== null);
   check('supporter: a tip below the tier (0 months) and a Ko-fi retry are not announced', pay({ months: 0 }) === null && pay({ fresh: false }) === null);
+  check('supporter: someone who has supported before (a repeat tip, a resubscription) is not announced again',
+    pay({ earlierSupport: true }) === null && pay({ isSubscription: true, isFirstSubscriptionPayment: true, earlierSupport: true }) === null);
 
   // ---- the client's cursor: the first answer replays nothing, later ones deliver once
   const cur = new et.CommunityCursor();
@@ -19524,8 +19528,10 @@ const recordDrive: CommandSource = (tick) => {
   check('toasts: the first answer carries only the head; nothing older is shown', cur.accept({ h: 7, items: [ev(7)] }).length === 0 && cur.param() === '7');
   check('toasts: an answer from an older server (no ev) changes nothing', cur.accept(undefined).length === 0 && cur.param() === '7');
   check('toasts: newer events are delivered', cur.accept({ h: 9, items: [ev(8), ev(9)] }).map((e) => e.id).join() === '8,9');
-  check('toasts: a lagging machine re-syncs the cursor down, and the id set stops a second delivery',
-    cur.accept({ h: 8 }).length === 0 && cur.param() === '8' && cur.accept({ h: 9, items: [ev(9)] }).length === 0);
+  check('toasts: the cursor NEVER moves backwards (a lagging machine, or a head of 0 from a cold one)',
+    cur.accept({ h: 8 }).length === 0 && cur.accept({ h: 0 }).length === 0 && cur.param() === '9');
+  check('toasts: ...so nothing at or below it is delivered again, or delivered as news',
+    cur.accept({ h: 10, items: [ev(5), ev(9), ev(10)] }).map((e) => e.id).join() === '10' && cur.param() === '10');
 
   // ---- what a viewer is shown
   const prefs = { me: 'u3', community: true, visible: (g: string) => g !== 'hidden' };

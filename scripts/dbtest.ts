@@ -7309,7 +7309,9 @@ async function main(): Promise<void> {
     for (const u of ['ce-a', 'ce-b', 'ce-c']) await db.query(`update profiles set username = $2 where user_id = $1`, [u, u.replace('-', '_')]);
 
     const id1 = await repo.insertCommunityEvent({ kind: 'record', game: 'chain', userId: 'ce-a', partnerId: 'ce-b', data: { name: 'ce_a', partner: 'ce_b', mode: 'duo', score: 9 } });
-    const back = await repo.listCommunityEvents(id1 - 1);
+    check('community/db: a row younger than the settle window is not read yet (ids commit out of order)',
+      (await repo.listCommunityEvents(id1 - 1)).length === 0 && repo.COMMUNITY_SETTLE_MS >= 1000);
+    const back = await repo.listCommunityEvents(id1 - 1, 20, 0);
     check('community/db: a row round-trips with its facts, and its time as epoch ms',
       back.length === 1 && back[0].userId === 'ce-a' && back[0].partnerId === 'ce-b' && back[0].data.score === 9 && Math.abs(back[0].at - Date.now()) < 60_000,
       JSON.stringify(back));
@@ -7326,7 +7328,7 @@ async function main(): Promise<void> {
       `select count(*) as n, min(id) as lo, count(*) filter (where created_at < now() - interval '1 day') as old from community_events`)).rows[0];
     check('community/db: every write prunes the table to its newest rows and its last day',
       Number(left.n) <= repo.COMMUNITY_KEEP_ROWS && Number(left.lo) > last - repo.COMMUNITY_KEEP_ROWS && Number(left.old) === 0, JSON.stringify(left));
-    const head = await repo.listCommunityEvents(0, 5);
+    const head = await repo.listCommunityEvents(0, 5, 0);
     check('community/db: a cold cache (cursor 0) reads the NEWEST rows, oldest first',
       head.length === 5 && head[4].id === last && head.every((r, i) => i === 0 || r.id > head[i - 1].id));
 
@@ -7376,15 +7378,44 @@ async function main(): Promise<void> {
 
     // ---- the cache a status poll is answered from
     ce.resetCommunityEventsForTests();
+    check('community/db: a machine that has not read the table yet answers no `ev` at all (not a head of 0)',
+      ce.communityFeed('') === undefined && ce.communityFeed('5') === undefined);
+    await db.query(`update community_events set created_at = created_at - interval '10 seconds'`);
     await ce.refreshCommunityEvents(true);
     const first = ce.communityFeed('');
     check('community/db: a poll without a cursor gets the head and nothing else', !!first && first.h > 0 && first.items === undefined, JSON.stringify(first));
     check('community/db: an older client (no parameter) gets nothing', ce.communityFeed(null) === undefined);
     await ce.announce({ kind: 'supporter', game: null, name: null });
+    await ce.refreshCommunityEvents(true);
+    check('community/db: a just-written event waits out the settle window, like everyone else’s',
+      ce.communityFeed(String(first!.h)) === undefined);
+    await db.query(`update community_events set created_at = created_at - interval '10 seconds' where id > $1`, [first!.h]);
+    await ce.refreshCommunityEvents(true);
     const next = ce.communityFeed(String(first!.h));
-    check('community/db: an event written on this machine reaches its very next poll (no wait for the TTL)',
+    check('community/db: ...and then reaches the next poll',
       next?.items?.length === 1 && next.items[0].kind === 'supporter' && next.items[0].name === undefined, JSON.stringify(next));
     ce.resetCommunityEventsForTests();
+
+    // ---- a supporter is announced ONCE: the first payment that bought months, by email or account
+    const pay = (messageId: string, email: string, months = 1) =>
+      repo.recordKofiPayment({ messageId, kind: 'Donation', email, transactionId: `tx-${messageId}`, amount: '5.00', currency: 'USD', isSubscription: false, tierName: null, months });
+    await pay('ce-p1', 'first@example.test');
+    check('supporter/db: a first payment from an email has no earlier support',
+      !(await repo.hadEarlierSupport({ messageId: 'ce-p1', email: 'First@Example.test', userId: null })));
+    await pay('ce-p2', 'first@example.test');
+    check('supporter/db: a second payment from the same email does (a repeat tip is not a new supporter)',
+      await repo.hadEarlierSupport({ messageId: 'ce-p2', email: 'first@example.test', userId: null }));
+    await pay('ce-tip', 'tipper@example.test', 0);
+    await pay('ce-p3', 'tipper@example.test');
+    check('supporter/db: an earlier tip below the tier does not count; the first membership is still news',
+      !(await repo.hadEarlierSupport({ messageId: 'ce-p3', email: 'tipper@example.test', userId: null })));
+    await db.query(`update profiles set kofi_email = 'linked@example.test' where user_id = 'ce-c'`);
+    const linked = await pay('ce-l1', 'linked@example.test');
+    check('supporter/db: a linked payment’s OWN grant is not "earlier support"',
+      linked.autoGrantedTo === 'ce-c' && !(await repo.hadEarlierSupport({ messageId: 'ce-l1', email: 'linked@example.test', userId: 'ce-c' })));
+    await db.query(`insert into supporter_grants (user_id, source, months, until, note) values ('ce-b', 'admin', 2, now() + interval '60 days', 'comp')`);
+    check('supporter/db: an account an admin already comped is not a new supporter',
+      await repo.hadEarlierSupport({ messageId: 'ce-new', email: 'b-new@example.test', userId: 'ce-b' }));
   }
 
   // -------------------------------------------- the prod → alpha sync (scripts/sync-alpha-db.ts)

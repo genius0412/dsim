@@ -95,6 +95,7 @@ import {
   usernameAvailable,
   UsernameTakenError,
   profileNames,
+  hadEarlierSupport,
 } from './db/repo';
 import { announce, supporterAnnouncement } from './communityEvents';
 import {
@@ -1629,6 +1630,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const linkedName = r.fresh && r.autoGrantedTo && payload.is_public
         ? ((await profileNames([r.autoGrantedTo]).catch(() => null))?.get(r.autoGrantedTo)?.username ?? null)
         : null;
+      // ONE ANNOUNCEMENT PER PERSON: only a payer with no earlier payment or grant is new. Asked
+      // only of a payment that could be; a failed read says "seen before" (never announce twice).
+      const couldBeNew = r.fresh && months > 0 && !(event.isSubscription && payload.is_first_subscription_payment === false);
+      const earlierSupport = couldBeNew
+        ? await hadEarlierSupport({ messageId: payload.message_id, email: payload.email ?? null, userId: r.autoGrantedTo }).catch(() => true)
+        : false;
       const supporterNews = supporterAnnouncement({
         fresh: r.fresh,
         months,
@@ -1637,6 +1644,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         isPublic: payload.is_public,
         linkedUserId: r.autoGrantedTo,
         linkedUsername: linkedName,
+        earlierSupport,
       });
       // not awaited: Ko-fi is waiting on this answer, and `announce` never throws
       if (supporterNews) void announce(supporterNews);
