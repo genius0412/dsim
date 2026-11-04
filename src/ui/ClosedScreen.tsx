@@ -100,9 +100,13 @@ function AccessRow({
   const who = groups.length
     ? `${listOf(groups.map((g) => ACCESS_GROUP_LABEL[g].toLowerCase() + 's'))} can sign in to continue.`
     : 'Admins can sign in to continue.';
-  /* THE ALPHA SIGNS IN WITH THE playdsim.com ACCOUNT: both builds point at the same Neon Auth
-     project (docs/deploy.md), so "Create account" with an address that plays there is refused,
-     and the form cannot say why without telling a stranger the address has an account. */
+  /* THE ALPHA SIGNS IN WITH THE playdsim.com EMAIL AND PASSWORD, AND NOTHING ELSE IS SHARED.
+     Both builds point at the same Neon Auth project (docs/deploy.md), so "Create account" with an
+     address that plays there is refused, and the form cannot say why without telling a stranger
+     the address has an account. The DATA is not shared: the alpha server has its own database
+     (a Neon branch), copied from production at a release by `scripts/sync-alpha-db.ts`. The
+     sign-in line used to say the "account works here", which testers read as their profile,
+     records and robots being the same ones. */
   const alpha = appChannel() === 'alpha';
   // a refused account's tag: its @username here once claimed, else the name it signed in as
   const tag = site.access?.username ? `@${site.access.username}` : user?.name || '';
@@ -148,7 +152,8 @@ function AccessRow({
       <>
         <p className="ds-closed-note">
           {sentenceCase(who)}
-          {alpha && ' Your playdsim.com account works here.'}
+          {alpha &&
+            ' Your playdsim.com email and password work here. The alpha keeps its own profile, records and robots, copied from playdsim.com at each release.'}
         </p>
         <button ref={focusFirst} className="ds-btn small" onClick={() => setAuthOpen(true)}>
           Sign in
