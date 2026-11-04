@@ -170,6 +170,15 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
   copies now take a less metallic finish at a lifted colour, so the A-frame reads. The RENDER lane
   walks the file for every neighbour and fails on 4e9507c4: hive frame on the mat, trays inside the
   frame, a deck under the field, the hall floor a riser below, and the frame's diffuse colour.
+- **They still looked balanced, because the trays were level.** A hive is bistable: each tray rests
+  tipped against one stop or the other, never level. `field.glb` stores the trays level and our
+  renderer turns them to a stop by `hiveTiltAngle` (±30°) about their pivots, after lifting each
+  tray's braces and rocker out of the static frame (`reparentTrayBraces`). The copies skipped both.
+  `grb/hive.ts` now does the same: the same selectors move the riding parts onto the tray, and each
+  tray hangs under a pivot node turned by the sim's own `hiveTiltAngle` at rest. Which side is up is
+  seeded per field and alliance (11 up one way, 11 the other). `hiveRestFaults` (RENDER lane) fails
+  on 9208ca75. It reads every neighbour's tray tilt (±30° within 0.5°), its place (where our field
+  draws that tray at that stop, within 0.3 in) and the riding parts' tilt (the tray's, within 0.1°).
 - **Our stage's front and left-end rail are left out**: they stand inside the clear room.
 - **The neighbouring fields are BIOBUZZ fields**, the repo's own full `field.glb`. It is the file
   our field is drawn from on High, so every hive stands on the same A-frame, foot bars and pads. Each
@@ -180,7 +189,7 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
 
 - **Event light is baked.** No light moves and there are no beams or haze. The field is lit by the
   sim's own rig, not by the truss.
-- **The drive teams stand on the stage** (see above), and there is no LED fascia on the stage edge.
+- **The drive teams stand on the stage** (see above).
 - **Spectators are simple rounded figures, all seated.** Nobody stands in the aisles, at the fields
   or in the pits.
 - **The LED walls show generic content**, with no camera feed of a match.
@@ -200,7 +209,7 @@ Dev PC: RTX 4070 Ti SUPER, 1920 × 1080, DPR 1, offscreen Electron, the whole fr
 
 The High range spans two runs; other sessions were using the GPU at the time.
 
-The file is 4.80 MB (meshopt geometry, KTX2 textures; the six fascia strips added a megabyte) and
+The file is 4.81 MB (meshopt geometry, KTX2 textures; the six fascia strips added a megabyte) and
 holds 4,130,330 triangles:
 - the 11 neighbouring fields, 268,892 each from the full `field.glb`;
 - the crowd, about 2,300 figures near our field at ~470 triangles and the rest at ~150;

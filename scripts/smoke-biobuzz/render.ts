@@ -476,6 +476,7 @@ import { THIRD_PARTY } from '../../src/contributors';
 // -- the retired photographed venues (2026-11-04) and the venue sight lines (2026-11-01) -----------
 import { CC_BY_4, creditedEnvironments, environmentCredit, isGeneratedModel, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
 import { neighbourFields } from '../venue-models/grb/generate';
+import { BB_HIVE_TILT_DEG as NEIGHBOUR_STOP_DEG } from '../../src/games/biobuzz/config';
 // -- the modeled venues (2026-11-04) ----------------------------------------------------------------
 import { VENUE_MAX_TRIES, bbModelDetail, noteVenueFailure, venueAssetUrl, venueBlocked } from '../../src/games/biobuzz/graphics/venueFiles';
 import { SPLAT_FLOOR_KEEP_IN, growClearBox, inVenueBox, insetCameraRoom, obstacleTris, splatHiddenBoxes, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
@@ -15349,7 +15350,8 @@ async function parseModelScene(file: string): Promise<THREE.Group | null> {
 /**
  * ⚠️ THE NEIGHBOURS' HIVES MUST STAND, AND BE SEEN TO (owner, 2026-11-04: "the fields nearby still
  * have hives floating"). Walks the file per neighbouring field: the hive frame's lowest point on the
- * field's mat (its stage deck, z 0), the trays inside the frame's reach, a carpet deck under the field
+ * field's mat (its stage deck, z 0), the trays inside the frame's reach along the pivot axis (their
+ * exact pose and place are `hiveRestFaults`'s), a carpet deck under the field
  * at the venue floor's height and the hall's concrete a riser below, and the frame's black anodised
  * metal drawn with enough DIFFUSE colour to read without the sim's own room reflections (a 70 % metal
  * at 0.03 reflects a dark painted dome and vanishes against the black stage: what floated the trays).
@@ -15411,8 +15413,11 @@ function hiveSupportFaults(scene: THREE.Group, fields: readonly { x: number; y: 
       continue;
     }
     if (Math.abs(frame.min.z) > 1.5) out.push(`${f.label}: the frame's foot is at z ${frame.min.z.toFixed(2)}, not on the mat`);
-    if (trays.min.z < frame.min.z || trays.max.z > frame.max.z + 3 || trays.min.x < frame.min.x - 3 || trays.max.x > frame.max.x + 3 || trays.min.y < frame.min.y - 3 || trays.max.y > frame.max.y + 3) {
-      out.push(`${f.label}: the trays reach outside their frame`);
+    // across the pivot axis only: a tray at a stop swings past the frame's own y and z reach (by 3.9 and
+    // 6.1 in, as ours does), so WHERE it hangs is `hiveRestFaults`'s exact check, not a box's
+    if (trays.min.z < frame.min.z || trays.min.x < frame.min.x - 3 || trays.max.x > frame.max.x + 3) {
+      const r = (b: THREE.Box3) => `[${b.min.toArray().map((x) => x.toFixed(1))}]..[${b.max.toArray().map((x) => x.toFixed(1))}]`;
+      out.push(`${f.label}: the trays ${r(trays)} reach outside their frame ${r(frame)}`);
     }
     const deck = under('carpet', f.x, f.y);
     if (deck === null || Math.abs(deck + 0.75) > 0.3) out.push(`${f.label}: no stage deck under it at the venue floor (${deck})`);
@@ -15423,6 +15428,109 @@ function hiveSupportFaults(scene: THREE.Group, fields: readonly { x: number; y: 
   if (!metal || (1 - metal.metalness) * metal.color.r < 0.05) out.push(`the frame's dark metal reads only by reflection (metalness ${metal?.metalness}, colour ${metal?.color.r.toFixed(3)})`);
   return out;
 }
+
+/**
+ * ⚠️ A HIVE IS BISTABLE (owner, 2026-11-04: "One side HAS to be up instead of being balanced").
+ * `field.glb` stores each tray LEVEL and our renderer turns it to a stop; a copy that skips the turn
+ * shows every neighbour's trays level, which is what 9208ca75 shipped. Per neighbouring field, each
+ * tray (its red or blue plastic, wherever it is drawn) must be turned about a HORIZONTAL axis by
+ * ±`BB_HIVE_TILT_DEG`, within 0.5°; must stand where our renderer draws it at that stop (the shipped
+ * `field.glb` tray, turned about `fieldColliders3d`'s pivot and placed on that field, every box face
+ * within 0.3 in); and the braces and rocker that ride it (`hive_<a>/tray-ride`) must be turned by
+ * the same angle, or they hang beside a tipped tray. Across the hall both stops must appear.
+ */
+function hiveRestFaults(scene: THREE.Group, fields: readonly { x: number; y: number; rot: number; label: string }[]): { faults: string[]; tilts: number[] } {
+  const faults: string[] = [];
+  for (const side of ['red', 'blue'] as const) if (!LEVEL_TRAY_CENTRE[side]) faults.push(`field.glb: no ${side} tray plastic to place the neighbours' against`);
+  // where the centre of the level tray's box goes when our renderer turns it about its pivot and the
+  // field is set down at (x, y) facing `rot`. The instance's own box is the same box (the copy is the
+  // same points, its node frame only scaled and moved), so its turned centre must land here.
+  const expected = (side: 'red' | 'blue', tilt: number, f: { x: number; y: number; rot: number }): THREE.Vector3 => {
+    const pv = fieldColliders3d().trays[side].pivot;
+    const p = LEVEL_TRAY_CENTRE[side]!;
+    const c = Math.cos(tilt);
+    const s = Math.sin(tilt);
+    const y = pv[1] + c * (p.y - pv[1]) - s * (p.z - pv[2]);
+    const z = pv[2] + s * (p.y - pv[1]) + c * (p.z - pv[2]);
+    return new THREE.Vector3(f.x + Math.cos(f.rot) * p.x - Math.sin(f.rot) * y, f.y + Math.sin(f.rot) * p.x + Math.cos(f.rot) * y, z);
+  };
+  const found: { kind: 'tray' | 'ride'; side: 'red' | 'blue'; at: THREE.Vector3; tilt: number; axisZ: number }[] = [];
+  const one = new THREE.Matrix4();
+  const w = new THREE.Matrix4();
+  scene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const mat = (m.material as THREE.Material).name;
+    const tray = /^field:plastic#(ff0000|0000ff)$/.exec(mat);
+    const ride = /hive_(red|blue).*tray-?ride/.exec(m.name);
+    if (!tray && !ride) return;
+    const side = tray ? (tray[1] === 'ff0000' ? 'red' : 'blue') : (ride![1] as 'red' | 'blue');
+    const g = m.geometry as THREE.BufferGeometry;
+    g.computeBoundingBox();
+    const inst = m as unknown as THREE.InstancedMesh;
+    const n = inst.isInstancedMesh ? inst.count : 1;
+    for (let k = 0; k < n; k++) {
+      if (inst.isInstancedMesh) {
+        inst.getMatrixAt(k, one);
+        w.multiplyMatrices(m.matrixWorld, one);
+      } else w.copy(m.matrixWorld);
+      // the tray is stored level with its pivot axis along local x: after the turn, local y climbs by
+      // sin(tilt) and local x stays flat
+      const y = new THREE.Vector3(0, 1, 0).transformDirection(w);
+      const x = new THREE.Vector3(1, 0, 0).transformDirection(w);
+      const at = g.boundingBox!.clone().applyMatrix4(w).getCenter(new THREE.Vector3());
+      found.push({ kind: tray ? 'tray' : 'ride', side, at, tilt: (Math.asin(Math.max(-1, Math.min(1, y.z))) * 180) / Math.PI, axisZ: x.z });
+    }
+  });
+  const tilts: number[] = [];
+  for (const f of fields) {
+    for (const side of ['red', 'blue'] as const) {
+      const near = found.filter((p) => p.side === side && Math.hypot(p.at.x - f.x, p.at.y - f.y) < 40);
+      const trays = near.filter((p) => p.kind === 'tray');
+      const rides = near.filter((p) => p.kind === 'ride');
+      if (trays.length !== 1) {
+        faults.push(`${f.label} ${side}: ${trays.length} trays found`);
+        continue;
+      }
+      const t = trays[0];
+      tilts.push(t.tilt);
+      if (Math.abs(Math.abs(t.tilt) - NEIGHBOUR_STOP_DEG) > 0.5) faults.push(`${f.label} ${side}: tray at ${t.tilt.toFixed(2)}°, not at a ±${NEIGHBOUR_STOP_DEG}° stop`);
+      if (Math.abs(t.axisZ) > 0.005) faults.push(`${f.label} ${side}: the tray's pivot axis is not level (${t.axisZ.toFixed(3)})`);
+      if (LEVEL_TRAY_CENTRE[side]) {
+        const off = expected(side, (Math.sign(t.tilt) * NEIGHBOUR_STOP_DEG * Math.PI) / 180, f).distanceTo(t.at);
+        if (off > 0.3) faults.push(`${f.label} ${side}: the tray stands ${off.toFixed(2)} in from where our field draws it at that stop`);
+      }
+      // one draw per material of the riding parts; every one turned as the tray is
+      if (rides.length === 0) faults.push(`${f.label} ${side}: no riding braces or rocker found`);
+      for (const r of rides) if (Math.abs(r.tilt - t.tilt) > 0.1) faults.push(`${f.label} ${side}: braces at ${r.tilt.toFixed(2)}°, the tray at ${t.tilt.toFixed(2)}°`);
+    }
+  }
+  if (tilts.length && !(tilts.some((x) => x > 0) && tilts.some((x) => x < 0))) faults.push(`every neighbour's trays tip the same way (${tilts[0].toFixed(1)}°): no mix`);
+  return { faults, tilts };
+}
+
+/** each tray's own plastic in a FRESH parse of the shipped field file (other checks pose the shared
+ *  one), level, in the field frame: the centre of its box */
+const LEVEL_TRAY_CENTRE: Record<'red' | 'blue', THREE.Vector3 | null> = await (async () => {
+  const out: Record<'red' | 'blue', THREE.Vector3 | null> = { red: null, blue: null };
+  const scene = await parseShippedGlb('field.glb');
+  scene?.updateMatrixWorld(true);
+  for (const side of ['red', 'blue'] as const) {
+    const box = new THREE.Box3();
+    scene?.traverse((o) => {
+      if (o.userData.name !== `hive_${side}/tray`) return;
+      o.traverse((c) => {
+        const m = c as THREE.Mesh;
+        if (m.isMesh && (m.material as THREE.Material).name === (side === 'red' ? 'plastic#ff0000' : 'plastic#0000ff')) {
+          const p = m.geometry.getAttribute('position');
+          for (let i = 0; i < p.count; i++) box.expandByPoint(new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld));
+        }
+      });
+    });
+    out[side] = box.isEmpty() ? null : box.getCenter(new THREE.Vector3());
+  }
+  return out;
+})();
 
 const MODEL_SCENES: Map<string, THREE.Group | null> = new Map(
   await Promise.all(BB_ENVIRONMENTS.filter((e) => e.model && isGeneratedModel(e.model)).map(async (e) => [e.id, await parseModelScene(e.model!.file)] as const)),
@@ -15596,6 +15704,12 @@ function modelVenueChecks(check: Check): void {
           `venue model ${e.id}: every neighbouring hive rests on its frame, every frame on its stage, every stage on the hall floor, and the frame is drawn to be SEEN`,
           bad.length === 0,
           bad.slice(0, 4).join(' | '),
+        );
+        const rest = hiveRestFaults(support, neighbourFields());
+        check(
+          `venue model ${e.id}: every neighbouring hive rests tipped against a stop (±${NEIGHBOUR_STOP_DEG}°, a mix of sides), its braces and rocker turned with it`,
+          rest.faults.length === 0,
+          rest.faults.slice(0, 4).join(' | '),
         );
       }
       const mv = readFileSync(join(SCENE_DIR, 'renderModelVenue.ts'), 'utf8');

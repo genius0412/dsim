@@ -191,11 +191,19 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
     trays in the air. The copies take a less metallic, lifted finish; `hiveSupportFaults` (RENDER lane)
     walks the file for every neighbour (frame on the mat, trays inside the frame, deck under it, the
     hall a riser below, the frame's diffuse colour) and fails on 4e9507c4.
+  - ⚠️ **A NEIGHBOUR'S HIVE RESTS AGAINST A STOP, NEVER LEVEL** (owner, 2026-11-04: "One side HAS
+    to be up"). `field.glb` stores the trays LEVEL; the live renderer turns them by `hiveTiltAngle`
+    and lifts the braces and rocker off the frame. A copy of the file does neither, unless it is told
+    to. `scripts/venue-models/grb/hive.ts` repeats `reparentTrayBraces`'s selectors and hangs each tray
+    under a pivot node turned by `hiveTiltAngle` at rest, with a seeded side per field. `hiveRestFaults`
+    holds every neighbour's tray to ±`BB_HIVE_TILT_DEG`, to where our field draws it at that stop, and
+    the riding parts to the tray's tilt. It fails on 9208ca75. Change the selectors in
+    `renderFieldGlb.ts` and change them in `hive.ts` too.
   - **Each stage's audience face is LED fascia** (the 2025 photographs): division name, red and blue
     scores and the clock; ours is `fasciaLive`, drawn by the same `liveScreen` tick as the wall. Ends
     and back are velour skirting with seeded irregular folds (`drapeSheet`).
   - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 2.2–2.8 ms GPU on High (gym
-    0.6–0.8), 4.0–4.1 on Ultra, 5.2–6.2 on Extreme (gym 2.1–2.7); 4.80 MB once, 4.13M triangles.
+    0.6–0.8), 4.0–4.1 on Ultra, 5.2–6.2 on Extreme (gym 2.1–2.7); 4.81 MB once, 4.13M triangles.
 - ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
   file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
   no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB

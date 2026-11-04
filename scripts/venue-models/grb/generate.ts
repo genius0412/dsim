@@ -23,6 +23,7 @@ import { TEX_TILE_IN, makeTextures, type TexName } from './textures';
 import { Geo, beam, box, cyl, disc, drapeSheet, placeM, type V3 } from './mesh';
 import { bakedLight } from './light';
 import { CROWD_SLOTS, POSES, dress, figure, hash3, type Lod } from './crowd';
+import { HIVE_SIDES, splitRidingParts, trayPivot, trayRestAngle, trayUnderPivot, type HiveSide } from './hive';
 
 const FT = 12;
 const M_PER_IN = 0.0254;
@@ -1238,7 +1239,12 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
   // stands on the same A-frame, foot bars and pads as ours
   const src = await t.io.read(join(repo, 'public', 'models', 'biobuzz', 'field.glb'));
   await src.transform(t.fns.dequantize());
+  // the braces and rocker that ride each tray, out of the static frames (see hive.ts)
+  const ride = splitRidingParts(src);
+  if (!ride.tris.red || !ride.tris.blue) throw new Error(`grb: no tray braces found in the hive frames (red ${ride.tris.red}, blue ${ride.tris.blue})`);
   const srcMeshNodes = src.getRoot().listNodes().filter((n: any) => n.getMesh());
+  const trayNode = (a: HiveSide) => srcMeshNodes.find((n: any) => n.getName() === `hive_${a}/tray`);
+  for (const a of HIVE_SIDES) if (!trayNode(a)) throw new Error(`grb: field.glb has no hive_${a}/tray node`);
   const map = t.fns.copyToDocument(doc, src, src.getRoot().listMeshes());
   for (const a of doc.getRoot().listAccessors()) a.setBuffer(buffer);
   for (const b of doc.getRoot().listBuffers()) if (b !== buffer) b.dispose();
@@ -1270,20 +1276,38 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
       m.setName(`field:${m.getName()}`).setDoubleSided(true);
     }
   }
-  let fieldTris = 0;
+  let fieldTris = ride.tris.red + ride.tris.blue;
   for (const srcNode of srcMeshNodes) for (const p of srcNode.getMesh().listPrimitives()) fieldTris += (p.getIndices()?.getCount() ?? 0) / 3;
   const fields = neighbourFields();
+  const ups: string[] = [];
   for (const nf of fields) {
     const place = doc.createNode(nf.label).setTranslation([nf.x * k, 0.75 * k, -nf.y * k]).setRotation(yRot(nf.rot));
     const zup = doc.createNode(`${nf.label}:z-up`).setRotation([-Math.SQRT1_2, 0, 0, Math.SQRT1_2]).setScale([k, k, k]);
     place.addChild(zup);
-    for (const srcNode of srcMeshNodes) zup.addChild(doc.createNode(srcNode.getName()).setMatrix(srcNode.getWorldMatrix()).setMesh(map.get(srcNode.getMesh())));
+    for (const srcNode of srcMeshNodes) {
+      if (/^hive_(red|blue)\/tray$/.test(srcNode.getName())) continue;
+      zup.addChild(doc.createNode(srcNode.getName()).setMatrix(srcNode.getWorldMatrix()).setMesh(map.get(srcNode.getMesh())));
+    }
+    // ⚠️ A HIVE IS BISTABLE: each tray rests tipped against one stop or the other, never level. The
+    // tray and what rides it hang under a pivot node turned exactly as `updateBiobuzzField` turns ours
+    for (const a of HIVE_SIDES) {
+      const th = trayRestAngle(nf.label, a);
+      ups.push(`${nf.label} ${a} ${th > 0 ? '+' : '−'}`);
+      const pivot = doc
+        .createNode(`${nf.label}:hive_${a}/tray-pivot`)
+        .setTranslation(trayPivot(a))
+        .setRotation([Math.sin(th / 2), 0, 0, Math.cos(th / 2)]);
+      pivot.addChild(doc.createNode(`hive_${a}/tray`).setMatrix(trayUnderPivot(a, trayNode(a).getWorldMatrix())).setMesh(map.get(trayNode(a).getMesh())));
+      pivot.addChild(doc.createNode(`hive_${a}/tray-ride`).setMesh(map.get(ride.mesh[a])));
+      zup.addChild(pivot);
+    }
     scene.addChild(place);
     tris += fieldTris;
   }
 
   const notes = [
     `generated: ${tris} triangles (${fields.length} neighbouring fields at ${fieldTris} each), ${v.batches.size} merged materials, ${v.parts.size} parts in ${v.placements.length} placements`,
+    `hives at rest (+ north up, − south up): ${ups.join(', ')}; ${ride.tris.red}+${ride.tris.blue} riding brace/rocker triangles moved onto the trays`,
     ...[...v.dropped].map(([label, n]) => `left out (inside KEEP_CLEAR): ${label} ×${n}`),
   ];
   return { doc, notes };

@@ -453,7 +453,7 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     },
     model: {
       file: 'venues/grb.glb',
-      bytes: 4796064,
+      bytes: 4805888,
       tris: 4130330,
       cameraRoom: { min: [-325, -276, -1], max: [296, 129, 188] },
       generator: 'scripts/venue-models/grb/generate.ts',
