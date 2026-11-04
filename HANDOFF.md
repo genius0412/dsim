@@ -1,3 +1,58 @@
+# HANDOFF — 2026-11-04c (Toasts; Records redesign; nav and scroll; alpha account sync; Zenith optional; GRB venue; coast fixes)
+
+**State: on `alpha` (1c4c9b34..a4869744). SERVER CHANGE, DEPLOYED: `dsim-alpha` on image `deployment-01M6M14KPSQGB1NT4VNPGDVZ2X` (00a8e481, migration 0065 applied), /health ok; a4869744 after it is client-only.** No `SIM_VERSION`/`BALANCE_VERSION` change. On a4869744: `npm test` (shared 4978, BIOBUZZ 6166, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234), `dbtest` pass.
+
+- **Event toasts (065b71ed, 703348ab).**
+  - **Personal, adding no new bytes:** new best or record, rating change (silent until placement ends), Stargazer.
+  - **Community:** world record, new ranked #1, new supporter. A supporter is named only when Ko-fi says public AND the payment is linked, and only on their first payment.
+  - **Delivery:** `community_events`, capped at 200 rows / 24 h, rides the existing status poll as `?ev=` behind a cap. The server reads only rows ≥2 s old; the client cursor only moves forward.
+  - **When shown:** held during a match, results, replays and dialogs. The community toggle is in Configure ▸ Audio and Visual.
+  - **Load at 2,000 online:** about 30 B per client per minute and about 6 DB reads per minute.
+- **Records (9091cdfd; plan in `docs/records-redesign.md`).**
+  - **Layout:** tabs Leaderboards · My records · Achievements, then one picker (Solo/Duo/1v1/2v2) and one filter line. The board state is in the URL. Window, the hub, the Robot column and click-row-to-watch are gone.
+  - **Space:** the first row moves from 503 px to 217 px at 1366×768 (15 rows on screen), and no phone page scrolls sideways.
+  - **My records** has four tiles and one history. Standing, messages and reports moved to Account; games played and playtime to the profile.
+  - **Old links:** `/records/hub`, `/leaderboard`, `/stats`, `?window=` and `?era=` all redirect.
+  - **Not done:** the expanded row has no Auto/TeleOp split; it needs `/api/records` to carry it.
+- **Nav shift (fb1ba451).**
+  - Play had no scroll track, so the right-aligned sections moved 15 px; the bar now pads by `--ds-scrollbar`.
+  - The ranked queue line pushed the sections 80–225 px; it now sits left of them, away from Home.
+  - Check: `DSIM_NAV=only npm run shiftaudit` (72 route pairs).
+- **Scroll (a4869744).**
+  - `.ds-app` stays mounted, so every page kept the last page's scroll.
+  - `src/ui/pageScroll.ts` + `pageScrollRules.ts`: a new page, section or tab lands at 0, and Back restores the position. All history writes go through `pushRoute`/`replaceRoute`; anchors land 16 px under the bar.
+  - Check: `DSIM_SCROLL=only npm run shiftaudit` (76/78 failing before, 0 after). Admin tabs and Standing and messages (needs a signed-in account) are not covered by the click check.
+- **Alpha accounts (1c4c9b34, 10ad71e6, a9524d15, 8599c8b8).**
+  - **What's shared:** only Neon Auth. The alpha game DB is the `alpha` Neon branch (branched 2026-08-10), so the closed-screen copy now says only the email and password are shared.
+  - **`npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env`:** prod → alpha upsert, prod read-only, prod wins on shared keys.
+    - Never writes `access_members`, the lockdown or admin state, and keeps every alpha-only row.
+    - Refuses while migrations differ, so it can't run until the next promotion: dry-run first, then `--apply`, which snapshots first.
+  - **Verification:** alpha's `neon_auth."user"` was frozen at the branch, so 50 verified players read unverified. `--verified-only --apply` fixed them on live alpha.
+  - **Email gate:** it now trusts the token's `emailVerified` claim. `/get-session` was a no-op (200 `null` for a JWT Bearer) and is gone. The table is read only for a claim-less token, which logs once. Not confirmed on a live token: watch dsim-alpha logs for that line; if it shows up, schedule `--verified-only` from the dev box.
+- **Zenith optional (557ef6f0).**
+  - The three packages are `optionalDependencies`, with stand-ins in `src/auto/zenith-stub/` (tsconfig `paths` fallback plus a Vite plugin). Without the tarballs, install, build, dev and test all work, with autonomous off and "Autonomous isn't included in this build." AUTO/AUTOUI and one IMPORT check skip with one line.
+  - **Guard:** Vite throws under `VERCEL` or `ZENITH_REQUIRED=1`, and the Dockerfile checks the packages. README has "Building without Zenith".
+- **GRB venue (1dad0605, 4e9507c4, 9208ca75).**
+  - **What it is:** a generated modeled venue (`scripts/venue-models/grb/`; sources in `docs/venues/grb.md`), the 2026 FTC layout on Level 3: six divisions in a 2×3 grid, two fields each.
+  - **Stages:**
+    - **Height:** 24 in. The drive areas sit on the deck (in reality drivers stand on the floor; the sim keeps them at mat level).
+    - **Fronts:** LED fascia with the division name, live score and clock.
+    - **Sides:** seeded skirting.
+  - **Look:** baked dim house with a blue wash, and the LED wall drives from the match.
+  - **Default:** on High+ (stored gym picks migrated once).
+  - **Cost:** 4.8 MB, 4.13M triangles. GPU p50 at 1080p on a 4070 Ti SUPER: High 2.2–2.8 ms, Ultra 4.0–4.1, Extreme 5.2–6.2.
+  - **Check:** the RENDER lane walks every neighbour (frame on mat, trays in frame, deck on floor).
+  - **Still different:** no moving beams or haze, a simple seated crowd, no camera feed on the screens.
+- **Coast (977a65ae, 6ddaaf41, 00a8e481).**
+  - Forward decel was already right against 498 teams' committed Pedro FLOAT tuner results (35 in/s²).
+  - **Fixed:**
+    - Only a let-go drive floats. A keyboard turn's exact-zero inner wheels had floated and killed turning.
+    - Mecanum roller friction: strafe decel 43 → 67 in/s².
+    - A driver's zero brakes 2 ticks before floating, so reversing through centre stops as braked. The SDK's `floatAtZero` applies only at zero power.
+    - Autos, bots and the field disable float on tick one.
+  - Brake pins unchanged.
+- **Still waiting on the owner:** the four Sketchfab rooms and the DFK Arena splat (logged-in downloads into `venue-sources/<uid>/`).
+
 # HANDOFF — 2026-11-04b (Owner's bug list; venues off photos; brake/coast; MSAA in display light)
 
 **State: on `alpha` (ee58f9f6..5ce63523). SERVER CHANGE, DEPLOYED: `dsim-alpha` 7812416b179638 (ord, shared-cpu-2x/1024) on image `deployment-01M6K19KFN65Y3E3066WQC401H` (5ce63523), /health ok.** No `SIM_VERSION`, `SIM_PATCH` or `BALANCE_VERSION` change. On 568a48ee: `npm test` (shared 4829, BIOBUZZ 6109), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234) pass. 89a30b61 and 5ce63523 came after a review and ran their own `npm test`/`build`.
