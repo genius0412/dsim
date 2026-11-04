@@ -93,8 +93,18 @@ const BTN_FLYPRESET = 1024;
 // `buttons` bit because the replay track and the snapshot's `cmds` are this same lattice, and
 // both must carry what the seat did.
 const BTN_BBFIRE_UNAIMED = 2048;
+// A COMMAND SET BY CODE (`RobotCommand.seat`: an auto, a bot, the field's disable), so a coast
+// robot's let-go wheels float at once instead of settling like a released stick. SERVER-ONLY like
+// the bit above, for the same reasons: a client never sets it, and the replay track and snapshot
+// `cmds` must carry what the seat did. An older server's door already admits bit 16384 (0xffff).
+const BTN_SEAT = 16384;
 /** the bits a client may not send: the door clears them (`sanitizeQCommand`) */
-export const SEAT_ONLY_BUTTONS = BTN_BBFIRE_UNAIMED;
+export const SEAT_ONLY_BUTTONS = BTN_BBFIRE_UNAIMED | BTN_SEAT;
+
+/** a command a seat produced (an auto, a bot): marked `seat` before it is localized and stepped */
+export function fromSeat(c: RobotCommand): RobotCommand {
+  return { ...c, seat: true };
+}
 /** the widest `buttons` an honest sender can produce — every bit above is refused. */
 // BIOBUZZ: run the intake BACKWARDS (`RobotCommand.bbReverse`, `nectarReject.ts`). A driver button, so it
 // is NOT in `SEAT_ONLY_BUTTONS`. An older server masks it off and never reverses, which is the
@@ -123,6 +133,7 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbPass ? BTN_BBPASS : 0) |
       (c.flyPreset ? BTN_FLYPRESET : 0) |
       (c.bbFireUnaimed ? BTN_BBFIRE_UNAIMED : 0) |
+      (c.seat ? BTN_SEAT : 0) |
       (c.bbReverse ? BTN_BBREVERSE : 0) |
       (c.bbBar ? BTN_BBBAR : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
@@ -193,6 +204,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbPass: (q.buttons & BTN_BBPASS) !== 0,
     flyPreset: (q.buttons & BTN_FLYPRESET) !== 0,
     ...((q.buttons & BTN_BBFIRE_UNAIMED) !== 0 ? { bbFireUnaimed: true } : {}),
+    ...((q.buttons & BTN_SEAT) !== 0 ? { seat: true } : {}),
     // only when pressed, so a command that never reverses is the one it always was (replay digests)
     ...((q.buttons & BTN_BBREVERSE) !== 0 ? { bbReverse: true } : {}),
     ...((q.buttons & BTN_BBBAR) !== 0 ? { bbBar: true } : {}),

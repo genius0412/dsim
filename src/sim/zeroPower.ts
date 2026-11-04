@@ -46,6 +46,19 @@ export function zeroPowerOf(spec: Pick<RobotSpec, 'zeroPower'>): ZeroPowerMode {
   return spec.zeroPower === 'coast' ? 'coast' : 'brake';
 }
 
+/** what a DISABLED robot is commanded (before the start, after the buzzer): the field cuts its
+ *  power by code, so a coast robot's wheels float at once (`RobotCommand.seat`) */
+export const DISABLED_CMD: RobotCommand = {
+  driveX: 0,
+  driveY: 0,
+  rotate: 0,
+  leftDrive: 0,
+  rightDrive: 0,
+  intake: false,
+  fire: false,
+  seat: true,
+};
+
 /** is this wheel's commanded power off, as the hub would read it */
 export function wheelOff(power: number): boolean {
   return Math.abs(power) < C.ZERO_POWER_EPS;
@@ -87,14 +100,23 @@ export function floatingWheels(
  * centre, sampled once at zero, or springing back to it. Counts each let-go wheel's ticks on
  * `r.coastIdle` (dropped once every wheel is driven again) and returns `floatingWheels`' answer
  * with only the settled wheels still floating, or null when none is.
+ *
+ * A DRIVER'S ZERO ONLY. A command code set (`seat`: an auto, a bot, the field's disable) has no
+ * stick: power 0 is power 0 from its first tick, as on a real robot and as Pedro's FLOAT tuners
+ * measured, so its let-go wheels count as settled at once.
  */
-export function settleCoast(r: { coastIdle?: number[] }, powered: readonly boolean[] | null, dt: number): boolean[] | null {
+export function settleCoast(
+  r: { coastIdle?: number[] },
+  powered: readonly boolean[] | null,
+  dt: number,
+  seat: boolean,
+): boolean[] | null {
   if (!powered) {
     delete r.coastIdle;
     return null;
   }
   const settle = Math.round(C.COAST_SETTLE_S / dt);
-  const idle = powered.map((on, i) => (on ? 0 : Math.min((r.coastIdle?.[i] ?? 0) + 1, settle + 1)));
+  const idle = powered.map((on, i) => (on ? 0 : seat ? settle + 1 : Math.min((r.coastIdle?.[i] ?? 0) + 1, settle + 1)));
   r.coastIdle = idle;
   const out = powered.map((on, i) => on || idle[i] <= settle);
   return out.every(Boolean) ? null : out;

@@ -443,7 +443,7 @@ export function updateRobot(
    * friction. Brake, a spec without the field, never gets here.
    */
   const powered = wheelPower
-    ? settleCoast(r, floatingWheels(dp.saturation, wheelPower, dp.saturation === 'tank' && arcadeCancel(cmd)), dt)
+    ? settleCoast(r, floatingWheels(dp.saturation, wheelPower, dp.saturation === 'tank' && arcadeCancel(cmd)), dt, cmd.seat === true)
     : null;
   if (powered) {
     const pos = wheelLocals(r.spec);

@@ -512,10 +512,19 @@ step, all three games, allowed in ranked.
   +5.1-9.7 (mecanum +1.2 / +4.7 / +8.1). ⚠️ The settle cannot cover a key's own release-to-press
   gap: braking every release for 150 ms stops a released median robot from 66 in/s in 4.7 in,
   exactly brake (measured: 17 ms 49 in, 33 ms 38, 50 ms 29, 100 ms 10). A gap that long is a
-  stick held at centre, and it floats. The cost of the two ticks: a release from speed loses one
-  settle of brake first — the median robot rolls 38 in (61 without it), the default mecanum about
-  104 (131). That applies to a code-commanded zero too (an auto), which on a real robot floats at
-  once; the sim cannot tell a stick from code.
+  stick held at centre, and it floats. The cost of the two ticks: a driver's release from speed
+  loses one settle of brake first — the median robot rolls 38 in (61 without it), the default
+  mecanum about 104 (131).
+- **THE SETTLE IS FOR A DRIVER'S HANDS ONLY (`RobotCommand.seat`, protocol bit 16384).** Code sets
+  power 0 at once on a real robot, and that is what the Pedro FLOAT data measured, so a command a
+  SEAT produced floats from its first zero tick: a Zenith auto (`powersToCommand` marks it), a bot
+  (`fromSeat` where solo practice and `Room.frameCommands` step one), and the field disabling a
+  robot before the start or after the buzzer (`DISABLED_CMD`, all four steps). The median robot
+  let go by code rolls the 61 in again. Seat-only like `bbFireUnaimed`: `sanitizeQCommand` clears
+  it from every client packet, so it is deterministic and server-decided; the replay track and
+  the snapshot's `cmds` carry it on the same lattice, and a plain command never grows the field,
+  so old replays and digests are untouched. An older server ignores the bit (bits to 0xffff pass
+  its door) and settles everything.
 - **THE WHEELS ARE RECOVERED FROM THE CHASSIS MODEL.** The drive is chassis-level, so `coastStep`
   splits the brake answer across wheel rows in normalised chassis coordinates (each axis over its
   own free speed, where a wheel's power is a row of signs times the command). It keeps the powered

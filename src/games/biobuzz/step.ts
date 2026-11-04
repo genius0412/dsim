@@ -11,6 +11,7 @@ import { updateBiobuzzPenalties } from './penalties';
 import { BB_WALL, bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld, bbWallsTouched } from './score';
 import { biobuzzPhysics } from './state';
 import { step3d } from './sim3d/step3d';
+import { DISABLED_CMD } from '../../sim/zeroPower';
 
 /**
  * BIOBUZZ step — a playable, unscored match.
@@ -108,7 +109,7 @@ function step2d(world: World, dt: number, commands: Map<number, RobotCommand>): 
   const from = new Map<number, SweepFrom>();
   for (const r of world.robots) from.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
   for (const r of world.robots) {
-    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : DISABLED_CMD;
     // 2. AIM HOOK — holding fire on a DUMPER turns the whole robot onto the cell Aim Assist is on
     // (`bbAimAssist`), and `bbLaunch` dumps once it is lined up and the dump would land — the
     // same feel as Chain Reaction's dumper. Null when this build aims some other way (a turret

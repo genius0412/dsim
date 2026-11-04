@@ -9,6 +9,7 @@ import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
 import { updateChainPenalties } from './penalties';
 import { beamBlock, beamDrag, beamStrafeBlock, cogFactor } from './beams';
+import { DISABLED_CMD } from '../../sim/zeroPower';
 
 /**
  * Chain Reaction step — a playable match.
@@ -40,7 +41,7 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   // the drive, as a wrench per robot — see DECODE's `step` and `updateRobot`
   const drive = new Map<number, DriveWrench>();
   for (const r of world.robots) {
-    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : DISABLED_CMD;
     // turretless shooters (drum/dumper) turn the whole robot to face the goal while the
     // fire button is held — override the rotate command before the drivetrain model.
     //

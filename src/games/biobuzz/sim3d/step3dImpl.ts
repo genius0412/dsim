@@ -14,6 +14,7 @@ import { deriveTick } from './derive';
 import { hiveContactPass } from './contacts3d';
 import { hive3dJointTick, hive3dTick } from './hive3d';
 import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, elements3dPlaceAndRetrieve } from './elements3d';
+import { DISABLED_CMD } from '../../../sim/zeroPower';
 
 /**
  * ⚠️ HEAVY. Reached only through `sim3d/impl.ts` (and therefore only after `initPhysics3d()`);
@@ -90,7 +91,7 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
 
   // 1-3. resolve commands, the dumper aim hook, the shared drivetrain model.
   for (const r of world.robots) {
-    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : DISABLED_CMD;
     const aim = bbAimAssist(world, r, cmd, enabled);
     if (aim !== null) {
       const fwd = ((cmd.leftDrive ?? 0) + (cmd.rightDrive ?? 0)) / 2;

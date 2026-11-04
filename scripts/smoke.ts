@@ -364,7 +364,7 @@ import {
   wrapNav,
   type NavRect,
 } from '../src/input/padNav';
-import { CLIENT_CAPS, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, SEAT_ONLY_BUTTONS, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
+import { CLIENT_CAPS, fromSeat, quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, SEAT_ONLY_BUTTONS, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import { buildPaceCurve, clockKey, coerceCurve, netScore, paceAt, PaceCurveRecorder } from '../src/ui/pace/curve';
@@ -8190,22 +8190,22 @@ function ramOffCentreSamples(
   // average the deceleration to rest. 498 robots' committed results: forward 35.2 in/s² median,
   // sideways 67.1, on a median 12 kg robot with a measured top speed of 72 in/s (353 rpm here).
   /** let go at v0 along the diagonal, driving forward or strafing left; also whether its spin ever
-   *  reversed. `settled`: its wheels already let go past `COAST_SETTLE_S` (the tuner's own case, a
-   *  power of exactly 0 set by code: no stick to come back through centre) */
-  const zpRoll = (spec: Partial<RobotSpec>, v0: number, strafe: boolean, spin = 0, settled = false) => {
+   *  reversed. `byCode`: power 0 set by code (`fromSeat`), the tuner's own case — no stick to come
+   *  back through centre, so no `COAST_SETTLE_S` */
+  const zpRoll = (spec: Partial<RobotSpec>, v0: number, strafe: boolean, spin = 0, byCode = false) => {
     const { w, st } = zpWorld('decode', [spec]);
     const r = w.robots[0];
     const h = Math.PI / 4;
     r.pos = { x: -58, y: -58 }; r.heading = strafe ? h - Math.PI / 2 : h; r.angVel = spin; r.fieldCentric = false;
     r.vel = { x: v0 * Math.cos(h), y: v0 * Math.sin(h) };
-    if (settled) r.coastIdle = [99, 99, 99, 99];
+    const zero = byCode ? localizeCommand(fromSeat(ZERO)) : ZERO;
     const p0 = { ...r.pos };
     let t = 0;
     let turned = 0;
     let reversed = false;
     while (t < 600 && (Math.hypot(r.vel.x, r.vel.y) >= 0.5 || Math.abs(r.angVel) > 0.02)) {
       const hb = r.heading;
-      st(new Map([[0, ZERO]]));
+      st(new Map([[0, zero]]));
       turned += Math.atan2(Math.sin(r.heading - hb), Math.cos(r.heading - hb));
       // backwards by more than float dust at rest: 0.05 rad/s is 3°/s
       reversed ||= spin !== 0 && r.angVel * Math.sign(spin) < -0.05;
@@ -8263,6 +8263,56 @@ function ramOffCentreSamples(
   const revB = zpReverse({ drivetrain: 'mecanum' }, 6);
   const revC = zpReverse({ drivetrain: 'mecanum', ...COAST }, 6);
   check('zero power: the settle rides a coast robot only, and only while a wheel is let go (brake never carries it)', !('coastIdle' in revB.r) && revC.r.coastIdle === undefined, JSON.stringify([revB.r.coastIdle, revC.r.coastIdle]));
+
+  // ---- ...A DRIVER'S ZERO SETTLES; CODE'S DOES NOT (`RobotCommand.seat`) -----------------
+  // An auto, a bot or the field's disable sets power 0 as a real robot's code does: it floats from
+  // the first tick, which is what Pedro's FLOAT tuners measured. Only a driver's stick settles.
+  const SEAT_ZERO = localizeCommand(fromSeat(ZERO));
+  const zpRelease = (spec: Partial<RobotSpec>, zero: RobotCommand) => {
+    const { w, st } = zpWorld('decode', [spec]);
+    const r = w.robots[0];
+    r.pos = { x: -62, y: -62 }; r.heading = Math.PI / 4; r.vel = { x: 0, y: 0 }; r.angVel = 0; r.fieldCentric = false;
+    for (let i = 0; i < 75; i++) st(new Map([[0, FULL]]));
+    const v = [Math.hypot(r.vel.x, r.vel.y)];
+    for (let i = 0; i < 3; i++) { st(new Map([[0, zero]])); v.push(Math.hypot(r.vel.x, r.vel.y)); }
+    return v;
+  };
+  const medianBuild = { drivetrain: 'mecanum', driveRpm: 353, massLb: 26.5 } as Partial<RobotSpec>;
+  const vDriver = zpRelease({ ...medianBuild, ...COAST }, ZERO);
+  const vCode = zpRelease({ ...medianBuild, ...COAST }, SEAT_ZERO);
+  const vBrake = zpRelease(medianBuild, ZERO);
+  const friction = coastDecel(coerceSpec({ ...DEFAULT_SPEC, ...medianBuild })) * SIM_DT;
+  const fmtV = (v: number[]) => v.map((x) => x.toFixed(2)).join('→');
+  check('zero power: a DRIVER\'s release brakes for two ticks exactly as braked, then floats',
+    vDriver[1] === vBrake[1] && vDriver[2] === vBrake[2] && vDriver[3] > vBrake[3], `coast ${fmtV(vDriver)} brake ${fmtV(vBrake)} in/s`);
+  check('zero power: an AUTO\'s, a BOT\'s or the FIELD\'s zero (`seat`) floats from its first tick, losing only friction',
+    [1, 2, 3].every((i) => vCode[i - 1] - vCode[i] > 0 && vCode[i - 1] - vCode[i] < friction * 1.25), `${fmtV(vCode)} in/s (friction ${friction.toFixed(2)} a tick)`);
+  // the bit rides the same lattice as every other button: quantized, recorded, sent in the snapshot's
+  // `cmds`, and stripped from a driver's own packet at the door
+  const { powersToCommand } = await import('../src/auto/drive');
+  const autoCmd = powersToCommand(createWorld('free', 3, [setup(0, 'blue', COAST)]).robots[0], { forward: 0, strafe: 0, turn: 0 }, { intake: false, fire: false });
+  const fromDoor = sanitizeQCommand(quantizeCommand(SEAT_ZERO));
+  check('zero power: `seat` survives the quantized lattice, a plain command never grows the field, and a client packet cannot claim it',
+    SEAT_ZERO.seat === true && !('seat' in localizeCommand(ZERO)) && !!fromDoor && !('seat' in dequantizeCommand(fromDoor)) && autoCmd.seat === true);
+  const srcOf = (p: string) => readFileSync(pathResolve(p), 'utf8');
+  check('zero power: every seat marks its commands — solo and server bots (`fromSeat`), the Zenith auto (`powersToCommand`), and the field\'s disable in all four steps',
+    srcOf('src/game.ts').includes('localizeCommand(fromSeat(seat.step(this.world)))') && srcOf('server/room.ts').includes('localizeCommand(fromSeat(bot.step(w)))')
+      && ['src/sim/world.ts', 'src/games/chain/step.ts', 'src/games/biobuzz/step.ts', 'src/games/biobuzz/sim3d/step3dImpl.ts'].every((p) => srcOf(p).includes(': DISABLED_CMD;')));
+  // a replay of a coasting robot let go by code, then by a driver, re-simulates to the same world
+  const setupC: RobotSetup = { id: 0, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC, ...COAST }), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 };
+  const recRun = (code: boolean) => {
+    const w = createWorld('free', 11, [setupC]);
+    const rec = new ReplayRecorder(11, [setupC], 'free', 'decode');
+    for (let t = 1; t <= 150; t++) {
+      const m = new Map([[0, localizeCommand(t <= 60 ? FULL : t <= 90 && code ? fromSeat(ZERO) : ZERO)]]);
+      step(w, SIM_DT, m);
+      rec.record(t, m);
+    }
+    return { live: worldHash(w), replayed: worldHash(simulateReplay(rec.finish())) };
+  };
+  const recCode = recRun(true);
+  const recDriver = recRun(false);
+  check('zero power: a replay re-simulates a code release and a driver release each to its own world', recCode.live === recCode.replayed && recDriver.live === recDriver.replayed && recCode.live !== recDriver.live, JSON.stringify([recCode, recDriver]));
 
   // ---- THE COAST NUMBERS, pinned (2026-11-04): hash + distance (in) or degrees -------------
   // 300 rpm / 30 lb so every roll fits the field diagonal; spins from 6 rad/s at the default build

@@ -30,6 +30,7 @@ import { robotsEnabled, stepMatch } from './match';
 import { updateProvisionalPattern } from './scoring';
 import { updatePenalties } from './penalties';
 import { initializePathTraversal, updatePathTraversal } from './pathTraversal';
+import { DISABLED_CMD } from './zeroPower';
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
@@ -129,7 +130,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
 
   for (const r of world.robots) {
     sweepFrom.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
-    let currentCmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    let currentCmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : DISABLED_CMD;
 
     // Auto pathing logic: if active, override driver commands
     if (world.match.phase === 'auto' && r.autoPathActive) {

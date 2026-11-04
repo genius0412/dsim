@@ -97,6 +97,15 @@ export interface RobotCommand {
    */
   bbFireUnaimed?: boolean;
   /**
+   * SET BY CODE, NOT A DRIVER'S HANDS: a Zenith auto (`powersToCommand`), a bot (`fromSeat` where a
+   * room or solo practice steps one), or the field disabling a robot. A coast robot's let-go wheels
+   * float on the first zero tick of such a command, as a real robot's do when code sets power 0;
+   * a driver's zero brakes for `COAST_SETTLE_S` first (`settleCoast`). Protocol bit 16384, cleared
+   * from every client packet like `bbFireUnaimed`, so the replay track and the snapshot's `cmds`
+   * carry it and no driver can send it. Optional; absent is a driver.
+   */
+  seat?: boolean;
+  /**
    * BIOBUZZ, RUN THE INTAKE BACKWARDS while held: the rollers push the mouth clear and spit the
    * held elements back out, last in first out, one per `BB_REVERSE_PERIOD_S` (`nectarReject.ts`). Wins
    * over `intake` when both are held. Every build has it — a roller runs both ways. Protocol bit

@@ -76,11 +76,13 @@ export function powersToCommand(r: RobotState, p: DrivePowerTriple, buttons: Aut
   const s = Number.isFinite(p.strafe) ? p.strafe : 0;
   const t = Number.isFinite(p.turn) ? p.turn : 0;
   // `bbRamp` rides only while pressed, so a command that never presses it is the one it always was
+  // `seat`: code sets these powers, so a coast robot's zero floats at once (`RobotCommand.seat`)
   const base = {
     intake: buttons.intake,
     fire: buttons.fire,
     ...(buttons.bbRamp ? { bbRamp: true } : {}),
     ...(buttons.bbFireUnaimed ? { bbFireUnaimed: true } : {}),
+    seat: true,
   };
   if (dp.saturation === 'tank') {
     // `updateRobot`'s tank: forward = (ld + rd) / 2, turn = (rd - ld) / 2, in units of full

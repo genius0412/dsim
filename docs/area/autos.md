@@ -57,7 +57,9 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   ⚠️ **`bbFireUnaimed` IS A SEAT-ONLY BIT** (protocol bit 2048, `SEAT_ONLY_BUTTONS`): it skips a gate
   every driver has, so `sanitizeQCommand` clears it from every client packet. It rides replays, the
   snapshot's `cmds` and prediction like any button. Read from `SIM_PATCH` 9; a world stamped 7
-  ignores it, which an AUTO check holds.
+  ignores it, which an AUTO check holds. So is **`seat`** (bit 16384), which `powersToCommand` sets
+  on every auto command: a coast robot's zero from code floats at once, a driver's settles first
+  (`docs/area/physics.md`, zero power).
 - **FORMAT 4**: a `transfer` is planner-only; the runtime and the live run treat it as a zero-second
   wait (one scheduler tick), so it moves nothing. `envelope` and `rejoinFrom` are planner-only too.
   `mirrorAuto` is called without `mirrorId`, so a running routine's transfer and `expect` ids stay

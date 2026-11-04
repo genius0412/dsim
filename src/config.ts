@@ -1411,6 +1411,8 @@ export const COAST_STICTION_SPEED = 2;
  * So two ticks. Longer cannot be justified: the keys' own release-to-press gap reversing (50-150
  * ms) would need it all, and braking every release that long stops a released median robot from
  * 66 in/s in 4.7 in at 150 ms — exactly brake, where real robots measure about 68 in of float.
+ * A DRIVER'S zero only: code (an auto, a bot, the field's disable; `RobotCommand.seat`) has no
+ * stick and floats on its first zero tick.
  */
 export const COAST_SETTLE_S = 2 / 60;
 

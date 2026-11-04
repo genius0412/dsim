@@ -89,7 +89,7 @@ import { actionMode, effectiveBindings, type ControlBindings } from './input/bin
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
-import { localizeCommand } from './net/protocol';
+import { fromSeat, localizeCommand } from './net/protocol';
 import { LeadController } from './net/leadControl';
 import { REMOTE_SMOOTH_HALFLIFE, blendPose, followDrawn, nearDrawWeight, type Pose } from './net/contactDraw';
 import { FULL_RESYNC_EVERY, cmdsAgree, digestsAgree, worldDigest, type WorldDigest } from './net/worldDigest';
@@ -2266,7 +2266,7 @@ export class GameController {
        * be a tick late, and one produced outside this map would not be recorded — and an
        * unrecorded bot command makes the replay a different match from the run.
        */
-      for (const [id, seat] of this.bots) commands.set(id, localizeCommand(seat.step(this.world)));
+      for (const [id, seat] of this.bots) commands.set(id, localizeCommand(fromSeat(seat.step(this.world))));
       // the auto drives the local robot in AUTO (and in an armed Free Drive trial); otherwise it
       // hands the driver's command straight back, so this is a no-op outside those
       if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));

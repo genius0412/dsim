@@ -30,6 +30,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  fromSeat,
   localizeCommand,
   sanitizeQCommand,
   encodeMsg,
@@ -4340,7 +4341,7 @@ export class Room {
          * replay would diverge from the run by the rounding, every tick. Same trap solo
          * practice hit and the same fix (`docs/area/netcode.md`, `stepSolo`).
          */
-        frame.set(r.id, localizeCommand(bot.step(w)));
+        frame.set(r.id, localizeCommand(fromSeat(bot.step(w))));
         continue;
       }
       if (this.dropped.has(r.id)) {
