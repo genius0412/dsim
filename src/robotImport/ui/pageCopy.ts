@@ -31,7 +31,6 @@ export const PAGE_COPY = {
   missingAction: 'Import the file',
   staleText: 'The model on this device is out of date. Import the robot’s newest exported file to update it.',
   editTitle: 'Edit robot',
-  editCardAria: (name: string) => `Edit ${name}`,
   robotName: 'Robot name',
   teamNameLabel: 'Team name',
   teamNumberLabel: 'Team #',

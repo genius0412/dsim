@@ -285,7 +285,7 @@ const GAME_DEFAULT_SPEC: Partial<Record<GameId, RobotSpec>> = {
 };
 
 /** the base robot a FRESH `game` loadout is seeded from — see `GAME_DEFAULT_SPEC`. */
-function defaultSpecFor(game: GameId): RobotSpec {
+export function defaultSpecFor(game: GameId): RobotSpec {
   return GAME_DEFAULT_SPEC[game] ?? DEFAULT_SPEC;
 }
 

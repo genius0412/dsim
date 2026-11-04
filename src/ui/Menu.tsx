@@ -35,6 +35,8 @@ import { importerEnabled } from '../seasonVisibility';
 import { answersFor, libraryEntryFor, sameImportedRobot } from '../robotImport/libraryIds';
 import { IdentityDialog, ImportedPanel, ImportedRow, useImportedActions, useRobotNotice } from '../robotImport/ui/ImportedRobots';
 import { identityOf, withIdentityAt, type RobotIdentity } from '../robotImport/identity';
+import { removeSavedRobot } from './savedRobots';
+import { defaultSpecFor } from '../settings';
 import { FootprintSvg } from './FootprintSvg';
 import { polyBounds as importBox } from '../sim/imported';
 import { handOffFiles } from '../robotImport/ui/handoff';
@@ -575,10 +577,23 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
   /** the saved robot whose details are being edited from its card (an index into `savedRobots`) */
   const [editingDetails, setEditingDetails] = useState<number | null>(null);
   const deleteSavedRobot = (i: number): void => {
+    const gone = savedRobots[i];
+    // THE ROBOT BEING DRIVEN MOVES OFF IT: the next saved robot, else the default preset's build under
+    // a fresh player's name, not under the deleted robot's own.
+    // Driving on with the deleted build left it in Play's strip as a card of its own
+    const out = removeSavedRobot(savedRobots, i, !spec.imported && !!gone && sameRobot(spec, gone), presetBuildFor(settings, defaultSpecFor(settings.game)));
     const e = editingSaved.get(settings.game);
     if (e === i) editingSaved.delete(settings.game);
     else if (e !== undefined && e > i) editingSaved.set(settings.game, e - 1);
-    set({ savedRobots: savedRobots.filter((_, j) => j !== i) });
+    // ...and no copy of it stays in Play's kept slots
+    for (const kept of [keptEdits, keptPresets]) {
+      const b = kept.get(settings.game);
+      if (b && gone && sameRobot(b, gone)) kept.delete(settings.game);
+    }
+    if (!out.select) return set({ savedRobots: out.saved });
+    if (out.selectedIndex >= 0) editingSaved.set(settings.game, out.selectedIndex);
+    else editingSaved.delete(settings.game);
+    onChange({ ...settings, savedRobots: out.saved, spec: out.select, assists: coerceAssists(out.select.assists, PLAYER_ASSISTS) });
   };
 
   return (
@@ -1095,15 +1110,18 @@ const editingSaved = new Map<string, number>();
  * driven off a phone's panel. The build it replaces keeps its card in the strip (`keptEdits`).
  */
 export function startNewRobot(settings: GameSettings, onChange: (s: GameSettings) => void, onEdit: () => void): void {
+  const next = presetBuildFor(settings);
+  editingSaved.delete(settings.game);
+  if (next) onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
+  onEdit();
+}
+
+/** the game's first preset's build under a name and team: the player's own (what "New robot" starts
+ *  from), or a fresh player's when the robot they had was just deleted */
+function presetBuildFor(settings: GameSettings, who: RobotSpec = settings.spec): RobotSpec | null {
   const mod = moduleFor(settings.game);
   const p = (mod.presets ? mod.presets.list : settings.game === 'decode' ? ROBOT_PRESETS : CHAIN_PRESETS)[0];
-  const spec = settings.spec;
-  editingSaved.delete(settings.game);
-  if (p) {
-    const next: RobotSpec = { ...p, name: spec.name, teamName: spec.teamName, teamNumber: spec.teamNumber };
-    onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
-  }
-  onEdit();
+  return p ? { ...p, name: who.name, teamName: who.teamName, teamNumber: who.teamNumber } : null;
 }
 
 /**
@@ -1201,14 +1219,15 @@ export function RobotStrip({
         />
       )}
       {/* the preset build last driven, unedited (the builder's Start from has every preset). It is
-          NOT a saved robot, so it says so like the edit does: unbadged it read as a fourth saved
-          robot beside the builder's "Your robots 3/3" (owner, 2026-11-04) */}
+          NOT a saved robot, so it says so: unbadged it read as a fourth saved robot beside the
+          builder's "Your robots 3/3" (owner, 2026-11-04). "Preset", not "Unsaved": that word is for a
+          build the player made and never saved */}
       {preset && (
         <RobotCard
           spec={preset}
           game={settings.game}
           on={presetBuildOn}
-          unsaved
+          preset
           team={teamLine(preset)}
           thumb={thumbOf(preset)}
           onPick={() =>

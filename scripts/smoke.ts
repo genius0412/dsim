@@ -19246,8 +19246,8 @@ const recordDrive: CommandSource = (tick) => {
       const stripAt = menuSrc.indexOf('export function RobotStrip(');
       const row2 = menuSrc.slice(stripAt);
       const presetCard = row2.slice(row2.indexOf('{preset && ('), row2.indexOf('{settings.savedRobots.map('));
-      check('play: the kept preset build is badged Unsaved like the kept edit, so it cannot pass for a saved robot',
-        /spec=\{preset\}[\s\S]*?unsaved\n/.test(presetCard) && /spec=\{unsaved\}[\s\S]*?unsaved\n/.test(row2));
+      check('play: the kept preset build is badged Preset and the kept edit Unsaved, so neither passes for a saved robot',
+        /spec=\{preset\}[\s\S]*?preset\n/.test(presetCard) && !presetCard.includes('unsaved') && /spec=\{unsaved\}[\s\S]*?unsaved\n/.test(row2));
       check('play: the strip and the builder list the same saved robots, from settings.savedRobots, and one sameRobot decides which is on',
         /settings\.savedRobots\.map\(\(r, i\) => \(/.test(row2) && /savedRobots\.map\(\(r, i\) => \(/.test(menuSrc) &&
           (menuSrc.match(/function sameRobot\(/g) ?? []).length === 1 && !/const sameRobot =/.test(menuSrc));
@@ -19279,6 +19279,35 @@ const recordDrive: CommandSource = (tick) => {
       // what the stored robot comes back as through the sim's own validator: nothing the dialog stores is changed by it
       const back = coerceSpec(after[1], undefined, 'biobuzz');
       check('identity: coerceSpec keeps what the dialog stored', back.name === 'B2' && back.teamName === 'T' && back.teamNumber === 77);
+    }
+    // DELETING A SAVED ROBOT (owner, 2026-11-04: the builder's list and Play's strip disagreed): the robot
+    // being driven moves to the next saved robot, else the default preset's build, and no copy of the deleted
+    // one stays in Play's kept slots, so "Unsaved" only ever means a build the player made and never saved
+    {
+      const { removeSavedRobot } = await import('../src/ui/savedRobots');
+      const mk = (name: string) => coerceSpec({ ...DEFAULT_SPEC, name }, undefined, 'biobuzz');
+      const [a, b, c] = [mk('A'), mk('B'), mk('C')];
+      const preset = mk('Preset');
+      const mid = removeSavedRobot([a, b, c], 1, true, preset);
+      check('delete saved: the active middle robot gives way to the one that took its place',
+        mid.saved.length === 2 && mid.saved[0] === a && mid.saved[1] === c && mid.select === c && mid.selectedIndex === 1);
+      const last = removeSavedRobot([a, b, c], 2, true, preset);
+      check('delete saved: the active last robot gives way to the new last one', last.select === b && last.selectedIndex === 1 && last.saved.length === 2);
+      const first = removeSavedRobot([a, b, c], 0, true, preset);
+      check('delete saved: the active first robot gives way to the next', first.select === b && first.selectedIndex === 0);
+      const only = removeSavedRobot([a], 0, true, preset);
+      check('delete saved: the last saved robot, when it was active, gives way to the default preset build',
+        only.saved.length === 0 && only.select === preset && only.selectedIndex === -1);
+      const aside = removeSavedRobot([a, b, c], 1, false, preset);
+      check('delete saved: deleting a robot that is not being driven selects nothing', aside.select === null && aside.saved.length === 2 && aside.saved[1] === c);
+      check('delete saved: a slot that is not there changes nothing', removeSavedRobot([a, b], 5, true, preset).saved.length === 2 && removeSavedRobot([a, b], 5, true, preset).select === null);
+      check('delete saved: with no preset to fall back on the build stays', removeSavedRobot([a], 0, true, null).select === null);
+      const menuSrc3 = readFileSync('src/ui/Menu.tsx', 'utf8').replace(/\r\n/g, '\n');
+      const del = menuSrc3.slice(menuSrc3.indexOf('const deleteSavedRobot = '), menuSrc3.indexOf('return (', menuSrc3.indexOf('const deleteSavedRobot = ')));
+      check('delete saved: the builder deletes through removeSavedRobot, forgets the kept copies and moves the active robot',
+        del.includes('removeSavedRobot(savedRobots, i, !spec.imported && !!gone && sameRobot(spec, gone), presetBuildFor(settings, defaultSpecFor(settings.game)))') &&
+          del.includes('for (const kept of [keptEdits, keptPresets])') && del.includes('spec: out.select') &&
+          /startNewRobot[\s\S]*?presetBuildFor\(settings\)/.test(menuSrc3));
     }
     // THE INTAKE'S NAME (owner, 2026-11-04): BIOBUZZ's "Sweeper" reads "Ground intake". Display only: the id
     // (`sweeper`) is what saved robots, the database and replays hold, and Chain Reaction keeps its own word

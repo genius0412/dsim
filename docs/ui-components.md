@@ -470,7 +470,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-badge` | src/ui/shell.css:1138 | 61 |
+| `.ds-badge` | src/ui/shell.css:1138 | 62 |
 | `.ds-badge-list` | src/ui/shell.css:10505 | 1 |
 | `.ds-badge-row` | src/ui/shell.css:10510 | 1 |
 

@@ -36,6 +36,7 @@ export function RobotCard({
   real = false,
   imported = false,
   unsaved = false,
+  preset = false,
   thumb,
   onPick,
   onEdit,
@@ -55,6 +56,8 @@ export function RobotCard({
   imported?: boolean;
   /** a build that is not saved yet (Play's strip keeps it in place): an "Unsaved" badge */
   unsaved?: boolean;
+  /** a preset's build under the player's own name, kept in Play's strip but never saved: a "Preset" badge */
+  preset?: boolean;
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
   onPick(): void;
@@ -74,6 +77,7 @@ export function RobotCard({
         {real ? <span className="ds-badge">Real robot</span> : null}
         {imported ? <span className="ds-badge">Imported</span> : null}
         {unsaved ? <span className="ds-badge">Unsaved</span> : null}
+        {preset ? <span className="ds-badge">Preset</span> : null}
       </span>
       {team ? (
         <span className="od">
