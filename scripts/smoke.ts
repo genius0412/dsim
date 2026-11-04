@@ -19736,12 +19736,29 @@ const recordDrive: CommandSource = (tick) => {
         css.includes('height: clamp(120px, 100dvh - 370px - var(--ds-bar-h), calc(42dvh - var(--ds-bar-h) - var(--ds-s-4)));'));
     check('nav: the trail drops its root while the sections show it (no "PLAY" twice in one bar)',
       shellSrc.includes('const trail = barNav && section ? crumbs.slice(1) : crumbs;') && /\{trail\.map\(\(c, i\) =>/.test(shellSrc));
+    // THE SECTIONS SIT AT ONE x ON EVERY SCREEN (owner, 2026-11-04: "a layout shift of nav items for
+    // different pages"). `shiftaudit` measures it across routes; these hold the two mechanisms.
+    {
+      const mainSrc = readFileSync('src/main.tsx', 'utf8');
+      const sbSrc = readFileSync('src/ui/scrollbar.ts', 'utf8');
+      check('nav: the bar pads itself by the scroll track its screen lacks (Play and its popups have none), measured before the first render',
+        css.includes('--ds-scrollbar: 0px;') && css.includes('--bar-fix: max(0px, var(--ds-scrollbar) - (100vw - 100%));') &&
+          sbSrc.includes("root.style.setProperty('--ds-scrollbar', `${w}px`);") && sbSrc.includes("window.addEventListener('resize', measure);") &&
+          mainSrc.indexOf('initScrollbarWidth();') > 0 && mainSrc.indexOf('initScrollbarWidth();') < mainSrc.indexOf('createRoot('));
+      const navAt = shellSrc.indexOf('<nav className="ds-bar-nav"');
+      const queueOff = shellSrc.indexOf('{!home && <QueueCounts className="bar" allGames />}');
+      const live = shellSrc.slice(shellSrc.indexOf('<span className="ds-bar-live">'), shellSrc.indexOf('</span>', shellSrc.indexOf('<span className="ds-bar-live">')));
+      check('nav: off Home the ranked queue line sits BEFORE the sections, so its coming and going cannot move them; Home keeps it in its cluster',
+        queueOff > 0 && queueOff < navAt && live.includes('{home && <QueueCounts className="bar" allGames />}') &&
+          /\.ds-bar > \.ds-qcount\.bar \{[^}]*margin-left: auto;[^}]*white-space: nowrap;/.test(css) && css.includes('.ds-bar > .ds-qcount.bar + .ds-bar-nav {'));
+    }
     // EVERY WINDOW SHAPE (owner, 2026-11-01: "Do the placements MAKE SENSE AND LOOK GOOD? For ALL
     // dimensions, even ultrawide or super thin?")
     const stageSrc2 = readFileSync('src/ui/MenuStage.tsx', 'utf8');
     check('shapes: past --ds-wide-max (2560px) the bar, the shell body, Play, the footer and Home’s column keep to a centred band',
       css.includes('--ds-wide-max: 2560px;') &&
-        css.includes('padding: 14px calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&
+        css.includes('--bar-band: max(0px, (100% - var(--bar-fix) - var(--ds-wide-max)) / 2);') &&
+        css.includes('padding: 14px calc(22px + var(--bar-band) + var(--bar-fix)) 14px calc(22px + var(--bar-band));') &&
         /\.ds-body \{[^}]*max-width: var\(--ds-wide-max\);/.test(css) &&
         /\.ds-main\.ds-main-stage \{\s*max-width: var\(--ds-wide-max\);/.test(css) &&
         css.includes('padding: var(--ds-s-4) calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));') &&

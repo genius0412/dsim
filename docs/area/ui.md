@@ -1270,6 +1270,17 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   answers `unfilled`, nothing once both are gone. Both fill the SAME `.ds-adframe` (728x90, 320x50 under 760px, a hairline outline, a 14px label above: “Advertisement” for the unit, “Sponsored” for the placement), so swapping them moves nothing; under 520px tall the strip is hidden. **FRIENDS IS AN OVERLAY (owner, 2026-10-10: it must not push the page).** The toggle card stays in the layout; opening it shows `.ds-friends-overlay`, a `position: fixed` sheet from the right edge under the app bar (full height in a room, which has no bar) with a transparent `.fr-scrim` behind it. Escape or a click outside closes it. It always starts closed: the stored open state (`decodesim.friendsPanelOpen`) and the squeeze media query are gone. At ≤900px `.ds-body` wraps so the toggle takes the first line and the content its own (`.ds-body > .ds-main`); at ≤640px the toggle is icon-only, its label visually hidden but still read. The
   profile hero is a CONTAINER query (`@container hero (max-width: 439px)`): picture + name on top,
   stats three across below.
+- ⚠️ **THE SECTIONS SIT AT ONE x/y/SIZE ON EVERY ROUTE (2026-11-04, owner: "a layout shift of nav items
+  for different pages").** Two causes, both measured. (1) Every shell screen keeps an always-on scroll track
+  but Play and its popups (`.on-stage` is `overflow-y: auto`), so the bar was 15px wider there and the
+  right-aligned sections jumped between Play and the rest. The bar now pads itself by the track its screen
+  lacks: `--bar-fix` = `--ds-scrollbar` (measured by `src/ui/scrollbar.ts` before the first render; 0 for
+  an overlay scrollbar) less the track it shows (`100vw - 100%`), and the wide-window band is computed on
+  the width WITH a track, so the mark agrees too. (2) The ranked queue line rode in the cluster right of the
+  sections and pushed them 80-230px whenever somebody queued; off Home it sits BEFORE them, nowrap with an
+  ellipsis, hidden under 721px. Home keeps it in its cluster (no sections to push). Anything new in the bar
+  that comes and goes goes LEFT of the sections, or into a reserved box. `npm run shiftaudit` compares the
+  sections across ten routes at 1920, 1366 and 390 in both themes (`DSIM_NAV=only` runs just that).
 - **RECORDS IS A HUB AND THE PAGES BEHIND IT (2026-10-10).** `/records` is `RecordsHub` (a player search, a
   link to every page, and a FEED of new No.1s and top-3 scores over Today / This week / This month / This
   season); `/records/<key>` is one page. **The pages are a registry**, `RECORDS_PAGES` in `recordsPages.ts`

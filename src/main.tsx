@@ -10,6 +10,7 @@ import { NoticePoller } from './ui/NoticePoller';
 import { PadNavLayer } from './ui/PadNavLayer';
 import { initPhysics } from './sim/physicsEngine';
 import { initTheme } from './theme';
+import { initScrollbarWidth } from './ui/scrollbar';
 import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { adoptLanFromOrigin } from './net/lanAdopt';
@@ -33,6 +34,8 @@ import './ui/tutorial.css';
 // This re-stamps from the same key and, when the pref is 'system', arms the
 // prefers-color-scheme listener so an OS switch is picked up live.
 initTheme();
+// before the first render: the app bar pads itself by the scroll track a screen lacks (`scrollbar.ts`)
+initScrollbarWidth();
 
 // Consent BEFORE the auction. index.html hardcodes the adsbygoogle tag so the
 // AdSense crawler finds it on every route, which means the tag is already parsing

@@ -400,6 +400,9 @@
      the far edge, and the bar's sections were 2,000px from the page they belong to. 2560 leaves every
      16:9 and 16:10 screen as it was. */
   --ds-wide-max: 2560px;
+  /* the platform's scrollbar width, measured and set by `src/ui/scrollbar.ts` before the first render
+     (0 for an overlay scrollbar). `.ds-bar` reads it: see there. */
+  --ds-scrollbar: 0px;
 }
 
 /* ---- app surface + top bar ------------------------------------------- */
@@ -436,11 +439,20 @@
    and `min-height` holds the bar to it — border-box, so it exactly matches what the bar already
    measured. That also kills a real shift on load: the bar was 57px until the webfont swapped and
    then grew to 63, dragging the whole page down with it. */
+/* THE BAR LAYS OUT AS IF ITS SCREEN HAD A SCROLL TRACK (2026-11-04). Every shell screen keeps one
+   (`.ds-app` is `overflow-y: scroll`) but Play and its popups (`.on-stage`, `auto`), so the bar was one
+   track wider there and the sections, right-aligned, jumped 15px between Play and Configure or Records.
+   `--bar-fix` is the track this screen is missing: the platform's width (`--ds-scrollbar`) less the one
+   it shows (`100vw - 100%`, `100%` being `.ds-app`'s content width), so 0 wherever a track is up. The
+   right padding takes it, and the wide-window band is worked out on the width WITH a track, so the mark
+   and the sections sit at the same x on every screen. `shiftaudit` compares them across routes. */
 .ds-bar {
+  --bar-fix: max(0px, var(--ds-scrollbar) - (100vw - 100%));
+  --bar-band: max(0px, (100% - var(--bar-fix) - var(--ds-wide-max)) / 2);
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 14px calc(22px + max(0px, (100% - var(--ds-wide-max)) / 2));
+  padding: 14px calc(22px + var(--bar-band) + var(--bar-fix)) 14px calc(22px + var(--bar-band));
   min-height: var(--ds-bar-h);
   border-bottom: 1px solid var(--ds-line);
   background: var(--ds-bar);
@@ -494,7 +506,9 @@
 /* RESERVE the async cluster. `QueueCounts` and `PresenceChip` both render nothing
    until the presence poll lands, and `.ds-bar-right` is `margin-left: auto`, so the
    whole right side of the bar re-flowed a second after every page load. 168px is the
-   settled width of both at 13px — a one-off geometry, per ui-standard §1.2.
+   settled width at 13px — a one-off geometry, per ui-standard §1.2. Measured 2026-11-04:
+   "123 online · 45 signed in" is 158px, so the chip never grows the box and never moves the
+   sections. Off Home the queue line, which does grow, is left of the sections (AppShell).
    `shiftaudit` cannot see this: it forces state classes, never a fetch. */
 .ds-bar-live {
   display: flex;
@@ -549,6 +563,20 @@
 .ds-bar-nav + .ds-bar-right {
   margin-left: 0;
 }
+/* THE RANKED QUEUE LINE, OFF HOME: before the sections, in the bar's free middle (`AppShell`), so its
+   coming and going moves nothing but itself. It takes the free space's auto margin from the sections,
+   and it shrinks with an ellipsis rather than wrapping, because a wrapped line grew the bar's height. */
+.ds-bar > .ds-qcount.bar {
+  margin-left: auto;
+  margin-right: 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ds-bar > .ds-qcount.bar + .ds-bar-nav {
+  margin-left: 0;
+}
 /* A LANDSCAPE PHONE (500px tall or less) keeps one line, a row there being a quarter of the window; the
    season goes, as it does under 641px wide, so the sections and the cluster fit */
 @media (max-width: 900px) and (max-height: 500px) {
@@ -601,6 +629,17 @@
   }
   .ds-bar-nav + .ds-bar-right {
     margin-left: auto;
+  }
+  /* ...unless the queue line already took the first row's free space */
+  .ds-bar > .ds-qcount.bar ~ .ds-bar-right {
+    margin-left: 0;
+  }
+}
+/* a phone bar has no room for the queue line (it squeezed the trail to an ellipsis); Play carries the
+   count, the same call Home's and Play's own phone rules made */
+@media (max-width: 720px) {
+  .ds-bar > .ds-qcount.bar {
+    display: none;
   }
 }
 

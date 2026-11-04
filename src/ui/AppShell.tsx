@@ -233,6 +233,11 @@ export function AppShell({
             </ol>
           </nav>
         )}
+        {/* THE RANKED QUEUE LINE sits BEFORE the sections off Home, in the bar's free middle. It comes and
+            goes with the queues and runs 80-230px, and in the cluster to their right it pushed all three
+            sections sideways by that much whenever somebody queued. Home has no sections to push, so it
+            keeps the line in its cluster. */}
+        {!home && <QueueCounts className="bar" allGames />}
         {barNav && (
           <nav className="ds-bar-nav" aria-label="Sections">
             {BAR_NAV.map((it) => (
@@ -250,7 +255,8 @@ export function AppShell({
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone
-              already went looking for a match.
+              already went looking for a match. Off Home the queue line is left of the
+              sections (above); the online chip stays here, and its reserved box holds it.
 
               BOTH of these render nothing until the presence poll lands, and the
               cluster is `margin-left: auto` — so without a reserved box the whole
@@ -258,7 +264,7 @@ export function AppShell({
               `.ds-bar-live` owns that reservation. `shiftaudit` forces hover and
               state classes but never an async fetch, so it cannot catch this. */}
           <span className="ds-bar-live">
-            <QueueCounts className="bar" allGames />
+            {home && <QueueCounts className="bar" allGames />}
             {presence && <PresenceChip p={presence} />}
           </span>
           {showAdmin && (

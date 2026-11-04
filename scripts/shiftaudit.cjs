@@ -5,6 +5,14 @@
  *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173   # in another shell
  *   npm run shiftaudit                                 # both themes
  *   DSIM_THEME=dark npm run shiftaudit                 # one theme
+ *   DSIM_NAV=only npm run shiftaudit                   # just the cross-route nav comparison (~1 min)
+ *
+ * THE BAR'S SECTIONS ACROSS ROUTES (2026-11-04). Besides the per-state probes, every theme opens
+ * `NAV_PAGES` at three window sizes and asserts that Play, Configure and Records sit at the same
+ * x/y/width/height on all of them. A state probe cannot see this class of shift: nothing on the
+ * page changes state, the ROUTE does. It caught the always-on scroll track that every shell
+ * screen keeps but Play, which moved all three sections 15px between Play and the rest.
+ * DSIM_NAV=0 skips it.
  *
  * `VITE_ROBOT_IMPORT=1` opens the robot importer in a local build (`importerEnabled`,
  * src/seasonVisibility.ts: it ships on the alpha channel only). Without it the importer's route
@@ -50,6 +58,8 @@ const say = (...a) => {
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// muted from the start, not only per window: the HUD pass starts a match and its audio
+app.commandLine.appendSwitch('mute-audio');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 setTimeout(() => { log('WATCHDOG'); process.exit(2); }, 600000);
 process.on('unhandledRejection', (e) => { log('UNHANDLED REJECTION:', (e && e.stack) || e); process.exit(3); });
@@ -74,6 +84,17 @@ const PAGES = process.env.DSIM_PAGES
 // (the STL fixture through the drop card's file input, straight to Review, Save) and audits
 // those. Off with DSIM_SEED=0; a DSIM_PAGES run includes it only when the list names `seeded`.
 const SEED = process.env.DSIM_SEED !== '0' && (!process.env.DSIM_PAGES || PAGES.includes('seeded'));
+// THE CROSS-ROUTE NAV COMPARISON (see the header). One route of each kind the bar is drawn over:
+// Play on the stage (no scroll track), two of its popups, a long and a short page of Configure and
+// of Records, and two footer pages. Home is not here: its sections are hidden, not placed.
+const NAV = process.env.DSIM_NAV || 'on'; // 'on' | 'only' | '0'
+const NAV_PAGES = ['/modes', '/rooms', '/ranked', '/configure/robot', '/configure/audio', '/records',
+  '/records/leaderboard', '/records/career', '/download', '/privacy'];
+const NAV_SIZES = [[1920, 1080], [1366, 768], [390, 844]];
+const NAV_MEASURE = `(() => [...document.querySelectorAll('.ds-bar-nav-btn')].map((b) => {
+  const r = b.getBoundingClientRect();
+  return { t: b.textContent.trim(), shown: getComputedStyle(b).visibility !== 'hidden', r: [r.x, r.y, r.width, r.height] };
+}))()`;
 const STL = path.join(__dirname, 'fixtures', 'robot-import', 'robot.stl');
 // PAGE selectors — the controls that differ from route to route.
 const SELECTORS = [
@@ -339,7 +360,8 @@ app.whenReady().then(async () => {
   // time under the importer's name and the seeded pass could not make a robot. Said, not skipped quietly.
   const IMPORT_PAGE = '/configure/robot/import';
   let importerOpen = true;
-  if (PAGES.includes(IMPORT_PAGE) || SEED) {
+  const navOnly = NAV === 'only';
+  if (!navOnly && (PAGES.includes(IMPORT_PAGE) || SEED)) {
     await win.loadURL(BASE + '/decode' + IMPORT_PAGE);
     importerOpen = await until(`location.pathname.endsWith(${JSON.stringify(IMPORT_PAGE)}) && !!document.querySelector('.ds-import-drop')`, 10000);
     if (!importerOpen) {
@@ -347,10 +369,58 @@ app.whenReady().then(async () => {
     }
   }
 
+  /**
+   * THE SECTIONS MUST NOT MOVE BETWEEN ROUTES. Each size: open every NAV_PAGES route, read the three
+   * buttons, and compare each route with the first one that shows them. A button that is there but
+   * hidden (Home's stage) is skipped, not compared; one that is missing where the first route had it
+   * is a finding, because a section that comes and goes is the same shift.
+   */
+  let navChecked = 0;
+  const navAcrossRoutes = async (theme) => {
+    for (const [w, h] of NAV_SIZES) {
+      win.setContentSize(w, h);
+      await sleep(200);
+      let ref = null;
+      for (const page of NAV_PAGES) {
+        await win.loadURL(BASE + page);
+        await js(`document.fonts.ready.then(() => true)`);
+        await until(`document.querySelectorAll('.ds-bar-nav-btn').length > 0`, 8000);
+        await sleep(400);
+        const got = (await js(NAV_MEASURE)).filter((b) => b.shown);
+        log(`  nav [${theme} ${w}x${h}] ${page}: ${got.map((b) => `${b.t}@${b.r.map((v) => v.toFixed(1)).join(',')}`).join(' | ') || 'none shown'}`);
+        if (!ref) {
+          if (got.length) ref = { page, got };
+          else say(`  NAV [${theme} ${w}x${h}] ${page}: no section shown`);
+          continue;
+        }
+        navChecked++;
+        const moved = [];
+        for (const want of ref.got) {
+          const b = got.find((x) => x.t === want.t);
+          if (!b) { moved.push(`${want.t} missing`); continue; }
+          const k = [0, 1, 2, 3].find((i) => Math.abs(b.r[i] - want.r[i]) > EPS);
+          if (k !== undefined) moved.push(`${want.t} ${'xywh'[k]}: ${want.r[k].toFixed(1)} -> ${b.r[k].toFixed(1)}`);
+        }
+        if (got.length !== ref.got.length) moved.push(`${ref.got.length} sections on ${ref.page}, ${got.length} here`);
+        if (moved.length) {
+          problems++;
+          say(`  NAV MOVED [${theme} ${w}x${h}] ${ref.page} -> ${page}`);
+          moved.forEach((x) => say(`          ${x}`));
+        }
+      }
+    }
+    // back to the size every probe below was measured at
+    win.setSize(1400, 900);
+    await sleep(200);
+  };
+
   for (const theme of THEMES) {
     // stamped by the blocking inline script in index.html, so it must precede the load
     await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
     log(`\n############################ THEME: ${theme.toUpperCase()}`);
+
+    if (NAV !== '0') await navAcrossRoutes(theme);
+    if (navOnly) continue;
 
     let chromeDone = false;
     for (const page of PAGES) {
@@ -421,7 +491,7 @@ app.whenReady().then(async () => {
   }
 
   await js(`localStorage.removeItem('decodesim.theme'); 'ok'`);
-  say(`===== ${checked} state changes checked · ${problems} caused layout shift${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
+  say(`===== ${checked} state changes checked · ${navChecked} route pairs compared for the bar's sections · ${problems} caused layout shift${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
   dbg.detach();
   process.exit(problems === 0 ? 0 : 1);
 });
