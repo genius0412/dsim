@@ -1,3 +1,57 @@
+# HANDOFF — 2026-11-04b (Owner's bug list; venues off photos; brake/coast; MSAA in display light)
+
+**State: on `alpha` (ee58f9f6..5ce63523). SERVER CHANGE, DEPLOYED: `dsim-alpha` 7812416b179638 (ord, shared-cpu-2x/1024) on image `deployment-01M6K19KFN65Y3E3066WQC401H` (5ce63523), /health ok.**** No `SIM_VERSION`, `SIM_PATCH` or `BALANCE_VERSION` change. On 568a48ee: `npm test` (shared 4829, BIOBUZZ 6109), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234) pass. 89a30b61 and 5ce63523 came after a review and ran their own `npm test`/`build`.
+
+- **Owner's playtest list, all landed:**
+  - Rooms (812d4136, 789db234, 8cc0d366):
+    - Browse rooms opens with Private room / Public room buttons, and the dialog title says which. "Have a code" is gone from a new room.
+    - There is no Watch button: Spectate is a choice in Your alliance.
+    - Under "Drivers pick a side" the host can no longer move a driver (`room.ts` refuses `moveMember`).
+    - A bot accepts its partner's start-role swap.
+    - A typed code joins a duo-record room. A full side cannot shrink, so its "−" is disabled. `WatchLobby` is deleted.
+  - Robots (84bd6172, ebea1fc2):
+    - Unsaved builds carry a badge, so Play's list and the builder's "Your robots n/3" count the same things.
+    - Deleting a saved robot removes it from Play, and if it was active the next one becomes active.
+    - Name, team number and team name are edited on the card (`IdentityDialog`), with no trip through the importer.
+    - The BIOBUZZ "Sweeper" is now "Ground intake"; the id stays `sweeper`.
+  - Other: a press on a friend opens a profile preview (ee58f9f6, `FriendPreview.tsx`). Badges carry their label (`BadgeMark.tsx`). The MatchStrategy alliance card is less cramped.
+- **Leave-room freeze (8f9ad5d4):** not reproduced on any exit path. Added a safety net: error boundaries with "Back to Home", and a watch that rescues a stage page stuck mid-transition. The real trigger is still unknown; if a tester hits it, take the console log.
+- **Venues (27b9f514, 1b146dda, 1ef39027):** the photographed venues and their 16 MB of `public/venues` are deleted. A stored pick loads the procedural room it fell back to, and High and up default to the gym.
+  - Portrait screens cap the vertical FOV at 100° (it reached 138°).
+  - Modeled rooms: one compressed GLB each, High and up only. The build finds the largest empty box around the field, and the cameras stay inside it.
+  - Splat trial: the Spark renderer (its own 939 KB chunk) measured 7.9 ms GPU for 4M synthetic splats at 1080p on the 4070 Ti. The session's view: Extreme-only at most, thinned to about 1M splats.
+  - **Blocked on the owner's logged-in downloads:**
+    - Sketchfab glTF into `venue-sources/<uid>/`: a5b17ba2e3494873abd313f720097614 (hangar), 943a9bc962974d02aa34592084687c3c (basketball court), 128c39da6a8e4a8ba169bf87e2d4fa91 (badminton hall), d74b3baa5a74430fb3717cfa3d883476 (venue stage).
+    - The DFK Arena splat (superspl.at) into `venue-sources/f5fa43b3/`.
+    - Real frame times, download sizes and the CC BY credits wait on those files.
+- **Brake / Coast (ee68c179):** a "Zero power" row in the builder's Drivetrain section and the importer's drivetrain step. Coast only acts on a wheel commanded exactly zero: that wheel rolls against gearbox drag plus rolling resistance.
+  - The rolling-resistance numbers (0.03 g traction, 0.05 g rollers) are estimates.
+  - Coasting mecanum/omni lose side grip; tank and swerve tyres don't.
+  - Brake is stored as no field, so old specs, rows and replays are brake. 15 brake scenes are pinned at their pre-change hashes.
+  - Online, coast needs this deploy; an older server drops the field and drives brake.
+  - 5ce63523 (after review):
+    - A client from before coast would drop it on its next settings save. A new `zeroPower` settings cap lets the server (`repo.ts`) restore it.
+    - Brake and coast count as two builds in `sameBuild`, the lobby and strategy cards, and `bbSpecMatches`.
+  - Zenith's robot file keeps the braking decel for coast on purpose. The follower brakes with reverse power, and the roll-out figure took the probe auto from 5.5 s to 9.8 s.
+  - **Open:** a coasting tank's auto stalls (12.1 s vs 5.7 s braked). That is a follower issue, not fixed here.
+  - Numbers are in `docs/area/physics.md`.
+- **Anti-aliasing (83fdb613, 568a48ee, 89a30b61):** measured against a 6× supersampled reference over eight views. Causes found:
+  - MSAA averaged HDR before tone mapping.
+  - Low had no AA.
+  - Medium's 2× was too few samples.
+  - Low's robot cards were drawn at 75% size and stretched.
+
+  Shadows, texture filtering, z-fighting and specular sparkle measured as non-causes.
+  - **Fix:** `renderSplitPass.ts` tone-maps the opaque samples before the resolve and draws glass multisampled. Low is now MSAA 2× and Medium 4×, with stored settings migrated once. Cards draw at native size.
+  - **Stair error:** Low −38%, Medium and High −10%. GPU at DPR 2 rose by about 0.05–0.4 ms per tier.
+  - **Rejected:** FXAA (it thins the 2 px rails) and TAA (it ghosts fast robots).
+  - **Lock-in:** the RENDER lane fails if the AA code changes without `npm run aaprobe -- --record` (~25 min) or if a view passes its ceiling. Rules are in `docs/area/biobuzz.md`.
+  - **Phones and Quest (89a30b61, from review):**
+    - With `WEBGL_multisampled_render_to_texture` (Android Mali/Adreno, the Quest's 2D page), three draws MSAA straight into the texture, so the split pass read the image it was writing. `canSplit()` mirrors three's own test, and those devices take the old single pass; the lane stubs the extension.
+    - The shot path, a `THREE.Line`, draws over the reach collar again.
+    - Not checked on a real phone.
+  - Low, Medium and High at DPR 2 stay soft below native resolution. That is their pixel budget, left alone.
+
 # HANDOFF — 2026-11-04 (Box NECTAR drawn as the field's; the menu stage at the player's graphics)
 
 **State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
