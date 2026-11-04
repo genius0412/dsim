@@ -84,6 +84,7 @@ import { recordsViewOf } from './recordsPages';
 import { DEFAULT_BOARD_QUERY, boardQueryString, canonicalBoardQuery, parseBoardQuery, type BoardKey, type BoardQuery } from './recordsQuery';
 import { rememberBoard, rememberedBoard } from './boardMemory';
 import { crumbsFor } from './crumbs';
+import { arrive, pushRoute, replaceRoute } from './pageScroll';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
@@ -723,7 +724,7 @@ export function App() {
       ? `${canonical}${canonical.includes('?') ? '&' : '?'}${new URLSearchParams({ [AUTH_VERIFIER_PARAM]: verifier })}`
       : canonical;
     if (window.location.pathname + window.location.search !== target) {
-      window.history.replaceState(null, '', target + window.location.hash);
+      replaceRoute(target + window.location.hash);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -783,9 +784,18 @@ export function App() {
     setShowChainDisclaimer(screen === 'modes' && settings.game === 'chain' && !chainDisclaimerSeen());
   }, [screen, settings.game]);
 
-  /** the single way screens change — updates state AND the URL */
-  const navigate = (next: Screen, args: Partial<RouteArgs> = {}): void => {
+  /**
+   * The single way screens change — updates state AND the URL. `anchor` lands the page at that
+   * element (`#anchor` in the address, `pageScroll.ts`); a navigation to the address already shown
+   * (a re-click of the tab you are on) puts the page back at its top. Where the page lands otherwise
+   * follows from `scrollPage` below, with nothing to do here.
+   */
+  const navigate = (next: Screen, args: Partial<RouteArgs> = {}, anchor: string | null = null): void => {
     const a: RouteArgs = { ...NO_ARGS, ...args };
+    const game = settingsRef.current.game;
+    // the PATH, so a board's query is not a different page; against the game ON SCREEN (`settings`, not
+    // the ref `selectGame` has already moved), so another season's board is not a re-click
+    const again = pathFor(next, a, game) === pathFor(screen, route, settings.game);
     setScreen(next);
     setRoute(a);
     if (next !== 'replay') {
@@ -793,9 +803,10 @@ export function App() {
       setReplayMatch(null); // ...and the moderation context it may have been opened with
     }
     if (isWebHistory) {
-      const url = urlFor(next, a, settingsRef.current.game);
-      if (window.location.pathname + window.location.search !== url) window.history.pushState(null, '', url);
+      const url = urlFor(next, a, game) + (anchor ? `#${anchor}` : '');
+      if (window.location.pathname + window.location.search + (anchor ? window.location.hash : '') !== url) pushRoute(url);
     }
+    arrive(anchor, again);
   };
 
   /** Leaderboards' board changed IN PLACE (a filter, not a page): the address is replaced, not pushed,
@@ -806,7 +817,7 @@ export function App() {
     setRoute((r) => ({ ...r, query }));
     if (isWebHistory) {
       const url = urlFor('records', { ...NO_ARGS, sub: 'leaderboard', query }, settingsRef.current.game);
-      if (window.location.pathname + window.location.search !== url) window.history.replaceState(null, '', url);
+      if (window.location.pathname + window.location.search !== url) replaceRoute(url);
     }
   };
   /** a board opened from elsewhere (a toast, My records' tile): Leaderboards on it; `me` scrolls to your row */
@@ -2311,6 +2322,21 @@ export function App() {
   const recordsView = recordsViewOf(route.sub);
   /** the board on screen: the address's, or the one last shown in this game, or Solo */
   const boardQuery = parseBoardQuery(route.query ?? rememberedBoard(settings.game));
+  /**
+   * WHICH PAGE the shell shows, for where a navigation lands (`pageScroll.ts`): the screen and every
+   * part of the route that REPLACES the content — a Configure section, a Records tab, Profile's page, a
+   * player, a competition page, a dev route. Never the board query or the game: those change a list in
+   * place. A popup is Play's page, so Play does not move under it.
+   */
+  const scrollPage = popup
+    ? 'modes'
+    : [
+        screen,
+        screen === 'configure' ? configureSection : screen === 'records' ? recordsView : (route.sub ?? ''),
+        route.username ?? '',
+        route.replayId ?? '',
+        route.dev ?? '',
+      ].join('/');
   /** the two public legal screens — the blocking gates below suspend on them */
   const legalScreen = screen === 'privacy' || screen === 'terms';
   /** the claim and notice dialogs wait for every other modal this shell can raise, and for a popup:
@@ -2353,7 +2379,7 @@ export function App() {
         onDownload={() => navigate('download')}
         onContributors={() => navigate('contributors')}
         onChangelog={() => navigate('changelogs')}
-        onPrivacy={() => navigate('privacy')}
+        onPrivacy={(anchor) => navigate('privacy', {}, anchor ?? null)}
         onTerms={() => navigate('terms')}
         onDonate={() => navigate('donate')}
         signedIn={signedIn}
@@ -2363,6 +2389,7 @@ export function App() {
         myUserId={accountUserId}
         game={settings.game}
         page={popup ? 'modes' : screen}
+        scrollPage={scrollPage}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both
@@ -2410,7 +2437,7 @@ export function App() {
             update(switchGame(settings, g));
             if (isWebHistory) {
               const path = pathFor(screen, route, g);
-              if (window.location.pathname !== path) window.history.pushState(null, '', path);
+              if (window.location.pathname !== path) pushRoute(path);
             }
           }}
         />
@@ -2858,11 +2885,9 @@ export function App() {
             selectGame(g);
             navigate('records', { sub: 'leaderboard', query: boardQueryString(q) });
           }}
-          onStanding={() => {
-            navigate('account');
-            // after React has committed the page (rAF would not fire in a hidden tab; `ConsentLink` says why)
-            setTimeout(() => document.querySelector('.ds-standing, .nt-inbox')?.scrollIntoView({ block: 'start' }), 0);
-          }}
+          // Account at its standing and messages: an anchor (`data-anchor="standing"`), waited for while the
+          // session and the standing load
+          onStanding={() => navigate('account', {}, 'standing')}
           onWatch={watchReplay}
           onWatchLocal={(r) => {
             // a local practice log has no server id — hand the container straight to the

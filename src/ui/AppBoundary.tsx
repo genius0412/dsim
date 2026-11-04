@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react';
+import { replaceRoute } from './pageScroll';
 
 /**
  * A RENDER ERROR NEVER LEAVES A BLANK SCREEN (owner, 2026-11-04: a tester left a room and was stuck on
@@ -29,7 +30,7 @@ interface State {
 /** Home by a fresh load: `/` resolves to the saved game's Home (a `file:` build routes in state, so a reload is Home) */
 export function reloadHome(): void {
   try {
-    if (window.location.protocol !== 'file:') window.history.replaceState(null, '', '/');
+    replaceRoute('/'); // nothing under a `file:` build, which routes in state
   } catch {
     /* a reload of the current address still clears the failure */
   }

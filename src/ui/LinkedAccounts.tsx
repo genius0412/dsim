@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { replaceRoute } from './pageScroll';
 import { fetchLinks, startLink, unlinkProvider, type LinkProvider } from '../net/api';
 
 const LABEL: Record<LinkProvider, string> = { github: 'GitHub', discord: 'Discord' };
@@ -38,8 +39,8 @@ export function LinkedAccounts() {
     if (!p) return;
     if (p === 'taken') setError('That account is already linked to another DSIM profile.');
     else if (p === 'error') setError('Couldn’t finish linking. Try again.');
-    // strip it so a reload does not repeat the message
-    window.history.replaceState(null, '', window.location.pathname);
+    // strip it so a reload does not repeat the message (the same history entry: its scroll key stays)
+    replaceRoute(window.location.pathname + window.location.hash);
   }, []);
 
   if (!state || state.available.length === 0) return null;

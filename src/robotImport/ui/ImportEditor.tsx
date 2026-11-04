@@ -7,6 +7,7 @@ import { BB_HOOD_DEFAULT_DEG } from '../../games/biobuzz/config';
 import { decodeFixedLauncher } from '../../sim/fixedShot';
 import { seasonFor } from '../../seasons';
 import { FOCUSABLE } from '../../ui/PadNavLayer';
+import { usePageTop } from '../../ui/pageScroll';
 import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
@@ -624,6 +625,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- actions -------------------------------------------------------------------------------
   const step = doc?.step ?? 0;
+  // A STEP REPLACES THE EDITOR'S CONTENT: the page goes to its top and focus to the step's title
+  // (`pageScroll.ts`); a Fix's own focus target, set in the effect above, lands after it
+  const bodyRef = useRef<HTMLElement>(null);
+  usePageTop(doc ? step : null, bodyRef);
   const goStep = (s: StepIndex, focus?: string): void => {
     pendingFocus.current = focus ?? null;
     // moving between steps is not an edit: it is kept with the draft, never undone
@@ -1266,7 +1271,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           }
         />
 
-        <section className="ds-panel ds-import-body">
+        <section ref={bodyRef} className="ds-panel ds-import-body">
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
               <h2 className={`ds-panel-title notice${blocked ? ' error' : ''}`} role="status">

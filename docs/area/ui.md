@@ -734,6 +734,48 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   right after the first load, under the boot screen now; the sponsor logo (two 30 KB PNGs) lands about
   a second after Home on Slow 4G, into its reserved box.
 
+## Where a navigation lands (2026-11-04)
+
+Owner: Configure ▸ Network clicked from a scrolled Graphics stayed scrolled; "make sure weird things like
+this dont happen for all other page transitions". Cause: shell screens scroll inside `.ds-app`, which stays
+mounted across every shell navigation, so each new page inherited the old offset (clamped to its height);
+`window.scrollTo` does nothing here. Measured on the alpha build before the fix: **76 of 78 landings wrong**.
+All of it now lives in `src/ui/pageScroll.ts` (DOM) and `src/ui/pageScrollRules.ts` (the rules, DOM-free).
+
+- **A new page lands at its top**: a route, a Configure section, a Records tab, Profile's two pages, a
+  player, a competition page. `AppShell` runs `useRouteScroll` on App's `scrollPage` (the screen plus the
+  route part that replaces the content); it zeroes `.ds-app` and every scroller nested in `<main>`, before
+  paint. A popup is Play's page, so Play does not move under it. Navigating to the address already shown
+  (a re-click) goes to the top too.
+- **Back and Forward restore** the offset the page was left at. Every history entry is keyed:
+  ⚠️ **write history only through `pushRoute` / `replaceRoute`**, never `history.pushState`; a raw
+  `replaceState(null, …)` wipes the key. A restore waits up to 2.5 s for content still loading and gives
+  up when the player scrolls.
+- **Anchors**: `navigate(screen, args, 'standing')` or an address `#id` lands the element (`id`, or
+  `data-anchor="…"`) 16px under the bar, waiting up to 4 s for it to render. My records' "Standing and
+  messages" and the footer's Data (`/privacy#your-data`) use it. No `setTimeout(scrollIntoView)`.
+- **In place does not move the page**: a filter, a board pick, a select, a toggle, a fold, a game switch
+  on the same page. A list whose rows are replaced calls `useListTop(key, panelRef)`: its own scroller goes
+  to its first row, and the page moves only if that first row is above the view (Leaderboards' board and
+  filters, match history's filters and Prev/Next, the competitions scopes). "Load more" appends.
+- **A tab strip that is not a route** calls `usePageTop(key, regionRef)` (the console's tabs, the
+  importer's steps). `npm test` ("page scroll:") fails any new `ds-tabs`/`ds-subnav`/`tablist` strip that is
+  neither listed as routed nor calls one of the two hooks, and any history write, shell reset or anchor jump
+  outside `pageScroll.ts`.
+- **Focus follows**: after a page change focus goes to `[data-page-focus]` (Configure's section), else the
+  page's `h1`, else `<main>`, with `preventScroll`; an anchor takes focus itself. Not on the first load, and
+  never out of a dialog or popup. ARIA tablists keep focus on the tab (`usePageTop(…, false)`). Those
+  targets take no ring (`[data-scroll-focus]:focus`).
+- **Instant, always.** Nothing here animates, so `prefers-reduced-motion` has nothing to cap.
+
+**The check:** `DSIM_SCROLL=only npm run shiftaudit` (build, then `npx vite preview --port 4173`; ~2 min,
+offscreen and muted). At 1366x768 and 390x844 it opens 18 transitions (the bar's sections, the mark, five
+Configure sections, Records' tabs, Profile's pages, footer links, the Data anchor) scrolled down, clicks
+with real input events, and asserts the new page is at 0 (or the anchor under the bar), nothing nested is
+still scrolled, focus is in the new page, and Back restores the old offset; plus two in-place controls and
+a cold `/privacy#your-data` load. Every shell page is padded to 3000px so a short destination cannot pass by
+clamping (`DSIM_SCROLL_PAD=0` turns it off). A full `npm run shiftaudit` includes it; `DSIM_SCROLL=0` skips it.
+
 ## Configure — the sections, and the three rules that hold them together
 
 `src/ui/Configure.tsx` routes five keys at `/configure/<key>`. ⚠️ **ROBOT IS CONFIGURE'S FIRST SECTION** (owner, 2026-11-01: "The robot configure menu feels like it should be in configure"; it was a Play page without the sub-nav from 2026-10-13). It is in the sub-nav ("Build, save & import"), a bare `/configure` opens it, its trail is Configure's, and the importer's up is Configure. Home's Configure keycap reads "Robot, controls & settings". The builder also carries a way back in its hero, **Play with this robot** (`onPlay`), beside the bar's sections. **Save changes** updates the saved robot being edited (`editingSaved`, the slot last on, forgotten on another kind of pick), with **Save as new** beside it: Save used to add a copy every time, so with three saved an edit could not be saved at all. Leaving a match lands on **Play**, not Home (`exitGame`; a test drive and a competition match keep their own returns). Play still picks the robot (the strip) and opens the builder (Edit, New robot). **The ARRAY is the order on

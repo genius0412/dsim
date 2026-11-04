@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { Markdown } from './markdown';
 import { PRIVACY_MD, TERMS_MD, LEGAL_UPDATED, LEGAL_IDENTIFIED, LEGAL_CONTACT } from '../legalText';
 import { YourData } from './YourData';
@@ -51,15 +50,9 @@ function LegalPage({ title, sub, body }: { title: string; sub?: string; body: st
  * question, so it should be the page that answers it.
  */
 export function Privacy() {
-  // A DEEP LINK to a section (`/privacy#your-data`, the documented fallback for the footer's
-  // "Data" link) has to be followed by hand: the browser looks for the anchor on the initial
+  // A DEEP LINK to a section (`/privacy#your-data`, the documented fallback for the footer's "Data"
+  // link) is followed by the shell (`pageScroll.ts`): the browser looks for the anchor on the initial
   // load, before React has rendered it, and finds nothing.
-  useEffect(() => {
-    const id = decodeURIComponent(window.location.hash.slice(1));
-    if (!id) return;
-    const t = setTimeout(() => document.getElementById(id)?.scrollIntoView({ block: 'start' }), 0);
-    return () => clearTimeout(t);
-  }, []);
   return (
     <div className="ds-legal-col">
       <LegalPage

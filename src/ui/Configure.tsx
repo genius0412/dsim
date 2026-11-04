@@ -122,7 +122,9 @@ export function Configure({
           ))}
         </nav>
 
-        <div className="ds-subnav-body">
+        {/* THE SECTION, named for a screen reader: a section change lands here at the top of the page
+            and focus comes to it (`data-page-focus`, `pageScroll.ts`) */}
+        <section className="ds-subnav-body" aria-label={LABELS[section].label} data-page-focus tabIndex={-1}>
           {section === 'robot' && <Menu settings={settings} onChange={onChange} onImport={onImport} onPlay={onPlay} />}
           {section === 'controls' && (
             <ControlsSection
@@ -140,7 +142,7 @@ export function Configure({
             </LoadBoundary>
           )}
           {section === 'network' && <NetworkSection />}
-        </div>
+        </section>
       </div>
     </>
   );

@@ -22,6 +22,7 @@ import { RANKED_PLACEMENT } from '../config';
 import { RobotSheet, UnsavedSheet } from './RobotSheet';
 import { fmtDay } from './fmtDate';
 import { LatestRecords } from './LatestRecords';
+import { useListTop } from './pageScroll';
 import {
   BOARD_KEYS,
   BOARD_LABELS,
@@ -290,6 +291,11 @@ export function Leaderboard({
             : { rank: null, value: null, toPlace: Math.max(0, minGames - me.games) }
           : null;
 
+  // A BOARD PICK OR A FILTER CHANGES THE ROWS IN PLACE (`pageScroll.ts`, rule 4): the page stays, unless
+  // the board's top is above the visible area, when it comes back to just under the bar
+  const boardRef = useRef<HTMLDivElement>(null);
+  useListTop(`${game}|${board}|${cat}|${dt}|${season ?? ''}`, boardRef);
+
   // OPEN AT YOUR ROW (My records' tiles link with `me=1`): once, when the board lands, then the flag
   // leaves the address so a reload does not scroll again
   const tableRef = useRef<HTMLTableElement>(null);
@@ -323,7 +329,7 @@ export function Leaderboard({
 
   return (
     <div className="rb-layout">
-      <div className="ds-panel rb-board">
+      <div ref={boardRef} className="ds-panel rb-board">
         <div className="rb-controls">
           <div className="ds-segs rb-boards" role="group" aria-label="Board">
             {BOARD_KEYS.map((b) => (

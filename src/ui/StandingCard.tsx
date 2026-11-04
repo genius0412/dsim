@@ -173,7 +173,7 @@ export function StandingCard({ compact = false }: { compact?: boolean }) {
     // a full meter and an empty offence list for everyone would read as an accusation —
     // but it now says what it IS.
     return (
-      <div className="ds-standing good" data-tier={tier.key}>
+      <div className="ds-standing good" data-tier={tier.key} data-anchor="standing">
         <div className="ds-standing-head">
           <StandingGauge score={score} />
           <div className="ds-standing-headtext">
@@ -186,7 +186,7 @@ export function StandingCard({ compact = false }: { compact?: boolean }) {
   }
 
   return (
-    <div className={`ds-standing ${compact ? 'compact' : ''}`} data-tier={tier.key}>
+    <div className={`ds-standing ${compact ? 'compact' : ''}`} data-tier={tier.key} data-anchor="standing">
       <div className="ds-standing-head">
         <StandingGauge score={score} />
         <div className="ds-standing-headtext">

@@ -46,7 +46,7 @@ export function NoticeInbox() {
   if (!userId || (shown.length === 0 && filed.length === 0)) return null;
 
   return (
-    <div className="ds-panel nt-inbox">
+    <div className="ds-panel nt-inbox" data-anchor="standing">
       {shown.length > 0 && (
         <>
           <div className="ds-panel-h">

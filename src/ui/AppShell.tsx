@@ -20,6 +20,7 @@ import { RAIL_ITEMS } from './NavRail';
 import { bootDone, fadeIn } from './screenFade';
 import { AppBoundary } from './AppBoundary';
 import { useStageWatch } from './shellWatch';
+import { useRouteScroll } from './pageScroll';
 import type { Presence, RoomInvite } from '../net/api';
 
 export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
@@ -80,6 +81,7 @@ export function AppShell({
   myUserId,
   game,
   page,
+  scrollPage,
 }: {
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
@@ -104,8 +106,9 @@ export function AppShell({
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
   onContributors: () => void;
-  /** Privacy policy — public, and a hard prerequisite for the AdSense application */
-  onPrivacy: () => void;
+  /** Privacy policy — public, and a hard prerequisite for the AdSense application. `anchor` lands it
+   *  at a section (`your-data`, the Data link's fallback) */
+  onPrivacy: (anchor?: string) => void;
   /** Terms of use — public, paired with the privacy policy */
   onTerms: () => void;
   /** Support/donate page — Ko-fi link + the supporter-membership claim flow */
@@ -128,6 +131,10 @@ export function AppShell({
   /** WHICH PAGE this is (App's screen, Play under a popup): a new one fades its content in
    * (`screenFade.ts`). Not the sub-route, so a Configure section or a Records page does not. */
   page?: string;
+  /** WHICH PAGE this is for where a navigation lands (`pageScroll.ts`): the screen AND the part of the
+   *  route that replaces the content (a section, a tab, a profile), never a filter. A change lands the
+   *  new page at its top (or its anchor), Back restores the offset it was left at. */
+  scrollPage: string;
 }) {
   const lanOn = useLanEnabled();
   const presence = usePresence();
@@ -177,6 +184,8 @@ export function AppShell({
   // a stage page that shows nothing of its own is brought back, or sent Home (`shellWatch.ts`)
   const appRef = useRef<HTMLDivElement>(null);
   useStageWatch(!!stage, page, appRef, () => onNav('home'));
+  // where a navigation lands: the top, an anchor, or (Back) where the page was left
+  useRouteScroll(appRef, mainRef, scrollPage);
   // a page that throws says so, under the bar, instead of unmounting the app (`AppBoundary`)
   const content = (
     <AppBoundary resetKey={page} onHome={() => onNav('home')}>
@@ -345,7 +354,7 @@ interface FootNav {
   game: GameId;
   onDownload: () => void;
   onContributors: () => void;
-  onPrivacy: () => void;
+  onPrivacy: (anchor?: string) => void;
   onTerms: () => void;
   onDonate: () => void;
   onChangelog: () => void;
@@ -415,11 +424,8 @@ export function FootBody() {
  * left click stays in the SPA through the app's own `navigate` (`go`). The hrefs mirror
  * `screenSuffix` in App.tsx, which the router's `parseScreen` reads back.
  *
- * The click also puts the page back at its TOP (owner, 2026-09-23). `.ds-app` is the scroll
- * container, not the window (html/body are overflow:hidden for the game canvas), and a
- * navigation that keeps this shell mounted keeps its scroll offset — so the destination opened
- * already scrolled down to where the footer was. Synchronous is fine: the offset belongs to the
- * container, which either survives the navigation (and stays at 0) or is replaced by a fresh one.
+ * The destination opens at its TOP (owner, 2026-09-23), like every navigation: `useRouteScroll`
+ * (`pageScroll.ts`) does it for all of them now, so this link no longer resets the scroll itself.
  */
 function FootLink({
   href,
@@ -441,7 +447,6 @@ function FootLink({
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
         go();
-        e.currentTarget.closest('.ds-app')?.scrollTo({ top: 0 });
       }}
     >
       {children}
@@ -471,26 +476,17 @@ function FootLink({
  * this build ships a CMP at all, because the panel behind it is useful either way — it is where
  * the analytics switch, the storage inventory, the export and the delete live.
  *
- * The scroll is DEFERRED because `onPrivacy` navigates by React state — the heading does not
- * exist yet when this handler runs — and on the privacy page itself, where navigating is a
- * no-op, the jump is the only feedback there is.
- *
- * ⚠️ `setTimeout` AND NOT `requestAnimationFrame`. rAF does not fire in a hidden or backgrounded
- * tab, so the version that used it scrolled nowhere whenever the page was not being painted —
- * which is exactly the state a tab is in while something else is in front of it. A frame
- * callback is the right tool for "before the next paint" and the wrong one for "after React has
- * committed", which is all this needs.
+ * It lands there as an ANCHOR (`/privacy#your-data`, `pageScroll.ts`), under the bar, and on the
+ * privacy page itself, where there is no page to change, the jump is still made. It used to
+ * `scrollIntoView` the heading on a timeout, which put it behind the sticky bar.
  */
-function ConsentLink({ onPrivacy }: { onPrivacy: () => void }) {
+function ConsentLink({ onPrivacy }: { onPrivacy: (anchor?: string) => void }) {
   return (
     <button
       className="ds-foot-link legal"
       onClick={() => {
         if (showConsentSettings()) return;
-        onPrivacy();
-        setTimeout(() => {
-          document.getElementById('your-data')?.scrollIntoView({ block: 'start' });
-        }, 0);
+        onPrivacy('your-data');
       }}
     >
       Data

@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useListTop } from './pageScroll';
 import {
   type MatchHistoryEntry,
   type MatchHistoryOpts,
@@ -173,6 +174,11 @@ export function MatchHistory({
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   /** bumped by Try again: re-runs the fetch effect */
   const [retry, setRetry] = useState(0);
+  // A FILTER OR A PAGE TURN REPLACES THE ROWS (`pageScroll.ts`, rule 4): the table's own scroller goes to
+  // its first row, and the page moves only when the list's top is above the visible area (Next is under
+  // the rows, so a long page brings the list back to its top)
+  const listRef = useRef<HTMLDivElement>(null);
+  useListTop(`${type}|${result}|${pageSize}|${offset}|${season ?? ''}`, listRef);
 
   // a period switch resets to the first page (the old offset may exceed the count), and so does a
   // type the caller changed
@@ -224,7 +230,7 @@ export function MatchHistory({
   const refetching = status === 'loading' && page != null;
 
   return (
-    <div className="ds-panel">
+    <div ref={listRef} className="ds-panel">
       <div className="ds-panel-h">{head ?? <h2 className="ds-panel-title">Match history</h2>}</div>
       {!slim && (
       <div className="mh-filters">

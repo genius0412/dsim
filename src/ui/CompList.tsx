@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useListTop } from './pageScroll';
 import { fetchCompetitionCaps, fetchCompetitions, type ListScope } from '../net/competitions';
 import type { CompetitionSummary } from '../competition/types';
 import { formatLabel, phaseLine } from '../competition/copy';
@@ -38,6 +39,10 @@ export function CompList({
   onCreate: () => void;
 }) {
   const [scope, setScope] = useState<ListScope>('upcoming');
+  // THE SCOPE TABS FILTER ONE LIST (`pageScroll.ts`, rule 4): the page stays where it is unless the
+  // list's top is above the visible area
+  const listRef = useRef<HTMLDivElement>(null);
+  useListTop(scope, listRef);
   const [rows, setRows] = useState<CompetitionSummary[] | null>(null);
   const [more, setMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -127,7 +132,7 @@ export function CompList({
         ))}
       </nav>
 
-      <div className="ds-panel">
+      <div ref={listRef} className="ds-panel">
         {err ? (
           <div className="ds-empty">
             <div className="big">Couldn’t load competitions</div>

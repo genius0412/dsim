@@ -20133,7 +20133,7 @@ const recordDrive: CommandSource = (tick) => {
     same(rq.parseBoardQuery('board=nope&cat=x&dt=y&season=-1'), rq.DEFAULT_BOARD_QUERY) && rq.canonicalBoardQuery('board=1v1&cat=auto&dt=tank') === 'board=1v1');
   check('records query: the address carries the board in and out (start, Back/Forward, navigate, a filter in place)',
     /query: routeQuery\(p\.screen, p\.sub, window\.location\.search\)/.test(app) && /query: routeQuery\(s\.screen, s\.sub, window\.location\.search\)/.test(app) &&
-      /const url = urlFor\(next, a, settingsRef\.current\.game\);/.test(app) && /window\.history\.replaceState\(null, '', url\)/.test(app) && /const canonical = urlFor\(startScreen, start/.test(app));
+      /const url = urlFor\(next, a, game\)/.test(app) && /replaceRoute\(url\)/.test(app) && /const canonical = urlFor\(startScreen, start/.test(app));
   check('records: another game\'s boards keep the board and drop the period (a period is per game)',
     /const q = \{ \.\.\.boardQuery, season: null, me: false \};\s*selectGame\(g\);/.test(app));
   // EVERY TOAST LINK RESOLVES (065b71ed / 703348ab): the target names the board, and App opens it
@@ -20168,7 +20168,8 @@ const recordDrive: CommandSource = (tick) => {
   const acct = readFileSync('src/ui/Account.tsx', 'utf8');
   check('records: standing and messages moved to Account, and My records links straight to them',
     /\{showAuth && <StandingCard \/>\}/.test(acct) && /\{showAuth && <NoticeInbox \/>\}/.test(acct) && /onClick=\{nav\.onStanding\}>\s*Standing and messages/.test(myRec) &&
-      /navigate\('account'\);[\s\S]{0,200}querySelector\('\.ds-standing, \.nt-inbox'\)/.test(app));
+      /navigate\('account', \{\}, 'standing'\)/.test(app) &&
+      /data-anchor="standing"/.test(readFileSync('src/ui/StandingCard.tsx', 'utf8')) && /data-anchor="standing"/.test(readFileSync('src/ui/NoticeInbox.tsx', 'utf8')));
   check('records: practice and LAN replays are types of My records\' one history list',
     /type === 'practice' \? \(\s*<PracticeReplays [^>]*head=\{head\}/.test(myRec) && /type === 'lan' \? \(\s*<LanReplays [^>]*head=\{head\}/.test(myRec));
   check('records: playtime and games played stay on the public profile, awards on Achievements',
@@ -27672,7 +27673,7 @@ const dumperSetup = (): RobotSetup => {
     const body = fn.slice(0, fn.indexOf('\n}'));
     check(
       '⚠️ footer: the consent link renders unconditionally (it must never delete itself)',
-      body.length > 0 && !/return null/.test(body) && /onPrivacy\(\)/.test(body),
+      body.length > 0 && !/return null/.test(body) && /onPrivacy\('your-data'\)/.test(body),
     );
     const yd = readFileSync(joinPath('src', 'ui', 'YourData.tsx'), 'utf8');
     check(
@@ -43178,6 +43179,112 @@ function fxImportFixed(): RobotSpec {
       `${downWhileHeld} ${r.butterflyTank}`,
     );
   }
+}
+
+/* WHERE A NAVIGATION LANDS (owner, 2026-11-04: Configure ▸ Network from a scrolled Graphics stayed
+   scrolled). The rules (`pageScrollRules.ts`), then the sources: every history write, anchor jump and
+   tab strip goes through `pageScroll.ts`, so a new screen or tab cannot quietly bring the bug back.
+   The app itself is checked by `DSIM_SCROLL=only npm run shiftaudit`. */
+{
+  const { landing, focusMoves, anchorOf, revealDelta, anchorDelta } = await import('../src/ui/pageScrollRules');
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  check('page scroll: a new page lands at its top', landing(true, null).kind === 'top');
+  check('page scroll: a re-render of the same page does not move it', landing(false, null).kind === 'stay');
+  check(
+    'page scroll: navigating to the page already shown (a re-click) goes to its top',
+    landing(false, { kind: 'navigate', anchor: null, again: true }).kind === 'top',
+  );
+  check(
+    'page scroll: a game switch or a board query on the same page does not move it',
+    landing(false, { kind: 'navigate', anchor: null, again: false }).kind === 'stay',
+  );
+  check('page scroll: Back restores the offset the page was left at', same(landing(true, { kind: 'pop', y: 640, anchor: null }), { kind: 'restore', y: 640 }));
+  check('page scroll: Back to a page with nothing saved lands at its top', landing(true, { kind: 'pop', y: null, anchor: null }).kind === 'top');
+  check('page scroll: Back within one page with nothing saved does not move it', landing(false, { kind: 'pop', y: null, anchor: null }).kind === 'stay');
+  check('page scroll: a saved offset wins over the address anchor', same(landing(true, { kind: 'pop', y: 300, anchor: 'your-data' }), { kind: 'restore', y: 300 }));
+  check(
+    'page scroll: an anchor wins over the top (My records -> Account at its standing)',
+    same(landing(true, { kind: 'navigate', anchor: 'standing', again: false }), { kind: 'anchor', id: 'standing' }),
+  );
+  check('page scroll: an anchor on the page already shown is still followed', landing(false, { kind: 'navigate', anchor: 'your-data', again: true }).kind === 'anchor');
+  check('page scroll: a deep link lands at its anchor', same(landing(true, { kind: 'load', y: null, anchor: 'your-data' }), { kind: 'anchor', id: 'your-data' }));
+  check(
+    'page scroll: a fragment is an anchor only when it names an element (not the console\'s #tab=…)',
+    anchorOf('#your-data') === 'your-data' && anchorOf('#tab=users&user=abc') === null && anchorOf('') === null && anchorOf('#%E0%A4%A') === null,
+  );
+  check('page scroll: focus moves into a new page', focusMoves({ kind: 'top' }, null, false));
+  check('page scroll: focus is not taken on the first load', !focusMoves({ kind: 'top' }, { kind: 'load', y: null, anchor: null }, true));
+  check('page scroll: a deep link\'s anchor takes focus even on the first load', focusMoves({ kind: 'anchor', id: 'x' }, { kind: 'load', y: null, anchor: 'x' }, true));
+  check('page scroll: Back into the shell from a replay moves focus into the page', focusMoves({ kind: 'restore', y: 10 }, { kind: 'pop', y: 10, anchor: null }, true));
+  check('page scroll: a page that stays keeps focus where it is', !focusMoves({ kind: 'stay' }, null, false));
+  check('page scroll: a list whose first row shows does not move the page', revealDelta(300, 360, 64) === 0 && revealDelta(64, 120, 64) === 0);
+  check('page scroll: a pick in the list\'s own head, its edge under the bar, does not nudge the page', revealDelta(54, 140, 64) === 0);
+  check('page scroll: a list whose first row is above the view comes back to just under the bar', revealDelta(-500, -400, 64, 8) === -572);
+  check('page scroll: an anchor lands its margin under the scroller top', anchorDelta(900, 0, 80) === 820);
+
+  // THE SOURCES. Comment lines are stripped (`*` JSDoc lines and `//` tails), so a note naming the old
+  // pattern is not a hit; split on /\r?\n/ for the reason the determinism grep gives.
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = joinPath(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.tsx?$/.test(e.name) && !e.name.endsWith('.d.ts')) files.push(p.replace(/\\/g, '/'));
+    }
+  };
+  walk('src');
+  const code = (p: string): string =>
+    readFileSync(p, 'utf8')
+      .split(/\r?\n/)
+      .map((l) => l.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '').replace(/^\s*\/\*.*$/, ''))
+      .join('\n');
+  const MANAGER = 'src/ui/pageScroll.ts';
+  /** the dev gallery's own picker state: its entries carry no scroll key, which costs only a restore there */
+  const HISTORY_OK = new Set([MANAGER, 'src/games/biobuzz/Gallery.tsx']);
+  const history = files.filter((p) => !HISTORY_OK.has(p) && /history\.(pushState|replaceState)\s*\(/.test(code(p)));
+  check(
+    'page scroll: only pageScroll.ts writes history (pushRoute/replaceRoute key each entry, so Back finds its offset)',
+    history.length === 0,
+    history.join(', '),
+  );
+  /** a blank page brought back by `useStageWatch` is a repair, not a navigation */
+  const RESET_OK = new Set([MANAGER, 'src/ui/shellWatch.ts']);
+  const resets = files.filter(
+    (p) =>
+      !RESET_OK.has(p) &&
+      /closest\(\s*['"]\.ds-app['"]\s*\)|scrollTo\(\s*\{\s*top:\s*0|scrollIntoView\(\s*\{\s*block:\s*['"]start['"]/.test(code(p)),
+  );
+  check(
+    'page scroll: no page resets the shell or jumps to an anchor itself (land with navigate(…, anchor), usePageTop, useListTop)',
+    resets.length === 0,
+    resets.join(', '),
+  );
+  /**
+   * EVERY TAB STRIP IS ACCOUNTED FOR. A strip whose tabs are ROUTES gets rule 1 from App's `scrollPage`
+   * (the route part that replaces the content is in it); any other strip must call `usePageTop` (it
+   * replaces the content) or `useListTop` (it filters one list). A new strip in a new file fails here
+   * until it is one or the other.
+   */
+  const ROUTED: Record<string, string> = {
+    'src/ui/Configure.tsx': '/configure/<section>',
+    'src/ui/Records.tsx': '/records/<tab>',
+    'src/ui/ProfileTabs.tsx': '/account and /account/appearance',
+    'src/ui/CompDetail.tsx': '/competitions/<slug>/<tab>',
+  };
+  // a JSX attribute, not a selector string (`PadNavLayer` asks for `[role="tablist"]`)
+  const STRIP = /className=\{?[`'"][^`'"]*\bds-(tabs|subnav)(?![\w-])|\srole=["']tablist["']/;
+  const strips = files.filter((p) => p.endsWith('.tsx') && STRIP.test(code(p)));
+  const loose = strips.filter((p) => !ROUTED[p] && !/\buse(PageTop|ListTop)\(/.test(code(p)));
+  check('page scroll: the tab strips were found (the check is not vacuous)', strips.length >= 7, strips.join(', '));
+  check('page scroll: every tab strip is a route or calls usePageTop/useListTop', loose.length === 0, loose.join(', '));
+  const stale = Object.keys(ROUTED).filter((p) => !strips.includes(p));
+  check('page scroll: every routed strip listed here still draws one', stale.length === 0, stale.join(', '));
+  const app = code('src/ui/App.tsx');
+  const shell = code('src/ui/AppShell.tsx');
+  check(
+    'page scroll: the shell lands every page (AppShell runs useRouteScroll on the page App names)',
+    /useRouteScroll\(appRef, mainRef, scrollPage\)/.test(shell) && /scrollPage=\{scrollPage\}/.test(app) && /pushRoute\(url\)/.test(app),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -12268,3 +12268,10 @@ button.ds-toast-main:disabled {
     width: 76px;
   }
 }
+
+/* WHERE A NAVIGATION LANDS (`pageScroll.ts`): focus moves to the new page's heading, its section or an
+   anchor. That is where the next Tab starts, a place and not a control, so it takes no ring */
+[data-scroll-focus]:focus,
+[data-page-focus]:focus {
+  outline: none;
+}

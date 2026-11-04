@@ -6,6 +6,17 @@
  *   npm run shiftaudit                                 # both themes
  *   DSIM_THEME=dark npm run shiftaudit                 # one theme
  *   DSIM_NAV=only npm run shiftaudit                   # just the cross-route nav comparison (~1 min)
+ *   DSIM_SCROLL=only npm run shiftaudit                # just the scroll-on-navigation pass (~2 min)
+ *
+ * WHERE A NAVIGATION LANDS (2026-11-04, owner: "Clicking one of the settings menus (like 'Network')
+ * while I am on a different tab (like 'Graphics') while being scrolled down, it does not bring me to
+ * the top of the page"). `SCROLL_CASES`: from a route scrolled down, a REAL click (input events, not
+ * `el.click()`) on a section, a tab, a bar button or a footer link must land the new page at its top
+ * (or at its anchor, just under the bar), move focus into the new page, and Back must put the old page
+ * back where it was. `SCROLL_STAY`: a control that only changes what a list shows must not move the
+ * page. Every shell page is padded to 3000px first (`DSIM_SCROLL_PAD=0` to not), so a short
+ * destination cannot clamp a leftover offset to 0 and pass by luck. See `src/ui/pageScroll.ts`.
+ * DSIM_SCROLL=0 skips it.
  *
  * THE BAR'S SECTIONS ACROSS ROUTES (2026-11-04). Besides the per-state probes, every theme opens
  * `NAV_PAGES` at three window sizes and asserts that Play, Configure and Records sit at the same
@@ -98,6 +109,47 @@ const NAV_MEASURE = `(() => [...document.querySelectorAll('.ds-bar-nav-btn')].ma
   const r = b.getBoundingClientRect();
   return { t: b.textContent.trim(), shown: getComputedStyle(b).visibility !== 'hidden', r: [r.x, r.y, r.width, r.height] };
 }))()`;
+// THE SCROLL PASS (see the header). Each case: the page it starts on, scrolled down; the control a
+// player clicks (by selector and its accessible name or the start of its text); the address it must
+// reach (game prefix dropped); and, for a deep link, the anchor it must land at. DECODE where the
+// game does not matter (a 2D page is lighter on this PC); BIOBUZZ for Graphics, which only a game with
+// a 3D view has.
+const SCROLL = process.env.DSIM_SCROLL || 'on'; // 'on' | 'only' | '0'
+const SCROLL_PAD = process.env.DSIM_SCROLL_PAD !== '0';
+const SCROLL_SIZES = [[1366, 768], [390, 844]];
+const SCROLL_CASES = [
+  // the bar's sections and the mark
+  { from: '/decode/configure/controls', sel: '.ds-bar-nav-btn', name: 'Records', to: '/records/leaderboard' },
+  { from: '/decode/records/career', sel: '.ds-bar-nav-btn', name: 'Configure', to: '/configure/robot' },
+  { from: '/decode/account', sel: '.ds-bar-nav-btn', name: 'Play', to: '/modes' },
+  { from: '/decode/download', sel: '.ds-mark', name: 'DSIM home', to: '' },
+  // Configure's sections, round the ring; Graphics -> Network is the owner's report
+  { from: '/biobuzz/configure/graphics', sel: '.ds-subnav-btn', name: 'Network', to: '/configure/network' },
+  { from: '/biobuzz/configure/audio', sel: '.ds-subnav-btn', name: 'Graphics', to: '/configure/graphics' },
+  { from: '/decode/configure/robot', sel: '.ds-subnav-btn', name: 'Controls', to: '/configure/controls' },
+  { from: '/decode/configure/controls', sel: '.ds-subnav-btn', name: 'Audio and visual', to: '/configure/audio' },
+  { from: '/decode/configure/audio', sel: '.ds-subnav-btn', name: 'Network', to: '/configure/network' },
+  { from: '/decode/configure/network', sel: '.ds-subnav-btn', name: 'Robot', to: '/configure/robot' },
+  // Records' three tabs
+  { from: '/decode/records/leaderboard', sel: '.rb-tabs .ds-tab', name: 'My records', to: '/records/career' },
+  { from: '/decode/records/career', sel: '.rb-tabs .ds-tab', name: 'Achievements', to: '/records/achievements' },
+  { from: '/decode/records/achievements', sel: '.rb-tabs .ds-tab', name: 'Leaderboards', to: '/records/leaderboard' },
+  // the Profile destination's two pages
+  { from: '/decode/account', sel: '.ds-tabs .ds-tab', name: 'Appearance', to: '/account/appearance' },
+  { from: '/decode/account/appearance', sel: '.ds-tabs .ds-tab', name: 'Account', to: '/account' },
+  // the footer
+  { from: '/decode/configure/controls', sel: '.ds-foot-link', name: 'Download', to: '/download' },
+  { from: '/decode/records/achievements', sel: '.ds-foot-link', name: 'Privacy', to: '/privacy' },
+  // an ANCHOR: the footer's Data link opens Privacy at Your data (a local build has no consent dialog)
+  { from: '/decode/download', sel: '.ds-foot-link', name: 'Data', to: '/privacy', anchor: 'your-data' },
+];
+// IN PLACE: what a list shows changes, the page stays where it is
+const SCROLL_STAY = [
+  { at: '/decode/records/leaderboard', sel: '.rb-boards .ds-seg', name: 'Duo' },
+  { at: '/decode/configure/audio', sel: '.ds-subnav-body .ds-opt:not(.on)', name: '' },
+];
+// a DEEP LINK to an anchor, loaded cold
+const SCROLL_DEEP = [{ url: '/decode/privacy#your-data', anchor: 'your-data' }];
 const STL = path.join(__dirname, 'fixtures', 'robot-import', 'robot.stl');
 // PAGE selectors — the controls that differ from route to route.
 const SELECTORS = [
@@ -364,7 +416,12 @@ app.whenReady().then(async () => {
   const IMPORT_PAGE = '/configure/robot/import';
   let importerOpen = true;
   const navOnly = NAV === 'only';
-  if (!navOnly && (PAGES.includes(IMPORT_PAGE) || SEED)) {
+  const scrollOnly = SCROLL === 'only';
+  // an `only` pass (either, or both) runs just that: no importer check, no per-state probes
+  const onlyPasses = navOnly || scrollOnly;
+  const navOn = navOnly || (!scrollOnly && NAV !== '0');
+  const scrollOn = scrollOnly || (!navOnly && SCROLL !== '0');
+  if (!onlyPasses && (PAGES.includes(IMPORT_PAGE) || SEED)) {
     await win.loadURL(BASE + '/decode' + IMPORT_PAGE);
     importerOpen = await until(`location.pathname.endsWith(${JSON.stringify(IMPORT_PAGE)}) && !!document.querySelector('.ds-import-drop')`, 10000);
     if (!importerOpen) {
@@ -417,13 +474,152 @@ app.whenReady().then(async () => {
     await sleep(200);
   };
 
+  /**
+   * WHERE A NAVIGATION LANDS (see the header and `SCROLL_CASES`). Every check is counted in
+   * `scrollFailed` and in `problems`; the console gets one line per failure and the total.
+   */
+  let scrollChecked = 0;
+  let scrollFailed = 0;
+  const scrollFail = (what) => {
+    scrollFailed++;
+    problems++;
+    say(`  SCROLL ${what}`);
+  };
+  const strip = (p) => p.replace(/^\/(decode|chain|biobuzz)(?=\/|$)/, '');
+  const FIND = (sel, name) => `(() => {
+    const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+    const want = ${JSON.stringify(name)};
+    return [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => {
+      const r = e.getBoundingClientRect();
+      if (!r.width || !r.height || getComputedStyle(e).visibility === 'hidden') return false;
+      return !want || norm(e.getAttribute('aria-label')) === want || norm(e.textContent).startsWith(want);
+    }) || null;
+  })()`;
+  // shell pages get a 3000px floor, so no destination is too short to keep a leftover offset
+  const PAD = `(() => { if (!document.getElementById('__scrollpad')) { const s = document.createElement('style');
+    s.id = '__scrollpad'; s.textContent = '.ds-app:not(.on-stage) .ds-main { min-height: 3000px !important; }';
+    document.head.appendChild(s); } return true; })()`;
+  /** the page scrolled to its end, then (when the control is not on screen there) up just far enough
+   *  that the control sits under the bar; returns the point to click and the offset left behind */
+  const AIM = (sel, name) => `(() => {
+    const el = ${FIND(sel, name)};
+    const app = document.querySelector('.ds-app');
+    if (!el || !app) return null;
+    app.scrollTop = app.scrollHeight;
+    const barB = Math.max(0, document.querySelector('.ds-bar')?.getBoundingClientRect().bottom ?? 0);
+    let r = el.getBoundingClientRect();
+    if (r.top < barB + 2 || r.bottom > innerHeight - 2) app.scrollTop += r.top - barB - 2;
+    r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return { x, y, hit: !!hit && (hit === el || el.contains(hit)), y0: app.scrollTop };
+  })()`;
+  /** where the page is now: the shell's offset, any nested scroller in the page still scrolled, the
+   *  anchor's place under the bar, and what has focus */
+  const LANDED = (anchor) => `(() => {
+    const app = document.querySelector('.ds-app');
+    const main = document.querySelector('.ds-main');
+    const name = (e) => e ? e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\\s+/).slice(0, 2).join('.') : '') : 'none';
+    const nested = main ? [...main.querySelectorAll('*')].filter((e) => e.scrollTop > 0).map(name) : [];
+    const barB = Math.max(0, document.querySelector('.ds-bar')?.getBoundingClientRect().bottom ?? 0);
+    const a = ${JSON.stringify(anchor || '')};
+    const at = a ? (document.getElementById(a) || document.querySelector('[data-anchor~="' + a + '"]')) : null;
+    const ae = document.activeElement;
+    const focusOk = !!ae && ae !== document.body && !!main && (main === ae || main.contains(ae))
+      && (ae.matches('main, h1, h2, h3, [data-page-focus], [data-anchor]') || (!!a && ae.id === a));
+    return { top: app ? app.scrollTop : -1, nested, anchorGap: at ? at.getBoundingClientRect().top - barB : null, focus: name(ae), focusOk };
+  })()`;
+  const click = async (x, y) => {
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) });
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
+  };
+  /** open a page, wait for the control, pad it */
+  const openAt = async (url, sel, name) => {
+    await win.loadURL(BASE + url);
+    await js(`document.fonts.ready.then(() => true)`);
+    const ok = await until(`!!${FIND(sel, name)}`, 10000);
+    if (SCROLL_PAD) await js(PAD);
+    await sleep(500);
+    return ok;
+  };
+  const scrollPass = async () => {
+    for (const [w, h] of SCROLL_SIZES) {
+      win.setContentSize(w, h);
+      await sleep(200);
+      const at = `${w}x${h}`;
+      for (const c of SCROLL_CASES) {
+        const label = `[${at}] ${c.from} -> ${c.name}`;
+        if (!(await openAt(c.from, c.sel, c.name))) { scrollFail(`${label}: no "${c.name}" to click`); continue; }
+        const aim = await js(AIM(c.sel, c.name));
+        if (!aim || !aim.hit) { scrollFail(`${label}: "${c.name}" is covered where it would be clicked`); continue; }
+        if (aim.y0 < 1) log(`  (scroll ${label}: the page could not be left scrolled before the click)`);
+        await click(aim.x, aim.y);
+        if (!(await until(`location.pathname.replace(/^\\/(decode|chain|biobuzz)(?=\\/|$)/, '') === ${JSON.stringify(c.to)}`, 6000))) {
+          scrollFail(`${label}: the click did not reach ${c.to || '/'}`);
+          continue;
+        }
+        await sleep(700);
+        const got = await js(LANDED(c.anchor));
+        scrollChecked++;
+        log(`  scroll ${label}: left at ${aim.y0.toFixed(0)}, landed ${got.top.toFixed(0)}${c.anchor ? ` (anchor ${got.anchorGap == null ? 'missing' : got.anchorGap.toFixed(0) + 'px under the bar'})` : ''}, focus ${got.focus}`);
+        if (c.anchor) {
+          if (got.anchorGap == null || got.anchorGap < -1 || got.anchorGap > 48) scrollFail(`${label}: #${c.anchor} is ${got.anchorGap == null ? 'missing' : got.anchorGap.toFixed(0) + 'px from the bar'} (want 0-48 under it)`);
+        } else if (got.top > 0.5) scrollFail(`${label}: landed ${got.top.toFixed(0)}px down (left at ${aim.y0.toFixed(0)})`);
+        if (got.nested.length) scrollFail(`${label}: still scrolled inside the page: ${got.nested.join(', ')}`);
+        if (!got.focusOk) scrollFail(`${label}: focus stayed on ${got.focus}, not the new page`);
+        // BACK puts the old page where it was
+        win.webContents.navigationHistory.goBack();
+        if (!(await until(`location.pathname === ${JSON.stringify(c.from)}`, 6000))) {
+          scrollFail(`${label}: Back did not return to ${c.from}`);
+          continue;
+        }
+        await sleep(700);
+        const back = await js(LANDED(''));
+        scrollChecked++;
+        log(`  scroll ${label}: Back to ${back.top.toFixed(0)} (was ${aim.y0.toFixed(0)})`);
+        if (Math.abs(back.top - aim.y0) > 2) scrollFail(`${label}: Back restored ${back.top.toFixed(0)}px, the page was left at ${aim.y0.toFixed(0)}`);
+      }
+      for (const s of SCROLL_STAY) {
+        const label = `[${at}] ${s.at}: ${s.sel}${s.name ? ` "${s.name}"` : ''} in place`;
+        if (!(await openAt(s.at, s.sel, s.name))) { scrollFail(`${label}: nothing to click`); continue; }
+        const aim = await js(AIM(s.sel, s.name));
+        if (!aim || !aim.hit) { scrollFail(`${label}: covered where it would be clicked`); continue; }
+        const len = await js('history.length');
+        await click(aim.x, aim.y);
+        await sleep(700);
+        const got = await js(LANDED(''));
+        scrollChecked++;
+        log(`  scroll ${label}: ${aim.y0.toFixed(0)} -> ${got.top.toFixed(0)}`);
+        if (Math.abs(got.top - aim.y0) > 1) scrollFail(`${label}: the page moved ${aim.y0.toFixed(0)} -> ${got.top.toFixed(0)}`);
+        if ((await js('history.length')) !== len) scrollFail(`${label}: an in-place change added a history entry`);
+      }
+      for (const d of SCROLL_DEEP) {
+        const label = `[${at}] ${d.url} (loaded cold)`;
+        await win.loadURL(BASE + d.url);
+        await until(`!!document.getElementById(${JSON.stringify(d.anchor)})`, 10000);
+        if (SCROLL_PAD) await js(PAD);
+        await sleep(1200);
+        const got = await js(LANDED(d.anchor));
+        scrollChecked++;
+        log(`  scroll ${label}: anchor ${got.anchorGap == null ? 'missing' : got.anchorGap.toFixed(0) + 'px under the bar'}`);
+        if (got.anchorGap == null || got.anchorGap < -1 || got.anchorGap > 48) scrollFail(`${label}: #${d.anchor} is ${got.anchorGap == null ? 'missing' : got.anchorGap.toFixed(0) + 'px from the bar'} (want 0-48 under it)`);
+      }
+    }
+    win.setSize(1400, 900);
+    await sleep(200);
+    say(`  scroll pass: ${scrollChecked} landings checked, ${scrollFailed} failed`);
+  };
+
   for (const theme of THEMES) {
     // stamped by the blocking inline script in index.html, so it must precede the load
     await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
     log(`\n############################ THEME: ${theme.toUpperCase()}`);
 
-    if (NAV !== '0') await navAcrossRoutes(theme);
-    if (navOnly) continue;
+    if (navOn) await navAcrossRoutes(theme);
+    // where a page lands does not depend on the theme: once, in the first
+    if (scrollOn && theme === THEMES[0]) await scrollPass();
+    if (onlyPasses) continue;
 
     let chromeDone = false;
     for (const page of PAGES) {
@@ -494,7 +690,7 @@ app.whenReady().then(async () => {
   }
 
   await js(`localStorage.removeItem('decodesim.theme'); 'ok'`);
-  say(`===== ${checked} state changes checked · ${navChecked} route pairs compared for the bar's sections · ${problems} caused layout shift${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
+  say(`===== ${checked} state changes checked · ${navChecked} route pairs compared for the bar's sections · ${scrollChecked} navigation landings checked (${scrollFailed} wrong) · ${problems} problems in all${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
   dbg.detach();
   process.exit(problems === 0 ? 0 : 1);
 });

@@ -1,5 +1,6 @@
-import { lazy, useCallback, useEffect, useState } from 'react';
+import { lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { LoadBoundary } from './LoadBoundary';
+import { replaceRoute, usePageTop } from './pageScroll';
 import {
   adminAnnounce,
   adminCancelNotice,
@@ -76,7 +77,8 @@ function writeHash(tab: AdminTab, user: string | null): void {
   p.set('tab', tab);
   if (user) p.set('user', user);
   const next = `#${p.toString()}`;
-  if (window.location.hash !== next) window.history.replaceState(null, '', next);
+  // the same entry at a new hash: `replaceRoute` keeps its scroll key (`pageScroll.ts`)
+  if (window.location.hash !== next) replaceRoute(next);
 }
 
 /** the console's title + tab bar. Split out so the Live tab (which renders a very
@@ -165,6 +167,10 @@ export function Admin({
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
+  // A TAB, or an account opened over the search, REPLACES the console's content: the page goes to its
+  // top (`pageScroll.ts`). Focus stays on the tab: an ARIA tablist keeps it there.
+  const rootRef = useRef<HTMLDivElement>(null);
+  usePageTop(`${tab}|${openUser ?? ''}`, rootRef, false);
 
   const [minutes, setMinutes] = useState(5);
   const [message, setMessage] = useState('Scheduled server update');
@@ -376,7 +382,7 @@ export function Admin({
   // furthest down. It leads instead.
   if (tab === 'live') {
     return (
-      <div className="ds-section adm-wide">
+      <div ref={rootRef} className="ds-section adm-wide">
         <AdminHeader tab={tab} setTab={setTab} />
         {/* every tab opens on an h2 under the page h1, so AdminLive's section h3s nest */}
         <h2 className="ds-h2">Live</h2>
@@ -386,7 +392,7 @@ export function Admin({
   }
 
   return (
-    <div className="ds-section adm-wide">
+    <div ref={rootRef} className="ds-section adm-wide">
       <AdminHeader tab={tab} setTab={setTab} />
 
       {/* USERS. The search is a way IN to an account, not a place to act on one — every

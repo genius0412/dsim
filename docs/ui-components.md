@@ -277,7 +277,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-bar` | src/ui/shell.css:394 | 12 |
+| `.ds-bar` | src/ui/shell.css:394 | 13 |
 | `.ds-bar-link` | src/ui/shell.css:743 | 1 |
 | `.ds-bar-live` | src/ui/shell.css:513 | 3 |
 | `.ds-bar-nav` | src/ui/shell.css:557 | 2 |
@@ -356,7 +356,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-osk` | src/ui/shell.css:8976 | 12 |
+| `.ds-osk` | src/ui/shell.css:8976 | 13 |
 | `.ds-osk-foot` | src/ui/shell.css:9061 | 1 |
 | `.ds-osk-grid` | src/ui/shell.css:9005 | 1 |
 | `.ds-osk-key` | src/ui/shell.css:2093 | 6 |
@@ -512,8 +512,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-modal` | src/ui/shell.css:4508 | 25 |
-| `.ds-modal-backdrop` | src/ui/shell.css:4498 | 11 |
+| `.ds-modal` | src/ui/shell.css:4508 | 26 |
+| `.ds-modal-backdrop` | src/ui/shell.css:4498 | 12 |
 | `.ds-modal-h` | src/ui/shell.css:4526 | 6 |
 
 ## `ds-more` — 3
@@ -741,7 +741,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-app` | src/ui/importer.css:22 | 13 |
+| `.ds-app` | src/ui/importer.css:22 | 14 |
 
 ## `ds-arrive` — 1
 
@@ -867,7 +867,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-empty` | src/ui/shell.css:2745 | 62 |
+| `.ds-empty` | src/ui/shell.css:2745 | 63 |
 
 ## `ds-facts` — 1
 
@@ -927,7 +927,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-loading` | src/ui/shell.css:2746 | 47 |
+| `.ds-loading` | src/ui/shell.css:2746 | 48 |
 
 ## `ds-lobbies` — 1
 
