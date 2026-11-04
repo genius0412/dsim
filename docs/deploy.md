@@ -152,6 +152,8 @@ npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env --apply    # one transa
   first time (2026-11-04), then only new ones. Without it those rows have no Watch button on the
   alpha.
 - No restart is needed: the alpha server reads the copied rows on its next query.
+- **`--verified-only`** copies only Neon Auth's `emailVerified` flag (Neon's schema, so no
+  migration check) and can run any day; the alpha server also confirms a stale `false` itself.
 
 ### Protocol compatibility still matters, just less
 

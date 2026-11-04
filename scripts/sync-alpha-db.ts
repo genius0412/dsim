@@ -4,6 +4,7 @@
  *   npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env              dry run (the default)
  *   npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env --apply      write to alpha
  *   ... --replays     also copy the replay logs the copied records and matches point at
+ *   ... --verified-only   only Neon Auth's verified flag; any time, no migration check
  *
  * WHY IT EXISTS. The alpha signs in through production's Neon Auth, so the same email and
  * password work on both sites, but `dsim-alpha`'s DATABASE_URL is its own Neon branch
@@ -50,6 +51,8 @@ export interface SyncOptions {
   apply: boolean;
   /** also copy the replay logs the copied rows point at */
   replays?: boolean;
+  /** only Neon Auth's verified flag: no schema check, no table copy, no snapshot */
+  verifiedOnly?: boolean;
   /** rows per page read from production */
   pageSize?: number;
   log?: (line: string) => void;
@@ -174,6 +177,30 @@ async function readOnly(c: SyncConn): Promise<boolean> {
   return r.transaction_read_only === 'on';
 }
 
+const VERIFIED = 'neon_auth.user emailVerified corrected';
+
+/**
+ * NEON AUTH'S VERIFIED FLAG, the one thing copied into the `neon_auth` schema. Neon Auth writes
+ * only the PRODUCTION branch's `neon_auth`; the alpha's copy froze when the branch was taken, so
+ * an address verified since read unverified there, with `REQUIRE_VERIFIED_EMAIL` on (50 accounts
+ * on 2026-11-04). Only that column, only for rows alpha already has. The schema is Neon's, not
+ * the app's, so this step does not depend on the migrations and `--verified-only` runs it alone
+ * at any time. The server no longer trusts a `false` there either (`resolveVerified`).
+ */
+async function syncVerified(prod: SyncConn, alpha: SyncConn, write: boolean): Promise<number> {
+  const has = async (c: SyncConn) => (await columnsOf(c, 'neon_auth', 'user')).some((x) => x.name === 'emailVerified');
+  if (!(await has(prod)) || !(await has(alpha))) return 0;
+  const v = await one<{ j: string }>(
+    prod,
+    `select coalesce(json_agg(json_build_object('id', id::text, 'v', "emailVerified")), '[]')::text as j from neon_auth."user"`,
+  );
+  const pred = `jsonb_to_recordset($1::jsonb) as p(id text, v boolean)
+                where u.id::text = p.id and u."emailVerified" is distinct from p.v`;
+  return write
+    ? (await rows(alpha, `update neon_auth."user" u set "emailVerified" = p.v from ${pred} returning u.id`, [v.j])).length
+    : Number((await one<{ n: number }>(alpha, `select count(*)::int as n from neon_auth."user" u, ${pred}`, [v.j])).n);
+}
+
 export async function syncAlpha(prod: SyncConn, alpha: SyncConn, opts: SyncOptions): Promise<SyncReport> {
   const log = opts.log ?? (() => {});
   const pageSize = opts.pageSize ?? 1000;
@@ -184,6 +211,18 @@ export async function syncAlpha(prod: SyncConn, alpha: SyncConn, opts: SyncOptio
   let alphaOpen = false;
   try {
     if (!(await readOnly(prod))) throw new Error('refusing: the production transaction is not read-only');
+
+    if (opts.verifiedOnly) {
+      await alpha.query(opts.apply ? 'begin' : 'begin transaction read only');
+      alphaOpen = true;
+      report.extras[VERIFIED] = await syncVerified(prod, alpha, opts.apply);
+      if (opts.apply) {
+        await alpha.query('commit');
+        alphaOpen = false;
+        report.applied = true;
+      }
+      return report;
+    }
 
     // ---------------------------------------------------------------- the schema check
     const migs = async (c: SyncConn) =>
@@ -440,27 +479,7 @@ export async function syncAlpha(prod: SyncConn, alpha: SyncConn, opts: SyncOptio
         : Number((await one<{ n: number }>(alpha, `select count(*)::int as n from public.seasons s where ${pred}`, [ps.j])).n);
     }
 
-    // ------------------------------ Neon Auth's verified flag (the email gate reads it there)
-    // Neon Auth writes only the PRODUCTION branch's `neon_auth` schema. The alpha's copy has been
-    // frozen since the branch was taken, so an address verified since reads unverified on alpha,
-    // and `REQUIRE_VERIFIED_EMAIL` is on there. Only that one column, only for rows alpha has.
-    {
-      const has = async (c: SyncConn) =>
-        (await columnsOf(c, 'neon_auth', 'user')).some((x) => x.name === 'emailVerified');
-      if ((await has(prod)) && (await has(alpha))) {
-        const v = await one<{ j: string }>(
-          prod,
-          `select coalesce(json_agg(json_build_object('id', id::text, 'v', "emailVerified")), '[]')::text as j from neon_auth."user"`,
-        );
-        const pred = `jsonb_to_recordset($1::jsonb) as p(id text, v boolean)
-                      where u.id::text = p.id and u."emailVerified" is distinct from p.v`;
-        report.extras['neon_auth.user emailVerified corrected'] = write
-          ? (await rows(alpha, `update neon_auth."user" u set "emailVerified" = p.v from ${pred} returning u.id`, [v.j])).length
-          : Number((await one<{ n: number }>(alpha, `select count(*)::int as n from neon_auth."user" u, ${pred}`, [v.j])).n);
-      } else {
-        report.extras['neon_auth.user emailVerified corrected'] = 0;
-      }
-    }
+    report.extras[VERIFIED] = await syncVerified(prod, alpha, write);
 
     if (write) {
       await alpha.query('commit');
@@ -522,6 +541,7 @@ async function main(): Promise<void> {
   if (!key) throw new Error('NEON_API_KEY is not set (pass --env <file> or set it in the environment)');
   const apply = process.argv.includes('--apply');
   const replays = process.argv.includes('--replays');
+  const verifiedOnly = process.argv.includes('--verified-only');
   const alphaName = argValue('--alpha-branch') ?? 'alpha';
 
   let project = process.env.NEON_PROJECT_ID;
@@ -566,6 +586,7 @@ async function main(): Promise<void> {
     const report = await syncAlpha(prod, alpha, {
       apply,
       replays,
+      verifiedOnly,
       log: (l) => console.log(l),
       beforeWrite: async () => {
         // THE RESTORE POINT: alpha's WAL position now, plus a Neon snapshot when the plan allows.
@@ -599,7 +620,7 @@ async function main(): Promise<void> {
       },
     });
 
-    console.log('\ntable                   prod    alpha   +new   overwritten   same   alpha-only kept');
+    if (report.tables.length) console.log('\ntable                   prod    alpha   +new   overwritten   same   alpha-only kept');
     for (const t of report.tables) {
       console.log(
         `${t.table.padEnd(20)} ${String(t.prod).padStart(7)} ${String(t.alpha).padStart(8)} ${String(t.insert).padStart(6)} ${String(t.update).padStart(13)} ${String(t.same).padStart(6)} ${String(t.alphaOnly).padStart(17)}`,
@@ -608,7 +629,7 @@ async function main(): Promise<void> {
     }
     console.log('');
     for (const [k, v] of Object.entries(report.extras)) console.log(`${String(v).padStart(7)}  ${k}`);
-    console.log(`untouched (alpha's own): ${Object.entries(report.untouched).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    if (!verifiedOnly) console.log(`untouched (alpha's own): ${Object.entries(report.untouched).map(([k, v]) => `${k} ${v}`).join(', ')}`);
     if (report.refused.length) {
       console.log(`\n${apply ? 'REFUSED, nothing written' : 'An --apply now would REFUSE'}:\n  ${report.refused.join('\n  ')}`);
       console.log('  Run it right after alpha is promoted to production, when both have applied the same migrations.');

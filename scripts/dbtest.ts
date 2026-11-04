@@ -5713,6 +5713,26 @@ async function main(): Promise<void> {
       (await repo.authEmailVerified('not-a-uuid')) === null,
     );
     await db.exec(`drop schema neon_auth cascade;`);
+
+    /* THE TABLE CAN BE STALE IN ONE DIRECTION. On the alpha's branch `neon_auth` froze when the
+       branch was taken, so a `false` there may be an address verified since: it is confirmed with
+       the session, and only a `true` is taken without asking (`resolveVerified`, server/auth.ts). */
+    const { resolveVerified } = await import('../server/auth');
+    let asked = 0;
+    const session = (v: boolean | null) => async () => {
+      asked++;
+      return v;
+    };
+    check('email gate: a stale "unverified" row loses to the session saying verified',
+      (await resolveVerified(false, session(true))) === true);
+    check('email gate: an unverified row the session agrees with stays unverified',
+      (await resolveVerified(false, session(false))) === false);
+    check('email gate: an unverified row stands when the session cannot be asked',
+      (await resolveVerified(false, session(null))) === false);
+    check('email gate: no row asks the session, as before', (await resolveVerified(null, session(false))) === false);
+    asked = 0;
+    check('email gate: a verified row is final, with no round trip',
+      (await resolveVerified(true, session(false))) === true && asked === 0);
   }
 
   /* ---- persistence hardening (races, atomicity, deleted accounts) ----------------------
@@ -7317,7 +7337,8 @@ async function main(): Promise<void> {
       insert into reward_grants (id, user_id, grant_key, source) values
         ('00000000-0000-4000-8000-0000000000e1', '00000000-0000-4000-8000-00000000000c', 'stargazer', 'star'),
         ('00000000-0000-4000-8000-0000000000e2', '00000000-0000-4000-8000-00000000000c', 'team:dev', 'team');
-      insert into reward_periods (game, board, period) values ('biobuzz', 'ranked_act', 1);`);
+      insert into reward_periods (game, board, period) values ('biobuzz', 'ranked_act', 1);
+      insert into access_members (user_id, grp, granted_by) values ('00000000-0000-4000-8000-00000000000c', 'dev', 'owner');`);
     await seed(alphaDb, `${both}
       insert into neon_auth."user" values ('00000000-0000-4000-8000-00000000000c', 'c@x', false);
       insert into seasons (game, balance_version, act, active) values ('biobuzz', 4, 1, true), ('biobuzz', 6, 1, true);
@@ -7343,6 +7364,9 @@ async function main(): Promise<void> {
           (select string_agg(user_id || ':' || coalesce(username, '-') || ':' || settings::text, ',' order by user_id) from profiles) u`),
       );
     const prodBefore = await fingerprint(prodDb);
+    // EVERY COLUMN of every access grant (beta/dev/contributor), compared after each run below
+    const access = async () => JSON.stringify(await rowsOf(alphaDb, `select * from access_members order by user_id, grp`));
+    const accessBefore = await access();
 
     // A DRY RUN writes nothing and still counts
     const alphaBefore = await fingerprint(alphaDb);
@@ -7352,6 +7376,16 @@ async function main(): Promise<void> {
     check('sync: a dry run counts per table (profiles: 1 new, 2 overwritten, 2 alpha-only)',
       dryProfiles?.insert === 1 && dryProfiles.update === 2 && dryProfiles.alphaOnly === 2, JSON.stringify(dryProfiles));
     check('sync: with matching migrations nothing is refused', dry.refused.length === 0, dry.refused.join('; '));
+
+    // --verified-only: Neon Auth's flag alone, at any time (the alpha is ahead most days)
+    await alphaDb.exec(`insert into schema_migrations (name) values ('9998_alpha_ahead.sql');`);
+    const vOnly = await syncAlpha(prodConn, alphaConn, { apply: true, verifiedOnly: true });
+    check('sync --verified-only: corrects the stale flag even while alpha’s migrations are ahead',
+      vOnly.applied && vOnly.extras['neon_auth.user emailVerified corrected'] === 1 &&
+        (await rowsOf(alphaDb, `select "emailVerified" v from neon_auth."user"`))[0]?.v === true);
+    check('sync --verified-only: writes nothing else', (await fingerprint(alphaDb)) === alphaBefore && (await access()) === accessBefore);
+    await alphaDb.exec(`delete from schema_migrations where name = '9998_alpha_ahead.sql';
+      update neon_auth."user" set "emailVerified" = false;`);
 
     // THE APPLY
     const run = await syncAlpha(prodConn, alphaConn, { apply: true, pageSize: 2 });
@@ -7369,9 +7403,12 @@ async function main(): Promise<void> {
     const alphaOnly = await prof('u-alphaonly');
     check('sync: an alpha-only account survives', !!alphaOnly && alphaOnly.handle === 'Alpha only');
     check('sync: ...and gives up a username production gives another account', alphaOnly?.username === null);
-    const grants = await rowsOf(alphaDb, `select user_id, grp from access_members order by user_id`);
-    check('sync: every alpha access grant survives, the alpha-only tester’s included',
-      grants.map((g) => `${g.user_id}:${g.grp}`).join() === 'u-alphaonly:beta,u-tester:beta');
+    check('sync: every alpha access grant is untouched, row for row (the alpha-only tester’s, and one whose username was cleared)',
+      (await access()) === accessBefore);
+    check('sync: production’s access grants are not copied (each deployment has its own list)',
+      !(await rowsOf(alphaDb, `select 1 from access_members where grp = 'dev'`)).length);
+    check('sync: the script has no statement that writes access_members',
+      !/(insert\s+into|update|delete\s+from)\s+(public\.)?access_members/i.test(readFileSync(join(ROOT, 'scripts/sync-alpha-db.ts'), 'utf8')));
     const lock = (await rowsOf(alphaDb, `select active, scope from maintenance where id = 1`))[0];
     check('sync: the alpha lockdown is untouched', lock?.active === true && lock?.scope === 'site');
     const recs = await rowsOf(alphaDb, `select id::text, replay_id::text from records order by id`);
@@ -7402,6 +7439,7 @@ async function main(): Promise<void> {
         (await rowsOf(alphaDb, `select replay_id::text r from records where id = '00000000-0000-4000-8000-0000000000b1'`))[0]?.r === RP_PROD);
     const again = await syncAlpha(prodConn, alphaConn, { apply: true, pageSize: 2 });
     check('sync: a second run changes nothing', again.tables.every((t) => t.insert === 0 && t.update === 0), JSON.stringify(again.tables.filter((t) => t.insert || t.update)));
+    check('sync: three runs later, the access grants are still row-for-row the same', (await access()) === accessBefore);
 
     // A SCHEMA MISMATCH REFUSES: alpha has run a migration production has not
     await alphaDb.exec(`insert into schema_migrations (name) values ('9999_alpha_ahead.sql');

@@ -114,7 +114,8 @@ export function emailGateRefusal(user: AuthedUser): string | null {
  * configuration rather than of this code. Both spellings are read off the payload
  * first (`email_verified` is the OIDC one, `emailVerified` the Better Auth field
  * name) and this is the fallback for a deployment whose tokens carry neither: Neon
- * Auth's own `neon_auth."user"` row first (`authEmailVerified`), then `/get-session`.
+ * Auth's own `neon_auth."user"` row first (`authEmailVerified`), then `/get-session`
+ * whenever that row does not say yes (`resolveVerified`).
  *
  * ONE FETCH PER TOKEN, EVER. A token is a bearer credential with an hour of life
  * and the friends poll re-verifies it roughly twice a minute per open tab, so an
@@ -136,6 +137,49 @@ const VERIFIED_CACHE_MAX = 2000;
 // from then on the resolved answer is served out of `verifiedByToken`.
 const verifiedInFlight = new Map<string, Promise<boolean | null>>();
 
+/**
+ * THE TABLE IS TRUSTED WHEN IT SAYS YES, AND ASKED AGAIN WHEN IT SAYS NO (2026-11-04).
+ * `neon_auth` is written only on the database Neon Auth is attached to. The alpha's database is
+ * a branch whose copy froze when it was taken, so an address verified since reads `false` there,
+ * and with `REQUIRE_VERIFIED_EMAIL` on that refused 50 verified players. A `false` (or no row) is
+ * now confirmed with `/get-session`, whose answer wins; a `true` is final, because an address
+ * does not become unverified. Cost, measured on production that day: 19 unverified accounts were
+ * active in 24 h, and each costs at most one more round trip per token (an hour), the price an
+ * account with no row already paid. If the session cannot be asked, the table's answer stands.
+ */
+export async function resolveVerified(
+  stored: boolean | null,
+  session: () => Promise<boolean | null>,
+): Promise<boolean | null> {
+  if (stored === true) return true;
+  return (await session()) ?? stored;
+}
+
+/** `/get-session`'s `emailVerified` for this token, or null when it cannot say */
+async function sessionVerified(token: string): Promise<boolean | null> {
+  if (!AUTH_URL) return null;
+  try {
+    const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
+      headers: { authorization: `Bearer ${token}` },
+      // A HUNG UPSTREAM MUST NOT HANG THE JOIN. Without a deadline this `await` is however
+      // long the platform's socket timeout is (minutes), and it sits in front of the join
+      // handshake — an auth endpoint that stops answering would stall every sign-in rather
+      // than degrade one field. An abort lands in the catch below, which is the fail-open
+      // "not told" answer, so the timeout costs the gate nothing it was not already
+      // prepared for.
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
+    const v = body?.user?.emailVerified;
+    return typeof v === 'boolean' ? v : null;
+  } catch {
+    // network, CORS, a route that does not exist on this build, our own 2 s abort — all of
+    // them mean "not told". Never fatal.
+    return null;
+  }
+}
+
 async function verifiedFromStore(token: string, userId: string): Promise<boolean | null> {
   const hit = verifiedByToken.get(token);
   if (hit !== undefined) return hit;
@@ -144,31 +188,8 @@ async function verifiedFromStore(token: string, userId: string): Promise<boolean
   const pending = (async (): Promise<boolean | null> => {
     // NEON AUTH'S OWN TABLE FIRST. It lives in the database this server already uses, and
     // it is the row the verification code flips, so it needs no guess about what the
-    // project's JWT carries. The session endpoint is the fallback for a deployment whose
-    // database does not hold it (no DATABASE_URL, or auth on a different project).
-    let answer: boolean | null = await authEmailVerified(userId);
-    if (answer === null && AUTH_URL) {
-      try {
-        const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
-          headers: { authorization: `Bearer ${token}` },
-          // A HUNG UPSTREAM MUST NOT HANG THE JOIN. Without a deadline this `await` is however
-          // long the platform's socket timeout is (minutes), and it sits in front of the join
-          // handshake — an auth endpoint that stops answering would stall every sign-in rather
-          // than degrade one field. An abort lands in the catch below, which is the fail-open
-          // "not told" answer, so the timeout costs the gate nothing it was not already
-          // prepared for.
-          signal: AbortSignal.timeout(2000),
-        });
-        if (res.ok) {
-          const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
-          const v = body?.user?.emailVerified;
-          if (typeof v === 'boolean') answer = v;
-        }
-      } catch {
-        // network, CORS, a route that does not exist on this build, our own 2 s abort — all of
-        // them mean "not told", which the gate reads as verified. Never fatal.
-      }
-    }
+    // project's JWT carries. The session endpoint answers when the table does not say yes.
+    const answer = await resolveVerified(await authEmailVerified(userId), () => sessionVerified(token));
     // FIFO eviction: a Map iterates in insertion order, so the oldest key is first.
     if (verifiedByToken.size >= VERIFIED_CACHE_MAX) {
       const oldest = verifiedByToken.keys().next().value;
