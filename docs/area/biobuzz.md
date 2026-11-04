@@ -158,15 +158,26 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
     Anything of the real hall inside it is LEFT OUT and the build lists it; the build then refuses a
     clear box that does not contain it. That is why FRANKLIN's second field stands 5.4 ft further than
     the plan and our field's drive-team tables are not drawn.
-  - **The competition risers are not drawn**: the sim's driver and alliance tape stand on the mat's
-    plane, so the hall's floor is the mat's (`docs/venues/grb.md`, Deviations).
+  - **Every division stands on a 24-in stage** (DECODE manual §15.2.1), its deck at the mat's plane
+    under the fields AND the drive areas (the sim's driver and alliance tape stand on that plane), the
+    hall floor a riser below. Neighbouring fields are the FULL `field.glb` on their own stages, so their
+    hives stand on the same A-frames as ours.
+  - **The event light is BAKED, not lit** (`grb/light.ts`): vertex colours on the merged meshes and an
+    instance colour (`_COLOR_0`) on every instanced part dim the house, pool white light on each
+    division and fade the crowd; B3's roof steel carries the blue uplight wash in its emissive slot.
+    The field takes the row's rig exactly as before. The generator writes its own
+    `EXT_mesh_gpu_instancing` batches with those colours; `build.ts`'s clear box expands them.
+  - **The LED wall over our field shows our match** (`screenLive` material; `liveScreen`,
+    `renderModelVenue.ts`): a 512 × 288 canvas redrawn every `LIVE_SCREEN_MS` (250) from
+    `world.match` (scores, clock, phase), reached through `venue.userData.tick` so `renderScene.ts`
+    still imports the loader only dynamically. Other walls show generated scoreboards. No logos.
   - **Repeated parts are GPU-instanced** (`instance()` after the clear box, for every source): 8,600
     placements in 51 draws. The RENDER lane's `parseModelTris` expands `InstancedMesh` matrices, and
     pins the row's `tris` to the parsed count, so a lane reading one instance per draw cannot pass.
   - **A generated row is not credited** (`environmentCredit` returns null); the lane checks its
     generator and research files exist instead.
-  - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 1.9–2.0 ms GPU on High (gym
-    0.6–0.8), 4.0–4.3 on Extreme (gym 2.1–2.7); 2.13 MB once.
+  - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 2.6–3.5 ms GPU on High (gym
+    0.6–0.8), 3.2–3.4 on Ultra, 6.3–7.0 on Extreme (gym 2.1–2.7); 3.75 MB once, 4.07M triangles.
 - ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
   file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
   no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB

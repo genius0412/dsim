@@ -13,6 +13,8 @@ export class Geo {
   nrm: number[] = [];
   uv: number[] = [];
   idx: number[] = [];
+  /** explicit UVs for the next polygon (a screen's face); null: box-projected */
+  nextUV: [number, number][] | null = null;
   /** inches per UV unit for box-projected UVs (0: the material has no texture; UVs stay 0) */
   constructor(public uvIn = 0) {}
 
@@ -20,11 +22,16 @@ export class Geo {
     return this.idx.length / 3;
   }
 
+  private polyStart = 0;
+
   private vtx(p: V3, n: V3): number {
     const i = this.pos.length / 3;
     this.pos.push(p[0], p[1], p[2]);
     this.nrm.push(n[0], n[1], n[2]);
-    if (this.uvIn > 0) {
+    if (this.nextUV) {
+      const t = this.nextUV[(this.pos.length / 3 - 1 - this.polyStart) % this.nextUV.length];
+      this.uv.push(t[0], t[1]);
+    } else if (this.uvIn > 0) {
       // box projection on the dominant normal axis
       const ax = Math.abs(n[0]);
       const ay = Math.abs(n[1]);
@@ -60,11 +67,19 @@ export class Geo {
     const l = Math.hypot(n[0], n[1], n[2]) || 1;
     n = [n[0] / l, n[1] / l, n[2] / l];
     if (flip) n = [-n[0], -n[1], -n[2]];
+    this.polyStart = this.pos.length / 3;
     const base = pts.map((p) => this.vtx(p, n));
     for (let k = 1; k + 1 < base.length; k++) {
       if (flip) this.idx.push(base[0], base[k + 1], base[k]);
       else this.idx.push(base[0], base[k], base[k + 1]);
     }
+  }
+
+  /** a polygon with its own UVs, one per point (a screen's face, 0..1 across it) */
+  polyUV(pts: V3[], uvs: [number, number][]): void {
+    this.nextUV = uvs;
+    this.poly(pts);
+    this.nextUV = null;
   }
 
   /** append another soup, moved by `m` (a 3×4 row-major affine: x' = m0 x + m1 y + m2 z + m3, …) */

@@ -103,8 +103,35 @@ function worldTris(t: Tools, doc: any): { tris: VenueTris; owner: string[] } {
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
     if (!mesh) continue;
-    const m = node.getWorldMatrix();
-    for (const prim of mesh.listPrimitives()) {
+    // ⚠️ A NODE CARRYING EXT_mesh_gpu_instancing DRAWS ITS MESH ONCE PER INSTANCE (a generated source
+    // writes its repeated parts that way): every instance's triangles are obstacles, not the node's one
+    const batch = node.getExtension('EXT_mesh_gpu_instancing');
+    const mats: number[][] = [];
+    if (batch) {
+      const T = batch.getAttribute('TRANSLATION');
+      const R = batch.getAttribute('ROTATION');
+      const S = batch.getAttribute('SCALE');
+      const n = (T ?? R ?? S).getCount();
+      const w = node.getWorldMatrix();
+      const t = [0, 0, 0], r = [0, 0, 0, 1], s = [1, 1, 1];
+      for (let i = 0; i < n; i++) {
+        if (T) T.getElement(i, t);
+        if (R) R.getElement(i, r);
+        if (S) S.getElement(i, s);
+        const [x, y, z, q] = r;
+        // T·R·S as a column-major 4×4, then the node's world in front of it
+        const l = [
+          (1 - 2 * (y * y + z * z)) * s[0], 2 * (x * y + z * q) * s[0], 2 * (x * z - y * q) * s[0], 0,
+          2 * (x * y - z * q) * s[1], (1 - 2 * (x * x + z * z)) * s[1], 2 * (y * z + x * q) * s[1], 0,
+          2 * (x * z + y * q) * s[2], 2 * (y * z - x * q) * s[2], (1 - 2 * (x * x + y * y)) * s[2], 0,
+          t[0], t[1], t[2], 1,
+        ];
+        const out = new Array(16).fill(0);
+        for (let c = 0; c < 4; c++) for (let rr = 0; rr < 4; rr++) for (let k = 0; k < 4; k++) out[c * 4 + rr] += w[k * 4 + rr] * l[c * 4 + k];
+        mats.push(out);
+      }
+    } else mats.push(node.getWorldMatrix());
+    for (const m of mats) for (const prim of mesh.listPrimitives()) {
       if (prim.getMode() !== t.core.Primitive.Mode.TRIANGLES) continue;
       const p = prim.getAttribute('POSITION');
       if (!p) continue;

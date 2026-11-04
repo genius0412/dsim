@@ -12,6 +12,10 @@ export const TEX_TILE_IN = {
   slats: 24,
   deck: 24,
   block: 96,
+  board0: 0,
+  board1: 0,
+  board2: 0,
+  liveIdle: 0,
 } as const;
 export type TexName = keyof typeof TEX_TILE_IN;
 
@@ -168,6 +172,100 @@ async function block(sharp: any): Promise<Uint8Array> {
   });
 }
 
+// ── THE LED WALLS' PICTURES ──────────────────────────────────────────────────────────────────
+// Generic match scoreboards: a red and a blue score, a clock, a phase bar, a few rows of results.
+// Drawn in pixels with seven-segment digits, so no font, no logo and no artwork is involved. A 0
+// tile size marks a picture mapped 0..1 across a screen face rather than tiled.
+
+type Px = { w: number; h: number; d: Float32Array };
+const canvasOf = (w: number, h: number): Px => ({ w, h, d: new Float32Array(w * h * 3) });
+function rect(c: Px, x0: number, y0: number, x1: number, y1: number, rgb: Rgb): void {
+  for (let y = Math.max(0, Math.round(y0)); y < Math.min(c.h, Math.round(y1)); y++)
+    for (let x = Math.max(0, Math.round(x0)); x < Math.min(c.w, Math.round(x1)); x++) c.d.set(rgb, (y * c.w + x) * 3);
+}
+/** segments a..g of each digit, the usual order */
+const SEG: Record<string, string> = { '0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc', '7': 'abc', '8': 'abcdefg', '9': 'abcfgd', '-': 'g' };
+function digit(c: Px, ch: string, x: number, y: number, w: number, h: number, rgb: Rgb): void {
+  const t = Math.max(2, w * 0.18);
+  const segs = SEG[ch] ?? '';
+  const hh = h / 2;
+  const at: Record<string, [number, number, number, number]> = {
+    a: [x + t, y, x + w - t, y + t], d: [x + t, y + h - t, x + w - t, y + h], g: [x + t, y + hh - t / 2, x + w - t, y + hh + t / 2],
+    f: [x, y + t, x + t, y + hh], b: [x + w - t, y + t, x + w, y + hh], e: [x, y + hh, x + t, y + h - t], c: [x + w - t, y + hh, x + w, y + h - t],
+  };
+  for (const sgm of segs) rect(c, ...at[sgm], rgb);
+}
+function text7(c: Px, s: string, x: number, y: number, w: number, h: number, rgb: Rgb): void {
+  let cx = x;
+  for (const ch of s) {
+    if (ch === ':') {
+      rect(c, cx + w * 0.15, y + h * 0.28, cx + w * 0.35, y + h * 0.38, rgb);
+      rect(c, cx + w * 0.15, y + h * 0.62, cx + w * 0.35, y + h * 0.72, rgb);
+      cx += w * 0.55;
+      continue;
+    }
+    digit(c, ch, cx, y, w, h, rgb);
+    cx += w * 1.25;
+  }
+}
+const RED: Rgb = [214, 52, 46];
+const BLUE: Rgb = [46, 104, 222];
+const WHITE: Rgb = [235, 238, 242];
+const DIM: Rgb = [70, 76, 88];
+/** the shared layout: background, two alliance panels with their scores, the clock between them */
+function boardBase(red: string, blue: string, clock: string, phase: number): Px {
+  const c = canvasOf(512, 288);
+  rect(c, 0, 0, 512, 288, [10, 12, 18]);
+  rect(c, 0, 0, 512, 22, [24, 28, 38]);
+  for (let i = 0; i < 6; i++) rect(c, 14 + i * 22, 7, 30 + i * 22, 15, i < 3 ? RED : BLUE);
+  rect(c, 16, 40, 200, 180, [120, 24, 22]);
+  rect(c, 312, 40, 496, 180, [22, 50, 120]);
+  text7(c, red, 34 + (3 - red.length) * 50, 62, 40, 96, WHITE);
+  text7(c, blue, 330 + (3 - blue.length) * 50, 62, 40, 96, WHITE);
+  text7(c, clock, 214, 84, 20, 46, WHITE);
+  // the phase bar under the clock: how much of the match has run
+  rect(c, 214, 150, 298, 158, DIM);
+  rect(c, 214, 150, 214 + 84 * phase, 158, [230, 196, 70]);
+  return c;
+}
+async function encodeBoard(sharp: any, c: Px): Promise<Uint8Array> {
+  const buf = Buffer.alloc(c.w * c.h * 4);
+  for (let i = 0; i < c.w * c.h; i++) {
+    buf[i * 4] = clamp8(c.d[i * 3]);
+    buf[i * 4 + 1] = clamp8(c.d[i * 3 + 1]);
+    buf[i * 4 + 2] = clamp8(c.d[i * 3 + 2]);
+    buf[i * 4 + 3] = 255;
+  }
+  return new Uint8Array(await sharp(buf, { raw: { width: c.w, height: c.h, channels: 4 } }).png({ compressionLevel: 9 }).toBuffer());
+}
+/** three generic boards (different matches) and the live screen's idle frame (0–0, the full clock) */
+async function boards(sharp: any): Promise<Pick<Record<TexName, Uint8Array>, 'board0' | 'board1' | 'board2' | 'liveIdle'>> {
+  const b0 = boardBase('128', '96', '1:47', 0.25);
+  // results rows under the panels
+  for (let r = 0; r < 4; r++) {
+    rect(b0, 16, 196 + r * 22, 248, 212 + r * 22, r % 2 ? [40, 20, 22] : [52, 22, 24]);
+    rect(b0, 264, 196 + r * 22, 496, 212 + r * 22, r % 2 ? [18, 26, 48] : [22, 32, 60]);
+  }
+  const b1 = boardBase('212', '187', '0:23', 0.85);
+  for (let r = 0; r < 4; r++) rect(b1, 16 + r * 122, 200, 126 + r * 122, 268, r % 2 ? [22, 44, 100] : [96, 24, 22]);
+  // a bracket: alliance pills joined by lines
+  const b2 = canvasOf(512, 288);
+  rect(b2, 0, 0, 512, 288, [10, 12, 18]);
+  for (let col = 0; col < 3; col++) {
+    const n = 4 >> col;
+    for (let k = 0; k < n; k++) {
+      const y = 24 + ((k + 0.5) * 240) / n;
+      rect(b2, 20 + col * 168, y - 26, 150 + col * 168, y - 4, RED);
+      rect(b2, 20 + col * 168, y + 4, 150 + col * 168, y + 26, BLUE);
+      text7(b2, String(40 + ((k * 37 + col * 53) % 160)), 116 + col * 168, y - 23, 8, 16, WHITE);
+      text7(b2, String(30 + ((k * 61 + col * 29) % 150)), 116 + col * 168, y + 7, 8, 16, WHITE);
+      if (col < 2) rect(b2, 150 + col * 168, y - 1, 188 + col * 168, y + 1, DIM);
+    }
+  }
+  const idle = boardBase('0', '0', '2:30', 0);
+  return { board0: await encodeBoard(sharp, b0), board1: await encodeBoard(sharp, b1), board2: await encodeBoard(sharp, b2), liveIdle: await encodeBoard(sharp, idle) };
+}
+
 export async function makeTextures(sharp: any): Promise<Record<TexName, Uint8Array>> {
   return {
     concrete: await concrete(sharp),
@@ -175,5 +273,6 @@ export async function makeTextures(sharp: any): Promise<Record<TexName, Uint8Arr
     slats: await slats(sharp),
     deck: await deck(sharp),
     block: await block(sharp),
+    ...(await boards(sharp)),
   };
 }

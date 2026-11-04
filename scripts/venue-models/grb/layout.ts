@@ -220,8 +220,10 @@ export const QUEUE_CARTS: readonly [number, number][] = [
 /** FTC CMP 2026 coach orientation, "Elevated Fields & Ladders" (MEASURED: published) */
 export const DS_TABLE = { heightIn: 26, lengthIn: 72, depthIn: 30 } as const;
 export const HP_TABLE = { heightIn: 20, sideIn: 13.4 } as const;
-/** competition fields stand on 24-in risers (DECODE manual §15.2.1; coach orientation). ⚠️ NOT
- * DRAWN under the competition fields: see the doc ("the risers"). The practice fields' are. */
+/** competition fields stand on 24-in risers (DECODE manual §15.2.1; coach orientation). Drawn as a
+ * stage under each division's carpet, fields and drive areas both (`generate.ts`, `stages`): the
+ * sim's drive team stands on the mat's plane, so our deck is that plane and the hall floor is a riser
+ * below it. The practice fields' risers are drawn under the field alone. */
 export const RISER_IN = 24;
 /** the stands: rental grandstand, ESTIMATED from photographs (rows, rise) and PLAN (footprint) */
 export const STAND = { rowDepthIn: 32, riseIn: 11, rows: 24, frontAisleFt: 6, aisles: 2, aisleFt: 4, railIn: 42 } as const;

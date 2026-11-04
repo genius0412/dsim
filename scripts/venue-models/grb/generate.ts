@@ -20,7 +20,9 @@ import { join } from 'node:path';
 import * as L from './layout';
 import { PIT_CELLS } from './pits';
 import { TEX_TILE_IN, makeTextures, type TexName } from './textures';
-import { Geo, beam, box, cyl, disc, drapeSheet, ellipsoid, placeM, type V3 } from './mesh';
+import { Geo, beam, box, cyl, disc, drapeSheet, placeM, type V3 } from './mesh';
+import { bakedLight } from './light';
+import { CROWD_SLOTS, POSES, dress, figure, hash3, type Lod } from './crowd';
 
 const FT = 12;
 const M_PER_IN = 0.0254;
@@ -40,6 +42,8 @@ interface MatSpec {
   uvOrigin?: [number, number];
   double?: boolean;
   alpha?: number;
+  /** a picture mapped 0..1 across the face, in the emissive slot (an LED wall) */
+  emissiveTex?: TexName;
 }
 
 const POCKET_ORIGIN: [number, number] = [(L.FLOOR_POCKET.x0 - 15) * FT, (L.FLOOR_POCKET.y0 - 15) * FT];
@@ -62,6 +66,24 @@ const MATS: Record<string, MatSpec> = {
   steel: { color: 0x24272c, rough: 0.6, metal: 0.4 },
   deck: { color: 0x2f3236, rough: 0.8, metal: 0.2, tex: 'deck' },
   duct: { color: 0x6d737a, rough: 0.4, metal: 0.75 },
+  // B3's roof under the event's blue uplight wash: the light the photographs show on the steel,
+  // baked into the emissive slot (a lightmap's job; nothing at runtime, nothing on a robot)
+  steelWash: { color: 0x3a3f48, rough: 0.6, metal: 0.4, emissive: 0x1a2b63, strength: 0.75 },
+  deckWash: { color: 0x2f3236, rough: 0.8, metal: 0.2, tex: 'deck', emissive: 0x0c1636, strength: 0.7 },
+  ductWash: { color: 0x6d737a, rough: 0.4, metal: 0.75, emissive: 0x16264f, strength: 0.6 },
+  lampDim: { color: 0x000000, emissive: 0xfff1dc, strength: 1.4 },
+  lensBlue: { color: 0x000000, emissive: 0x3a62ff, strength: 4 },
+  board0: { color: 0x000000, emissive: 0xffffff, strength: 1.15, rough: 0.3, emissiveTex: 'board0' },
+  board1: { color: 0x000000, emissive: 0xffffff, strength: 1.15, rough: 0.3, emissiveTex: 'board1' },
+  board2: { color: 0x000000, emissive: 0xffffff, strength: 1.15, rough: 0.3, emissiveTex: 'board2' },
+  // OUR field's wall: the renderer draws the match's own score and clock into it (`renderModelVenue`)
+  screenLive: { color: 0x000000, emissive: 0xffffff, strength: 1.15, rough: 0.3, emissiveTex: 'liveIdle' },
+  wrapRed: { color: 0x7a201c, rough: 0.6 },
+  wrapBlack: { color: 0x141416, rough: 0.7 },
+  'crowd:shirt': { color: 0xffffff, rough: 0.85 },
+  'crowd:skin': { color: 0xffffff, rough: 0.6 },
+  'crowd:pants': { color: 0xffffff, rough: 0.85 },
+  'crowd:hair': { color: 0xffffff, rough: 0.75 },
   lampBody: { color: 0x26282c, rough: 0.5, metal: 0.4 },
   lamp: { color: 0x000000, emissive: 0xfff1dc, strength: 3 },
   truss: { color: 0xa9adb2, rough: 0.33, metal: 0.85 },
@@ -92,36 +114,28 @@ const MATS: Record<string, MatSpec> = {
   ...Object.fromEntries([0x5e7f9e, 0x9c5a4d, 0x6d8a5a, 0x8a7b4e, 0x6a5f86, 0x4f7c7c, 0x9a8f86, 0x3d4a66].map((c, i) => [`banner${i}`, { color: c, rough: 0.9, double: true }])),
 };
 
-/** spectators' shirts (team colours, desaturated so no stand outshines the field) and skin tones */
-const SHIRTS = [0x2c3a56, 0x70352f, 0x222326, 0x5f6368, 0x2c5759, 0x84733a, 0x96979a, 0x395b3a];
-const SKINS = [0x8d5a3c, 0xb98a68, 0x5e3c2a, 0xcfa585];
-Object.assign(MATS, {
-  pants: { color: 0x26292e, rough: 0.85 },
-  hair: { color: 0x241c17, rough: 0.8 },
-  ...Object.fromEntries(SHIRTS.map((c, i) => [`shirt${i}`, { color: c, rough: 0.85 }])),
-  ...Object.fromEntries(SKINS.map((c, i) => [`skin${i}`, { color: c, rough: 0.7 }])),
-});
+/** LEVEL OF DETAIL BY DISTANCE: within 60 ft of our field (the stand in front of it, its neighbours'
+ * nearer halves, the staff behind it) the full figure; past that the low one, which from there is a
+ * few pixels either way */
+function lodAt(x: number, y: number): Lod {
+  return Math.hypot(x, y) < 60 * FT ? 'near' : 'far';
+}
+
+/** a seated spectator at (x, y) on a seat at z, facing the turn `rot`: four instanced parts, each
+ * tinted with its garment's colour (the baked light is applied when the instances are written) */
+function seat(v: Venue, x: number, y: number, z: number, rot: number, lod: Lod, label: string): void {
+  const d = dress(x, y);
+  for (const slot of CROWD_SLOTS) v.place(`crowd:${d.pose}:${lod}:${slot}`, x, y, z, rot, label, { scale: d.scale, tint: d.colors[slot] });
+}
 
 /** a seeded hash in [0, 1) of two numbers: the crowd and the pits' variety, the same every build */
 function hash2(x: number, y: number): number {
-  let h = Math.imul(Math.round(x * 10) ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(Math.round(y * 10), 0xc2b2ae35);
-  h ^= h >>> 15;
-  h = Math.imul(h, 0x2c1b3c6d);
-  h ^= h >>> 12;
-  return (h >>> 0) / 4294967296;
+  return hash3(x, y, 0);
 }
 
-/** a seated spectator at (x, y) on a bench top at z, facing the turn `rot` */
-function spectator(v: Venue, x: number, y: number, z: number, rot: number, label: string): void {
-  const h = hash2(x, y);
-  v.place(`body${Math.floor(h * 997) % SHIRTS.length}`, x, y, z, rot, label);
-  v.place(`head${Math.floor(h * 7919) % SKINS.length}`, x, y, z, rot, label);
-  v.place('legs', x, y, z, rot, label);
-}
-
-/** how full the stands are between matches: ESTIMATED from the 2025–26 photographs (packed for
- * playoffs, about half full in qualification) */
-const CROWD_SHARE = 0.42;
+/** how full the stands are: ESTIMATED from the 2025–26 photographs (packed for playoffs, a little
+ * less in qualification) */
+const CROWD_SHARE = 0.72;
 /** where a row's bench plank sits, feet back from the row's front edge (10 in deep, at the back of the
  * 32-in row so the feet have the front) */
 const BENCH_FT = [1.55, 2.4] as const;
@@ -133,9 +147,11 @@ type Part = Map<string, Geo>;
 class Venue {
   batches = new Map<string, Geo>();
   parts = new Map<string, Part>();
-  placements: { part: string; x: number; y: number; z: number; rot: number }[] = [];
+  placements: { part: string; x: number; y: number; z: number; rot: number; scale: number; tint: number | null }[] = [];
   /** what KEEP_CLEAR dropped, by label */
   dropped = new Map<string, number>();
+  /** the level being built: −RISER_IN for the hall (its floor a riser below the stages), 0 on a deck */
+  zOff = 0;
 
   private geoFor(map: Map<string, Geo>, mat: string): Geo {
     let g = map.get(mat);
@@ -153,6 +169,7 @@ class Venue {
   obj(label: string, build: (g: (mat: string) => Geo) => void): boolean {
     const scratch = new Map<string, Geo>();
     build((mat) => this.geoFor(scratch, mat));
+    if (this.zOff) for (const g of scratch.values()) for (let i = 2; i < g.pos.length; i += 3) g.pos[i] += this.zOff;
     if (blocks(scratch, null)) {
       this.dropped.set(label, (this.dropped.get(label) ?? 0) + 1);
       return false;
@@ -167,14 +184,20 @@ class Venue {
     this.parts.set(name, p);
   }
 
-  place(name: string, x: number, y: number, z: number, rot = 0, label = name): boolean {
+  /** a part from ready geometry, one material */
+  partOf(name: string, mat: string, g: Geo): void {
+    this.parts.set(name, new Map([[mat, g]]));
+  }
+
+  place(name: string, x: number, y: number, z: number, rot = 0, label = name, o: { scale?: number; tint?: number } = {}): boolean {
     const p = this.parts.get(name);
     if (!p) throw new Error(`no part ${name}`);
+    z += this.zOff;
     if (blocks(p, placeM(x, y, z, rot))) {
       this.dropped.set(label, (this.dropped.get(label) ?? 0) + 1);
       return false;
     }
-    this.placements.push({ part: name, x, y, z, rot });
+    this.placements.push({ part: name, x, y, z, rot, scale: o.scale ?? 1, tint: o.tint ?? null });
     return true;
   }
 }
@@ -217,7 +240,9 @@ function floor(v: Venue): void {
       const cx = (xs[i] + xs[i + 1]) / 2;
       const cy = (ys[j] + ys[j + 1]) / 2;
       const onCarpet = carpets.some((c) => cx > c.x0 && cx < c.x1 && cy > c.y0 && cy < c.y1);
-      v.obj('floor', (g) => g(onCarpet ? 'carpet' : 'concrete').poly([[f(xs[i]), f(ys[j]), 0], [f(xs[i + 1]), f(ys[j]), 0], [f(xs[i + 1]), f(ys[j + 1]), 0], [f(xs[i]), f(ys[j + 1]), 0]]));
+      // a stage deck is at the mat's level whatever level the hall is being built at
+      const z = onCarpet ? -v.zOff : 0;
+      v.obj('floor', (g) => g(onCarpet ? 'carpet' : 'concrete').poly([[f(xs[i]), f(ys[j]), z], [f(xs[i + 1]), f(ys[j]), z], [f(xs[i + 1]), f(ys[j + 1]), z], [f(xs[i]), f(ys[j + 1]), z]]));
     }
   }
 }
@@ -265,6 +290,17 @@ function walls(v: Venue): void {
       onWall(g('doorFrame'), dock, f(a) - 6, f(b) + 6, f(h), f(h) + 6, 0, 4);
       onWall(g('doorFrame'), dock, f(a) - 4, f(b) + 4, f(h) + 8, f(h) + 30, 0, 22);
     });
+  }
+  // WALL WRAPS round the competition hall: 12-ft vinyl panels, red and black in turn (the photographs'
+  // wraps, as plain colour), every wall of B3; the doors are drawn proud of them
+  for (const [wi, from, to] of [[0, L.AIRWALL_X, L.WALLS.b3End], [1, L.AIRWALL_X, L.WALLS.b3End], [2, L.WALLS.concourse, L.WALLS.dock]] as const) {
+    const w = WALL_RUNS[wi];
+    const n = Math.round((to - from) / 30);
+    for (let k = 0; k < n; k++) {
+      const a = from + ((to - from) * k) / n;
+      const b = from + ((to - from) * (k + 1)) / n;
+      v.obj('wall wrap', (g) => onWall(g(k % 2 ? 'wrapBlack' : 'wrapRed'), w, f(a) + 2, f(b) - 2, 6, f(12), 0, 0.6));
+    }
   }
   // PERSONNEL DOORS (CAD door swings, grouped): 3-ft leaves, 7 ft high, a lit exit sign over each set
   for (const [wi, sets] of [[0, L.PERSON_DOORS.dock], [1, L.PERSON_DOORS.concourse], [2, L.PERSON_DOORS.b3End]] as const) {
@@ -322,8 +358,9 @@ function roof(v: Venue): void {
   const zb = H;
   const zt = H + f(L.PRIMARY_TRUSS.depthFt);
   const ch = f(L.PRIMARY_TRUSS.chordFt);
-  v.part('primary', (g) => {
-    const s = g('steel');
+  const inB3 = (x: number) => x > L.AIRWALL_X;
+  for (const wash of [false, true]) v.part(wash ? 'primaryWash' : 'primary', (g) => {
+    const s = g(wash ? 'steelWash' : 'steel');
     box(s, [-ch / 2, y0, zb], [ch / 2, y1, zb + ch]);
     box(s, [-ch / 2, y0, zt - ch], [ch / 2, y1, zt]);
     const panel = f(L.PRIMARY_TRUSS.panelFt);
@@ -339,7 +376,7 @@ function roof(v: Venue): void {
     }
   });
   const primaries = L.COLUMN_X.filter((x) => Math.abs(x - L.WALL_COLUMN_X[0]) > 1);
-  for (const x of primaries) v.place('primary', f(x), 0, 0, 0, 'roof');
+  for (const x of primaries) v.place(inB3(x) ? 'primaryWash' : 'primary', f(x), 0, 0, 0, 'roof');
 
   // joists between consecutive bearings (primaries and the two end walls)
   const bearings = [L.WALLS.b3End, ...primaries, L.WALLS.a3End].sort((a, b) => a - b);
@@ -348,10 +385,11 @@ function roof(v: Venue): void {
   for (let b = 0; b + 1 < bearings.length; b++) {
     const span = bearings[b + 1] - bearings[b];
     if (span < 10) continue;
-    const name = `joist${Math.round(span)}`;
+    const wash = inB3(bearings[b]);
+    const name = `joist${Math.round(span)}${wash ? 'w' : ''}`;
     if (!v.parts.has(name)) {
       v.part(name, (g) => {
-        const s = g('steel');
+        const s = g(wash ? 'steelWash' : 'steel');
         const L2 = f(span) / 2 - ch / 2;
         box(s, [-L2, -jc / 2, zt - jd], [L2, jc / 2, zt - jd + jc]);
         box(s, [-L2, -jc / 2, zt - jc], [L2, jc / 2, zt]);
@@ -368,21 +406,23 @@ function roof(v: Venue): void {
     for (let y = L.WALLS.concourse + 5; y < L.WALLS.dock - 2; y += L.JOIST.pitchFt) v.place(name, xm, f(y), 0, 0, 'roof');
   }
   // the deck, seen from below
-  v.obj('deck', (g) => g('deck').poly([[f(L.WALLS.a3End), y0, zt], [f(L.WALLS.a3End), y1, zt], [f(L.WALLS.b3End), y1, zt], [f(L.WALLS.b3End), y0, zt]]));
+  v.obj('deck', (g) => g('deck').poly([[f(L.WALLS.a3End), y0, zt], [f(L.WALLS.a3End), y1, zt], [f(L.AIRWALL_X), y1, zt], [f(L.AIRWALL_X), y0, zt]]));
+  v.obj('deck', (g) => g('deckWash').poly([[f(L.AIRWALL_X), y0, zt], [f(L.AIRWALL_X), y1, zt], [f(L.WALLS.b3End), y1, zt], [f(L.WALLS.b3End), y0, zt]]));
 
   // spiral ducts along y, two per 90-ft bay, one per 60-ft bay, none in the 30-ft airwall bay
-  v.part('ductRun', (g) => {
+  for (const wash of [false, true]) v.part(wash ? 'ductRunWash' : 'ductRun', (g) => {
+    const dm = wash ? 'ductWash' : 'duct';
     const r = 21;
     const z = f(33.5);
     const ya = y0 + f(6);
     const yb = y1 - f(6);
-    cyl(g('duct'), [0, ya, z], [0, yb, z], r, 18);
-    for (let y = ya + f(10); y < yb; y += f(10)) cyl(g('duct'), [0, y - 1, z], [0, y + 1, z], r + 1.2, 18, false);
+    cyl(g(dm), [0, ya, z], [0, yb, z], r, 18);
+    for (let y = ya + f(10); y < yb; y += f(10)) cyl(g(dm), [0, y - 1, z], [0, y + 1, z], r + 1.2, 18, false);
     for (let y = ya + f(15); y < yb - f(10); y += f(30)) {
-      cyl(g('duct'), [0, y, z - r + 2], [0, y, f(31)], 8, 12, false);
+      cyl(g(dm), [0, y, z - r + 2], [0, y, f(31)], 8, 12, false);
       cyl(g('lampBody'), [0, y, f(31)], [0, y, f(31) - 4], 15, 16);
     }
-    for (const yy of [ya, yb]) cyl(g('duct'), [0, yy, z], [0, yy, zt - jd], 8, 12, false);
+    for (const yy of [ya, yb]) cyl(g(dm), [0, yy, z], [0, yy, zt - jd], 8, 12, false);
   });
   const ductX: number[] = [];
   for (let b = 0; b + 1 < bearings.length; b++) {
@@ -391,18 +431,30 @@ function roof(v: Venue): void {
     if (span > 75) ductX.push(bearings[b] + span / 3, bearings[b] + (2 * span) / 3);
     else ductX.push(bearings[b] + span / 2);
   }
-  for (const x of ductX) v.place('ductRun', f(x), 0, 0, 0, 'roof');
+  for (const x of ductX) v.place(inB3(x) ? 'ductRunWash' : 'ductRun', f(x), 0, 0, 0, 'roof');
+  // MAIN DUCTS ACROSS THE HALL (along x, the 2025 photograph's silver runs), above the bay ducts, with
+  // their own rings; the B3 length in the wash
+  for (const yd of [62, -118]) {
+    for (const [xa, xb, m] of [[L.WALLS.a3End + 4, L.AIRWALL_X, 'duct'], [L.AIRWALL_X, L.WALLS.b3End - 4, 'ductWash']] as const) {
+      v.obj('roof', (g) => {
+        const z = f(35.6);
+        cyl(g(m), [f(xa), f(yd), z], [f(xb), f(yd), z], 16, 16, false);
+        for (let x = xa + 10; x < xb; x += 10) cyl(g(m), [f(x) - 1, f(yd), z], [f(x) + 1, f(yd), z], 17.2, 16, false);
+      });
+    }
+  }
 
   // high-bay pendants: a 30-ft grid offset from the ducts, hanging from the joists to ~31.5 ft
-  v.part('highBay', (g) => {
+  // the house lights: full in A3 (the pits work under them), dimmed over B3's competition
+  for (const dim of [false, true]) v.part(dim ? 'highBayDim' : 'highBay', (g) => {
     const zb2 = f(31.5);
     cyl(g('lampBody'), [0, 0, zb2], [0, 0, zb2 + 14], 9, 14);
     cyl(g('lampBody'), [0, 0, zb2 + 14], [0, 0, zt - jd], 0.6, 6, false);
-    disc(g('lamp'), [0, 0, zb2 - 0.1], [0, 0, -1], 8, 14);
+    disc(g(dim ? 'lampDim' : 'lamp'), [0, 0, zb2 - 0.1], [0, 0, -1], 8, 14);
   });
   for (let x = L.WALLS.a3End + 10; x < L.WALLS.b3End - 5; x += 30) {
     if (ductX.some((d) => Math.abs(d - x) < 6)) continue;
-    for (let y = L.WALLS.concourse + 12; y < L.WALLS.dock - 5; y += 30) v.place('highBay', f(x), f(y), 0, 0, 'roof');
+    for (let y = L.WALLS.concourse + 12; y < L.WALLS.dock - 5; y += 30) v.place(inB3(x) ? 'highBayDim' : 'highBay', f(x), f(y), 0, 0, 'roof');
   }
 }
 
@@ -488,29 +540,41 @@ function eventParts(v: Venue): void {
     }
   });
   v.part('trussCorner', (g) => box(g('truss'), [-t / 2, -t / 2, 0], [t / 2, t / 2, t]));
-  // A SEATED SPECTATOR, facing +y, sitting on z 0 (a bench top): body (shirt), head (skin) and legs
-  // are three parts so the crowd needs one draw per shirt and per skin tone, not one per pairing
-  SHIRTS.forEach((_, i) =>
-    v.part(`body${i}`, (g) => {
-      const m = g(`shirt${i}`);
-      box(m, [-8, -6, 3], [8, 2.5, 24]);
-      for (const sx of [-1, 1]) beam(m, [sx * 9.5, -2, 22], [sx * 8.5, 6, 9], 3, 3);
-    }),
-  );
-  SKINS.forEach((_, i) =>
-    v.part(`head${i}`, (g) => {
-      cyl(g(`skin${i}`), [0, -2, 23.5], [0, -2, 27], 2.2, 8);
-      // a head, its hair on the top and back (the hair band is the ellipsoid's upper 42 %)
-      ellipsoid(g('hair'), g(`skin${i}`), [0, -1.6, 31], [3.6, 4.2, 4.6]);
-    }),
-  );
-  v.part('legs', (g) => {
-    const m = g('pants');
-    box(m, [-7, -5, 0], [7, 13, 5]);
-    box(m, [-6.5, 9, -16], [-0.8, 13.5, 0]);
-    box(m, [0.8, 9, -16], [6.5, 13.5, 0]);
-    box(g('black'), [-6.8, 8, -17.75], [-0.6, 16, -15.5]);
-    box(g('black'), [0.6, 8, -17.75], [6.8, 16, -15.5]);
+  // THE CROWD's parts: four poses × two levels of detail × four instanced slots (`crowd.ts`)
+  for (const pose of POSES) {
+    for (const lod of ['near', 'far'] as const) {
+      const fig = figure(pose, lod);
+      for (const slot of CROWD_SLOTS) v.partOf(`crowd:${pose}:${lod}:${slot}`, `crowd:${slot}`, fig[slot]);
+    }
+  }
+  // a PAR can under a truss, aimed 30° toward +y; a blue uplight can on top of one, aimed at the roof
+  v.part('par', (g) => {
+    const tilt = (30 * Math.PI) / 180;
+    const a: V3 = [0, -Math.sin(tilt) * 5, -12 + Math.cos(tilt) * 5];
+    const b: V3 = [0, Math.sin(tilt) * 6, -12 - Math.cos(tilt) * 6];
+    box(g('fixture'), [-1, -1, -6], [1, 1, 0]);
+    cyl(g('fixture'), a, b, 4.5, 10);
+    disc(g('lens'), [b[0], b[1] + 0.1, b[2] - 0.1], [0, Math.sin(tilt), -Math.cos(tilt)], 3.8, 10);
+  });
+  v.part('uplight', (g) => {
+    cyl(g('fixture'), [0, 0, t], [0, 0, t + 9], 4, 10);
+    disc(g('lensBlue'), [0, 0, t + 9.1], [0, 0, 1], 3.4, 10);
+  });
+  // a LINE ARRAY: a bumper and eight cabinets in a J, hung from z 0, the curve facing −y
+  v.part('lineArray', (g) => {
+    box(g('fixture'), [-22, -10, -4], [22, 10, 0]);
+    let z = -4;
+    let y = 0;
+    for (let k = 0; k < 8; k++) {
+      const tilt = (k * 3.2 * Math.PI) / 180;
+      const h = 13;
+      const c: V3 = [0, y - Math.sin(tilt) * 7, z - h / 2];
+      box(g('fixture'), [c[0] - 21, c[1] - 9, c[2] - h / 2], [c[0] + 21, c[1] + 9, c[2] + h / 2]);
+      box(g('black'), [c[0] - 19, c[1] - 9.3, c[2] - h / 2 + 1], [c[0] + 19, c[1] - 9, c[2] + h / 2 - 1]);
+      z -= h + 0.5;
+      y -= Math.sin(tilt) * 4;
+    }
+    cyl(g('fixture'), [0, 0, 0], [0, 0, f(L.DECK_FT - L.JOIST.depthFt) - f(29)], 0.6, 6, false);
   });
   // a moving head hung under a truss (base at z 0), aimed 35° off vertical toward +y
   v.part('movingHead', (g) => {
@@ -535,14 +599,93 @@ function eventParts(v: Venue): void {
     const z0 = f(L.SCREEN.bottomFt);
     const z1 = z0 + f(L.SCREEN.hFt);
     box(g('black'), [-w - 3, 0, z0 - 3], [w + 3, 6, z1 + 3]);
-    g('screen').poly([[-w, -0.2, z0], [w, -0.2, z0], [w, -0.2, z1], [-w, -0.2, z1]]);
     for (const s of [-1, 1]) cyl(g('fixture'), [s * (w - 12), 3, z1 + 3], [s * (w - 12), 3, f(L.LIGHT_TRUSS.trimFt)], 0.4, 4, false);
   });
+  // the picture side: one generic scoreboard per variant, mapped 0..1 (u left to right as the audience sees it)
+  for (const k of [0, 1, 2]) v.partOf(`face${k}`, `board${k}`, faceGeo(`board${k}`));
   // a speaker box hung from a truss, tilted toward −y
   v.part('speaker', (g) => {
     box(g('fixture'), [-10, -8, -40], [10, 8, -2]);
     cyl(g('fixture'), [0, 0, -2], [0, 0, 0], 0.6, 6, false);
   });
+}
+
+/**
+ * THE STAGES (2026-11-04, owner): every division's fields stand raised, `RISER_IN` above the hall floor
+ * (DECODE manual §15.2.1: "approximately 24 in"). The deck carries the fields AND the drive areas: in the
+ * sim the drive team stands on the mat's plane (the alliance tape and the driver's eye are measured from
+ * it), so the deck is the division's whole carpet, as in the 2025 photographs' black stage. Built at hall
+ * level: black velour skirting round the edge from the floor to the deck, a fascia board, and a run of
+ * steps at both ends and at the back.
+ */
+function stages(v: Venue): void {
+  const R = L.RISER_IN;
+  for (const d of L.DIVISIONS) {
+    const c = d.carpet;
+    const [x0, x1, y0, y1] = [f(c.x0), f(c.x1), f(c.y0), f(c.y1)];
+    const edges: [number, number, number, number][] = [[x0, y0, x1, y0], [x1, y0, x1, y1], [x1, y1, x0, y1], [x0, y1, x0, y0]];
+    for (const [ax, ay, bx, by] of edges) {
+      v.obj(`${d.name} stage`, (g) => {
+        // the skirt hangs 1.5 in outside the deck edge, floor to deck
+        const nx = Math.sign(by - ay) * 1.5;
+        const ny = -Math.sign(bx - ax) * 1.5;
+        drapeSheet(g('drape'), ax + nx, ay + ny, bx + nx, by + ny, 0, R - 2.5, 6, 1.2);
+        if (ax === bx) box(g('black'), [Math.min(ax, ax + nx * 1.4), Math.min(ay, by), R - 3], [Math.max(ax, ax + nx * 1.4), Math.max(ay, by), R]);
+        else box(g('black'), [Math.min(ax, bx), Math.min(ay, ay + ny * 1.4), R - 3], [Math.max(ax, bx), Math.max(ay, ay + ny * 1.4), R]);
+      });
+    }
+    // steps: three 8-in risers, 11-in treads, 4 ft wide, at both ends and at the back's middle
+    const steps = (cx: number, cy: number, dx: number, dy: number) =>
+      v.obj(`${d.name} stage steps`, (g) => {
+        for (let k = 0; k < 2; k++) {
+          const top = R - 8 * (k + 1);
+          const a = 11 * k;
+          const b = 11 * (k + 1);
+          const lo: V3 = dx ? [cx + dx * a, cy - 24, 0] : [cx - 24, cy + dy * a, 0];
+          const hi: V3 = dx ? [cx + dx * b, cy + 24, top] : [cx + 24, cy + dy * b, top];
+          box(g('standDeck'), [Math.min(lo[0], hi[0]), Math.min(lo[1], hi[1]), 0], [Math.max(lo[0], hi[0]), Math.max(lo[1], hi[1]), top]);
+        }
+      });
+    steps(x0 - 2, f(d.fieldY), -1, 0);
+    steps(x1 + 2, f(d.fieldY), 1, 0);
+    steps((x0 + x1) / 2, d.facing > 0 ? y1 + 2 : y0 - 2, 0, d.facing > 0 ? 1 : -1);
+  }
+}
+
+/** an LED wall's face, its picture mapped 0..1 (left to right as the audience sees it), toward −y */
+function faceGeo(_mat: string): Geo {
+  const g = new Geo();
+  const w = f(L.SCREEN.wFt) / 2;
+  const z0 = f(L.SCREEN.bottomFt);
+  const z1 = z0 + f(L.SCREEN.hFt);
+  g.polyUV([[-w, -0.2, z0], [w, -0.2, z0], [w, -0.2, z1], [-w, -0.2, z1]], [[0, 1], [1, 1], [1, 0], [0, 0]]);
+  return g;
+}
+
+/** THE UPPER RIGGING (ESTIMATED from the 2025 photograph's dense trussing): a box-truss grid over the
+ * whole competition area at 28 ft, cross members every ~30 ft, motors to the roof, a wash can every
+ * 20 ft along its long runs */
+function upperGrid(v: Venue): void {
+  const trim = f(28);
+  const xs = [-100, -70, -40, -10, 20, 50, 80, 110, 128];
+  const y0 = -16;
+  const y1 = 64;
+  const run = (ax: number, ay: number, bx: number, by: number) => {
+    const L2 = Math.hypot(bx - ax, by - ay);
+    const n = Math.max(1, Math.round(L2 / 10));
+    const rot = Math.atan2(by - ay, bx - ax);
+    for (let i = 0; i < n; i++) v.place('truss10', f(ax + ((bx - ax) * (i + 0.5)) / n), f(ay + ((by - ay) * (i + 0.5)) / n), trim, rot, 'upper rigging');
+  };
+  run(xs[0], y0, xs[xs.length - 1], y0);
+  run(xs[0], y1, xs[xs.length - 1], y1);
+  for (const x of xs) {
+    run(x, y0, x, y1);
+    for (const y of [y0, y1]) {
+      v.place('trussCorner', f(x), f(y), trim, 0, 'upper rigging');
+      v.place('hoist', f(x), f(y), trim - f(4), 0, 'upper rigging');
+    }
+  }
+  for (let x = xs[0] + 10; x < xs[xs.length - 1]; x += 20) for (const y of [y0, y1]) v.place('uplight', f(x), f(y), trim, 0, 'upper rigging');
 }
 
 /** one division (PLAN): the stand, rails, media, the lighting grid and screens, the back zone */
@@ -557,8 +700,12 @@ function division(v: Venue, d: L.Division): void {
     for (const side of [-1, 1]) {
       // each field's own frame: +x audience right; for a top-row field that is −x in ours
       const xw = fx * FT + side * s * (70.7 + 1 + L.DS_TABLE.depthIn / 2);
+      // on the deck: the drive teams stand on the stage with their field
+      const hall = v.zOff;
+      v.zOff = 0;
       v.place('dsTable', xw, fy * FT, 0, 0, `${d.name} drive-team table`);
       v.place('hpTable', fx * FT + side * s * (70.7 + 44), fy * FT - s * 40, 0, 0, `${d.name} human-player stand`);
+      v.zOff = hall;
     }
   }
 
@@ -574,7 +721,7 @@ function division(v: Venue, d: L.Division): void {
       v.place('chair', tx - 24, ty + s * 26, 0, s > 0 ? 0 : Math.PI, `${d.name} scoring table`);
       v.place('chair', tx + 24, ty + s * 26, 0, s > 0 ? 0 : Math.PI, `${d.name} scoring table`);
       // field staff on half the chairs, facing the field
-      for (const cx of [tx - 24, tx + 24]) if (hash2(cx, ty) < 0.5) spectator(v, cx, ty + s * 28, 18.5, s > 0 ? Math.PI : 0, `${d.name} scoring table`);
+      for (const cx of [tx - 24, tx + 24]) if (hash2(cx, ty) < 0.5) seat(v, cx, ty + s * 28, 18.5, s > 0 ? Math.PI : 0, lodAt(cx, ty), `${d.name} scoring table`);
     }
   }
   // the drape (PLAN blue line): along the centre aisle, back down both carpet ends, then out along the
@@ -619,7 +766,31 @@ function division(v: Venue, d: L.Division): void {
     v.place('movingHead', x, yB, trim, s > 0 ? Math.PI : 0, `${d.name} lighting truss`);
   }
   for (const x of [xa + 30, xb - 30]) v.place('speaker', x, yF - s * 14, trim, s > 0 ? 0 : Math.PI, `${d.name} speaker`);
-  for (const fx of d.fieldX) v.place('screen', f(fx), yB - s * 16, 0, s > 0 ? 0 : Math.PI, `${d.name} LED wall`);
+  d.fieldX.forEach((fx, i) => {
+    const rot = s > 0 ? 0 : Math.PI;
+    v.place('screen', f(fx), yB - s * 16, 0, rot, `${d.name} LED wall`);
+    // OUR field's wall shows our match (`screenLive`); every other wall a generic board
+    if (d.name === 'franklin' && i === 0) v.obj('our LED wall', (g) => g('screenLive').append(faceGeo('screenLive'), placeM(f(fx), yB - s * 16, 0, rot)));
+    else v.place(`face${Math.floor(hash3(fx, d.fieldY, 9) * 3)}`, f(fx), yB - s * 16, 0, rot, `${d.name} LED wall`);
+  });
+  // more rigging: two cross trusses between the long beams, heads on them, PAR cans along the front
+  // beam aimed at the fields, blue uplight cans on both long beams (the roof's wash), a line array at
+  // each front corner hung from the roof chord
+  for (const t3 of [1 / 3, 2 / 3]) {
+    const xc = xa + (xb - xa) * t3;
+    const { n, step } = span(yF, yB);
+    for (let i = 0; i < n; i++) v.place('truss10', xc, yF + step * (i + 0.5), trim, Math.PI / 2, `${d.name} lighting truss`);
+    for (const k of [0.3, 0.7]) v.place('movingHead', xc, yF + (yB - yF) * k, trim, s > 0 ? 0 : Math.PI, `${d.name} lighting truss`);
+  }
+  const pars = Math.max(4, Math.round((xb - xa) / f(10)));
+  for (let i = 0; i < pars; i++) v.place('par', xa + ((xb - xa) * (i + 0.5)) / pars + 30, yF, trim, s > 0 ? 0 : Math.PI, `${d.name} lighting truss`);
+  const ups = Math.max(4, Math.round((xb - xa) / f(7)));
+  for (let i = 0; i < ups; i++) {
+    const x = xa + ((xb - xa) * (i + 0.5)) / ups;
+    v.place('uplight', x, yF, trim, 0, `${d.name} lighting truss`);
+    v.place('uplight', x, yB, trim, 0, `${d.name} lighting truss`);
+  }
+  for (const x of [xa - 30, xb + 30]) v.place('lineArray', x, yF - s * 30, f(29), s > 0 ? 0 : Math.PI, `${d.name} speaker`);
 
   stand(v, d);
 }
@@ -710,20 +881,26 @@ function stand(v: Venue, d: L.Division): void {
       const n = Math.floor((b - a) / 20);
       for (let k = 0; k < n; k++) {
         const x = a + 10 + k * 20 + (hash2(k, i * 31 + a) - 0.5) * 4;
-        if (hash2(x, y) < CROWD_SHARE) spectator(v, x, y, rowZ(i) + 17.75, s > 0 ? 0 : Math.PI, `${d.name} crowd`);
+        if (hash2(x, y) < CROWD_SHARE) seat(v, x, y, rowZ(i) + 17.75, s > 0 ? 0 : Math.PI, lodAt(x, y), `${d.name} crowd`);
       }
     }
   }
   // the accessible platform's rail (open toward the stand) and its chairs
   const A = d.access;
   const aFront = s > 0 ? A.y1 : A.y0;
+  const PZ = 8;
   v.obj(`${d.name} accessible seating`, (g) => {
+    box(g('riser'), [f(A.x0), f(A.y0), 0], [f(A.x1), f(A.y1), PZ]);
     const r = g('rail');
-    const pts: V3[] = [[f(A.x0), f(s > 0 ? A.y0 : A.y1), 36], [f(A.x0), f(aFront), 36], [f(A.x1), f(aFront), 36], [f(A.x1), f(s > 0 ? A.y0 : A.y1), 36]];
+    const pts: V3[] = [[f(A.x0), f(s > 0 ? A.y0 : A.y1), PZ + 36], [f(A.x0), f(aFront), PZ + 36], [f(A.x1), f(aFront), PZ + 36], [f(A.x1), f(s > 0 ? A.y0 : A.y1), PZ + 36]];
     for (let i = 0; i + 1 < pts.length; i++) cyl(r, pts[i], pts[i + 1], 0.9, 8, false);
-    for (const p of pts) cyl(r, [p[0], p[1], 0], p, 0.9, 6, false);
+    for (const p of pts) cyl(r, [p[0], p[1], PZ], p, 0.9, 6, false);
   });
-  for (let k = 0; k < 4; k++) v.place('chair', f(A.x0 + 3 + ((A.x1 - A.x0 - 6) * k) / 3), f(aFront) - s * 30, 0, s > 0 ? Math.PI : 0, `${d.name} accessible seating`);
+  for (let k = 0; k < 4; k++) {
+    const cx = f(A.x0 + 3 + ((A.x1 - A.x0 - 6) * k) / 3);
+    v.place('chair', cx, f(aFront) - s * 30, PZ, s > 0 ? Math.PI : 0, `${d.name} accessible seating`);
+    if (k !== 1) seat(v, cx, f(aFront) - s * 32, PZ + 18.5, s > 0 ? 0 : Math.PI, lodAt(cx, f(aFront)), `${d.name} accessible seating`);
+  }
   for (const m of d.media) {
     for (const t of [0.3, 0.7]) v.place('tripod', f(m.x0 + (m.x1 - m.x0) * t), f((m.y0 + m.y1) / 2), 0, s > 0 ? 0 : Math.PI, `${d.name} team media`);
   }
@@ -835,12 +1012,15 @@ export function neighbourFields(): { x: number; y: number; rot: number; label: s
 
 export function buildVenue(): Venue {
   const v = new Venue();
+  v.zOff = -L.RISER_IN;
   floor(v);
   walls(v);
   columns(v);
   roof(v);
   eventParts(v);
   for (const d of L.DIVISIONS) division(v, d);
+  stages(v);
+  upperGrid(v);
   pits(v);
   practiceFields(v);
   enclosures(v);
@@ -898,11 +1078,20 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
       }
       m.setBaseColorTexture(tex);
     }
+    if (s.emissiveTex) {
+      let tex = textures.get(s.emissiveTex);
+      if (!tex) {
+        tex = doc.createTexture(s.emissiveTex).setImage(texImages[s.emissiveTex]).setMimeType('image/png');
+        textures.set(s.emissiveTex, tex);
+      }
+      m.setEmissiveTexture(tex);
+    }
     materials.set(name, m);
     return m;
   };
 
-  const prim = (g: Geo, matName: string): any => {
+  /** `bake`: write the baked light (`light.ts`) as COLOR_0 — static geometry is in place already */
+  const prim = (g: Geo, matName: string, bake = false): any => {
     const n = g.pos.length / 3;
     const P = new Float32Array(n * 3);
     const N = new Float32Array(n * 3);
@@ -932,6 +1121,13 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
         UV[i * 2 + 1] = flat ? (g.pos[i * 3 + 1] - origin[1]) / tile : g.uv[i * 2 + 1];
       }
       p.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(UV).setBuffer(buffer));
+    } else if (MATS[matName].emissiveTex) {
+      p.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(new Float32Array(g.uv)).setBuffer(buffer));
+    }
+    if (bake) {
+      const C = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) C.set(bakedLight(g.pos[i * 3], g.pos[i * 3 + 1], g.pos[i * 3 + 2] + L.RISER_IN), i * 3);
+      p.setAttribute('COLOR_0', doc.createAccessor().setType('VEC3').setArray(C).setBuffer(buffer));
     }
     return p;
   };
@@ -940,7 +1136,7 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
   for (const [mat, g] of v.batches) {
     if (!g.tris) continue;
     tris += g.tris;
-    scene.addChild(doc.createNode(`static:${mat}`).setMesh(doc.createMesh(`static:${mat}`).addPrimitive(prim(g, mat))));
+    scene.addChild(doc.createNode(`static:${mat}`).setMesh(doc.createMesh(`static:${mat}`).addPrimitive(prim(g, mat, true))));
   }
   const partMesh = new Map<string, any>();
   for (const [name, part] of v.parts) {
@@ -949,26 +1145,62 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
     partMesh.set(name, mesh);
   }
   const yRot = (rot: number): [number, number, number, number] => [0, Math.sin(rot / 2), 0, Math.cos(rot / 2)];
-  v.placements.forEach((pl, i) => {
-    const part = v.parts.get(pl.part)!;
-    for (const g of part.values()) tris += g.tris;
-    scene.addChild(
-      doc
-        .createNode(`${pl.part}#${i}`)
-        .setMesh(partMesh.get(pl.part))
-        .setTranslation([pl.x * k, pl.z * k, -pl.y * k])
-        .setRotation(yRot(pl.rot)),
-    );
-  });
+  /**
+   * EVERY PART PLACED MORE THAN ONCE IS ONE GPU-INSTANCED DRAW, written here (EXT_mesh_gpu_instancing)
+   * with an instance colour, `_COLOR_0`: the baked light at the instance (`light.ts`, sampled at the
+   * part's own centre, so a roof truss reads the roof's light and not the floor's) times its tint (a
+   * spectator's garment). three multiplies it into the diffuse colour only; emissive is untouched.
+   */
+  const instancing = doc.createExtension(ext.EXTMeshGPUInstancing);
+  const byPart = new Map<string, typeof v.placements>();
+  for (const pl of v.placements) (byPart.get(pl.part) ?? byPart.set(pl.part, []).get(pl.part)!).push(pl);
+  for (const [name, list] of byPart) {
+    const part = v.parts.get(name)!;
+    let cx = 0, cy = 0, cz = 0, nv = 0;
+    for (const g of part.values()) {
+      tris += g.tris * list.length;
+      for (let i = 0; i < g.pos.length; i += 3) {
+        cx += g.pos[i];
+        cy += g.pos[i + 1];
+        cz += g.pos[i + 2];
+        nv++;
+      }
+    }
+    [cx, cy, cz] = [cx / Math.max(1, nv), cy / Math.max(1, nv), cz / Math.max(1, nv)];
+    const T = new Float32Array(list.length * 3);
+    const R = new Float32Array(list.length * 4);
+    const S = new Float32Array(list.length * 3);
+    const C = new Float32Array(list.length * 3);
+    list.forEach((pl, i) => {
+      T.set([pl.x * k, pl.z * k, -pl.y * k], i * 3);
+      R.set(yRot(pl.rot), i * 4);
+      S.set([pl.scale, pl.scale, pl.scale], i * 3);
+      const c = Math.cos(pl.rot);
+      const sn = Math.sin(pl.rot);
+      const light = bakedLight(pl.x + c * cx - sn * cy, pl.y + sn * cx + c * cy, pl.z + cz * pl.scale + L.RISER_IN);
+      const tint = pl.tint === null ? [1, 1, 1] : hexLinear(pl.tint);
+      C.set([light[0] * tint[0], light[1] * tint[1], light[2] * tint[2]], i * 3);
+    });
+    const batch = instancing
+      .createInstancedMesh()
+      .setAttribute('TRANSLATION', doc.createAccessor().setType('VEC3').setArray(T).setBuffer(buffer))
+      .setAttribute('ROTATION', doc.createAccessor().setType('VEC4').setArray(R).setBuffer(buffer))
+      .setAttribute('SCALE', doc.createAccessor().setType('VEC3').setArray(S).setBuffer(buffer))
+      .setAttribute('_COLOR_0', doc.createAccessor().setType('VEC3').setArray(C).setBuffer(buffer));
+    scene.addChild(doc.createNode(`inst:${name}`).setMesh(partMesh.get(name)).setExtension('EXT_mesh_gpu_instancing', batch));
+  }
 
   // the neighbouring fields: the CAD field's low-detail file, copied in once, placed per field
-  const src = await t.io.read(join(repo, 'public', 'models', 'biobuzz', 'field-low.glb'));
+  // the FULL field (the file our own field is drawn from on High and up), so every neighbour's hive
+  // stands on the same A-frame, foot bars and pads as ours
+  const src = await t.io.read(join(repo, 'public', 'models', 'biobuzz', 'field.glb'));
   await src.transform(t.fns.dequantize());
   const srcMeshNodes = src.getRoot().listNodes().filter((n: any) => n.getMesh());
   const map = t.fns.copyToDocument(doc, src, src.getRoot().listMeshes());
   for (const a of doc.getRoot().listAccessors()) a.setBuffer(buffer);
   for (const b of doc.getRoot().listBuffers()) if (b !== buffer) b.dispose();
-  for (const e of doc.getRoot().listExtensionsUsed()) if (e.extensionName !== 'KHR_materials_emissive_strength') e.dispose();
+  // the copy brings no extension of its own we want (the build re-encodes); ours stay
+  for (const e of doc.getRoot().listExtensionsUsed()) if (e.extensionName !== 'KHR_materials_emissive_strength' && e.extensionName !== 'EXT_mesh_gpu_instancing') e.dispose();
   for (const srcMesh of src.getRoot().listMeshes()) {
     for (const p of map.get(srcMesh).listPrimitives()) {
       const m = p.getMaterial();
@@ -976,6 +1208,8 @@ export async function generateGrb(t: GenTools, repo: string): Promise<{ doc: any
       // the CAD's tile grey (0.22) is the mat's flat stand-in; the sim paints its own field's tiles
       // charcoal, so the neighbours' mats take that charcoal rather than shining beside ours
       if (/^tile#/.test(m.getName())) m.setBaseColorFactor([0.045, 0.045, 0.047, 1]).setRoughnessFactor(0.9);
+      // the CAD's polycarbonate is a flat 30 % white; ours is drawn clear, so the copies' is thinner
+      if (/^glass#/.test(m.getName())) m.setBaseColorFactor([0.55, 0.6, 0.66, 0.14]).setRoughnessFactor(0.1);
       m.setName(`field:${m.getName()}`).setDoubleSided(true);
     }
   }

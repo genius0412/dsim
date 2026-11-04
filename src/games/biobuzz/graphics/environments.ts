@@ -418,13 +418,15 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
      * research, its sources and every estimate are `docs/venues/grb.md`), drawn from High up; the
      * arena-style procedural venue stands for it below that.
      *
-     * The rig is a lit convention hall rather than a dark house: the 2025 and 2026 photographs show
-     * the house lights on over the stands and the truss lights on the fields, so the hemisphere
-     * carries more than the arena's and the ground bounce is concrete grey.
+     * The rig lights the field as any hall's does; the DIM HOUSE the photographs show (a blue wash on
+     * the roof, white light pooled on each division, the crowd falling off into the dark) is BAKED into
+     * the model's own colours (`scripts/venue-models/grb/light.ts`), so the field is lit exactly as
+     * before. Every division stands on a 24-in stage; ours is the plane the sim's mat and drive area
+     * are on, and the hall floor is a riser below it.
      */
     id: 'grb',
     name: 'Championship hall',
-    note: 'Houston’s FTC hall, from High up. 2.0 MB',
+    note: 'Houston’s FTC hall, from High up. 3.7 MB',
     rig: {
       hemiSky: 0xe6ecf7,
       hemiGround: 0x44464a,
@@ -451,9 +453,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     },
     model: {
       file: 'venues/grb.glb',
-      bytes: 2134776,
-      tris: 1818176,
-      cameraRoom: { min: [-325, -276, -1], max: [296, 129, 223] },
+      bytes: 3748420,
+      tris: 4074162,
+      cameraRoom: { min: [-325, -276, -1], max: [296, 129, 188] },
       generator: 'scripts/venue-models/grb/generate.ts',
       research: 'docs/venues/grb.md',
     },

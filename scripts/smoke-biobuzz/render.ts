@@ -15004,6 +15004,29 @@ function modelVenueChecks(check: Check): void {
       // its numbers come from must be here, so it can be rebuilt and checked against its sources
       check(`venue model ${e.id}: generated here: its generator and its research are in the repo`, existsSync(join(root, m.generator)) && existsSync(join(root, m.research)));
       check(`venue model ${e.id}: ...and it is not on the credits list (nothing of anybody else's is in it)`, environmentCredit(e) === null && !creditedEnvironments().includes(e));
+      // the file's own glTF JSON: the live LED wall, the baked light and the instancing are in it
+      if (existsSync(path)) {
+        const glb = readFileSync(path);
+        const json = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8')) as {
+          materials?: { name?: string }[];
+          extensionsUsed?: string[];
+          meshes?: { primitives: { attributes: Record<string, number> }[] }[];
+          nodes?: { extensions?: Record<string, { attributes?: Record<string, number> }> }[];
+        };
+        check(`venue model ${e.id}: our field's LED wall is in the file as \`screenLive\`, for the renderer to draw our match on`, (json.materials ?? []).some((x) => x.name === 'screenLive'));
+        check(
+          `venue model ${e.id}: the event light is BAKED (vertex colours on the static meshes, an instance colour on every instanced part), not lights`,
+          (json.meshes ?? []).some((x) => x.primitives.some((pr) => 'COLOR_0' in pr.attributes)) &&
+            (json.nodes ?? []).some((x) => !!x.extensions?.EXT_mesh_gpu_instancing?.attributes?._COLOR_0) &&
+            !(json.extensionsUsed ?? []).includes('KHR_lights_punctual'),
+        );
+      }
+      const mv = readFileSync(join(SCENE_DIR, 'renderModelVenue.ts'), 'utf8');
+      const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+      check(
+        `venue model ${e.id}: the live wall is redrawn from the match a few times a second (a canvas, \`LIVE_SCREEN_MS\`), never every frame`,
+        /m\.name === 'screenLive'/.test(mv) && /now - last < LIVE_SCREEN_MS/.test(mv) && /userData\.tick as/.test(sc),
+      );
     } else {
       check(`venue model ${e.id}: CC BY 4.0, credited`, m.license === 'CC BY 4.0' && m.licenseUrl === CC_BY_4 && m.authors.length > 0 && /^https:\/\/sketchfab\.com\/3d-models\//.test(m.page));
     }

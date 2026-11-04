@@ -10,6 +10,25 @@ MODELED VENUES.
 FTC floor plan. Everything event-specific (divisions, stands, pits) is the 2026 layout. The building is
 the same every year.
 
+## Every source is FTC's
+
+FRC and FTC share the GRB, so each reference was checked against the FTC: FTC division names, FTC game
+elements and 12-ft fields, two per division.
+
+- **FIRST's 2026 FTC floor plan** is on FIRST's FTC Championship page. It names the six FTC divisions,
+  draws "Div N F1/F2" 12-ft fields, and puts the area on Level 3. FRC played on Level 1, Halls A–E,
+  per the event guide.
+- **The GRB plan** is of Halls A3–B3 on Level 3, the FTC's halls.
+- **FIRST's 2025 photograph** carries "INTO THE DEEP" signage, an FTC season. It comes from the FTC
+  update post.
+- **The 2026 da Vinci stream thumbnail** shows DECODE elements, an FTC season.
+- **The coach-orientation photographs** come from the FTC coach orientation.
+- **One photo is not an FTC event.** The GRB's own Hall B3 gallery photo shows the room at a non-FIRST
+  show. It is used for the building's finish only: blue-grey columns, black roof steel.
+
+Layout, as the 2026 plan draws it: six divisions in a 2 × 3 grid (two rows of three, back to back
+across the centre aisle), each with two fields side by side. That is what the model has.
+
 ## Which hall, by year
 
 | year (season) | FTC location | source |
@@ -51,7 +70,7 @@ published 371–372 and A3's length 326 ft against 324. What it gives:
 - **Floor pockets.** A 30-ft grid; drawn into the slab texture where the CAD puts them.
 - **Airwall.** Between A3 and B3. Open for FTC 2026: the plan runs ROBOT HELP & INSPECTION across it.
 
-Two photographs show the finish: GRB's own [Hall B3 gallery photo](https://www.grbhouston.com/media-gallery/)
+Two photographs show the finish: GRB’s own [Hall B3 gallery photo](https://www.grbhouston.com/media-gallery/) (a non-FIRST show, the building only)
 (blue-grey round columns, black roof steel and deck, deep trusses, round ducts) and FIRST's 2025 FTC
 photograph in the [2026 updates post](https://www.firstinspires.org/community-blog/2026-first-cmp-updates)
 (white walls, red panels low on the walls, columns with diagonal knee braces into the roof truss,
@@ -83,8 +102,11 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
   blue, Jackson salmon, Lovelace green, Ross grey. Pits are 10 × 10 × 10 ft with a 6-ft table.
 - **Practice fields**: 14 at A3's west wall, fields 1–6 on risers (plan labels; coach orientation).
 - **Fields on 24-in risers**, drive teams and field staff at floor level
-  ([DECODE manual §15.2.1](https://ftc-resources.firstinspires.org/ftc/archive/2026/game/manual-15));
-  driver-station tables 26 in, human-player tray stands 20 in (coach orientation).
+  ([DECODE manual §15.2.1](https://ftc-resources.firstinspires.org/ftc/archive/2026/game/manual-15)).
+  The riser is FTC.RoboSource's Gen2 Portable Riser, with a 3-step ladder at the field's non-audience
+  wall. Driver-station tables are 26 in, human-player tray stands 20 in (coach orientation). FIRST's
+  2025 photograph shows the 2025 version: a black-skirted stage under the fields, with people
+  standing on it.
 
 ## Estimated, and why
 
@@ -96,16 +118,20 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
 | lighting grid | 20.5-in box truss over each division at 24 ft, moving heads on both long beams | 2025 photographs; the 2026 plan does not draw rigging |
 | LED walls | one 16 × 9 ft wall per field over the back drape, facing the audience | 2025 photographs; not on the 2026 plan |
 | drape | 8 ft black round competition zones; pits 8-ft back, 3-ft sides | the common kit (GES standard booth: 8-ft back, 3-ft sides) |
-| crowd | 42 % of seats, between matches | photographs range from about half full to packed |
+| crowd | 72 % of seats; four poses, heights 0.86–1.06 | photographs range from well filled to packed |
+| stage | the division's whole carpet raised 24 in: black velour skirt, fascia, three-step stairs at both ends and the back | riser height measured; the skirt and stairs from the 2025 photograph |
+| event light (baked) | B3's house at 26 % of albedo, A3's pits at 80 %, white light pooled on each division (falling off over 26 ft), stand spill over 70 ft, blue uplight wash on B3's roof steel | the 2025 photograph; the levels tuned on captures |
+| rigging | a second box-truss grid over the competition area at 28 ft, cross trusses, PAR cans and blue uplight cans on every division grid, a line array at each front corner, two main ducts across the hall | the 2025 photograph's roof |
+| LED walls | our field's wall shows our match (scores, clock, phase); the others show three generated scoreboard layouts | the photographs show scoreboards and brackets; the content is generic |
+| wall wraps | 12-ft red and black vinyl panels in turn round B3's walls | the 2025 photographs' red and black wraps, as plain colour |
 | colours | desaturated paint, slab and steel values | tuned on captures against the photographs |
 
 ## Deviations from the real hall, on purpose
 
-- **The risers are not drawn under the competition fields.** The sim's driver stands on the plane of
-  the mat (eye 62 in above it, the alliance-area tape on the same plane). Raising the hall's floor
-  24 in below the field would leave that tape and the driver floating. With the floor at the mat, the
-  hall, stands and rigging sit at the right height relative to the driver's eye; the field sits 24 in
-  lower relative to the room than it did. The practice-field risers are drawn.
+- **The drive teams stand on the stage, not on the floor.** In 2026 the fields alone sat on risers.
+  The sim's drive team stands on the mat's plane: the alliance tape and the driver's eye (62 in) are
+  measured from it. So each stage's deck covers the fields and the drive areas, at the mat's level,
+  with the hall floor 24 in below. Nothing floats.
 - **FRANKLIN's second field stands at 33.5 ft from ours, not 28.1.** The sim's widest driver eye (a
   portrait phone, 240-in setback) stands 293 in from our field's centre, and the clear room
   (`docs/area/biobuzz.md`, MODELED VENUES) must hold it with its 24-in margin. Moved 5.4 ft, carpet with it.
@@ -113,15 +139,19 @@ grey, stands mid grey, pits by division colour) and by eye at 6× zoom.
   four drive-team tables and human-player stands, field 2's near station furniture, and the drape and
   queue lane on FRANKLIN's EDISON side. The queue carts in that gap are not drawn either.
 - **Blank signage.** Screens are lit blank panels; no FIRST, sponsor or season artwork anywhere.
-- **The neighbouring fields are BIOBUZZ fields** (the repo's own `field-low.glb`), because that is the
-  game being played, with the mat in the sim's charcoal rather than the CAD's flat grey.
+- **The neighbouring fields are BIOBUZZ fields**, the repo's own full `field.glb`. It is the file
+  our field is drawn from on High, so every hive stands on the same A-frame, foot bars and pads. Each
+  sits on its own stage. Its mat is in the sim's charcoal and its polycarbonate is thinned to read as
+  clear, against the CAD's flat greys.
 
 ## What still differs from the real GRB
 
-- Event lighting: the real hall is a dim house with hot stage light and coloured washes on the roof;
-  the sim lights the venue with the same rig as the field, so the room is evenly lit.
-- No risers or LED fascia under the competition fields (see above).
-- Low-poly spectators; no people standing in aisles, at the fields or in the pits.
+- **Event light is baked.** No light moves and there are no beams or haze. The field is lit by the
+  sim's own rig, not by the truss.
+- **The drive teams stand on the stage** (see above), and there is no LED fascia on the stage edge.
+- **Spectators are simple rounded figures, all seated.** Nobody stands in the aisles, at the fields
+  or in the pits.
+- **The LED walls show generic content**, with no camera feed of a match.
 - The roof steel, ducts and lights are estimated from photographs, not drawn from structural plans.
 - The 2026 finals (da Vinci) arena is not modelled; its location is not on the published plan.
 
@@ -131,13 +161,19 @@ Dev PC: RTX 4070 Ti SUPER, 1920 × 1080, DPR 1, offscreen Electron, the whole fr
 
 | | High | Ultra | Extreme |
 |---|---|---|---|
-| GRB, GPU p50 (driver / orbit / stand view), ms | 1.90 / 2.00 / 1.94 | 1.81 / 1.91 / 1.86 | 4.33 / 4.08 / 4.04 |
+| GRB, GPU p50 (driver / orbit / stand view), ms | 2.6–3.1 / 2.7–3.2 / 2.7–3.2 | 3.24 / 3.38 / 3.43 | 7.02 / 6.31 / 6.63 |
+| the first pass (1dad0605), ms | 1.90 / 2.00 / 1.94 | 1.81 / 1.91 / 1.86 | 4.33 / 4.08 / 4.04 |
 | school gym (the old default), ms | 0.79 / 0.62 / 0.57 | — | 2.66 / 2.37 / 2.14 |
 
-File: 2.13 MB (meshopt geometry, KTX2 textures), 1,818,176 triangles drawn through 119 meshes (51 of
-them GPU-instanced: columns, joists, truss sections, fixtures, seats' occupants, the 11 neighbouring
-fields at 84,708 triangles each). Loading from a local server, the model swaps in 0.55–1.1 s after the
-scene starts on High/Ultra (3.0 s on Extreme), including the loader chunk and the Basis transcoder.
+The High range spans two runs; other sessions were using the GPU at the time.
+
+The file is 3.75 MB (meshopt geometry, KTX2 textures) and holds 4,074,162 triangles:
+- the 11 neighbouring fields, 268,892 each from the full `field.glb`;
+- the crowd, about 2,300 figures near our field at ~470 triangles and the rest at ~150;
+- the hall and the event.
+
+Every part placed more than once is one instanced draw. Loading from a local server, the model swaps in
+0.45–0.9 s after the scene starts, including the loader chunk and the Basis transcoder.
 
 ## Rebuilding
 

@@ -1308,6 +1308,9 @@ class BiobuzzScene implements GameScene {
     updateBiobuzzElements(this.elements, world);
     updateBiobuzzRobots(this.robots, world);
     updateBiobuzzReticle(this.reticle, world, frame.localRobotId, this.reticleOn);
+    // a modeled venue's LED wall over our field shows this match (`renderModelVenue.ts`,
+    // `liveScreenTick`); it redraws a few times a second, not every frame
+    (this.venue?.userData.tick as ((w: World, now: number) => void) | undefined)?.(world, t0);
     // a robot appeared, left or was rebuilt: its materials are new and have never been tuned (or
     // swapped onto their physical twins — idempotent, so the whole group is simply walked again)
     if (this.robotsChanged()) {
