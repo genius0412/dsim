@@ -153,7 +153,8 @@ npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env --apply    # one transa
   alpha.
 - No restart is needed: the alpha server reads the copied rows on its next query.
 - **`--verified-only`** copies only Neon Auth's `emailVerified` flag (Neon's schema, so no
-  migration check) and can run any day; the alpha server also confirms a stale `false` itself.
+  migration check) and can run any day. The gate reads the token's own claim first, so this
+  only keeps the fallback table honest.
 
 ### Protocol compatibility still matters, just less
 
@@ -736,13 +737,14 @@ Google sign-ins are unaffected throughout (the provider vouched for the address,
 arrive verified).
 
 ⚠️ **AND CHECK THE TOKEN CARRIES THE CLAIM FIRST.** The gate reads `email_verified` (or
-`emailVerified`) off the verified JWT. Whether Better Auth's JWT plugin puts it there is a
-property of the project's configuration, and if it is absent the server falls back to ONE
-cached `GET /get-session` per token — which may itself answer nothing, in which case the
-verified state is `null` and the gate PASSES (deliberately: a gate that refuses what it
-cannot read would take ranked down silently). So before trusting the switch, sign in as a
-test account and read `/token`'s payload; if neither the claim nor the session lookup
-answers, the secret is a no-op and turning it on proves nothing.
+`emailVerified`) off the verified JWT. Neon Auth documents its payload as the default Better
+Auth user object, `emailVerified` included (neon.com/docs/auth/guides/plugins/jwt). If a token
+ever lacks it, the server reads Neon Auth's `neon_auth."user"` row in the game database once
+per token, logs `[auth] a token carries no emailVerified claim` once per process, and with no
+row the state is `null` and the gate PASSES (deliberately: a gate that refuses what it cannot
+read would take ranked down silently). There is no `/get-session` lookup: it takes a session
+cookie, not the JWT, and answered 200 `null` (2026-11-04). To confirm the claim, sign in as a
+test account and read `/token`'s payload.
 
 ### Step 5 — when the legal text changes
 

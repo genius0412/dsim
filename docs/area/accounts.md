@@ -179,11 +179,12 @@ badges and rewards on the alpha were the 2026-08-10 copy, plus whatever was done
 - **`neon_auth` on the alpha branch is FROZEN at the branch point.** Neon Auth writes only the
   production branch's `neon_auth` schema: on 2026-11-04 production had 2,998 users and the alpha
   664, none created after 2026-08-10. The email gate reads `neon_auth."user"."emailVerified"`
-  first (`authEmailVerified`), so on the alpha, where `REQUIRE_VERIFIED_EMAIL` is on, an address
-  verified since then read UNVERIFIED (50 accounts that day). Two fixes: the server now trusts
-  only a `true` from that table and confirms a `false` with `/get-session` (`resolveVerified`,
-  `server/auth.ts`); and `npm run sync:alpha -- --verified-only --apply` copies production's
-  flag alone at any time (run 2026-11-04: 50 corrected), as the full sync also does.
+  only when the token carries no `emailVerified` claim. Neon Auth's JWT does carry it (the
+  default Better Auth payload; tokens live 15 minutes), so the gate's answer is the token's, and
+  the table matters only if that ever changes, which the server logs once per process. Where it
+  is read on the alpha it was 50 accounts behind (2026-11-04);
+  `npm run sync:alpha -- --verified-only --apply` copies production's flag alone at any time
+  (run that day: 50 corrected), and the full sync does it too.
 - **`scripts/sync-alpha-db.ts` (`npm run sync:alpha`) copies production into the alpha**, one
   way, right after a promotion (runbook: `docs/deploy.md`). Upsert, production wins on the same
   key, ONE alpha transaction, production read in a read-only snapshot. It refuses unless both
@@ -581,10 +582,11 @@ ranked queue door, the record-room join door and `POST /api/practice`. Extend it
 second "is this account allowed" check. It is OFF unless `REQUIRE_VERIFIED_EMAIL=1`, because every
 email/password account that exists today is unverified and the sender domain is an owner dashboard
 action (`docs/deploy.md` §4) — default-on would refuse ranked to everybody with no way to fix it.
-`null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently. When the JWT carries no claim, the answer comes from Neon Auth's own `neon_auth."user"` row in the game DB (`authEmailVerified`), then `/get-session`. ON on `dsim-alpha` since 2026-09-25.
-⚠️ On the alpha that row is a frozen copy (see "The alpha's own database"), so a `false` there can
-be stale: only a `true` is final, and a `false` or no row is confirmed with `/get-session`
-(`resolveVerified`; on production that is ~19 unverified accounts a day, one round trip per token).
+`null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently. When the JWT carries no claim, the answer comes from Neon Auth's own `neon_auth."user"` row in the game DB (`authEmailVerified`). ON on `dsim-alpha` since 2026-09-25.
+⚠️ **No `/get-session` fallback any more** (2026-11-04): the server sends the JWT, and Neon Auth's
+`/get-session` takes a session cookie or session token, so it answered 200 `null` and only ever
+cost a 2 s timeout per token. On the alpha the table is a frozen copy (see "The alpha's own
+database"); it is consulted only for a token without the claim.
 ⚠️ **THE RECORD GATE LIVES IN `server/index.ts`, NOT `Room.startMatch`** beside the duo-record
 guard it belongs with — `server/room.ts` is bundled into the LAN host worker and may not import
 `jose` or read `process.env`.

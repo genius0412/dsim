@@ -59,8 +59,8 @@ export interface AuthedUser {
   /**
    * Has this account confirmed its email address?
    *
-   * THREE-VALUED ON PURPOSE. `true`/`false` are what the token (or the session
-   * endpoint) said; `null` means nobody told us, which is a different thing from
+   * THREE-VALUED ON PURPOSE. `true`/`false` are what the token (or, without its
+   * claim, Neon Auth's table) said; `null` means nobody told us, which is a different thing from
    * "no" and is treated as a pass — see `emailGateRefusal`.
    */
   emailVerified: boolean | null;
@@ -114,71 +114,34 @@ export function emailGateRefusal(user: AuthedUser): string | null {
  * configuration rather than of this code. Both spellings are read off the payload
  * first (`email_verified` is the OIDC one, `emailVerified` the Better Auth field
  * name) and this is the fallback for a deployment whose tokens carry neither: Neon
- * Auth's own `neon_auth."user"` row first (`authEmailVerified`), then `/get-session`
- * whenever that row does not say yes (`resolveVerified`).
+ * Auth's own `neon_auth."user"` row (`authEmailVerified`), else null (the gate passes).
  *
- * ONE FETCH PER TOKEN, EVER. A token is a bearer credential with an hour of life
- * and the friends poll re-verifies it roughly twice a minute per open tab, so an
- * un-cached lookup here would put a second round trip in front of every
- * authenticated request — the exact cost `getAuthToken`'s cache exists to remove
- * on the client. The answer is memoized against the token STRING, including the
- * "could not tell" answer, so a failing endpoint is asked once and not once a
- * second. A player who verifies gets a NEW token (the client drops its cached one on
- * success), so a cached `false` never outlives the state it described in that tab. Entries die with the token; the map is bounded so a long-lived machine
- * cannot accumulate them.
+ * THE CLAIM IS THE SOURCE (2026-11-04). Neon Auth signs the default Better Auth payload,
+ * the user object, `emailVerified` included (neon.com/docs/auth/guides/plugins/jwt), and
+ * a token lives 15 minutes, so it is current. The table is only for a token without it, and
+ * on the alpha it is a STALE copy: `neon_auth` is written on production's branch only, and
+ * the alpha's froze when it was branched (`npm run sync:alpha -- --verified-only` refreshes
+ * it). `NO_CLAIM_SEEN` logs once per process if that fallback is ever reached.
+ * ⚠️ THERE IS NO `/get-session` FALLBACK ANY MORE. It was sent the JWT as a Bearer, and Neon
+ * Auth's `/get-session` authenticates a session cookie or session token: probed 2026-11-04,
+ * it answers 200 `null` to anything else, so the fetch never told us anything and cost up to
+ * a 2 s timeout in front of a join, once per token per machine.
+ *
+ * ONE LOOKUP PER TOKEN. The friends poll re-verifies a token roughly twice a minute per
+ * open tab, so the table read is memoized against the token STRING, "no row" included.
+ * Entries die with the token; the map is bounded so a long-lived machine cannot
+ * accumulate them.
  */
 const verifiedByToken = new Map<string, boolean | null>();
+/** once per process: the claim was missing and the table answered instead (see above) */
+const NO_CLAIM_SEEN = { logged: false };
 const VERIFIED_CACHE_MAX = 2000;
-// ONE FETCH PER TOKEN HAS TO MEAN ONE FETCH WHILE THE FIRST IS STILL OPEN, TOO. The answer
-// cache above is only written when the fetch RESOLVES, so a tab that reconnects and fires its
-// join plus a friends poll plus a profile read at once would open one `/get-session` round trip
-// EACH — the thundering herd the cache was supposed to remove. Concurrent callers for the same
-// token string share the in-flight promise instead; the entry is dropped once it settles, and
-// from then on the resolved answer is served out of `verifiedByToken`.
+// ONE LOOKUP PER TOKEN HAS TO MEAN ONE WHILE THE FIRST IS STILL OPEN, TOO. The answer cache
+// above is only written when the read RESOLVES, so a tab that reconnects and fires its join
+// plus a friends poll plus a profile read at once would read the table once EACH. Concurrent
+// callers for the same token string share the in-flight promise instead; the entry is dropped
+// once it settles, and from then on the answer is served out of `verifiedByToken`.
 const verifiedInFlight = new Map<string, Promise<boolean | null>>();
-
-/**
- * THE TABLE IS TRUSTED WHEN IT SAYS YES, AND ASKED AGAIN WHEN IT SAYS NO (2026-11-04).
- * `neon_auth` is written only on the database Neon Auth is attached to. The alpha's database is
- * a branch whose copy froze when it was taken, so an address verified since reads `false` there,
- * and with `REQUIRE_VERIFIED_EMAIL` on that refused 50 verified players. A `false` (or no row) is
- * now confirmed with `/get-session`, whose answer wins; a `true` is final, because an address
- * does not become unverified. Cost, measured on production that day: 19 unverified accounts were
- * active in 24 h, and each costs at most one more round trip per token (an hour), the price an
- * account with no row already paid. If the session cannot be asked, the table's answer stands.
- */
-export async function resolveVerified(
-  stored: boolean | null,
-  session: () => Promise<boolean | null>,
-): Promise<boolean | null> {
-  if (stored === true) return true;
-  return (await session()) ?? stored;
-}
-
-/** `/get-session`'s `emailVerified` for this token, or null when it cannot say */
-async function sessionVerified(token: string): Promise<boolean | null> {
-  if (!AUTH_URL) return null;
-  try {
-    const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
-      headers: { authorization: `Bearer ${token}` },
-      // A HUNG UPSTREAM MUST NOT HANG THE JOIN. Without a deadline this `await` is however
-      // long the platform's socket timeout is (minutes), and it sits in front of the join
-      // handshake — an auth endpoint that stops answering would stall every sign-in rather
-      // than degrade one field. An abort lands in the catch below, which is the fail-open
-      // "not told" answer, so the timeout costs the gate nothing it was not already
-      // prepared for.
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
-    const v = body?.user?.emailVerified;
-    return typeof v === 'boolean' ? v : null;
-  } catch {
-    // network, CORS, a route that does not exist on this build, our own 2 s abort — all of
-    // them mean "not told". Never fatal.
-    return null;
-  }
-}
 
 async function verifiedFromStore(token: string, userId: string): Promise<boolean | null> {
   const hit = verifiedByToken.get(token);
@@ -186,10 +149,7 @@ async function verifiedFromStore(token: string, userId: string): Promise<boolean
   const flying = verifiedInFlight.get(token);
   if (flying) return flying;
   const pending = (async (): Promise<boolean | null> => {
-    // NEON AUTH'S OWN TABLE FIRST. It lives in the database this server already uses, and
-    // it is the row the verification code flips, so it needs no guess about what the
-    // project's JWT carries. The session endpoint answers when the table does not say yes.
-    const answer = await resolveVerified(await authEmailVerified(userId), () => sessionVerified(token));
+    const answer = await authEmailVerified(userId);
     // FIFO eviction: a Map iterates in insertion order, so the oldest key is first.
     if (verifiedByToken.size >= VERIFIED_CACHE_MAX) {
       const oldest = verifiedByToken.keys().next().value;
@@ -230,8 +190,8 @@ function logVerifyFailure(e: unknown): void {
 }
 
 /** verify a client-supplied JWT → {userId, handle, emailVerified}, or null if
- *  absent/invalid. `emailVerified` is null when neither the token nor the session
- *  endpoint would say (see `verifiedFromStore`). */
+ *  absent/invalid. `emailVerified` is null when neither the token nor Neon Auth's
+ *  table would say (see `verifiedFromStore`). */
 export async function verifyAuthToken(token: string | undefined): Promise<AuthedUser | null> {
   // SILENT: a missing token is the ordinary anonymous case (every signed-out join, queue attempt
   // and `/api/standing` read), and a line per call was pure log bill.
@@ -254,6 +214,10 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     // off — which is every deployment until the owner sets the secret — `null` and `false` lead
     // to the same place (`emailGateRefusal` returns null first thing), so a round trip on the
     // join path buys nothing at all. `null` is already the honest value for "not told".
+    if (typeof claim !== 'boolean' && REQUIRE_VERIFIED && !NO_CLAIM_SEEN.logged) {
+      NO_CLAIM_SEEN.logged = true;
+      console.log('[auth] a token carries no emailVerified claim; the gate reads neon_auth."user" (stale on the alpha branch)');
+    }
     const emailVerified =
       typeof claim === 'boolean' ? claim : REQUIRE_VERIFIED ? await verifiedFromStore(token, userId) : null;
     // Deliberately NOT logged. The friends read doubles as the presence heartbeat, so

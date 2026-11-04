@@ -98,7 +98,7 @@ interface TableRule {
   table: string;
   /** a production-side filter (SQL over the table's own columns) */
   where?: string;
-  /** keep the alpha's value of these columns on a row both have */
+  /** never production's value: the alpha's on a row both have, null on a row the copy adds */
   keepAlpha?: string[];
   /** the alpha's value of these columns stays for an account IN USE on the alpha */
   keepForTesters?: string[];
@@ -109,7 +109,9 @@ interface TableRule {
 const TABLES: TableRule[] = [
   // a game's act and season periods; production's roll wins (see `seasonsActive` below)
   { table: 'seasons' },
-  // `role` is the alpha's own projection of its ADMIN_USER_IDS (syncStaffRoles). `settings` holds
+  // `role` is the alpha's own projection of its ADMIN_USER_IDS (syncStaffRoles), and the two apps'
+  // lists differ (their Fly digests do), so production's role never lands: an added profile
+  // starts with none and the alpha's next boot sets it if alpha says so. `settings` holds
   // the saved robots and controls, and the robot importer is alpha-only, so a tester's imported
   // robots exist nowhere but here: production's blob would delete them.
   { table: 'profiles', keepAlpha: ['role'], keepForTesters: ['settings'] },
@@ -185,7 +187,8 @@ const VERIFIED = 'neon_auth.user emailVerified corrected';
  * an address verified since read unverified there, with `REQUIRE_VERIFIED_EMAIL` on (50 accounts
  * on 2026-11-04). Only that column, only for rows alpha already has. The schema is Neon's, not
  * the app's, so this step does not depend on the migrations and `--verified-only` runs it alone
- * at any time. The server no longer trusts a `false` there either (`resolveVerified`).
+ * at any time. The server reads the token's own `emailVerified` claim first and this table only
+ * for a token without one (server/auth.ts), so this keeps the fallback honest.
  */
 async function syncVerified(prod: SyncConn, alpha: SyncConn, write: boolean): Promise<number> {
   const has = async (c: SyncConn) => (await columnsOf(c, 'neon_auth', 'user')).some((x) => x.name === 'emailVerified');
@@ -375,7 +378,7 @@ export async function syncAlpha(prod: SyncConn, alpha: SyncConn, opts: SyncOptio
       };
       // what a column becomes, read off `src` (the incoming row) and `t` (the alpha row)
       const value = (c: string, src: string, onUpdate: boolean): string => {
-        if (onUpdate && rule.keepAlpha?.includes(c)) return `t.${ident(c)}`;
+        if (rule.keepAlpha?.includes(c)) return onUpdate ? `t.${ident(c)}` : 'null';
         if (onUpdate && rule.keepForTesters?.includes(c))
           return `case when ${IN_USE('t')} then t.${ident(c)} else ${src}.${ident(c)} end`;
         if (c === rule.replayCol)

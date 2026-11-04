@@ -5714,25 +5714,15 @@ async function main(): Promise<void> {
     );
     await db.exec(`drop schema neon_auth cascade;`);
 
-    /* THE TABLE CAN BE STALE IN ONE DIRECTION. On the alpha's branch `neon_auth` froze when the
-       branch was taken, so a `false` there may be an address verified since: it is confirmed with
-       the session, and only a `true` is taken without asking (`resolveVerified`, server/auth.ts). */
-    const { resolveVerified } = await import('../server/auth');
-    let asked = 0;
-    const session = (v: boolean | null) => async () => {
-      asked++;
-      return v;
-    };
-    check('email gate: a stale "unverified" row loses to the session saying verified',
-      (await resolveVerified(false, session(true))) === true);
-    check('email gate: an unverified row the session agrees with stays unverified',
-      (await resolveVerified(false, session(false))) === false);
-    check('email gate: an unverified row stands when the session cannot be asked',
-      (await resolveVerified(false, session(null))) === false);
-    check('email gate: no row asks the session, as before', (await resolveVerified(null, session(false))) === false);
-    asked = 0;
-    check('email gate: a verified row is final, with no round trip',
-      (await resolveVerified(true, session(false))) === true && asked === 0);
+    /* THE TOKEN'S OWN CLAIM IS THE SOURCE; the table is a fallback, and a STALE one on the alpha's
+       branch. `/get-session` was the second fallback and is gone: sent the JWT as a Bearer it
+       answers 200 `null` (probed 2026-11-04), so it only ever cost a timeout. Source checks,
+       because verifying a real token here would need Neon Auth's signing key. */
+    const authSrc = readFileSync(join(ROOT, 'server/auth.ts'), 'utf8');
+    check('email gate: the JWT’s own emailVerified claim is read before the table',
+      /payload\.email_verified \?\? payload\.emailVerified/.test(authSrc) &&
+        /typeof claim === 'boolean' \? claim : REQUIRE_VERIFIED \? await verifiedFromStore/.test(authSrc));
+    check('email gate: no outbound round trip to decide it (no /get-session, no fetch)', !/\bfetch\(/.test(authSrc));
   }
 
   /* ---- persistence hardening (races, atomicity, deleted accounts) ----------------------
@@ -7459,7 +7449,7 @@ async function main(): Promise<void> {
       insert into profiles (user_id, handle, username, settings, role) values
         ('00000000-0000-4000-8000-00000000000c', 'Shared', 'shared', '{"from":"prod"}', null),
         ('u-tester', 'Tester', 'tester', '{"from":"prod"}', null),
-        ('u-prodonly', 'Prod only', 'taken', '{"from":"prod"}', null);
+        ('u-prodonly', 'Prod only', 'taken', '{"from":"prod"}', 'admin');
       insert into replays (id, format, balance_version, seed, ticks, setups, tracks)
         values ('${RP_PROD}', 1, 5, 2, 1, '[]', '[]');
       insert into records (id, user_id, mode, drivetrain, score, balance_version, replay_id, game) values
@@ -7533,6 +7523,8 @@ async function main(): Promise<void> {
     check('sync: a production row overwrites the alpha copy (prod wins)',
       shared?.handle === 'Shared' && JSON.stringify(shared?.settings) === '{"from":"prod"}');
     check('sync: a production-only account is copied', (await prof('u-prodonly'))?.username === 'taken');
+    check('sync: ...without production’s staff role (each app projects its own ADMIN_USER_IDS)',
+      (await prof('u-prodonly'))?.role === null);
     check('sync: a tester keeps their alpha settings (imported robots live there)',
       JSON.stringify((await prof('u-tester'))?.settings) === '{"from":"alpha import"}');
     check('sync: staff keep their alpha role and settings', (await prof('u-staff'))?.role === 'admin');
