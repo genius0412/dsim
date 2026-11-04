@@ -1,3 +1,55 @@
+# HANDOFF — 2026-11-04d (First load; driver POV; turret; plates and plate fonts; penalty card and sounds; results fix; GRB hives; three modeled rooms)
+
+**State: on `alpha` (81bf86e3..5634d0db). SERVER CHANGE (plate-font validation, 19d4ec51), DEPLOYED: `dsim-alpha` on image `deployment-01M6MBF8VE2YF29177SM8CWPFV` (05a8e10a), /health ok; 2e4a3e35 and 5634d0db after it are client-only.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 5634d0db: `npm test` (shared 5036, BIOBUZZ 6322, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `test:mm` (234), `dbtest` pass.
+
+- **First load and first Play (a1155882).**
+  - **Causes:**
+    - The boot screen left on the field's first frame.
+    - The modeled room loaded only after the field.
+    - The room's shaders compiled for the wrong output (a ~0.8 s stall).
+    - Play's first React mount cost 80–140 ms.
+    - The Rapier 3D chunk loaded mid-fly.
+    - Every fly frame redrew the shadow map.
+  - **Now:**
+    - One reveal, capped at 6 s, after which a late room crossfades in.
+    - Play pre-mounts hidden while Home is idle.
+    - Physics loads after the fly, and the stage reuses its shadow map.
+  - **Numbers:** the first fly at ×4 CPU throttle has a worst frame of 50–67 ms (was 133) and draws 58–59 of ~60 frames (was 44).
+  - **Check:** `npm run firstload -- --check`.
+- **Driver POV (c1b381b0).**
+  - **Design:**
+    - A standing driver at the real station, eye at the player's height (68 in default).
+    - An off-axis window over the field and both hives.
+    - The eye steps back only as far as the window needs, and following the robot slides the window.
+  - **Why it was so far back:** it framed the 40 in collider wall, not the 11.6 in visible one, and held 20% of the lens for turning (now 6%).
+  - **16:9:** 89 → 44 in behind the wall; the field fills 10.5% → 27.9% of the screen.
+  - **Check:** the RENDER lane holds field corners and all 16 hive openings in frame at every aspect, and every eye inside the GRB box.
+- **Turret jitter (033b737a).** Solo drew the turret at the raw 60 Hz tick while the chassis interpolated; online, the turret used a different clock. Both now draw at the chassis's moment (3.2 → 0.05 px/frame² at 144 Hz).
+- **Plates (9d697b95, 19d4ec51).**
+  - **Pocketing:** every tier cuts round axle windows plus one row of round holes; the grid path is deleted.
+  - **Number plate:**
+    - `textBaseline='middle'` centred the em box, not the digits.
+    - Five-digit numbers were `ctx.scale`d to ~70%.
+    - Now the digits are optically centred at true proportions.
+  - **Fonts (OFL, subset, self-hosted):** Barlow Semi Condensed ExtraBold is the free default; Archivo Black, Saira ExtraBold, Chakra Petch Bold and JetBrains Mono ExtraBold are supporter perks, all at one tier like the bold plate frame. The server validates the choice.
+  - **Open:** the owner may want fonts split across tiers.
+- **Penalty card and sounds (81bf86e3).**
+  - **Old card:** "Y CARD" never said yellow, named no rule and showed only your own cards.
+  - **New card:** its own HUD card under the game card, the same in all three games, with fixed `--ds-card-*` colours. It reads "YELLOW CARD · G408 · YOU", a red adds "SCORE VOID", and partners' cards are listed.
+  - **Sounds (synthesized):** pin end, warning tick, minor thud, major double thud, yellow stab, red triple strike.
+    - Your alliance only; spectators hear both.
+    - Deduped and rate-limited; they follow the replay clock.
+    - Volume slider "Penalties and warnings".
+- **Results screen (05a8e10a).** The cause was 49b4b59c (2026-10-10): under 640 px tall, the versus breakdown split into two columns, so sections broke across them and values left their panels. It is now one column down to 541 px, and the phone split keeps whole sections. Check: `npm run resultsaudit` (70 boards; 362 failures on the old layout).
+- **GRB hives (2e4a3e35).** `field.glb` stores the trays level, and the live renderer tips them ±30° (`hiveTiltAngle`) and moves the braces. The neighbour copies now do the same in `scripts/venue-models/grb/hive.ts`, with a seeded side (11 each way). Check: `hiveRestFaults`.
+- **Modeled rooms (5634d0db).**
+  - **What shipped:** event stage, basketball court and aircraft hangar as High+ options; GRB stays the default.
+  - **Wire / GPU p50 at High:** GRB 1.7 MB / 2.5 ms, stage 2.9 / 1.2, court 1.4 / 2.4, hangar 3.2 / 0.8.
+  - **Build changes:** the court's glass transmission is stripped (it doubled GPU), and the hangar's normal maps are cut (25.9 → 4.06 MB).
+  - **Credits:** CC BY for jimbogies, nguyennghiakk, QuarizonStudio, and helijah's DA42.
+  - **Removed:** the Spark splat trial and its package (a test fails if it returns), and the badminton room.
+  - **Sources:** `venue-sources/<uid>/` (gitignored) on the dev box.
+
 # HANDOFF — 2026-11-04c (Toasts; Records redesign; nav and scroll; alpha account sync; Zenith optional; GRB venue; coast fixes)
 
 **State: on `alpha` (1c4c9b34..a4869744). SERVER CHANGE, DEPLOYED: `dsim-alpha` on image `deployment-01M6M14KPSQGB1NT4VNPGDVZ2X` (00a8e481, migration 0065 applied), /health ok; a4869744 after it is client-only.** No `SIM_VERSION`/`BALANCE_VERSION` change. On a4869744: `npm test` (shared 4978, BIOBUZZ 6166, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234), `dbtest` pass.
