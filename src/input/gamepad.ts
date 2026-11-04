@@ -83,8 +83,13 @@ export interface GamepadSample {
   bbBar: boolean;
   driveMode: boolean;
   flyPreset: boolean;
+  /** rising edge */
   flipFront: boolean;
+  /** rising edge */
   park: boolean;
+  /** the levels under the two edges above, for Flip front and Park mode played as Hold */
+  flipFrontHeld: boolean;
+  parkHeld: boolean;
   start: boolean;
   restart: boolean;
 }
@@ -111,6 +116,8 @@ const EMPTY: GamepadSample = {
   flyPreset: false,
   flipFront: false,
   park: false,
+  flipFrontHeld: false,
+  parkHeld: false,
   start: false,
   restart: false,
 };
@@ -213,6 +220,8 @@ export class GamepadInput {
       flyPreset: on.flyPreset,
       flipFront: on.flipFront && !this.prevFlip,
       park: on.park && !this.prevPark,
+      flipFrontHeld: on.flipFront,
+      parkHeld: on.park,
       start: on.start && !this.prevStart,
       restart: on.restart && !this.prevRestart,
     };

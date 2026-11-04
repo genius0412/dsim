@@ -355,21 +355,21 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-panel` | src/ui/shell.css:740 | 530 |
-| `.ds-panel-body` | src/ui/shell.css:2360 | 132 |
+| `.ds-panel` | src/ui/shell.css:740 | 534 |
+| `.ds-panel-body` | src/ui/shell.css:2360 | 133 |
 | `.ds-panel-foot` | src/ui/shell.css:2434 | 3 |
-| `.ds-panel-h` | src/ui/shell.css:2477 | 114 |
+| `.ds-panel-h` | src/ui/shell.css:2477 | 115 |
 | `.ds-panel-open` | src/ui/shell.css:2613 | 2 |
-| `.ds-panel-title` | src/ui/shell.css:2547 | 125 |
+| `.ds-panel-title` | src/ui/shell.css:2547 | 126 |
 
 ## `ds-bind` — 5
 
 | class | declared | used |
 |---|---|---|
-| `.ds-bind-col` | src/ui/shell.css:6815 | 2 |
+| `.ds-bind-col` | src/ui/shell.css:6815 | 4 |
 | `.ds-bind-fold` | src/ui/shell.css:6757 | 1 |
-| `.ds-bind-label` | src/ui/shell.css:6845 | 4 |
-| `.ds-bind-row` | src/ui/shell.css:6835 | 4 |
+| `.ds-bind-label` | src/ui/shell.css:6845 | 5 |
+| `.ds-bind-row` | src/ui/shell.css:6835 | 5 |
 | `.ds-bind-scope` | src/ui/shell.css:6771 | 1 |
 
 ## `ds-strat` — 5
@@ -694,7 +694,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-seg` | src/ui/shell.css:841 | 38 |
+| `.ds-seg` | src/ui/shell.css:841 | 39 |
 | `.ds-seg-dot` | src/ui/shell.css:6778 | 1 |
 
 ## `ds-sub` — 2
@@ -778,7 +778,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-binds` | src/ui/shell.css:6809 | 2 |
+| `.ds-binds` | src/ui/shell.css:6809 | 3 |
 
 ## `ds-body` — 1
 
@@ -1066,7 +1066,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-segs` | src/ui/shell.css:2678 | 27 |
+| `.ds-segs` | src/ui/shell.css:2678 | 28 |
 
 ## `ds-select` — 1
 

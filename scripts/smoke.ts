@@ -291,8 +291,14 @@ import {
   resetGame,
   seasonUnbound,
   removePadBindInGame,
+  MODE_ACTIONS,
+  NATIVE_MODE,
+  actionMode,
+  setActionMode,
 } from '../src/input/bindings';
-import { ACTION_LABELS, ALL_GAMES_PANELS, allGamesPanels, seasonPanels } from '../src/ui/controlsLayout';
+import { ACTION_LABELS, ALL_GAMES_PANELS, allGamesPanels, modeColumns, seasonPanels } from '../src/ui/controlsLayout';
+import { HoldFollower, RELEASE_DEBOUNCE_MS, ToggleLatch, type SimToggleState } from '../src/input/pressModes';
+import { InputManager } from '../src/input/input';
 import {
   TOUCH_BTN_SECONDARY,
   TOUCH_OTHER_ACTIONS,
@@ -41814,6 +41820,261 @@ function fxImportFixed(): RobotSpec {
     /if \(screen !== 'home'\) return;\s*const m = moduleFor\(settings\.game\);\s*if \(!m\.warmCards\) return;/.test(appSrc) &&
       /afterBoot\(\)\.then/.test(appSrc),
   );
+}
+
+/**
+ * HOLD OR TOGGLE (`ControlBindings.modes`, `src/input/pressModes.ts`). A player asked to hold
+ * Shift for the intake instead of tapping it; every action that either acts while held or flips
+ * on a press can now be played the other way. All of it lives in the input layer, so the checks
+ * here are the model, the two mechanisms on a synthetic clock, the follower against the real
+ * butterfly sim, and `InputManager` end to end on synthetic key events.
+ */
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  // -- the model
+  check(
+    'modes: the defaults store nothing and every action plays its native mode',
+    DEFAULT_BINDINGS.modes === undefined && MODE_ACTIONS.every((a) => actionMode(DEFAULT_BINDINGS, a) === NATIVE_MODE[a]),
+  );
+  check(
+    'modes: every mode action is a pad action too (one mode covers both devices)',
+    MODE_ACTIONS.every((a) => (PAD_ACTIONS as readonly string[]).includes(a)),
+  );
+  const tog = setActionMode(DEFAULT_BINDINGS, 'intake', 'toggle');
+  const back = setActionMode(tog, 'intake', 'hold');
+  check(
+    'modes: a change is stored, and setting it back prunes the field to absent (byte for byte)',
+    actionMode(tog, 'intake') === 'toggle' && J(tog.modes) === J({ intake: 'toggle' }) && back.modes === undefined &&
+      J(back) === J(cloneBindings(DEFAULT_BINDINGS)) && DEFAULT_BINDINGS.modes === undefined,
+    J(back.modes),
+  );
+  const stored = mergeBindings(JSON.parse(J({ ...DEFAULT_BINDINGS, modes: { intake: 'toggle', bbRamp: 'hold', park: 'hold' } })));
+  check(
+    'modes: a stored choice survives a load',
+    actionMode(stored, 'intake') === 'toggle' && actionMode(stored, 'bbRamp') === 'hold' && actionMode(stored, 'park') === 'hold',
+    J(stored.modes),
+  );
+  const junk = mergeBindings(
+    JSON.parse(J({ ...DEFAULT_BINDINGS, modes: { intake: 'sideways', catalyst: 'toggle', fire: 'hold', start: 'hold' } })),
+  );
+  check(
+    'modes: an unknown value, a non-mode action and a stored native mode are all dropped, and the field with them',
+    junk.modes === undefined,
+    J(junk.modes),
+  );
+  check(
+    'modes: a blob that never had the field loads without it',
+    mergeBindings(JSON.parse(J(DEFAULT_BINDINGS))).modes === undefined && mergeBindings({ keys: {} }).modes === undefined,
+  );
+  check(
+    'modes: the bindings a match plays carry them, in every game',
+    GAME_IDS.every((g) => J(effectiveBindings(stored, g).modes) === J(stored.modes)),
+  );
+  const several = setActionMode(setActionMode(setActionMode(stored, 'bbBar', 'hold'), 'bbReverse', 'toggle'), 'fire', 'toggle');
+  const bbReset = resetGame(several, 'biobuzz');
+  check(
+    'modes: Reset BIOBUZZ puts its own choices back and leaves Intake, Shoot and Park mode alone',
+    J(bbReset.modes) === J({ intake: 'toggle', park: 'hold', fire: 'toggle' }) &&
+      J(resetGame(several, 'decode').modes) === J(several.modes),
+    J(bbReset.modes),
+  );
+
+  // -- the card: All games lists the active season's own rows; a season scope lists only its own
+  const all = modeColumns(null, 'biobuzz');
+  check(
+    'modes card: All games with BIOBUZZ active lists every mode action, mechanisms then drive toggles',
+    J(all.mech) === J(['intake', 'fire', 'bbPlaceNectar', 'bbRamp', 'bbPass', 'bbReverse', 'bbBar']) &&
+      J(all.drive) === J(['driveMode', 'flipFront', 'park']),
+    J(all),
+  );
+  check(
+    'modes card: All games with DECODE or Chain Reaction active leaves BIOBUZZ’s own out',
+    (['decode', 'chain'] as const).every((g) => J(modeColumns(null, g).mech) === J(['intake', 'fire'])),
+  );
+  check(
+    'modes card: the BIOBUZZ scope lists its own five and nothing shared; DECODE and Chain Reaction show no card',
+    J(modeColumns('biobuzz', 'decode').mech) === J(['bbPlaceNectar', 'bbRamp', 'bbPass', 'bbReverse', 'bbBar']) &&
+      modeColumns('biobuzz', 'decode').drive.length === 0 &&
+      (['decode', 'chain'] as const).every((g) => modeColumns(g, g).mech.length + modeColumns(g, g).drive.length === 0),
+  );
+  check(
+    'modes card: no row’s name says "hold", which the row may no longer be',
+    MODE_ACTIONS.every((a) => !/\bhold\b/i.test(ACTION_LABELS[a])),
+    MODE_ACTIONS.map((a) => ACTION_LABELS[a]).join(', '),
+  );
+
+  // -- ToggleLatch, on a synthetic clock (one frame = 16 ms)
+  {
+    const l = new ToggleLatch();
+    let t = 0;
+    const frames = (level: boolean, n: number): boolean => {
+      let out = l.on;
+      for (let i = 0; i < n; i++) out = l.step(level, (t += 16));
+      return out;
+    };
+    const first = frames(true, 1);
+    const heldOn = frames(true, 30);
+    const afterRelease = frames(false, 10);
+    const second = frames(true, 1);
+    frames(false, 10);
+    check(
+      'toggle latch: a press turns it on, holding keeps it on, letting go keeps it on, the next press turns it off',
+      first && heldOn && afterRelease && !second,
+      `${first} ${heldOn} ${afterRelease} ${second}`,
+    );
+    frames(true, 5);
+    frames(false, 1); // one dropped frame inside a held press
+    const throughDropout = frames(true, 5);
+    check(
+      `toggle latch: a release shorter than ${RELEASE_DEBOUNCE_MS} ms inside a press is not a second press`,
+      throughDropout === true,
+    );
+    l.reset();
+    check('toggle latch: a restart turns it off, and a button still down is not a fresh press', !frames(true, 3));
+  }
+
+  // -- HoldFollower against the REAL butterfly swap (`updateRobot`'s debounced edge)
+  {
+    const butterfly = () =>
+      createWorld('free', 42, [
+        { id: 0, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC, drivetrain: 'butterfly' }), assists: DEFAULT_ASSISTS, startIndex: 0 },
+      ]);
+    const probe = (r: RobotState): SimToggleState => ({ on: r.butterflyTank, latched: r.driveModeHeld });
+    /** drive a level pattern through a follower into the sim, one tick per frame */
+    const drive = (pattern: [boolean, number][]) => {
+      const w = butterfly();
+      const r = w.robots[0];
+      const f = new HoldFollower();
+      const states: boolean[] = [];
+      let swaps = 0;
+      let t = 0;
+      for (const [level, n] of pattern) {
+        for (let i = 0; i < n; i++) {
+          const was = r.butterflyTank;
+          const bit = f.step(level, probe(r), (t += 1000 / 60));
+          step(w, SIM_DT, new Map([[0, { ...cmd({}), driveMode: bit }]]));
+          if (r.butterflyTank !== was) swaps++;
+          states.push(r.butterflyTank);
+        }
+      }
+      return { states, swaps, end: r.butterflyTank };
+    };
+    const held = drive([[true, 30], [false, 30]]);
+    check(
+      'hold follower: traction wheels go down on the press, stay down while held, come up on release',
+      held.states[0] === true && held.states[29] === true && held.end === false && held.swaps === 2,
+      `swaps=${held.swaps}`,
+    );
+    const tap = drive([[true, 1], [false, 20]]);
+    check(
+      'hold follower: a one-tick tap still ends on the mecanum set (the second press waits out the sim’s debounce)',
+      tap.end === false && tap.swaps === 2,
+      `end=${tap.end} swaps=${tap.swaps}`,
+    );
+    const mashed = drive([[true, 10], [false, 1], [true, 10], [false, 20]]);
+    check(
+      `hold follower: a one-tick dropout inside a hold is not a release (${RELEASE_DEBOUNCE_MS} ms, like the latch)`,
+      mashed.end === false && mashed.swaps === 2 && mashed.states.slice(0, 21).every(Boolean),
+      `swaps=${mashed.swaps} states=${mashed.states.map((s) => (s ? 1 : 0)).join('')}`,
+    );
+    const quick = drive([[true, 4], [false, 4], [true, 4], [false, 4], [true, 4], [false, 30]]);
+    check(
+      'hold follower: three quick presses still end with the button up and the wheels up',
+      quick.end === false,
+      `states=${quick.states.map((s) => (s ? 1 : 0)).join('')}`,
+    );
+    check('hold follower: with no robot to read it passes the level through', new HoldFollower().step(true, null, 0) === true);
+  }
+
+  // -- InputManager end to end: synthetic key events, a synthetic clock
+  {
+    const listeners: Record<string, ((e: unknown) => void)[]> = {};
+    const realWindow = (globalThis as { window?: unknown }).window;
+    const make = (b: ReturnType<typeof cloneBindings>): InputManager => {
+      const im = new InputManager(b);
+      for (const k of Object.keys(listeners)) listeners[k] = [];
+      (globalThis as { window?: unknown }).window = {
+        addEventListener: (type: string, fn: (e: unknown) => void) => {
+          (listeners[type] ??= []).push(fn);
+        },
+        removeEventListener: () => {},
+      };
+      im.keyboard.attach();
+      (globalThis as { window?: unknown }).window = realWindow;
+      return im;
+    };
+    const canvas = { tagName: 'CANVAS', isContentEditable: false };
+    const key = (type: 'keydown' | 'keyup', k: string): void => {
+      for (const fn of listeners[type] ?? [])
+        fn({ key: k, code: `Key${k}`, target: canvas, repeat: false, metaKey: false, preventDefault: () => {} });
+    };
+    let t = 1000;
+    const poll = (im: InputManager, r?: RobotState): RobotCommand => im.poll(r, (t += 16));
+
+    const plain = make(cloneBindings(DEFAULT_BINDINGS));
+    key('keydown', 'Shift');
+    const plainDown = poll(plain).intake;
+    key('keyup', 'Shift');
+    const plainUp = poll(plain).intake;
+    check('input: on the default map Intake is still a plain hold', plainDown && !plainUp);
+
+    const im = make(setActionMode(DEFAULT_BINDINGS, 'intake', 'toggle'));
+    key('keydown', 'Shift');
+    const on = poll(im).intake;
+    key('keyup', 'Shift');
+    poll(im);
+    poll(im);
+    poll(im);
+    const stays = poll(im).intake;
+    key('keydown', 'Shift');
+    const off = poll(im).intake;
+    key('keyup', 'Shift');
+    poll(im);
+    check('input: Intake on Toggle: Shift turns it on, it stays on, Shift again turns it off', on && stays && !off, `${on} ${stays} ${off}`);
+    poll(im);
+    poll(im);
+    poll(im);
+    key('keydown', 'Shift');
+    poll(im);
+    key('keyup', 'Shift');
+    im.resetModes();
+    check('input: a restart turns a toggled intake off', !poll(im).intake);
+
+    const parkHold = make(setActionMode(DEFAULT_BINDINGS, 'park', 'hold'));
+    key('keydown', 'p');
+    poll(parkHold);
+    const holdDown = parkHold.parkHeld && !parkHold.parkPressed;
+    key('keyup', 'p');
+    poll(parkHold);
+    check('input: Park mode on Hold reports the level and no toggle edge', holdDown && !parkHold.parkHeld);
+    const parkToggle = make(cloneBindings(DEFAULT_BINDINGS));
+    key('keydown', 'p');
+    poll(parkToggle);
+    const edge = parkToggle.parkPressed;
+    key('keyup', 'p');
+    poll(parkToggle);
+    check('input: Park mode on its native Toggle still reports the press edge', edge);
+
+    const w = createWorld('free', 42, [
+      { id: 0, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC, drivetrain: 'butterfly' }), assists: DEFAULT_ASSISTS, startIndex: 0 },
+    ]);
+    const r = w.robots[0];
+    const swap = make(setActionMode(DEFAULT_BINDINGS, 'driveMode', 'hold'));
+    const tick = (): void => {
+      step(w, SIM_DT, new Map([[0, poll(swap, r)]]));
+    };
+    key('keydown', 'b');
+    for (let i = 0; i < 20; i++) tick();
+    const downWhileHeld = r.butterflyTank;
+    key('keyup', 'b');
+    for (let i = 0; i < 20; i++) tick();
+    check(
+      'input: Swap wheel set on Hold: traction down while B is held, back up when it is let go',
+      downWhileHeld && !r.butterflyTank,
+      `${downWhileHeld} ${r.butterflyTank}`,
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

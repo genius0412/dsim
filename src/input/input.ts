@@ -1,9 +1,22 @@
-import type { RobotCommand } from '../types';
+import type { RobotCommand, RobotState } from '../types';
 import { clamp } from '../math';
 import { Keyboard } from './keyboard';
 import { GamepadInput } from './gamepad';
-import { KEY_ACTIONS, type ControlBindings } from './bindings';
+import { KEY_ACTIONS, actionMode, type ControlBindings } from './bindings';
+import { HoldFollower, ToggleLatch, type SimToggleState } from './pressModes';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
+
+/** the HELD actions a player may play as toggles (`ToggleLatch`) */
+type LatchAction = 'intake' | 'fire' | 'bbPlaceNectar' | 'bbPass' | 'bbReverse';
+/** the SIM toggles a player may play as holds (`HoldFollower`) */
+type FollowAction = 'bbRamp' | 'bbBar' | 'driveMode';
+
+/** what the sim's toggle looks like on the local robot right now */
+function simToggleOf(r: RobotState, a: FollowAction): SimToggleState {
+  if (a === 'bbRamp') return { on: r.bbRampOut ?? false, latched: r.bbRampHeld ?? false };
+  if (a === 'bbBar') return { on: r.bbBarOut ?? false, latched: r.bbBarHeld ?? false };
+  return { on: r.butterflyTank, latched: r.driveModeHeld };
+}
 
 export interface VirtualInput {
   driveX: number;
@@ -40,6 +53,31 @@ export class InputManager {
   flipPressed = false;
   /** edge-triggered "toggle park mode" from either device */
   parkPressed = false;
+  /** the levels under the two edges above, read instead of them when Flip front or Park mode
+   *  is played as Hold (`GameController.frameLogic`) */
+  flipHeld = false;
+  parkHeld = false;
+
+  /** HOLD OR TOGGLE (`pressModes.ts`): one of each, used only while its action is off its
+   *  native mode */
+  private latches: Record<LatchAction, ToggleLatch> = {
+    intake: new ToggleLatch(),
+    fire: new ToggleLatch(),
+    bbPlaceNectar: new ToggleLatch(),
+    bbPass: new ToggleLatch(),
+    bbReverse: new ToggleLatch(),
+  };
+  private followers: Record<FollowAction, HoldFollower> = {
+    bbRamp: new HoldFollower(),
+    bbBar: new HoldFollower(),
+    driveMode: new HoldFollower(),
+  };
+
+  /** a restart: every latched action off, every follower idle */
+  resetModes(): void {
+    for (const l of Object.values(this.latches)) l.reset();
+    for (const f of Object.values(this.followers)) f.reset();
+  }
 
   private virtualState: VirtualInput = {
     driveX: 0,
@@ -143,16 +181,28 @@ export class InputManager {
     this.releaseViewKey = null;
   }
 
-  /** call once per animation frame; returns the merged command */
-  poll(): RobotCommand {
+  /**
+   * call once per animation frame; returns the merged command. `robot` is the local robot as
+   * this client sees it, which a sim toggle played as Hold reads back (`HoldFollower`); without
+   * one, that action passes its level through as before. `now` is for the smoke run's clock.
+   */
+  poll(robot?: RobotState, now?: number): RobotCommand {
     const k = this.keyboard;
-    const keys = this.bindings.keys;
-    const g = this.gamepad.sample(this.bindings.pad);
+    const b = this.bindings;
+    const keys = b.keys;
+    const g = this.gamepad.sample(b.pad);
     this.gamepadConnected = g.connected;
+    const t = now ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
     const heldAny = (list: string[]): boolean => list.some((key) => k.held(key));
     const pressedAny = (list: string[]): boolean =>
       list.reduce((hit, key) => k.justPressed(key) || hit, false);
+    // HOLD OR TOGGLE (`pressModes.ts`). Keyboard and pad only: the touch pad's own buttons are
+    // OR'd in after, unchanged.
+    const held = (a: LatchAction, raw: boolean): boolean =>
+      actionMode(b, a) === 'toggle' ? this.latches[a].step(raw, t) : raw;
+    const sim = (a: FollowAction, raw: boolean): boolean =>
+      actionMode(b, a) === 'hold' ? this.followers[a].step(raw, robot ? simToggleOf(robot, a) : null, t) : raw;
 
     const kx = (heldAny(keys.driveRight) ? 1 : 0) - (heldAny(keys.driveLeft) ? 1 : 0);
     const ky = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
@@ -172,8 +222,14 @@ export class InputManager {
     const vPark = this.takeTap('park');
     this.startPressed = pressedAny(keys.start) || g.start || vStart;
     this.restartPressed = pressedAny(keys.restart) || g.restart || vRestart;
-    this.flipPressed = pressedAny(keys.flipFront) || g.flipFront || vFlip;
-    this.parkPressed = pressedAny(keys.park) || g.park || vPark;
+    // Flip front and Park mode played as Hold: the controller reads the level, and the edge is
+    // the touch pad's tap alone
+    this.flipHeld = heldAny(keys.flipFront) || g.flipFrontHeld;
+    this.parkHeld = heldAny(keys.park) || g.parkHeld;
+    const flipEdge = pressedAny(keys.flipFront) || g.flipFront;
+    const parkEdge = pressedAny(keys.park) || g.park;
+    this.flipPressed = (actionMode(b, 'flipFront') === 'toggle' && flipEdge) || vFlip;
+    this.parkPressed = (actionMode(b, 'park') === 'toggle' && parkEdge) || vPark;
 
     const cmd: RobotCommand = {
       driveX: clamp(kx + g.driveX + this.virtualState.driveX, -1, 1),
@@ -181,15 +237,16 @@ export class InputManager {
       rotate: clamp(krot + g.rotate + this.virtualState.rotate, -1, 1),
       leftDrive: clamp(kLeft + g.leftY + this.virtualState.leftDrive, -1, 1),
       rightDrive: clamp(kRight + g.rightY + this.virtualState.rightDrive, -1, 1),
-      intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
-      fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
+      intake: held('intake', heldAny(keys.intake) || g.intake) || this.virtualState.intake,
+      fire: held('fire', heldAny(keys.fire) || g.fire) || this.virtualState.fire,
       // Chain Reaction ring pick-up/place — held; the sim edge-triggers it
       catalyst: heldAny(keys.catalyst) || g.catalyst || this.virtualState.catalyst,
       // CATAPULT throw — held; the sim edge-triggers it (same contract as `catalyst`)
       fling: heldAny(keys.fling) || g.fling || this.virtualState.fling,
       // BIOBUZZ vertical slide — genuinely held: the carriage rises while the button is down
       // and drives back to stowed when it is released.
-      bbPlaceNectar: heldAny(keys.bbPlaceNectar) || g.bbPlaceNectar || this.virtualState.bbPlaceNectar,
+      bbPlaceNectar:
+        held('bbPlaceNectar', heldAny(keys.bbPlaceNectar) || g.bbPlaceNectar) || this.virtualState.bbPlaceNectar,
       // BIOBUZZ place-into-a-FLOWER — held here even though the sim acts once per press, the
       // same contract as `catalyst` and `fling` (see `driveMode` below for why).
       bbPlace: heldAny(keys.bbPlace) || g.bbPlace || this.virtualState.bbPlace,
@@ -200,7 +257,7 @@ export class InputManager {
       bbNectar: heldAny(keys.bbNectar) || g.bbNectar || this.virtualState.bbNectar,
       // BIOBUZZ `ramp` intake — held here, edge-triggered in the sim off `bbRampHeld`, same
       // contract as `driveMode` below (a replayed input can't double-toggle a client-side edge).
-      bbRamp: heldAny(keys.bbRamp) || g.bbRamp || this.virtualState.bbRamp,
+      bbRamp: sim('bbRamp', heldAny(keys.bbRamp) || g.bbRamp) || this.virtualState.bbRamp,
       /* BIOBUZZ pass — held, and UNLIKE the ramp above it is NOT edge-triggered. This comment
          used to claim it was, "off `bbPassHeld`, exactly as the ramp above is: a held button
          passes once, not once per tick" — and `bbPassHeld` does not exist anywhere
@@ -210,15 +267,15 @@ export class InputManager {
          stops a burst, and a driver emptying a hopper to a partner should not have to tap —
          but a comment describing the opposite would send whoever reads it next looking for a
          latch that was never written. */
-      bbPass: heldAny(keys.bbPass) || g.bbPass || this.virtualState.bbPass,
+      bbPass: held('bbPass', heldAny(keys.bbPass) || g.bbPass) || this.virtualState.bbPass,
       // BIOBUZZ: the intake runs BACKWARDS while this is held — genuinely held, like `intake`
-      bbReverse: heldAny(keys.bbReverse) || g.bbReverse || this.virtualState.bbReverse,
+      bbReverse: held('bbReverse', heldAny(keys.bbReverse) || g.bbReverse) || this.virtualState.bbReverse,
       // BIOBUZZ NECTAR bar — held here, edge-triggered in the sim off `bbBarHeld`, the ramp's contract
-      bbBar: heldAny(keys.bbBar) || g.bbBar || this.virtualState.bbBar,
+      bbBar: sim('bbBar', heldAny(keys.bbBar) || g.bbBar) || this.virtualState.bbBar,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.
-      driveMode: heldAny(keys.driveMode) || g.driveMode || this.virtualState.driveMode,
+      driveMode: sim('driveMode', heldAny(keys.driveMode) || g.driveMode) || this.virtualState.driveMode,
       // a SETPOINT FLYWHEEL's preset step — held here, edge-triggered (debounced) in the sim, the
       // `driveMode` contract
       flyPreset: heldAny(keys.flyPreset) || g.flyPreset || this.virtualState.flyPreset,

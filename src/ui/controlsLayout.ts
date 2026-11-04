@@ -28,13 +28,17 @@ import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import {
   KEY_ACTIONS,
+  MODE_ACTIONS,
   PAD_ACTIONS,
   VIEW_ACTIONS,
   actionIsSeasonOnly,
+  actionIsShared,
   actionOverridable,
+  actionUsedBy,
   seasonKeyActions,
   seasonPadActions,
   type KeyAction,
+  type ModeAction,
   type PadAction,
 } from '../input/bindings';
 
@@ -52,8 +56,8 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
   driveRight: 'Strafe right',
   rotateCCW: 'Turn left',
   rotateCW: 'Turn right',
-  intake: 'Intake (hold)',
-  fire: 'Shoot (hold)',
+  intake: 'Intake',
+  fire: 'Shoot',
   flyPreset: 'Next flywheel speed',
   catalyst: 'Catalyst pick up / place',
   fling: 'Catapult throw',
@@ -63,7 +67,7 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
   bbRamp: 'Deploy ramp',
   bbBar: 'NECTAR bar',
   bbPass: 'Pass to partner',
-  bbReverse: 'Reverse intake (hold)',
+  bbReverse: 'Reverse intake',
   viewToggle: 'Switch 2D / 3D view',
   cameraCycle: 'Next camera',
   eyeUp: 'Camera higher',
@@ -169,4 +173,20 @@ export function allGamesPanels(active: GameId | null): BindPanel[] {
     .filter((p) => p.keys.length > 0);
   const at = ALL_GAMES_PANELS.findIndex((p) => p.id === 'mechanisms') + 1;
   return [...ALL_GAMES_PANELS.slice(0, at), ...own, ...ALL_GAMES_PANELS.slice(at)];
+}
+
+/**
+ * THE HOLD OR TOGGLE CARD (`ControlBindings.modes`), as two columns: the mechanisms, then the
+ * drive toggles. All games lists every mode action except another season's own; a season scope
+ * lists only its own, because a mode is one setting for every season and Intake's would read
+ * there as if it were BIOBUZZ's alone. DECODE and Chain Reaction have none of their own, so
+ * their scopes show no card.
+ */
+export function modeColumns(scope: GameId | null, active: GameId | null): { mech: ModeAction[]; drive: ModeAction[] } {
+  const rows = MODE_ACTIONS.filter((a) =>
+    scope === null
+      ? !actionIsSeasonOnly(a) || (active !== null && actionUsedBy(a, active))
+      : actionIsSeasonOnly(a) && actionUsedBy(a, scope),
+  );
+  return { mech: rows.filter((a) => !actionIsShared(a)), drive: rows.filter(actionIsShared) };
 }

@@ -84,7 +84,7 @@ import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
 import { flyPresetIndex, flyReady, flySetpoint } from './sim/flywheel';
 import { InputManager } from './input/input';
-import { effectiveBindings, type ControlBindings } from './input/bindings';
+import { actionMode, effectiveBindings, type ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
@@ -1893,14 +1893,29 @@ export class GameController {
     return robotsEnabled(this.world);
   }
 
+  /**
+   * FLIP FRONT AND PARK MODE RIGHT NOW. `frontFlipped` / `parked` are the toggles. Played as
+   * Hold (`ControlBindings.modes`), a button that is down inverts them for as long as it is
+   * down, and only the touch pad's tap still flips the toggle underneath (`InputManager.poll`),
+   * so a keyboard or pad player gets plain "on while held".
+   */
+  private flippedNow(): boolean {
+    return this.frontFlipped !== (actionMode(this.bindings, 'flipFront') === 'hold' && this.input.flipHeld);
+  }
+
+  private parkedNow(): boolean {
+    return this.parked !== (actionMode(this.bindings, 'park') === 'hold' && this.input.parkHeld && this.canPark());
+  }
+
   /** everything a frame does EXCEPT render: sample input, step, audio, toasts */
   private frameLogic(dtMs: number): void {
-    const cmd = this.input.poll();
+    // the local robot goes in so a sim toggle played as Hold can read its state back
+    const cmd = this.input.poll(this.localRobot());
     // "flip front": reverse robot-centric drive so the shooter side leads.
     // Meaningless in field-centric (translation is driver-frame there).
     if (!this.localRobot().fieldCentric) {
       if (this.input.flipPressed) this.frontFlipped = !this.frontFlipped;
-      if (this.frontFlipped) {
+      if (this.flippedNow()) {
         cmd.driveX = -cmd.driveX;
         cmd.driveY = -cmd.driveY;
       }
@@ -1913,7 +1928,7 @@ export class GameController {
       if (this.parked) this.parked = false;
       else if (this.canPark()) this.parked = true;
     }
-    if (this.parked) {
+    if (this.parkedNow()) {
       const k = Math.max(0, Math.min(100, this.settings.parkSpeedPct)) / 100;
       cmd.driveX *= k;
       cmd.driveY *= k;
@@ -2326,6 +2341,7 @@ export class GameController {
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
+    this.input.resetModes();
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -3575,6 +3591,7 @@ export class GameController {
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
+    this.input.resetModes();
     this.acc = 0;
     this.inputBuf = [];
     this.remoteCmds = new Map();
@@ -3718,6 +3735,7 @@ export class GameController {
     this.drivenTicks = 0;
     this.frontFlipped = false;
     this.parked = false;
+    this.input.resetModes();
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -3858,7 +3876,7 @@ export class GameController {
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       windowFocused: this.input.keyboard.hasFocus(),
-      frontFlipped: this.frontFlipped,
+      frontFlipped: !r.fieldCentric && this.flippedNow(),
       butterflyMode:
         r.spec.drivetrain === 'butterfly' ? (r.butterflyTank ? 'tank' : 'mecanum') : null,
       flywheel: r.spec.flywheel
@@ -3869,7 +3887,7 @@ export class GameController {
             ready: flyReady(r),
           }
         : null,
-      parked: this.parked,
+      parked: this.parkedNow(),
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,
       gateForced: w.penalties.gateCulprit[a] !== null,

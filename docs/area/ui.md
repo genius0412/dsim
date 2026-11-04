@@ -227,6 +227,28 @@ that season has none) — then the bind panels —
   a hint never says "Hold RT" while RT turns; `seasonUnbound` counts a paused bind as none.
   Binding a trigger while it is on is refused by `padConflict` as held by Turn left / Turn right.
   Switching says what happened in the Driving title when any map has a trigger bind.
+- **HOLD OR TOGGLE** (`ControlBindings.modes`, `MODE_ACTIONS`, `src/input/pressModes.ts`; player
+  request 2026-11-03: "hold down shift for flower intake instead of it toggling"). Ten actions
+  have a Hold | Toggle choice on a "Hold or toggle" card after the mechanism cards: Intake, Shoot,
+  Place NECTAR, Pass and Reverse intake (native Hold); Deploy ramp, NECTAR bar, Swap wheel set,
+  Flip front and Park mode (native Toggle). Single presses (Place POLLEN, Next flywheel speed,
+  Start…) have none. One mode per action, for keyboard and pad alike and the same in every
+  season; touch is unchanged. A new sibling field that stores only non-native entries, so an
+  older client ignores it and a blob that never used it round-trips byte for byte. All Games
+  lists the active season's own rows; a season scope lists only its season-only ones, because
+  Intake's mode there would read as that season's alone. Reset of a season resets its own.
+  ⚠️ **IT IS ALL IN THE INPUT LAYER, NEVER THE SIM.** A held action on Toggle is a client latch
+  (`ToggleLatch`) whose level the command carries. A SIM toggle on Hold (ramp, bar, wheel set)
+  cannot be a level on the wire, because the sim flips on press edges (`debouncedPress`), so
+  `HoldFollower` presses FOR the player when the held level and the robot (`poll(localRobot)`)
+  disagree, waiting out the sim's latch between presses. It presses ONCE per change of the held
+  level, not until the robot agrees: the swing guard reverses a ramp that hits the flower, and
+  pressing until it agreed would flap it into the flower for as long as the button stayed down.
+  Both ignore a release under `RELEASE_DEBOUNCE_MS` (42 ms, the client twin of
+  `TOGGLE_DEBOUNCE_S`). Flip front and Park mode were client toggles already: on Hold the button
+  inverts the toggle while down (`flippedNow` / `parkedNow`), and a touch tap still flips it. No
+  server, replay or SIM_VERSION change: the commands are what the sim always read.
+  Known gap: the tutorial still says "Hold Space" for a player who set Shoot to Toggle.
 - **MATCH SETUP AND PRACTICE SETUP (`SoloSetup.tsx`) ARE NOT CONFIGURE SECTIONS**
   (owner, 2026-10-12). Solo practice used to open one setup screen with a sticky start bar; it now
   STARTS straight away (behind `guardStart`). Since 2026-11-01 the two cards are Play's **Solo setup

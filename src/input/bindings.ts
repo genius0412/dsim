@@ -233,6 +233,89 @@ export interface ControlBindings {
    * byte through the old shape.
    */
   perGame?: Partial<Record<GameId, GameBindingOverride>>;
+  /**
+   * HOLD OR TOGGLE, per action (see `MODE_ACTIONS`). Only an action the player moved off its
+   * `NATIVE_MODE` is stored, so the field is ABSENT on every blob that never used it and pruned
+   * back to absent when the last one goes back. A NEW SIBLING FIELD for the reason `perGame`
+   * is: an older client ignores it and plays every action the way it always has. One mode per
+   * action, for keyboard and pad alike, and the same in every season.
+   */
+  modes?: Partial<Record<ModeAction, PressMode>>;
+}
+
+// ---- HOLD OR TOGGLE ---------------------------------------------------------------
+// A player asked to hold Shift for the intake instead of tapping it on and off, and the same
+// question has two directions. Intake, Shoot, Place NECTAR, Pass and Reverse intake act WHILE
+// HELD; Deploy ramp, NECTAR bar, Swap wheel set, Flip front and Park mode flip ON EACH PRESS.
+// Each of the ten can be switched to the other behaviour. Everything else is a single press
+// (Catalyst, Place POLLEN, the human player, Next flywheel speed, Start…) or a drive axis, where
+// neither word means anything.
+//
+// The mode is applied in the INPUT layer (`pressModes.ts`, `InputManager.poll`), never in the
+// sim: a command still carries what the sim always read, so the server, the replays and
+// SIM_VERSION are untouched, and an older server plays a toggled intake exactly like a held one.
+
+export type PressMode = 'hold' | 'toggle';
+
+/** the actions with a Hold / Toggle choice, in `KEY_ACTIONS` order */
+export const MODE_ACTIONS = [
+  'intake',
+  'fire',
+  'bbPlaceNectar',
+  'bbRamp',
+  'bbPass',
+  'bbReverse',
+  'bbBar',
+  'driveMode',
+  'flipFront',
+  'park',
+] as const;
+export type ModeAction = (typeof MODE_ACTIONS)[number];
+
+/** how each one behaves when the player has not chosen: what it did before the choice existed */
+export const NATIVE_MODE: Readonly<Record<ModeAction, PressMode>> = {
+  intake: 'hold',
+  fire: 'hold',
+  bbPlaceNectar: 'hold',
+  bbRamp: 'toggle',
+  bbPass: 'hold',
+  bbReverse: 'hold',
+  bbBar: 'toggle',
+  driveMode: 'toggle',
+  flipFront: 'toggle',
+  park: 'toggle',
+};
+
+export function isModeAction(a: KeyAction): a is ModeAction {
+  return (MODE_ACTIONS as readonly KeyAction[]).includes(a);
+}
+
+/** the mode `a` plays in */
+export function actionMode(b: ControlBindings, a: ModeAction): PressMode {
+  return b.modes?.[a] ?? NATIVE_MODE[a];
+}
+
+/** `b` with `a` set to `mode`; the native mode is stored as no entry at all */
+export function setActionMode(b: ControlBindings, a: ModeAction, mode: PressMode): ControlBindings {
+  const out = cloneBindings(b);
+  const modes = { ...out.modes };
+  if (mode === NATIVE_MODE[a]) delete modes[a];
+  else modes[a] = mode;
+  if (Object.keys(modes).length) out.modes = modes;
+  else delete out.modes;
+  return out;
+}
+
+/** a stored `modes` field, validated entry by entry; `undefined` when nothing in it survives */
+function mergeModes(saved: unknown): ControlBindings['modes'] {
+  if (typeof saved !== 'object' || saved === null) return undefined;
+  const s = saved as Record<string, unknown>;
+  const out: Partial<Record<ModeAction, PressMode>> = {};
+  for (const a of MODE_ACTIONS) {
+    const v = s[a];
+    if ((v === 'hold' || v === 'toggle') && v !== NATIVE_MODE[a]) out[a] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 // ---- WHICH GAMES USE WHICH ACTION -------------------------------------------------
@@ -658,6 +741,7 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
   };
   const pg = clonePerGame(b.perGame);
   if (pg) out.perGame = pg;
+  if (b.modes) out.modes = { ...b.modes };
   return out;
 }
 
@@ -887,6 +971,8 @@ export function mergeBindings(saved: unknown): ControlBindings {
   }
   const pg = mergePerGame((saved as { perGame?: unknown }).perGame, out);
   if (pg) out.perGame = pg;
+  const modes = mergeModes((saved as { modes?: unknown }).modes);
+  if (modes) out.modes = modes;
   // THE KEYBOARD'S NEW-ACTION RULE, ON THE PAD. An action newer than the stored map takes a
   // default button only where no conflicting action the player already has holds it — in main,
   // or in the override of a game both actions are used in. Without it a new default lands on a
@@ -1530,7 +1616,12 @@ export function resetGame(b: ControlBindings, game: GameId): ControlBindings {
     next.pad.buttons[a] = DEFAULT_BINDINGS.pad.buttons[a].filter((i) => !singles.has(i));
     next.pad.combos[a] = DEFAULT_BINDINGS.pad.combos[a].filter((c) => !combos.has(chordKey(c))).map((c) => [...c]);
   }
-  return next;
+  // ...and their hold or toggle choice. Intake's and Shoot's belong to All games, like their binds.
+  let out = next;
+  for (const a of MODE_ACTIONS) {
+    if (actionIsSeasonOnly(a) && actionUsedBy(a, game)) out = setActionMode(out, a, NATIVE_MODE[a]);
+  }
+  return out;
 }
 
 /**

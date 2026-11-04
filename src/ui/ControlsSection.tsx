@@ -9,6 +9,7 @@ import {
   PAD_CHORD_GRACE_MIN_MS,
   actionIsSeasonOnly,
   actionIsShared,
+  actionMode,
   assignKey,
   assignKeyInGame,
   assignPadBind,
@@ -32,14 +33,17 @@ import {
   removePadBindInGame,
   resetGame,
   seasonUnbound,
+  setActionMode,
   syncKeyInGame,
   syncPadInGame,
   type BindConflict,
   type ControlBindings,
   type KeyAction,
+  type ModeAction,
   type PadAction,
   type PadChord,
   type PadBindings,
+  type PressMode,
 } from '../input/bindings';
 import { PadCapture } from '../input/padChords';
 import { padButtonDown } from '../input/gamepad';
@@ -50,7 +54,7 @@ import { visibleSeasons } from '../seasonVisibility';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
-import { ACTION_LABELS, allGamesPanels, seasonPanels, type BindPanel } from './controlsLayout';
+import { ACTION_LABELS, allGamesPanels, modeColumns, seasonPanels, type BindPanel } from './controlsLayout';
 
 /**
  * WHICH MAP IS BEING EDITED. `all` is the MAIN setting — the shared controls, and the Intake and
@@ -801,6 +805,63 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     );
   };
 
+  /** one Hold | Toggle row of the card below, in the bind rows' own shape */
+  const modeRow = (a: ModeAction) => {
+    const mode = actionMode(bindings, a);
+    return (
+      <div className="ds-bind-row" key={a}>
+        <span className="ds-bind-label">{ACTION_LABELS[a]}</span>
+        <span className="ds-segs" role="group" aria-label={`${ACTION_LABELS[a]}: hold or toggle`}>
+          {(['hold', 'toggle'] as const satisfies readonly PressMode[]).map((m) => (
+            <button
+              key={m}
+              className={`ds-seg ${mode === m ? 'on' : ''}`}
+              aria-pressed={mode === m}
+              onClick={() => onChange(setActionMode(bindings, a, m))}
+            >
+              {m === 'hold' ? 'Hold' : 'Toggle'}
+            </button>
+          ))}
+        </span>
+      </div>
+    );
+  };
+
+  /* HOLD OR TOGGLE (`ControlBindings.modes`). A card of its own, after the mechanism cards, and
+     not a switch on each bind row: the mode is one setting for the keyboard and the pad, and a
+     row in each column would be two controls for one value. */
+  const modes = modeColumns(game, activeGame);
+  const modePanel = modes.mech.length + modes.drive.length > 0 && (
+    <section className="ds-panel" key={`modes-${game ?? 'all'}`}>
+      <div className="ds-panel-h">
+        <h2 className="ds-panel-title">Hold or toggle</h2>
+      </div>
+      <div className="ds-panel-body">
+        <div className="ds-binds">
+          {modes.mech.length > 0 && (
+            <div className="ds-bind-col">
+              <h3>Mechanisms</h3>
+              {modes.mech.map(modeRow)}
+            </div>
+          )}
+          {modes.drive.length > 0 && (
+            <div className="ds-bind-col">
+              <h3>Driving</h3>
+              {modes.drive.map(modeRow)}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+
+  /** a scope's bind panels with the Hold or toggle card after the last mechanism card */
+  const bindPanels = (list: BindPanel[]) => {
+    const at = list.reduce((i, p, j) => (p.id === 'mechanisms' || p.id === 'season' ? j + 1 : i), list.length);
+    const nodes = list.map(bindPanel);
+    return [...nodes.slice(0, at), modePanel, ...nodes.slice(at)];
+  };
+
   /* TOUCH CONTROLS + TUTORIAL: ONE PANEL, TWO ROWS (design review 04-09). They were two
      head-only cards a section gap apart, one button each. TOUCH CONTROLS AT THE TOP (owner,
      2026-09-22): it sat in a "More" fold under the whole keyboard map, which on a phone — the
@@ -864,7 +925,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const panels =
     game === null ? (
       <>
-        {allGamesPanels(activeGame).map(bindPanel)}
+        {bindPanels(allGamesPanels(activeGame))}
 
         {/* THE PAD'S BUTTONS — when a trigger counts as pressed, how long a combo's buttons wait,
             and whether the pad drives the menus. How a hand works, not what a button means, so
@@ -912,7 +973,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         </section>
       </>
     ) : (
-      seasonPanels(game).map(bindPanel)
+      bindPanels(seasonPanels(game))
     );
 
   return (
@@ -947,7 +1008,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             onClick={() => {
               if (
                 !window.confirm(
-                  'Reset all controls? Every keyboard and gamepad bind, in every game, goes back to its default.',
+                  'Reset all controls? Every keyboard and gamepad bind and every hold or toggle choice, in every game, goes back to its default.',
                 )
               )
                 return;
@@ -960,10 +1021,14 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         ) : (
           <button
             className="ds-btn"
-            title={`${seasonFor(game).name}’s own binds back to their defaults, and Intake and Shoot back on All games`}
+            title={`${seasonFor(game).name}’s own binds and hold or toggle choices back to their defaults, and Intake and Shoot back on All games`}
             onClick={() => {
               const name = seasonFor(game).name;
-              if (!window.confirm(`Reset ${name} controls? Its own binds go back to their defaults, and Intake and Shoot back to All games.`))
+              if (
+                !window.confirm(
+                  `Reset ${name} controls? Its own binds and hold or toggle choices go back to their defaults, and Intake and Shoot back to All games.`,
+                )
+              )
                 return;
               setNotice(null);
               onChange(resetGame(bindings, game));

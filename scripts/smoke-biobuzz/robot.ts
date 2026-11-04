@@ -117,6 +117,7 @@ import {
   bbMuzzleZ,
   bbPlacePoint,
   bbPlacePointLocal,
+  bbRampReverse,
   bbRampSettled,
   bbRampStep,
   bbRampSwingProgress,
@@ -169,6 +170,7 @@ import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { cadFlowerRings, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { bbCoerce, cmd, mkWorld, mkWorld3d, run, setup, type Check } from './harness';
+import { HoldFollower } from '../../src/input/pressModes';
 
 /**
  * LANE B's smoke: THE ROBOT.
@@ -3144,6 +3146,55 @@ export function robotChecks(check: Check): void {
       check('ramp debounce: a 2-tick dropout inside a held press toggles ONCE', f[1] === 1, `flips=${f[1]}`);
       check('ramp debounce: a 3-tick gap is a real re-press and toggles TWICE', f[2] === 2, `flips=${f[2]}`);
       check('ramp debounce: a 6-tick gap toggles TWICE', f[3] === 2, `flips=${f[3]}`);
+    }
+    {
+      // DEPLOY RAMP ON HOLD (`HoldFollower`, `ControlBindings.modes`): the input layer presses for a
+      // player holding the button, reading the ramp back each frame. `block` stands in for the swing
+      // guard: a deploy past 30 % is reversed (`bbRampReverse`), as a flower in the way would. A
+      // follower that kept pressing would swing it into the flower again for as long as the button
+      // stayed down.
+      const holdRun = (steps: [boolean, number, boolean?][], block = false): { flips: number; out: boolean } => {
+        const { r } = pullWorld(125, 'ramp');
+        const f = new HoldFollower();
+        let t = 0;
+        let flips = 0;
+        let out = r.bbRampOut ?? false;
+        for (const [level, n, enabled = true] of steps) {
+          for (let i = 0; i < n; i++) {
+            t += 1 / 60;
+            const bit = f.step(level, { on: r.bbRampOut ?? false, latched: r.bbRampHeld ?? false }, t * 1000);
+            bbRampStep(r, cmd({ bbRamp: bit }), enabled, t);
+            const p = bbRampSwingProgress(r, t);
+            if (block && r.bbRampOut && !r.bbRampBlocked && p !== null && p > 0.3) bbRampReverse(r, t, t - (r.bbRampAt ?? t));
+            if ((r.bbRampOut ?? false) !== out) {
+              flips++;
+              out = r.bbRampOut ?? false;
+            }
+          }
+        }
+        return { flips, out };
+      };
+      const held = holdRun([[true, 40]]);
+      const let_go = holdRun([[true, 40], [false, 40]]);
+      check(
+        'ramp on Hold: deployed while the button is down, folded once it is let go',
+        held.out && held.flips === 1 && !let_go.out && let_go.flips === 2,
+        `held ${held.flips}/${held.out} let go ${let_go.flips}/${let_go.out}`,
+      );
+      const blocked = holdRun([[true, 90]], true);
+      check(
+        'ramp on Hold: a blocked swing is left reversed while the button stays down (no flapping)',
+        !blocked.out && blocked.flips === 2,
+        `flips=${blocked.flips}`,
+      );
+      const again = holdRun([[true, 90], [false, 20], [true, 40]], true);
+      check('ramp on Hold: letting go and pressing again tries the deploy again', again.flips === 4, `flips=${again.flips}`);
+      const pre = holdRun([[true, 30, false], [true, 30, true]]);
+      check(
+        'ramp on Hold: held through the countdown, it deploys the moment the robot is enabled',
+        pre.out && pre.flips === 1,
+        `flips=${pre.flips}`,
+      );
     }
   }
 

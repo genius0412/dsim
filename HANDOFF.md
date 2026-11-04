@@ -1,3 +1,14 @@
+# HANDOFF — 2026-11-03c (Controls: hold or toggle per action)
+
+**State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
+
+- **Asked:** a player wanted to hold Shift for the intake instead of tapping it on and off, and the owner wanted more control customization generally. Owner picked a separate card over a switch on every bind row.
+- **Built:** Controls ▸ "Hold or toggle" card, after the mechanism cards. Ten actions: Intake, Shoot, Place NECTAR, Pass, Reverse intake (native Hold); Deploy ramp, NECTAR bar, Swap wheel set, Flip front, Park mode (native Toggle). One mode per action for keyboard and pad, every season; touch unchanged. Stored as `ControlBindings.modes` (non-native entries only, absent otherwise). "Intake (hold)" / "Shoot (hold)" / "Reverse intake (hold)" labels lost the "(hold)".
+- **How:** `src/input/pressModes.ts`. Held → Toggle is a client latch. Sim toggle → Hold (`HoldFollower`) presses for the player when the held level and the local robot disagree, once per change, so a ramp the swing guard reverses is not pressed into the flower again. Both ignore a release under 42 ms. Flip/Park on Hold invert the toggle while the button is down. Rules: `docs/area/ui.md`, "HOLD OR TOGGLE".
+- **Checked:** smoke (model, latch, follower against the real butterfly swap and the real ramp step incl. a blocked swing and a press held through pre-match, `InputManager` on synthetic keys); offscreen Electron in a live Free drive: Intake on Toggle stays on with Shift up and goes off on the second tap, Flip front on Hold shows REVERSED only while F is down.
+- **Not checked:** Hold mode on the ramp, bar or wheel set in an online room (the follower reads the predicted robot; on a 3D Light/Balanced room it reads the snapshot, so a press can land one round trip late but cannot double-toggle). A pad in a live match.
+- **Known gap:** tutorial hints still say "Hold Space" / "with Shift held" for a player who set that action to Toggle.
+
 # HANDOFF — 2026-11-03b (the robot on Home's stage)
 
 **State: on `alpha`. Client only.** Checks pass (counts in the commit).
