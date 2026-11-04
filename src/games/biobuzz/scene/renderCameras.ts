@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import type { SceneCamera, SceneFrame } from '../../module';
-import type { Alliance, RobotState, World } from '../../../types';
+import type { RobotState, World } from '../../../types';
 import { wrapAngle } from '../../../math';
-import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN, bbRoleLabel } from '../config';
+import { BB_HALF_X, BB_HALF_Y, BB_VIEW_MARGIN, bbRoleLabel } from '../config';
+import { WALL_H } from '../fieldDims.gen';
 import {
   defaultFreeCam,
   dollyFreeCam,
@@ -18,7 +19,18 @@ import {
   type FreeCamNav,
   type FreeCamState,
 } from '../graphics/freeCam';
-import { driverEyeFollow, fieldViewPoints, fitDriverEyeFrame, type DriverEyeFrame, type DriverRole } from '../graphics/driverEye';
+import {
+  DRIVER_DEFAULT_HEIGHT_IN,
+  STAND_BACK_IN,
+  driverEyePoint,
+  driverShotWindow,
+  eyeHeightFromPersonHeight,
+  fieldViewPoints,
+  fitDriverShot,
+  type DriverRole,
+  type DriverShot,
+  type Eye3,
+} from '../graphics/driverEye';
 import { vFovForScreen } from '../graphics/fov';
 import { GFX_FOV_DEFAULT, GFX_FOV_MAX, GFX_FOV_MIN } from '../graphics/settings';
 
@@ -49,86 +61,47 @@ function forwardOf(viewAngle: number): { x: number; y: number } {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// DRIVER CAMERA FIT (issue 4, 2026-09-18 playtest: "driver POV is not showing the close edge of
-// the field; make sure the whole field is visible"). The Day 1 camera used a FIXED eye height,
-// setback and FOV (62 / 12 / 70) and simply `lookAt` the field centre — nothing checked that the
-// near edge (the wall right behind the robot, and the floor in front of it) actually landed
-// inside the frustum, and at a 12-in setback it does not: the near corners of the field sit only
-// a foot or so in front of the eye but 72+ in off to the side, which is a near-90° angle off the
-// forward axis. `fitDriverCamera` SOLVES for a pitch + vertical FOV (and, when the geometry
-// demands it, a taller eye and/or a bigger setback) that gets every corner inside the frame,
-// instead of guessing a constant and hoping.
+// THE DRIVER CAMERA (2026-11-04, owner: "The driver POV is too wide and too far back ... There HAS
+// to be a solution that shows both the field and the hive contents"). A standing driver at their
+// station, facing straight across the field, pitched down, seen through a SHIFTED lens: the window
+// is the player's own lens for this screen, placed over the part of the image the field and both
+// hives occupy, and the eye steps back from the wall only as far as that window needs. The math
+// and the history are `graphics/driverEye.ts`'s (`fitDriverShot`, `driverShotWindow`); this file
+// picks the station and turns the solved window into a projection.
+//
+// It replaced two cameras with one rule. The FIT (no height set) raised a 62-in eye to 72 and
+// stepped it 53 in back to frame the 40-in COLLIDER wall through a symmetric lens; the HEIGHT
+// view stepped a real eye 89 in back to frame the field in 80 % of a symmetric, yawed lens. Both
+// now stand where `fitDriverShot` says: 42 in back at 16:9 and the default 100°.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/** driver eye height, in — the STARTING point of the search (a stand-height view "keeps the
- * driver feel," owner brief). Raised toward `DRIVER_EYE_H_MAX` first, before the setback is ever
- * touched, because moving the eye up costs nothing gameplay-wise and a taller eye alone is often
- * enough at a wide-enough aspect (see the report: 21:9 fits at the DEFAULT setback once the eye
- * is raised, no setback change needed at all). */
-const DRIVER_EYE_H_DEFAULT = 62;
-/** plan-3d.md §4.3's own range for the eye-height key (`i`/`o`) — the search never leaves it. */
+/** plan-3d.md §4.3's own range for the eye-height key (`i`/`o`), in — the unset view's eye
+ * (`DRIVER_DEFAULT_HEIGHT_IN`'s 63.5) plus the nudge stays inside it. */
 const DRIVER_EYE_H_MIN = 44;
 const DRIVER_EYE_H_MAX = 72;
-// The FIT itself never reaches the lower bound (it only ever raises the eye above
-// `DRIVER_EYE_H_DEFAULT`); the `i`/`o` NUDGE does, which is what the range was always documenting
-// — `clampEye` is where both ends of it now bind.
 /** clamp a driver eye height into plan §4.3's own 44–72 envelope. */
 function clampEye(h: number): number {
   return Math.max(DRIVER_EYE_H_MIN, Math.min(DRIVER_EYE_H_MAX, h));
 }
-/** how far outside the field wall the driver's eye starts, in — the plan doc's original figure.
- * Kept as the default for a wide-enough aspect (16:9 and wider commonly fit here once the eye is
- * raised); a narrower aspect (4:3, portrait, a phone) needs more room and the search grows this,
- * never shrinks it below the default. */
-const DRIVER_SETBACK_DEFAULT = 12;
-/** the search's own ceiling — a generous "stagecraft" cap (20 ft) so a pathological aspect (a
- * folded phone, near-square) cannot spin the binary search forever chasing an unreachable fit;
- * past this, the fit reports its best effort rather than an ever-growing setback. Every aspect
- * this scene is actually tested at (16:9, 4:3, 9:16, a real phone's ~390:844) resolves well
- * inside this cap — see the report's measured setbacks. */
-const DRIVER_SETBACK_MAX = 240;
-/** vertical FOV bounds, degrees — plan-3d.md §4.3/§4.4's own range for this camera. */
-const DRIVER_FOV_MIN = 60;
-const DRIVER_FOV_MAX = 95;
-/** the frame margin every fitted point must clear, as a fraction of the half-FOV — "a 4% margin"
- * (the brief), so a corner lands just inside the edge rather than exactly on it (where a rounding
- * error or a resize mid-frame could clip it). */
-const DRIVER_MARGIN = 0.04;
-
-const FOV_MIN_RAD = (DRIVER_FOV_MIN * Math.PI) / 180;
-const FOV_MAX_RAD = (DRIVER_FOV_MAX * Math.PI) / 180;
+/** the eye's near plane, in: the near wall's top rail can stand a foot in front of it */
+const DRIVER_NEAR = 1;
 
 // ─────────────────────────────────────────────────────────── graphics-settings tuning (Day 3) ──
 //
 // Two of §4.4's sixteen settings — FIELD OF VIEW and CAMERA MOTION — are camera properties, and
 // this is where they land. MODULE scope rather than per-`createCameras`, because they are a
-// property of the DEVICE (the preference store is per device) and because the alternative is
-// threading a settings object through `solveFit`, whose whole design is a cache keyed on two
-// raw numbers. A page with two live scenes (the gallery) shares them, which is correct: they are
-// one player's preference, not one scene's.
+// property of the DEVICE (the preference store is per device). A page with two live scenes (the
+// gallery) shares them, which is correct: they are one player's preference, not one scene's.
 //
-// FOV is a CEILING on the driver camera and an exact value on chase and orbit, and that
-// asymmetry is deliberate. The driver camera SOLVES its FOV from the fit (`fitDriverCamera`) so
-// the whole field is in frame from the alliance wall; forcing 60° there would crop the far
-// corners off, which is not a preference, it is a broken shot. So a smaller number pulls the eye
-// BACK (the fit's own second lever) instead of narrowing the lens, and the setting reads as
-// "how wide a lens will you allow" — which is what it is.
+// The FOV is the driver window's SIZE: the eye steps back until the field fits in it, so a
+// narrower setting stands further back rather than cropping a corner.
 
 /**
  * The player's FOV setting, HORIZONTAL degrees (`graphics/fov.ts`), or `null` before any has been
- * applied — the fit then keeps its own hard maximum and chase/orbit their old fixed values, so a
- * build that never touches the setting behaves exactly as it did.
+ * applied — every camera then uses `GFX_FOV_DEFAULT`'s conversion, or its old fixed value.
  */
 let tunedHfovDeg: number | null = null;
 
-/** the driver fit's VERTICAL ceiling on a screen of `aspect`, radians. Never above the fit's own
- * hard maximum; allowed BELOW its minimum, because on an ultrawide screen a human-width view is
- * a narrow vertical one, and the fit's other lever (stepping the eye back) is what then frames
- * the field. */
-function fovCapRad(aspect: number): number {
-  if (tunedHfovDeg == null) return FOV_MAX_RAD;
-  return Math.min(FOV_MAX_RAD, (vFovForScreen(tunedHfovDeg, aspect) * Math.PI) / 180);
-}
 /** the chase camera's vertical FOV, degrees — the slider exactly, for this screen (across its
  * longer side: `vFovForScreen`) */
 function chaseFovDeg(aspect: number): number {
@@ -136,230 +109,67 @@ function chaseFovDeg(aspect: number): number {
 }
 /** orbit and free cam: a framing shot, so the tighter of the two, as before */
 function orbitFovDeg(aspect: number): number {
-  return tunedHfovDeg == null ? 55 : Math.max(DRIVER_FOV_MIN - 15, vFovForScreen(tunedHfovDeg, aspect) - 15);
+  return tunedHfovDeg == null ? 55 : Math.max(ORBIT_FOV_MIN, vFovForScreen(tunedHfovDeg, aspect) - 15);
 }
-/** the height-accurate driver eye's vertical FOV, degrees — the slider exactly, for this screen */
-function driverEyeFovDeg(aspect: number): number {
-  return Math.min(DRIVER_FOV_MAX, vFovForScreen(tunedHfovDeg ?? GFX_FOV_DEFAULT, aspect));
+/** the driver window's vertical angle, radians — the slider for this screen: across the width on
+ * landscape, across the height on portrait (`vFovForScreen`) */
+function driverLensRad(aspect: number): number {
+  return (vFovForScreen(tunedHfovDeg ?? GFX_FOV_DEFAULT, aspect) * Math.PI) / 180;
 }
 /** the player's own "reduced" pick, OR-ed with `prefers-reduced-motion` (which always wins). */
 let tunedReducedMotion = false;
 /** "Your height" (owner, 2026-09-21) — per-device, `null` = unset. Set by `renderScene.ts` on
- * every settings change, same as the tuning above; read only by `updateDriver`, which falls
- * straight back to the solved fit below when this is `null` or there is no local robot to
- * stand a driver behind. See `graphics/driverEye.ts` for the placement math. */
+ * every settings change, same as the tuning above. Unset, the driver stands at the station's
+ * centre at `DRIVER_DEFAULT_HEIGHT_IN`; set, at their own height and TOP/BOTTOM place
+ * (`graphics/driverEye.ts`). */
 let tunedDriverHeightIn: number | null = null;
 
 /**
- * Apply §4.4's two camera rows. Called by `renderScene.ts` on every settings change; cheap
- * enough to call every time rather than diffing, and it invalidates the driver fit's cache so
- * the next frame re-solves against the new ceiling.
+ * Apply §4.4's two camera rows. Called by `renderScene.ts` on every settings change; cheap enough
+ * to call every time rather than diffing. The driver shot's cache key carries the lens, so the
+ * next frame re-solves against it.
  */
 export function setCameraTuning(hfovDeg: number | null, motion: 'full' | 'reduced'): void {
   // `null` is "never set" — the state a fresh module starts in, which a test restores
   tunedHfovDeg = hfovDeg == null ? null : Math.min(GFX_FOV_MAX, Math.max(GFX_FOV_MIN, hfovDeg));
   tunedReducedMotion = motion === 'reduced';
-  cachedAspect = NaN; // force `fitDriverCamera` to re-solve against the new ceiling
 }
 
-/** apply "Your height" (`graphics/driverEye.ts`'s per-device setting). Called by
- * `renderScene.ts` beside `setCameraTuning`; `null` reverts the driver camera to the solved fit
- * exactly as it behaved before this setting existed. */
+/** apply "Your height" (`graphics/driverEye.ts`'s per-device setting). Called by `renderScene.ts`
+ * beside `setCameraTuning`; `null` puts the driver back at the station's centre. */
 export function setDriverHeightIn(heightIn: number | null): void {
   tunedDriverHeightIn = heightIn;
 }
 
-/** the tray's own peak height during a tip, APPROX — the manual's up-cell opening tops out at
- * `BB_HIVE_OPEN_Z[1]` (65.6), and the brief's own figure for "the hive tops" is "z ≈ 66"; this is
- * that same APPROX carried as a named constant rather than a bare literal in the point list
- * below. Not `BB3_HIVE_PIVOT_Z` (43.95, the HINGE, not the tray's highest point). */
-const HIVE_TOP_Z_APPROX = 66;
-
-/** every point the driver camera's frustum must contain, in field-absolute inches — the four
- * ground corners, the four wall-top corners (near AND far; the brief calls out the near wall by
- * name, but nothing distinguishes "near" from "far" analytically here, so both are fitted and
- * whichever the camera actually stands behind is automatically the tighter constraint), and the
- * two hive tops. Built ONCE at module load — this is field geometry, not per-frame state. */
-interface FitPoint {
-  x: number;
-  y: number;
-  z: number;
-}
-/** how fast the height-accurate driver view turns toward the robot — a head turn, not a snap */
+/** how fast the driver window slides toward the robot — a glance, not a snap */
 const EYE_FOLLOW_HALFLIFE = 0.18; // s
-/** what the height-accurate driver view frames: the whole field and both hives (`fieldViewPoints`) */
-const EYE_FIT_POINTS = fieldViewPoints(BB_HALF_X, BB_HALF_Y, BB3_WALL_H);
-const FIT_POINTS: readonly FitPoint[] = (() => {
-  const pts: FitPoint[] = [];
-  for (const sx of [1, -1] as const) {
-    for (const sy of [1, -1] as const) {
-      pts.push({ x: sx * BB_HALF_X, y: sy * BB_HALF_Y, z: 0 });
-      pts.push({ x: sx * BB_HALF_X, y: sy * BB_HALF_Y, z: BB3_WALL_H });
+/** what the driver view frames: the whole field at the wall the player SEES (`WALL_H`, 11.6 in —
+ * not the 40-in collider), and both hives to a tipped tray's top */
+const EYE_FIT_POINTS = fieldViewPoints(BB_HALF_X, BB_HALF_Y, WALL_H);
+
+/** the driver's station for this frame and the way it faces (straight across the field). A
+ * height-set view whose robot or role is not known yet stands at the unset station. */
+function driverStation(
+  viewAngle: number,
+  robot: RobotState | null,
+  startCat: SceneFrame['localStartCat'],
+  eyeOffset: number,
+): { at: Eye3; fwd: { x: number; y: number }; key: string } {
+  if (tunedDriverHeightIn != null && robot) {
+    const role = bbRoleLabel(startCat, robot.alliance);
+    if (role === 'TOP' || role === 'BOTTOM') {
+      // THE PLAYER'S OWN PLACE: their height, their half of the wall, square to it. No `i`/`o`
+      // nudge — a standing person moves their eyes, not their height.
+      const at = driverEyePoint(robot.alliance, role as DriverRole, tunedDriverHeightIn);
+      return { at, fwd: { x: -(Math.sign(at.x) || 1), y: 0 }, key: `${robot.alliance}|${role}|${tunedDriverHeightIn}` };
     }
   }
-  pts.push({ x: BB_HIVE_X, y: 0, z: HIVE_TOP_Z_APPROX });
-  pts.push({ x: -BB_HIVE_X, y: 0, z: HIVE_TOP_Z_APPROX });
-  return pts;
-})();
-
-interface FitResult {
-  /** pitch DOWN from horizontal, radians — positive tilts the look direction toward the floor. */
-  pitch: number;
-  /** the vertical FOV this pitch needs to clear every `FIT_POINTS` entry at `DRIVER_MARGIN`,
-   * BEFORE clamping to `[DRIVER_FOV_MIN, DRIVER_FOV_MAX]` — the caller clamps and, separately,
-   * uses the unclamped value to decide whether the search must keep growing the setback. */
-  vFov: number;
-  /** true iff `vFov <= DRIVER_FOV_MAX` (in radians) AND every point is genuinely in front of the
-   * camera (a pathological eye position — inside the field, say — could put a point behind it,
-   * where an angle comparison alone would falsely read as "fits"). */
-  fits: boolean;
-}
-
-/**
- * Solve the pitch and required vertical FOV for one candidate (eye height, setback, aspect).
- *
- * THE MATH, ONE PARAGRAPH. Build the camera's UN-PITCHED basis at the given yaw: forward `F0`
- * (horizontal, `forwardOf(viewAngle)`), up `Z = (0,0,1)`, right `R = F0 × Z`... — actually `R`
- * is built directly as `(F0.y, -F0.x)` (equivalent, no `Z` needed since both are horizontal/
- * vertical respectively). For any point, its offset from the eye decomposes as `x0` (along `R`,
- * UNCHANGED by pitch), `y0` (along world `Z`) and `z0` (along `F0`) — and pitching the camera
- * down by `θ` about `R` is EXACTLY a 2D rotation of `(z0, y0)` by `θ`: `zc = z0·cosθ − y0·sinθ`,
- * `yc = z0·sinθ + y0·cosθ`, `xc = x0`. So a point's ELEVATION angle `atan2(yc, zc)` is simply
- * `atan2(y0, z0) + θ` for every point — independent of `xc` — which means the pitch that
- * CENTRES the vertical spread (and so minimises the vertical FOV the fit needs) is a closed
- * form: `θ = −(βMin + βMax) / 2` where `β = atan2(y0, z0)` is each point's UN-PITCHED elevation.
- * The vertical FOV that clears the centred spread, and the horizontal FOV that clears the widest
- * `|xc/zc|` at the given `aspect` (via `hFov = 2·atan(tan(vFov/2)·aspect)`, so `vFov` is solved
- * for from the horizontal requirement too), both fold `DRIVER_MARGIN` in as a shrink on the
- * available half-angle, matching "a 4% margin" — a bigger REQUIRED fov, not a smaller one, is
- * what leaves room for the margin.
- */
-function solveFit(eyeH: number, setback: number, aspect: number, viewAngle: number): FitResult {
+  // THE STATION'S CENTRE, behind whichever wall `viewAngle` puts the driver at, at the default
+  // driver's height plus the `i`/`o` nudge (plan §4.3), in the 44–72 envelope.
   const fwd = forwardOf(viewAngle);
-  const eyeDist = BB_HALF_X + setback; // the field is square — see `updateDriver`'s own note
-  const eyeX = -fwd.x * eyeDist;
-  const eyeY = -fwd.y * eyeDist;
-  const rx = fwd.y;
-  const ry = -fwd.x;
-
-  let betaMin = Infinity;
-  let betaMax = -Infinity;
-  // pass 1: the UN-PITCHED elevation of every point, to solve the centring pitch.
-  const z0s: number[] = new Array(FIT_POINTS.length);
-  const y0s: number[] = new Array(FIT_POINTS.length);
-  const x0s: number[] = new Array(FIT_POINTS.length);
-  for (let i = 0; i < FIT_POINTS.length; i++) {
-    const p = FIT_POINTS[i];
-    const vx = p.x - eyeX;
-    const vy = p.y - eyeY;
-    const z0 = vx * fwd.x + vy * fwd.y;
-    const y0 = p.z - eyeH;
-    const x0 = vx * rx + vy * ry;
-    z0s[i] = z0;
-    y0s[i] = y0;
-    x0s[i] = x0;
-    const beta = Math.atan2(y0, z0);
-    if (beta < betaMin) betaMin = beta;
-    if (beta > betaMax) betaMax = beta;
-  }
-  const pitch = -(betaMin + betaMax) / 2;
-  const marginScale = 1 - DRIVER_MARGIN;
-
-  const vertHalf = Math.max(Math.abs(betaMin + pitch), Math.abs(betaMax + pitch));
-  const vFovForVertical = (2 * vertHalf) / marginScale;
-
-  const cosP = Math.cos(pitch);
-  const sinP = Math.sin(pitch);
-  let maxHorizRatio = 0;
-  let minZc = Infinity;
-  for (let i = 0; i < FIT_POINTS.length; i++) {
-    const zc = z0s[i] * cosP - y0s[i] * sinP;
-    if (zc < minZc) minZc = zc;
-    const ratio = zc > 1e-6 ? Math.abs(x0s[i]) / zc : Infinity;
-    if (ratio > maxHorizRatio) maxHorizRatio = ratio;
-  }
-  const vFovForHorizontal = 2 * Math.atan(maxHorizRatio / (aspect * marginScale));
-
-  const vFov = Math.max(vFovForVertical, vFovForHorizontal);
-  const fits = vFov <= fovCapRad(aspect) + 1e-9 && minZc > 1e-3 && Number.isFinite(vFov);
-  return { pitch, vFov, fits };
-}
-
-export interface DriverFit {
-  eyeH: number;
-  setback: number;
-  pitch: number;
-  vFov: number;
-}
-
-/**
- * `fitDriverCamera(alliance, viewAngle, aspect)` — the eye sits behind the ALLIANCE wall centre
- * (the `alliance` the contract names), but the fit itself only ever needs `viewAngle`: the field
- * is square and every `FIT_POINTS` entry is field-absolute, so "which wall" is already fully
- * carried by the yaw `forwardOf(viewAngle)` resolves to (see `updateDriver`'s own comment on the
- * square-field shortcut this already relied on). `alliance` is kept in the signature per the
- * contract — and for a future asymmetric-field revision where it would stop being redundant —
- * but is not read here.
- *
- * THE SEARCH (the brief's own order): try the default eye height and setback; if that overshoots
- * `DRIVER_FOV_MAX`, raise the eye to `DRIVER_EYE_H_MAX` (free — no gameplay cost, and often
- * enough on its own for a wide-enough aspect); if it STILL overshoots, binary-search the setback
- * upward (monotonic: a bigger setback only ever shrinks the required FOV, so bisection is exact)
- * up to `DRIVER_SETBACK_MAX`, and use the best the search reaches even if that cap itself cannot
- * fit (reported as `!fits`, never thrown — a slightly-cropped corner beats a broken camera).
- *
- * `aspect` IS THE SAFE RECT'S, not the canvas's (see the safe-rect block below `DriverFit`): the
- * field has to fit the part of the viewport the HUD does not cover, so every number this returns
- * is solved against that, and the canvas is then rendered as a wider window onto it.
- *
- * CACHED, not recomputed every frame: `updateDriver` calls this once per render, but the search
- * only has to re-run when `viewAngle` or `aspect` actually changes (an alliance switch, a
- * resize, a HUD band appearing) — the common case (same match, same window) is two `!==`
- * comparisons against the raw numbers (no string key, no allocation at all), which is what
- * keeps this a zero-per-frame-
- * allocation camera despite the search itself allocating a small scratch array per solve.
- */
-let cachedViewAngle = NaN;
-let cachedAspect = NaN;
-const cached: DriverFit = { eyeH: DRIVER_EYE_H_DEFAULT, setback: DRIVER_SETBACK_DEFAULT, pitch: 0, vFov: FOV_MAX_RAD };
-
-export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: number): DriverFit {
-  if (viewAngle === cachedViewAngle && aspect === cachedAspect) return cached;
-  cachedViewAngle = viewAngle;
-  cachedAspect = aspect;
-
-  let eyeH = DRIVER_EYE_H_DEFAULT;
-  let setback = DRIVER_SETBACK_DEFAULT;
-  let r = solveFit(eyeH, setback, aspect, viewAngle);
-
-  if (!r.fits) {
-    eyeH = DRIVER_EYE_H_MAX;
-    r = solveFit(eyeH, setback, aspect, viewAngle);
-  }
-
-  if (!r.fits) {
-    const atCap = solveFit(eyeH, DRIVER_SETBACK_MAX, aspect, viewAngle);
-    if (atCap.fits) {
-      let lo = setback;
-      let hi = DRIVER_SETBACK_MAX;
-      for (let i = 0; i < 30; i++) {
-        const mid = (lo + hi) / 2;
-        if (solveFit(eyeH, mid, aspect, viewAngle).fits) hi = mid;
-        else lo = mid;
-      }
-      setback = hi;
-    } else {
-      setback = DRIVER_SETBACK_MAX; // best effort — see this function's own header
-    }
-    r = solveFit(eyeH, setback, aspect, viewAngle);
-  }
-
-  const vFov = Math.min(fovCapRad(aspect), Math.max(FOV_MIN_RAD, r.vFov));
-  cached.eyeH = eyeH;
-  cached.setback = setback;
-  cached.pitch = r.pitch;
-  cached.vFov = vFov;
-  return cached;
+  const back = BB_HALF_X + STAND_BACK_IN; // the field is square: one half-extent is every wall
+  const z = clampEye(eyeHeightFromPersonHeight(DRIVER_DEFAULT_HEIGHT_IN) + eyeOffset);
+  return { at: { x: -fwd.x * back, y: -fwd.y * back, z }, fwd, key: `c|${viewAngle}|${z}` };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -381,8 +191,8 @@ export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** the resolved safe rect for THIS frame — one module-scope object, rewritten per frame and
- * never reallocated (this camera file allocates nothing per frame; see `fitDriverCamera`'s
- * cache note). `left`/`top` are the CSS-px insets, `w`/`h` the safe rect's size, `fullW`/`fullH`
+ * never reallocated (the driver shot is solved once per station, screen and lens, not per
+ * frame). `left`/`top` are the CSS-px insets, `w`/`h` the safe rect's size, `fullW`/`fullH`
  * the canvas's, and `offset` is false when there is no chrome at all (the gallery, a preview
  * harness, a `SceneFrame` from before `insets` existed) — in which case the cameras run exactly
  * as they did before this existed. */
@@ -419,6 +229,32 @@ function resolveSafeRect(frame: SceneFrame): void {
 function applyViewOffset(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera): void {
   if (safe.offset) cam.setViewOffset(safe.w, safe.h, -safe.left, -safe.top, safe.fullW, safe.fullH);
   else if (cam.view?.enabled) cam.clearViewOffset();
+}
+
+/**
+ * THE DRIVER'S SHIFTED LENS: the SAFE RECT shows the window `[cu ± w/2] × [cv ± h/2]` of the image
+ * plane at unit depth (`u` right, `v` up), and the canvas spills past it by the insets at the same
+ * scale, exactly as `applyViewOffset` does for a centred lens.
+ *
+ * An off-axis frustum IS a window onto a larger centred one, which is what `setViewOffset` already
+ * renders: the camera's own `fov`/`aspect` describe the smallest centred frustum that contains the
+ * canvas's window (half-extents `X`, `Y`), and the view offset cuts the canvas out of it. Every
+ * reader of the projection (`GameScene.project`, culling, the labels) sees the shifted matrix,
+ * and a later `updateProjectionMatrix` rebuilds the same one.
+ */
+function applyShiftedLens(cam: THREE.PerspectiveCamera, cu: number, cv: number, w: number, h: number): void {
+  const k = w / safe.w; // image-plane units per CSS pixel
+  const left = cu - w / 2 - k * safe.left;
+  const top = cv + h / 2 + k * safe.top;
+  const right = left + k * safe.fullW;
+  const bottom = top - k * safe.fullH;
+  const X = Math.max(Math.abs(left), Math.abs(right), 1e-6);
+  const Y = Math.max(Math.abs(top), Math.abs(bottom), 1e-6);
+  cam.zoom = 1;
+  cam.fov = (2 * Math.atan(Y) * 180) / Math.PI;
+  // `setViewOffset` reads ratios only; this scale just keeps its numbers in a sane range
+  const s = 1000 / Y;
+  cam.setViewOffset(2 * X * s, 2 * Y * s, (left + X) * s, (Y - top) * s, (right - left) * s, (top - bottom) * s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -485,6 +321,9 @@ export const ORBIT_ELEV_MIN = 0.08;
 export const ORBIT_ELEV_MAX = 1.45; // just short of straight down, where the yaw becomes meaningless
 export const ORBIT_CENTER_Z = 24;
 const ORBIT_FOV = 55;
+/** the orbit and free cams' floor under the slider, degrees vertical (the old driver fit's 60°
+ * floor, less the 15° these framing shots run tighter) */
+const ORBIT_FOV_MIN = 45;
 /** slow auto-rotate, rad/s — one lap in a bit over two minutes, i.e. a match. Slow enough to
  * read as a gallery turntable rather than a moving shot. */
 const ORBIT_AUTO_RATE = 0.05;
@@ -497,8 +336,8 @@ const ORBIT_DRAG_PITCH = 0.004;
 const FREE_DOLLY_RATE = 0.0012;
 
 /** the driver/chase eye-height nudge (`i` / `o`, plan §4.3), in inches, and the total offset the
- * keys may accumulate. The driver camera SOLVES its own eye height (`fitDriverCamera`), so this
- * is an offset on top of the solved value, clamped into the plan's own 44–72 envelope. */
+ * keys may accumulate. On the unset driver view it rides on the default driver's eye, clamped into
+ * the plan's own 44–72 envelope, and the shot re-solves for the new eye. */
 const EYE_NUDGE_STEP = 4;
 const EYE_OFFSET_MAX = 24;
 
@@ -603,7 +442,7 @@ export const OVERHEAD_EYE_Z = 800;
 const scratchTarget = new THREE.Vector3();
 
 export function createCameras(): BbCameras {
-  const driver = new THREE.PerspectiveCamera(DRIVER_FOV_MIN, 1, 1, 4000);
+  const driver = new THREE.PerspectiveCamera(60, 1, DRIVER_NEAR, 4000);
   driver.up.set(0, 0, 1);
   const overhead = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
   overhead.up.set(0, 0, 1);
@@ -680,113 +519,61 @@ export function createCameras(): BbCameras {
   }
 
   /**
-   * HEIGHT-ACCURATE DRIVER EYE (owner, 2026-09-21) — when the player has set "Your height" AND
-   * there is a local robot to resolve a TOP/BOTTOM role for, this REPLACES the solved fit below
-   * entirely: the eye sits at the exact point and height a real drive-team member would stand
-   * at (`graphics/driverEye.ts`), never moved to keep the field in frame. Returns `null` for
-   * every case that must fall back to the fit — no height set, no local robot (a spectator, a
-   * replay with no viewpoint), or a role the game has not locked yet.
+   * THE DRIVER SHOT (`graphics/driverEye.ts`'s `fitDriverShot`). It depends on the station (the
+   * alliance's wall, the player's height and role, or the unset centre with its `i`/`o` nudge), the
+   * screen shape and the lens, and on NOTHING that moves in a match, so it is solved once per change
+   * of those. Only the window's place moves, toward the robot, inside the room the shot left.
    */
-  /**
-   * The whole-field frame from a standing driver's eye (`fitDriverEyeFrame`). It depends on the
-   * alliance, the role, the height, the screen shape and the lens and on NOTHING that moves in a
-   * match, so it is solved once per change of those and the camera then holds still — the owner's
-   * "choppy" report was a frame that followed the robot.
-   */
-  let eyeKey = '';
-  let eyeFrame: DriverEyeFrame | null = null;
-  /** the eased aim — the view turns toward the robot at `EYE_FOLLOW_HALFLIFE`, and snaps when the
-   *  frame itself changes (a new match, a resize, a new lens) */
-  let eyeYaw = 0;
-  let eyePitch = 0;
-  let eyeHave = false;
-  function driverEyePoseFor(frame: SceneFrame, world: World, vFovDeg: number, aspect: number): DriverEyeFrame | null {
-    if (tunedDriverHeightIn == null) return null;
-    const robot = localRobot(world, frame);
-    if (!robot) return null;
-    const role = bbRoleLabel(frame.localStartCat, robot.alliance);
-    if (role !== 'TOP' && role !== 'BOTTOM') return null;
-    const key = `${robot.alliance}|${role}|${tunedDriverHeightIn}|${aspect}|${vFovDeg}`;
-    if (key !== eyeKey || !eyeFrame) {
-      eyeKey = key;
-      eyeHave = false;
-      eyeFrame = fitDriverEyeFrame(robot.alliance, role as DriverRole, tunedDriverHeightIn, EYE_FIT_POINTS, aspect, (vFovDeg * Math.PI) / 180);
-    }
-    return eyeFrame;
-  }
+  let shotKey = '';
+  let shot: DriverShot | null = null;
+  /** the eased window centre — it slides toward the robot at `EYE_FOLLOW_HALFLIFE`, and snaps when
+   *  the shot itself changes (a new match, a resize, a new lens) */
+  let winU = 0;
+  let winV = 0;
+  let winHave = false;
 
   function updateDriver(frame: SceneFrame, world: World, dt: number): void {
-    // THE FIT IS AGAINST THE SAFE RECT, not the canvas — the field has to land inside the part
-    // of the viewport the HUD is not covering, so that is the aspect (and the virtual image)
-    // every number below is solved for.
+    // THE SHOT IS AGAINST THE SAFE RECT, not the canvas — the field has to land inside the part
+    // of the viewport the HUD is not covering, so that is the aspect (and the window) it is solved
+    // for; `applyShiftedLens` then spills the canvas past it at the same scale.
     resolveSafeRect(frame);
     const aspect = Math.max(1e-3, safe.w / safe.h);
-
-    const eyeFov = driverEyeFovDeg(aspect);
-    const heightPose = driverEyePoseFor(frame, world, eyeFov, aspect);
-    const robotNow = heightPose ? localRobot(world, frame) : null;
-    if (heightPose && robotNow) {
-      // THE WHOLE FIELD, ALWAYS, AND TURNED TOWARD THE ROBOT AS FAR AS THAT ALLOWS (owner,
-      // 2026-09-24) — `driverEyeFollow` clamps, this eases, so the view glides to the edge of its
-      // room instead of stepping.
-      const want = driverEyeFollow(heightPose, EYE_FIT_POINTS, { x: robotNow.pos.x, y: robotNow.pos.y, z: robotNow.z ?? 0 }, aspect);
-      if (!eyeHave || !(dt > 0)) {
-        eyeYaw = want.yaw;
-        eyePitch = want.pitch;
-        eyeHave = true;
-      } else {
-        const k = blend(dt, reducedMotion() ? REDUCED_HALFLIFE : EYE_FOLLOW_HALFLIFE);
-        eyeYaw += wrapAngle(want.yaw - eyeYaw) * k;
-        eyePitch += (want.pitch - eyePitch) * k;
-      }
-      // THE WHOLE FIELD, AND STILL — no `i`/`o` nudge, no following the robot: a standing person
-      // moves their eyes, not the field. The lens is the player's own FOV setting, horizontal and
-      // capped at what two human eyes see (`graphics/fov.ts`). `driver.near` (1 in) already
-      // clears "the wall top a foot in front of the eye".
-      driver.aspect = aspect;
-      driver.fov = (heightPose.vFov * 180) / Math.PI;
-      applyViewOffset(driver);
-      driver.position.set(heightPose.eye.x, heightPose.eye.y, heightPose.eye.z);
-      driver.up.set(0, 0, 1);
-      const cosP = Math.cos(eyePitch);
-      const sinP = Math.sin(eyePitch);
-      const lookDist = 100;
-      scratchTarget.set(
-        heightPose.eye.x + Math.cos(eyeYaw) * cosP * lookDist,
-        heightPose.eye.y + Math.sin(eyeYaw) * cosP * lookDist,
-        heightPose.eye.z - sinP * lookDist,
-      );
-      driver.lookAt(scratchTarget);
-      driver.updateProjectionMatrix();
-      return;
+    const lens = driverLensRad(aspect);
+    const robot = localRobot(world, frame);
+    const station = driverStation(frame.viewAngle, robot, frame.localStartCat, eyeOffset);
+    const key = `${station.key}|${aspect}|${lens}`;
+    if (key !== shotKey || !shot) {
+      shotKey = key;
+      winHave = false;
+      shot = fitDriverShot(station.at, station.fwd, EYE_FIT_POINTS, aspect, lens);
     }
-
-    const fwd = forwardOf(frame.viewAngle);
-    // the field is square (BB_HALF_X === BB_HALF_Y), so one half-extent is the wall distance on
-    // every side regardless of which alliance's viewAngle this frame carries
-    const fit = fitDriverCamera('red', frame.viewAngle, aspect);
-    const eyeDist = BB_HALF_X + fit.setback;
-    driver.aspect = aspect;
-    driver.fov = (fit.vFov * 180) / Math.PI;
-    applyViewOffset(driver);
-    const eyeX = -fwd.x * eyeDist;
-    const eyeY = -fwd.y * eyeDist;
-    // THE `i`/`o` NUDGE (plan §4.3) rides ON TOP of the solved height, clamped into the same
-    // 44–72 envelope the fit searches in. The pitch and FOV stay the SOLVED ones: re-fitting per
-    // keystroke would undo the nudge (the fit would simply re-solve a height that frames the
-    // field), so a nudged eye can crop a corner by the few degrees it moved — which is the
-    // player asking for a different view, not a broken fit.
-    const eyeH = clampEye(fit.eyeH + eyeOffset);
-    driver.position.set(eyeX, eyeY, eyeH);
+    // FOLLOW: the window slides toward the robot, clamped so every point stays in (a clamp, so it
+    // glides to the edge of its room and stops there), and eased here
+    const want = driverShotWindow(shot, robot ? { x: robot.pos.x, y: robot.pos.y, z: robot.z ?? 0 } : null);
+    if (!winHave || !(dt > 0)) {
+      winU = want.cu;
+      winV = want.cv;
+      winHave = true;
+    } else {
+      const k = blend(dt, reducedMotion() ? REDUCED_HALFLIFE : EYE_FOLLOW_HALFLIFE);
+      winU += (want.cu - winU) * k;
+      winV += (want.cv - winV) * k;
+    }
+    driver.near = DRIVER_NEAR;
+    driver.position.set(shot.eye.x, shot.eye.y, shot.eye.z);
     driver.up.set(0, 0, 1);
-    // look along the pitched forward direction F(θ) = F0·cosθ − Z·sinθ — see `solveFit`'s header
-    // for the derivation; any positive distance along that ray is a valid look-at target.
-    const cosP = Math.cos(fit.pitch);
-    const sinP = Math.sin(fit.pitch);
+    // look along the pitched forward direction F(θ) = F0·cosθ − Z·sinθ; any positive distance
+    // along that ray is a valid look-at target
+    const cosP = Math.cos(shot.pitch);
+    const sinP = Math.sin(shot.pitch);
     const lookDist = 100;
-    scratchTarget.set(eyeX + fwd.x * cosP * lookDist, eyeY + fwd.y * cosP * lookDist, eyeH - sinP * lookDist);
+    scratchTarget.set(
+      shot.eye.x + shot.fwd.x * cosP * lookDist,
+      shot.eye.y + shot.fwd.y * cosP * lookDist,
+      shot.eye.z - sinP * lookDist,
+    );
     driver.lookAt(scratchTarget);
-    driver.updateProjectionMatrix();
+    applyShiftedLens(driver, winU, winV, shot.w, shot.h);
   }
 
   function updateOverhead(frame: SceneFrame): void {

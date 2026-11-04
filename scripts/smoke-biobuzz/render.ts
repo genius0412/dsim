@@ -349,11 +349,17 @@ import {
 import {
   coerceDriverHeightIn,
   driverEyeAim,
-  driverEyeFollow,
+  driverShotWindow,
   fieldViewPoints,
-  fitDriverEyeFrame,
+  fitDriverShot,
   driverEyePoint,
-  pointsInFrame,
+  shotHolds,
+  shotProject,
+  HIVE_MOUTH_POINTS,
+  HIVE_VIEW_POINTS,
+  SHOT_MARGIN,
+  SHOT_PITCH_MAX,
+  SHOT_PITCH_MIN,
   DRIVER_HEIGHT_MAX_IN,
   DRIVER_HEIGHT_MIN_IN,
   EYE_VERTEX_OFFSET_IN,
@@ -361,7 +367,7 @@ import {
   STAND_BACK_IN,
   type DriverRole,
 } from '../../src/games/biobuzz/graphics/driverEye';
-import { ALLIANCE_AREA } from '../../src/games/biobuzz/fieldDims.gen';
+import { ALLIANCE_AREA, HIVE, WALL_H } from '../../src/games/biobuzz/fieldDims.gen';
 import { hFovFromV, vFovForScreen, vFovFromH, HUMAN_BINOCULAR_HFOV_DEG } from '../../src/games/biobuzz/graphics/fov';
 // the wheel block below needs the preset COLUMNS (to assert the tier mapping) and the sim's own
 // wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
@@ -5572,34 +5578,52 @@ function driverEyeChecks(check: Check): void {
     check('driverEye/aim: yaw stays finite and pitch stays finite for an ordinary eye/robot pair', Number.isFinite(withRobot.yaw) && Number.isFinite(withRobot.pitch));
   }
 
-  // ---- THE HEIGHT-ACCURATE DRIVER VIEW (owner, 2026-09-24, four reports in a row): "the hive should
-  //      be fully visible", then "extremely choppy, especially coming off the wall... Robot is off the
-  //      frame", then "the whole field should be visible in driver view at all times", then "Not
-  //      fixed driver view tho" — so the whole field and both hives are ALWAYS in frame, and the
-  //      view turns toward the robot within the room that leaves, continuously.
+  // ---- THE DRIVER SHOT (owner, 2026-11-04: "too wide and too far back ... There HAS to be a solution
+  //      that shows both the field and the hive contents"). The rulings it keeps: the close edge in
+  //      frame (2026-09-18), the hive fully visible and the whole field at all times, and a view that
+  //      follows the robot (2026-09-24). A standing driver facing straight across, a solved pitch and
+  //      a SHIFTED window the size of the player's lens; the eye steps back only as far as it needs.
   {
-    const pts = fieldViewPoints(BB_HALF_X, BB_HALF_Y, BB3_WALL_H);
+    const pts = fieldViewPoints(BB_HALF_X, BB_HALF_Y, WALL_H);
+    const all = [...pts, ...HIVE_MOUTH_POINTS];
+    const lensFor = (hfov: number, aspect: number): number => (vFovForScreen(hfov, aspect) * Math.PI) / 180;
+    const stationOf = (alliance: 'red' | 'blue', role: DriverRole | null, h: number) => {
+      if (role) {
+        const at = driverEyePoint(alliance, role, h);
+        return { at, fwd: { x: -Math.sign(at.x), y: 0 } };
+      }
+      const sx = alliance === 'red' ? -1 : 1;
+      return { at: { x: sx * (BB_HALF_X + STAND_BACK_IN), y: 0, z: h - EYE_VERTEX_OFFSET_IN }, fwd: { x: -sx, y: 0 } };
+    };
     let cases = 0;
     let lost = 0;
-    let turned = 0;
+    let followed = 0;
+    let notStraightBack = 0;
+    let notMinimal = 0;
     const lostAt: string[] = [];
     for (const alliance of ['red', 'blue'] as const) {
-      for (const role of ['TOP', 'BOTTOM'] as const) {
+      for (const role of ['TOP', 'BOTTOM', null] as const) {
         for (const h of [DRIVER_HEIGHT_MIN_IN, 68, DRIVER_HEIGHT_MAX_IN]) {
-          for (const aspect of [16 / 9, 4 / 3, 21 / 9]) {
+          for (const aspect of [16 / 9, 16 / 10, 21 / 9, 4 / 3, 390 / 844, 844 / 390]) {
             for (const hfov of [60, 100, 120]) {
-              const cap = (vFovFromH(hfov, aspect) * Math.PI) / 180;
-              const f = fitDriverEyeFrame(alliance, role, h, pts, aspect, cap);
-              const centred = driverEyeFollow(f, pts, null, aspect);
+              const { at, fwd } = stationOf(alliance, role, h);
+              const shot = fitDriverShot(at, fwd, pts, aspect, lensFor(hfov, aspect));
+              if (!(shot.eye.z === at.z && shot.eye.y === at.y && Math.abs(shot.eye.x) >= Math.abs(at.x) && shot.extraBack >= 0)) notStraightBack++;
+              // ...and no further back than it needs: an inch nearer does not hold the field
+              if (shot.extraBack > 1) {
+                const nearer = { x: at.x - fwd.x * (shot.extraBack - 1), y: at.y, z: at.z };
+                if (!(fitDriverShot(nearer, fwd, pts, aspect, lensFor(hfov, aspect)).extraBack > 0.5)) notMinimal++;
+              }
+              const centred = driverShotWindow(shot, null);
               for (let gx = -60; gx <= 60; gx += 30) {
                 for (let gy = -60; gy <= 60; gy += 30) {
-                  const aim = driverEyeFollow(f, pts, { x: gx, y: gy, z: 0 }, aspect);
+                  const win = driverShotWindow(shot, { x: gx, y: gy, z: 0 });
                   cases++;
-                  if (!pointsInFrame(f.eye, aim.yaw, aim.pitch, f.vFov, aspect, pts)) {
+                  if (!shotHolds(shot, win, all, SHOT_MARGIN - 1e-9)) {
                     lost++;
-                    if (lostAt.length < 4) lostAt.push(`${alliance} ${role} h${h} a${aspect.toFixed(2)} fov${hfov} (${gx},${gy})`);
+                    if (lostAt.length < 4) lostAt.push(`${alliance} ${role ?? 'centre'} h${h} a${aspect.toFixed(2)} fov${hfov} (${gx},${gy})`);
                   }
-                  if (Math.abs(aim.yaw - centred.yaw) + Math.abs(aim.pitch - centred.pitch) > 0.01) turned++;
+                  if (Math.abs(win.cu - centred.cu) + Math.abs(win.cv - centred.cv) > 1e-4) followed++;
                 }
               }
             }
@@ -5608,45 +5632,63 @@ function driverEyeChecks(check: Check): void {
       }
     }
     check(
-      '⚠️ driverEye/field: the WHOLE FIELD and both HIVES are in frame wherever the robot is — every role, height, screen and lens',
+      '⚠️ driverShot/field: the WHOLE FIELD and every HIVE OPENING are in frame wherever the robot is — every station, height, screen and lens',
       lost === 0,
       `${lost}/${cases} frames lost a point${lostAt.length ? ': ' + lostAt.join(', ') : ''}`,
     );
+    check('driverShot/field: ...and it is not a fixed view: the window slides toward the robot in most of those frames', followed > cases / 2, `${followed}/${cases} followed`);
+    check("driverShot/eye: the eye keeps the player's own height and place along the wall, and only steps straight back from it", notStraightBack === 0, `${notStraightBack} stations moved otherwise`);
+    check('⚠️ driverShot/eye: ...and no further back than the frame needs (an inch nearer, it no longer holds the field)', notMinimal === 0, `${notMinimal} shots stood further back than needed`);
+
+    // ⚠️ CLOSER: the regression this exists for. The view it replaced stood 89 in behind the wall
+    // at 16:9 and the default 100° lens (a 68-in player); the field filled a tenth of the screen.
+    const f169 = fitDriverShot(driverEyePoint('red', 'TOP', 68), { x: 1, y: 0 }, pts, 16 / 9, lensFor(100, 16 / 9));
+    const behind = STAND_BACK_IN + f169.extraBack;
+    check('⚠️ driverShot/closer: at 16:9 and the default 100° lens the eye stands at most 45 in behind the wall (the old view: 89)', behind <= 45, `${behind.toFixed(1)} in`);
+    // the window IS the player's lens: its size on the image plane is 2·tan(half-angle) for this screen
     check(
-      'driverEye/field: ...and it is not a fixed view: the aim turns toward the robot in most of those frames',
-      turned > cases / 2,
-      `${turned}/${cases} turned`,
+      'driverShot/lens: the window is the size of the player lens for this screen, never wider',
+      Math.abs(f169.h - 2 * Math.tan(lensFor(100, 16 / 9) / 2)) < 1e-9 && Math.abs(f169.w - f169.h * (16 / 9)) < 1e-9,
+      `${f169.w.toFixed(4)} × ${f169.h.toFixed(4)}`,
     );
-    // the eye stays the player's own height and role; only the distance back from the wall moves
-    const f = fitDriverEyeFrame('red', 'TOP', 68, pts, 16 / 9, (vFovFromH(100, 16 / 9) * Math.PI) / 180);
-    const at = driverEyePoint('red', 'TOP', 68);
     check(
-      "driverEye/field: the eye keeps the player's own height and role, and only steps straight back from the wall",
-      f.eye.z === at.z && f.eye.y === at.y && Math.abs(f.eye.x) >= Math.abs(at.x) && f.extraBack >= 0,
-      `eye ${JSON.stringify(f.eye)} vs ${JSON.stringify(at)}, ${f.extraBack.toFixed(1)} in further back`,
+      'driverShot/pitch: a standing person looks down 5–45° at the field',
+      f169.pitch >= SHOT_PITCH_MIN - 1e-9 && f169.pitch <= SHOT_PITCH_MAX + 1e-9,
+      `${((f169.pitch * 180) / Math.PI).toFixed(1)}°`,
     );
-    // ⚠️ CONTINUITY — the choppiness report. Drive the robot off its own wall in half-inch steps and
-    // across the field: no step may turn the view more than a fraction of a degree. The first
-    // version switched between two aims on a projection test and jumped several degrees here.
+    // facing straight across the field, the near wall reads LEVEL: both near floor corners project
+    // at the same height on the screen whatever the station's place along the wall
+    const nearL = shotProject(f169, { x: -BB_HALF_X, y: -BB_HALF_Y, z: 0 });
+    const nearR = shotProject(f169, { x: -BB_HALF_X, y: BB_HALF_Y, z: 0 });
+    check('driverShot/level: the near wall is level on screen from a TOP/BOTTOM station', !!nearL && !!nearR && Math.abs(nearL.v - nearR.v) < 1e-9, `${nearL?.v} vs ${nearR?.v}`);
+    // the openings sit inside the hive box the shot is solved against — so they are held too
+    const boxX = Math.max(...HIVE_VIEW_POINTS.map((q) => Math.abs(q.x)));
+    const boxY = Math.max(...HIVE_VIEW_POINTS.map((q) => Math.abs(q.y)));
+    const boxZ = Math.max(...HIVE_VIEW_POINTS.map((q) => q.z));
+    const inBox = HIVE_MOUTH_POINTS.every((p) => Math.abs(p.x) <= boxX + 1e-9 && Math.abs(p.y) <= boxY + 1e-9 && p.z >= 0 && p.z <= boxZ + 1e-9);
+    const mouthZ = HIVE_MOUTH_POINTS.map((p) => p.z);
+    check(
+      'driverShot/hive: the 16 opening corners run the CAD up-cell window (OPEN_Z) and sit inside the hive box the shot frames',
+      inBox && Math.abs(Math.min(...mouthZ) - HIVE.OPEN_Z[0]) < 0.05 && Math.abs(Math.max(...mouthZ) - HIVE.OPEN_Z[1]) < 0.05 && HIVE_MOUTH_POINTS.length === 16,
+      `z ${Math.min(...mouthZ).toFixed(2)}..${Math.max(...mouthZ).toFixed(2)} vs ${HIVE.OPEN_Z.join('..')}`,
+    );
+
+    // ⚠️ CONTINUITY — the 2026-09-24 choppiness report. Drive the robot off its own wall in half-inch
+    // steps and across the field: no step may slide the window more than a hair.
     let worst = 0;
-    const cap = (vFovFromH(100, 16 / 9) * Math.PI) / 180;
     for (const alliance of ['red', 'blue'] as const) {
-      const g = fitDriverEyeFrame(alliance, 'TOP', 68, pts, 16 / 9, cap);
+      const g = fitDriverShot(driverEyePoint(alliance, 'TOP', 68), { x: alliance === 'red' ? 1 : -1, y: 0 }, pts, 16 / 9, lensFor(100, 16 / 9));
       const sx = alliance === 'red' ? 1 : -1;
       for (const y of [-40, 0, 40]) {
-        let prev = driverEyeFollow(g, pts, { x: -sx * 62, y, z: 0 }, 16 / 9);
+        let prev = driverShotWindow(g, { x: -sx * 62, y, z: 0 });
         for (let d = 0.5; d <= 124; d += 0.5) {
-          const cur = driverEyeFollow(g, pts, { x: -sx * 62 + sx * d, y, z: 0 }, 16 / 9);
-          worst = Math.max(worst, Math.abs(cur.yaw - prev.yaw), Math.abs(cur.pitch - prev.pitch));
+          const cur = driverShotWindow(g, { x: -sx * 62 + sx * d, y, z: 0 });
+          worst = Math.max(worst, Math.abs(cur.cu - prev.cu) / g.w, Math.abs(cur.cv - prev.cv) / g.h);
           prev = cur;
         }
       }
     }
-    check(
-      '⚠️ driverEye/field: the aim is CONTINUOUS — a half-inch of robot travel never turns the view more than 0.3°',
-      worst < (0.3 * Math.PI) / 180,
-      `worst ${((worst * 180) / Math.PI).toFixed(3)}° per half inch`,
-    );
+    check('⚠️ driverShot/follow: the window is CONTINUOUS — a half-inch of robot travel slides it under 0.3 % of the screen', worst < 0.003, `worst ${(worst * 100).toFixed(3)} % per half inch`);
   }
 
   // ---- graphics/ still imports neither three nor scene/ ---------------------------------------
@@ -5721,14 +5763,66 @@ function driverEyeChecks(check: Check): void {
       String(cams.driver.position.toArray()),
     );
 
-    // the lens is the player's FOV setting now (horizontal), not a fixed 55° vertical
+    // the lens is the player's FOV setting (horizontal), as the size of a SHIFTED window: the
+    // projection's own width on the image plane is 2·tan(45°) at 90°, wherever the window sits
     setCameraTuning(90, 'full');
     cams.update(frameFor({ localRobotId: robot.id, localStartCat: 'close' }), world, 'driver');
+    cams.driver.updateMatrixWorld();
+    const pe = cams.driver.projectionMatrix.elements;
     check(
-      'driverEye/wiring: the height-accurate camera takes its lens from the FOV setting, for this screen',
-      Math.abs(cams.driver.fov - vFovFromH(90, cams.driver.aspect)) < 1e-6,
-      `${cams.driver.fov} vs ${vFovFromH(90, cams.driver.aspect)}`,
+      'driverEye/wiring: the driver camera takes its lens from the FOV setting, for this screen (a 90° window, shifted)',
+      Math.abs(2 / pe[0] - 2 * Math.tan(Math.PI / 4)) < 1e-6 && Math.abs(pe[0] / pe[5] - 900 / 1600) < 1e-6 && Math.abs(pe[8]) + Math.abs(pe[9]) > 1e-3,
+      `width ${(2 / pe[0]).toFixed(4)} shift ${pe[8].toFixed(3)},${pe[9].toFixed(3)}`,
     );
+
+    // ⚠️ THROUGH THE REAL CAMERA, ON EVERY SCREEN SHAPE: the field (floor and the wall a player sees)
+    // and every HIVE OPENING land inside the HUD's safe rect, both alliances, both start sides, the
+    // unset view and three heights, with and without a score bar. And the eye stands inside the
+    // championship hall's clear box (`grb`'s `cameraRoom`), which nothing of the hall may enter.
+    setCameraTuning(100, 'full');
+    const grb = BB_ENVIRONMENTS.find((e) => e.id === 'grb')?.model?.cameraRoom;
+    const framed = [...fieldViewPoints(BB_HALF_X, BB_HALF_Y, WALL_H), ...HIVE_MOUTH_POINTS];
+    let shots = 0;
+    let missed = 0;
+    let outside = 0;
+    const missedAt: string[] = [];
+    const v = new THREE.Vector3();
+    for (const [w, h] of [[1600, 900], [1440, 900], [2100, 900], [1024, 768], [390, 844], [844, 390]] as const) {
+      for (const top of [0, Math.round(h * 0.08)]) {
+        for (const height of [null, 48, 68, 84]) {
+          setDriverHeightIn(height);
+          for (const al of ['red', 'blue'] as const) {
+            robot.alliance = al;
+            for (const cat of ['close', 'far'] as const) {
+              const ins = { top, right: 0, bottom: 0, left: 0 };
+              const camF = cams.update(frameFor({ viewAngle: viewAngleOf(al), width: w, height: h, localRobotId: robot.id, localStartCat: cat, insets: ins }), world, 'driver') as THREE.PerspectiveCamera;
+              camF.updateMatrixWorld();
+              shots++;
+              let bad = 0;
+              for (const p of framed) {
+                v.set(p.x, p.y, p.z).project(camF);
+                const px = ((v.x + 1) / 2) * w;
+                const py = ((1 - v.y) / 2) * h;
+                if (!(v.z < 1 && px >= -0.5 && px <= w + 0.5 && py >= top - 0.5 && py <= h + 0.5)) bad++;
+              }
+              if (bad > 0) {
+                missed++;
+                if (missedAt.length < 4) missedAt.push(`${w}×${h} top${top} ${height ?? 'unset'} ${al} ${cat}: ${bad}`);
+              }
+              const e = camF.position;
+              if (!grb || !(e.x >= grb.min[0] && e.x <= grb.max[0] && e.y >= grb.min[1] && e.y <= grb.max[1] && e.z >= grb.min[2] && e.z <= grb.max[2])) outside++;
+            }
+          }
+        }
+      }
+    }
+    robot.alliance = 'blue';
+    check(
+      '⚠️ driverEye/screens: the field and every hive opening are inside the safe rect through the real driver camera — 16:9, 16:10, 21:9, 4:3, both phones',
+      missed === 0 && shots === 6 * 2 * 4 * 4,
+      `${missed}/${shots} shots lost a point${missedAt.length ? ': ' + missedAt.join(', ') : ''}`,
+    );
+    check('⚠️ driverEye/venue: every one of those driver eyes stands inside the GRB hall’s clear box', !!grb && outside === 0, `${outside}/${shots} outside`);
 
     // A PORTRAIT SCREEN TAKES THE SLIDER ACROSS ITS HEIGHT (2026-11-04): held across the short
     // side, 100° made the chase camera 138° tall at 390 × 844 and the orbit 123°.

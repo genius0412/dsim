@@ -154,7 +154,7 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
   **High, Ultra and Extreme's default** (and so the replay export's), migrated once from `gym`
   (`GFX_MOVED_DEFAULTS`, revision 4). Rules it adds:
   - **`KEEP_CLEAR` (`grb/generate.ts`)**: the box the sim's eyes need (a portrait phone's driver eye at
-    ±293 in, the menu home eye at y −205 / z 150, the chase eye at 126 in) plus the 24-in margin.
+    ±293 in when it was drawn, ±210 since the 2026-11-04 driver view, the menu home eye at y −205 / z 150, the chase eye at 126 in) plus the 24-in margin.
     Anything of the real hall inside it is LEFT OUT and the build lists it; the build then refuses a
     clear box that does not contain it. That is why FRANKLIN's second field stands 5.4 ft further than
     the plan and our field's drive-team tables are not drawn.
@@ -1217,24 +1217,47 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     mind"). `GraphicsSettings.hfov` (was a VERTICAL `fov`, 60–90, converted once on load: the old
     default 70 maps to the new default 100, anything else to what it showed across 16:9). 120 is
     what both human eyes see together (`graphics/fov.ts`); the old vertical 90 was 150° across on
-    21:9. Every camera converts it for its own screen shape: the solved driver camera's ceiling
-    (`fovCapRad`, allowed below the fit's 60° floor so an ultrawide steps the eye back instead of
-    going fish-eye), chase, orbit/free (15° tighter), and the height-accurate driver eye.
-  - ⚠️ **THE HEIGHT-ACCURATE DRIVER VIEW HOLDS THE WHOLE FIELD AND FOLLOWS THE ROBOT INSIDE IT**
-    (owner, 2026-09-24, four reports in a row: the hive cut off; then "extremely choppy, especially
-    coming off the wall... Robot is off the frame"; then "the whole field should be visible in driver
-    view at all times"; then "Not fixed driver view tho", ruled as one view that does both).
-    `fitDriverEyeFrame` keeps the player's height and role and steps the eye straight back from the
-    wall until the whole field and both hives (`fieldViewPoints`) fit in `1 - EYE_TURN_SLACK` of
-    their lens: about 77 in back at the default 100°, 38 at 120°. `driverEyeFollow` then turns
-    toward the robot, CLAMPED into the aims that keep every point in frame, and the renderer eases
-    it (`EYE_FOLLOW_HALFLIFE`). ⚠️ **No step may branch on a projection test**: the first version
-    returned one aim when a test passed and a stepped one when it failed, and those switches were
-    the chop. The vertical clamp is exact (`β = atan(tan e / cos a)` in the yawed frame, the solved
-    camera's own derivation); the horizontal one carries `FIT_MARGIN_H`. The frame is solved once per
-    alliance, role, height, screen shape and lens (`eyeKey`), not per frame. Pinned by the RENDER
-    lane's `driverEye/field` checks: 0 of 2,700 frames lose a point, and a half-inch of robot travel
-    turns the view at most 0.044°.
+    21:9. Every camera converts it for its own screen shape (`vFovForScreen`): the driver window's
+    size (below), chase, and orbit/free (15° tighter).
+  - ⚠️ **THE DRIVER VIEW IS A STANDING DRIVER, FACING STRAIGHT ACROSS, THROUGH A SHIFTED LENS**
+    (owner, 2026-11-04: "The driver POV is too wide and too far back. I do recognize that I said
+    before to move it back, but I think it is way too far back. There HAS to be a solution that
+    shows both the field and the hive contents in driver POV."). It keeps every earlier ruling: the
+    close edge in frame (2026-09-18), the hive fully visible, the whole field at all times and a view
+    that follows the robot (2026-09-24: the hive cut off, "extremely choppy", "the whole field should
+    be visible in driver view at all times", "Not fixed driver view tho").
+    - **What made it far.** The view it replaced stepped the eye back until the field fitted 80 % of
+      a SYMMETRIC lens yawed toward the field centre: 89 in behind the wall at 16:9 and the default
+      100° (a 68-in player), 222 on a portrait phone, the field filling 10 % of a 16:9 screen. The
+      unset view raised a 62-in eye to 72 and stood 53 in back. Three things cost the distance: a
+      centred lens spends half the frame on sky above the hive and, from a TOP/BOTTOM station 24 in
+      off the wall's centre, on the empty side; the fit framed the 40-in COLLIDER wall (`BB3_WALL_H`),
+      whose top corners stand a few feet from the eye at nearly its height, where the wall a player
+      sees is 11.6 in (`WALL_H`); and 20 % of the lens was held back for turning.
+    - **What it is now** (`graphics/driverEye.ts` `fitDriverShot`, `driverShotWindow`;
+      `renderCameras.ts` `driverStation`, `applyShiftedLens`). The eye is the player's height at
+      their station (`driverEyePoint`; unset: `DRIVER_DEFAULT_HEIGHT_IN` 68 at the station's centre,
+      plus the `i`/`o` nudge), facing square to its wall, so the near wall reads level. The pitch is
+      solved (5–45°) for the smallest window. The WINDOW is off-axis: the player's lens for this
+      screen (across the width on landscape, the height on portrait), placed over the part of the
+      image plane the field (floor and the 11.6-in wall top) and both hives (to a tipped tray's 66 in)
+      occupy, with `SHOT_MARGIN` 4 % and `EYE_TURN_SLACK` 6 % to spare. The eye steps STRAIGHT BACK
+      only as far as that window needs. `applyShiftedLens` turns the window into a projection through
+      `setViewOffset` (an off-axis frustum is a window onto a larger centred one), composed with the
+      HUD safe rect, so `GameScene.project`, culling and the labels see the shifted matrix.
+    - **Measured** (1280 × 720 with a 56-px score bar, 68-in player, 100°; field share of the screen):
+      16:9 89 → 44 in behind the wall, 10.5 % → 27.9 %; 16:10 89 → 41, 9.4 → 26.4 %; 21:9 91 → 64,
+      13.2 → 24.5 %; 4:3 91 → 41, 7.6 → 22.3 %; portrait phone 197 → 115, 2.5 → 6.4 %. The unset view
+      at 16:9: 53 → 44 in, 23.5 → 27.9 %. A taller eye stands closer (72 in: 35 in back at 16:9), but
+      the eye is the player's own height, or a 68-in driver's, never raised to fit.
+    - **Following** slides the WINDOW toward the robot (`driverEyeAim`'s blend of field centre and
+      robot), CLAMPED so every point stays `SHOT_MARGIN` inside, and the renderer eases it
+      (`EYE_FOLLOW_HALFLIFE`). ⚠️ **No step may branch on a projection test** (the 2026-09-24 chop
+      was one aim when a test passed and another when it failed). Solved once per station, screen and
+      lens (`shotKey`). RENDER lane, `driverShot/*` and `driverEye/screens|venue`: 0 of 8,100
+      frames lose a field corner or a hive opening across every station, height, screen and lens; an
+      inch nearer never holds the field; through the real camera every point lands in the HUD safe
+      rect on 16:9, 16:10, 21:9, 4:3 and both phones, and every eye stands in `grb`'s clear box.
   - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that
