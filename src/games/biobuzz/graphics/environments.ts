@@ -252,33 +252,6 @@ export function isGeneratedModel(m: ModelVenue): m is GeneratedModelVenue {
 
 export const CC_BY_4 = 'https://creativecommons.org/licenses/by/4.0/';
 
-/**
- * ── A SPLAT VENUE (2026-11-04, the trial) ──────────────────────────────────────────────────
- *
- * A real room captured as Gaussian splats, drawn by Spark (`scene/renderSplatVenue.ts`, a lazy chunk)
- * from High up, in the file's own format (SOG, SPZ or PLY). The capture is placed by `transform`
- * (inches, z up, its floor at the procedural ground's height). Its lighting is BAKED into the splats,
- * so the field is lit by the row's `rig` and a shadow catcher puts the robots' shadows on the captured
- * floor. Two edits hide splats: everything under the field's footprint (the captured floor would show
- * through the mat), and everything inside `cameraRoom` above the floor, so nothing captured can stand
- * between an eye and the field (the same convex-room rule as a model's).
- */
-export interface SplatVenue {
-  /** the capture, relative to the app's base URL (`venueAssetUrl` versions it by `bytes`) */
-  file: string;
-  bytes: number;
-  splats: number;
-  /** the capture's placement: position (inches), rotation (a quaternion x, y, z, w) and uniform scale */
-  transform: { position: readonly [number, number, number]; quaternion: readonly [number, number, number, number]; scale: number };
-  /** the room the orbit and free eyes stay inside; every splat in it above the floor is hidden */
-  cameraRoom: { min: readonly [number, number, number]; max: readonly [number, number, number] };
-  title: string;
-  page: string;
-  authors: readonly { name: string; role: string }[];
-  license: 'CC BY 4.0';
-  licenseUrl: string;
-}
-
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -300,8 +273,6 @@ export interface EnvironmentDef {
   look?: EnvironmentLook;
   /** a MODELED venue (`ModelVenue`), drawn from High up; `venue` stands everywhere else */
   model?: ModelVenue;
-  /** a SPLAT venue (`SplatVenue`, the trial), drawn from High up; `venue` stands everywhere else */
-  splat?: SplatVenue;
   /** absent for a procedural entry: it is generated, it has no author and it costs nothing. */
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
@@ -458,6 +429,144 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       cameraRoom: { min: [-325, -276, -1], max: [296, 129, 188] },
       generator: 'scripts/venue-models/grb/generate.ts',
       research: 'docs/venues/grb.md',
+    },
+  },
+  {
+    /**
+     * A FINALS STAGE (2026-11-04): an auditorium's stage with the field on it, the seats in front and
+     * a screen and set behind, the way a championship's finals field stands. A CC BY 4.0 Sketchfab
+     * model (QuarizonStudio), drawn from High up; the arena's kind of procedural room stands for it
+     * below that. Its own light is BAKED into its textures (`scripts/venue-models/venues.ts`), so the
+     * rig lights the field as the arena's does and the house reads dark round it.
+     */
+    id: 'events-stage',
+    name: 'Event stage',
+    note: 'A finals stage before rows of seats, from High up. 7.3 MB',
+    rig: {
+      hemiSky: 0xe2e9f8,
+      hemiGround: 0x2e3138,
+      hemiIbl: 1.9,
+      hemiNoIbl: 2.4,
+      sun: [40, -70, 170],
+      sunColor: 0xf4f7ff,
+      sunIntensity: 2.0,
+      exposure: 1.3,
+    },
+    venue: { kind: 'arena', floor: 0x2b2e33, wall: 0x1b1e24, trim: 0x3d424b, lamp: 0xdfe8ff, lampPower: 1.8, half: 760, ceil: 400, stands: true },
+    look: {
+      sky: [
+        [0, 0x0c0e13],
+        [0.34, 0x171b23],
+        [0.5, 0x262b35],
+        [0.62, 0x1a1e26],
+        [1, 0x101318],
+      ],
+      truss: { el: 24, h: 3, color: 0xdfe8ff },
+      silhouette: { top: 0.52, bottom: 0.66, color: 0x0b0d12, alpha: 0.8, teeth: 28 },
+      blur: 0.2,
+      intensity: 0.85,
+    },
+    model: {
+      file: 'venues/events-stage.glb',
+      bytes: 7281904,
+      tris: 565061,
+      cameraRoom: { min: [-876, -876, -1], max: [876, 114, 267] },
+      title: 'venue stage for great events',
+      page: 'https://sketchfab.com/3d-models/venue-stage-for-great-events-d74b3baa5a74430fb3717cfa3d883476',
+      authors: [{ name: 'QuarizonStudio', role: 'Model' }],
+      license: 'CC BY 4.0',
+      licenseUrl: CC_BY_4,
+    },
+  },
+  {
+    /**
+     * A BASKETBALL GYM (2026-11-04): a court between two banks of bleachers, the hoops at the ends,
+     * the drivers facing down the court at them. A CC BY 4.0 Sketchfab model (nguyennghiakk), drawn
+     * from High up and lit like the gym; the gym's kind of procedural room stands for it below that.
+     */
+    id: 'basketball-court',
+    name: 'Basketball court',
+    note: 'Bleachers and hoops on a glossy floor, from High up. 6.9 MB',
+    rig: {
+      hemiSky: 0xfff7ea,
+      hemiGround: 0x6b5d48,
+      hemiIbl: 1.3,
+      hemiNoIbl: 2,
+      sun: [50, -60, 160],
+      sunColor: 0xfff6e6,
+      sunIntensity: 1.85,
+      exposure: 1.15,
+    },
+    venue: { kind: 'hall', floor: 0x8f744f, wall: 0xb0a690, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.2, half: 680, ceil: 300, stands: true, gridded: true },
+    look: {
+      sky: [
+        [0, 0xeae6da],
+        [0.3, 0xdbd4c3],
+        [0.5, 0xc2b291],
+        [0.6, 0xab8e63],
+        [1, 0x8f724b],
+      ],
+      lamp: { az: 90, el: 66, r: 24, color: 0xfff8e8 },
+      silhouette: { top: 0.5, bottom: 0.58, color: 0x4a3a28, alpha: 0.28, teeth: 14 },
+      blur: 0.22,
+      intensity: 0.8,
+    },
+    model: {
+      file: 'venues/basketball-court.glb',
+      bytes: 6941460,
+      tris: 971868,
+      cameraRoom: { min: [-235, -210, -1], max: [238, 167, 253] },
+      title: 'Indoor Basketball Court',
+      page: 'https://sketchfab.com/3d-models/indoor-basketball-court-943a9bc962974d02aa34592084687c3c',
+      authors: [{ name: 'nguyennghiakk', role: 'Model' }],
+      license: 'CC BY 4.0',
+      licenseUrl: CC_BY_4,
+    },
+  },
+  {
+    /**
+     * AN AIRCRAFT HANGAR (2026-11-04): a steel shed with a twin parked behind the field. A CC BY 4.0
+     * Sketchfab model (jimbogies), with helijah's Diamond DA42 in it (credited beside it), drawn from
+     * High up; the workshop's kind of procedural room stands for it below that.
+     */
+    id: 'aircraft-hangar',
+    name: 'Aircraft hangar',
+    note: 'Steel shed with a plane parked behind the field, from High up. 4.1 MB',
+    rig: {
+      hemiSky: 0xeef2f8,
+      hemiGround: 0x55585d,
+      hemiIbl: 1.6,
+      hemiNoIbl: 2.25,
+      sun: [40, -60, 170],
+      sunColor: 0xf8f9ff,
+      sunIntensity: 1.8,
+      exposure: 1.2,
+    },
+    venue: { kind: 'hall', floor: 0x5c5e61, wall: 0x7d8186, trim: 0x4c5056, lamp: 0xf2f6ff, lampPower: 1.4, half: 700, ceil: 260 },
+    look: {
+      sky: [
+        [0, 0x3d4045],
+        [0.36, 0x55595f],
+        [0.5, 0x6c7076],
+        [0.64, 0x4a4d52],
+        [1, 0x34363a],
+      ],
+      truss: { el: 40, h: 4, color: 0xf2f6ff },
+      silhouette: { top: 0.5, bottom: 0.64, color: 0x2a2c30, alpha: 0.6, teeth: 16 },
+      blur: 0.2,
+      intensity: 0.85,
+    },
+    model: {
+      file: 'venues/aircraft-hangar.glb',
+      bytes: 4059304,
+      tris: 120556,
+      cameraRoom: { min: [-270, -430, -1], max: [285, 275, 171] },
+      title: 'Aircraft Hangar',
+      page: 'https://sketchfab.com/3d-models/aircraft-hangar-a5b17ba2e3494873abd313f720097614',
+      authors: [{ name: 'jimbogies', role: 'Model' }],
+      license: 'CC BY 4.0',
+      licenseUrl: CC_BY_4,
+      includes: [{ title: 'Diamond Da42 “Twin Star”', author: 'helijah', page: 'https://sketchfab.com/3d-models/diamond-da42-twin-star-d83b6e776955401f87f7bc2ad5d5a252' }],
     },
   },
   {
@@ -869,10 +978,6 @@ export function environmentCredit(e: EnvironmentDef): {
     const m = e.model;
     return { title: m.title, source: 'Sketchfab', page: m.page, authors: m.authors, license: m.license, licenseUrl: m.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
   }
-  if (e.splat) {
-    const sp = e.splat;
-    return { title: sp.title, source: 'SuperSplat', page: sp.page, authors: sp.authors, license: sp.license, licenseUrl: sp.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
-  }
   return null;
 }
 
@@ -881,10 +986,7 @@ export function environmentCredit(e: EnvironmentDef): {
  * URL; the RENDER lane checks every row's byte count against the file on disk. */
 export function venueFileBytes(path: string): number | undefined {
   const clean = path.replace(/^\/+/, '');
-  for (const e of BB_ENVIRONMENTS) {
-    if (e.model?.file === clean) return e.model.bytes;
-    if (e.splat?.file === clean) return e.splat.bytes;
-  }
+  for (const e of BB_ENVIRONMENTS) if (e.model?.file === clean) return e.model.bytes;
   return undefined;
 }
 

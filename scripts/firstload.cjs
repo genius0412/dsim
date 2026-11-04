@@ -7,6 +7,8 @@
  *   npm run build
  *   npm run firstload                                 # High and Low, CPU x1/x4/x6, its own vite preview (~8 min)
  *   npm run firstload -- --tiers=high --cpu=4         # one cell
+ *   npm run firstload -- --tiers=high --cpu=1 --env=events-stage   # another room (the tier's column
+ *                                                     # with that environment: a modeled room's reveal)
  *   npm run firstload -- --check                      # High and Low at x1/x4, 3 runs each, medians against
  *                                                     # scripts/firstload-ceilings.json (~15 min)
  *   npm run firstload -- --runs=3 --verbose           # medians; the load's longest frames too
@@ -177,7 +179,8 @@ async function oneCell(cfg) {
   const cmd = (m, p) => dbg.sendCommand(m, p);
   await cmd('Page.enable');
   await cmd('Network.enable');
-  const gfx = JSON.stringify({ preset: cfg.tier, tier: cfg.tier, rev: 4 });
+  // `--env`: the tier's column with another environment, stored as the picker stores it (Custom)
+  const gfx = JSON.stringify(cfg.env ? { preset: 'custom', tier: cfg.tier, rev: 4, settings: { environment: cfg.env } } : { preset: cfg.tier, tier: cfg.tier, rev: 4 });
   const seed = `if (!sessionStorage.getItem('__flSeeded')) { sessionStorage.setItem('__flSeeded', '1'); localStorage.setItem('decodesim.graphics', ${JSON.stringify(gfx)}); }`;
   await cmd('Page.addScriptToEvaluateOnNewDocument', { source: INSTR(seed) });
   if (cfg.cpu > 1) await cmd('Emulation.setCPUThrottlingRate', { rate: cfg.cpu });
@@ -386,7 +389,7 @@ function summarise(cfg, raw, home, firstClickN) {
     };
   };
   return {
-    cell: `${cfg.tier} x${cfg.cpu}${cfg.net ? ` ${cfg.net}` : ''}`,
+    cell: `${cfg.tier} x${cfg.cpu}${cfg.net ? ` ${cfg.net}` : ''}${cfg.env ? ` ${cfg.env}` : ''}`,
     tier: cfg.tier,
     cpu: cfg.cpu,
     net: cfg.net || '',
@@ -435,6 +438,7 @@ async function runAll() {
   const cpus = arg('cpu', check ? '1,4' : '1,4,6').split(',').map(Number);
   const net = arg('net', '');
   const route = arg('route', '/biobuzz');
+  const env = arg('env', '');
   const outdir = arg('outdir', '');
   const dwell = Number(arg('dwell', '3000'));
   const outFile = arg('out', '');
@@ -460,7 +464,7 @@ async function runAll() {
       for (const cpu of cpus) {
         const runs = [];
         for (let n = 0; n < RUNS; n++) {
-          const cfg = { tier, cpu, net, route, dwell };
+          const cfg = { tier, cpu, net, route, dwell, env };
           // a fresh profile per run, removed after it (the child cannot delete its own)
           const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'firstload-'));
           const child = spawn(process.execPath, [__filename, `--one=${JSON.stringify(cfg)}`, `--port=${PORT}`, `--profile=${profile}`], {

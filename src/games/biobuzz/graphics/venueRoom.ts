@@ -12,7 +12,6 @@
  * RENDER lane sweeps every in-match eye (`sweepMatchEyes`) and fails if one stands outside it.
  */
 
-import { BB_HALF_X, BB_HALF_Y } from '../config';
 
 export interface VenueBox {
   min: readonly [number, number, number];
@@ -115,8 +114,8 @@ export function trisInBox(t: VenueTris, obstacles: readonly number[], box: Venue
 
 /**
  * GROW THE CLEAR BOX: from `seed` (which must itself be clear), push each of its five open faces
- * (four walls and the ceiling; the floor stays at the seed's) outward toward `limit` for as long as
- * no obstacle touches the box, each face by bisection to `tolIn`, round-robin until none moves. The
+ * (the ceiling, then the four walls; the floor stays at the seed's) outward toward `limit` for as long
+ * as no obstacle touches the box, each face by bisection to `tolIn`, round-robin until none moves. The
  * result is the box the cameras may stand in. Deterministic: same soup, same box.
  */
 export function growClearBox(t: VenueTris, obstacles: readonly number[], seed: VenueBox, limit: VenueBox, tolIn = 1): VenueBox {
@@ -124,13 +123,17 @@ export function growClearBox(t: VenueTris, obstacles: readonly number[], seed: V
   const max = [...seed.max] as [number, number, number];
   const clear = (): boolean => trisInBox(t, obstacles, { min, max }, 1).length === 0;
   if (!clear()) throw new Error('growClearBox: the seed box is not clear');
-  // the faces that grow: −x, +x, −y, +y, +z (the floor is where the seed puts it)
+  // the faces that grow: +z, then −x, +x, −y, +y (the floor is where the seed puts it). THE CEILING
+  // GOES FIRST: the growth is greedy, so the face that moves first takes the most. Walls first ran a
+  // gym's box out to its hoops and a hangar's out under its eaves, and each one's rim or roof slope
+  // then capped the ceiling at the menu eye's height; a high ceiling is what the orbit and free eyes
+  // look down on the field from
   const faces: readonly { axis: 0 | 1 | 2; up: boolean }[] = [
+    { axis: 2, up: true },
     { axis: 0, up: false },
     { axis: 0, up: true },
     { axis: 1, up: false },
     { axis: 1, up: true },
-    { axis: 2, up: true },
   ];
   for (let round = 0; round < 8; round++) {
     let moved = false;
@@ -167,23 +170,6 @@ export function insetCameraRoom(box: VenueBox, margin: number): VenueBox {
     min: [box.min[0] + margin, box.min[1] + margin, box.min[2]],
     max: [box.max[0] - margin, box.max[1] - margin, box.max[2] - margin],
   };
-}
-
-/** how far above the floor (−0.75 in) a captured splat counts as standing; the floor's fuzz stays */
-export const SPLAT_FLOOR_KEEP_IN = 3;
-
-/**
- * THE TWO BOXES A SPLAT VENUE HIDES (`scene/renderSplatVenue.ts`): the captured floor under the
- * field's footprint (it would poke through the mat), and everything inside the camera room above the
- * floor, so the convex-room rule holds for a capture by construction, as it does for a model.
- */
-export function splatHiddenBoxes(cameraRoom: VenueBox): { min: number[]; max: number[] }[] {
-  const ground = -0.75;
-  const keep = ground + SPLAT_FLOOR_KEEP_IN;
-  return [
-    { min: [-(BB_HALF_X + 2), -(BB_HALF_Y + 2), ground - 40], max: [BB_HALF_X + 2, BB_HALF_Y + 2, keep] },
-    { min: [cameraRoom.min[0], cameraRoom.min[1], keep], max: [cameraRoom.max[0], cameraRoom.max[1], cameraRoom.max[2]] },
-  ];
 }
 
 /** is the point inside the box (closed) */

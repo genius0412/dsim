@@ -1,7 +1,8 @@
 /**
  * MODELED VENUE BUILD (2026-11-04) — one Sketchfab glTF in, one `public/venues/<id>.glb` out.
  *
- *   npx tsx scripts/venue-models/build.ts <id> --inspect     what the source holds (nodes, bounds, textures)
+ *   npx tsx scripts/venue-models/build.ts <id> --inspect     what the source holds (nodes, bounds, textures;
+ *                                                            the 40 largest meshes, or every one with --all)
  *   npx tsx scripts/venue-models/build.ts <id>               build it (needs `fieldAt` and `floor` set)
  *   npx tsx scripts/venue-models/build.ts --placeholder      the whole chain on a generated room, to scratch/
  *
@@ -12,13 +13,14 @@
  *
  * What it does, in order — the README beside this file says why for each:
  *   1. read the glTF (or the zip, extracted with `tar` into the tools' work folder);
- *   2. drop `drop` nodes, every light, camera and animation (the scene's `rig` lights the room);
+ *   2. drop `drop` nodes, every light, camera and animation (the scene's `rig` lights the room), and
+ *      transmission (it doubles the opaque pass);
  *   3. place it: z up, inches, turned by `yawDeg`, the source's `fieldAt` at the origin and its
  *      `floor` at the procedural ground's height (−0.75 in, under the field's mat);
- *   4. grow the CLEAR BOX (`graphics/venueRoom.ts`) from the field's footprint: the row's
- *      `cameraRoom`, inside which no triangle stands — it fails if the field's own footprint is not
+ *   4. grow the CLEAR BOX (`graphics/venueRoom.ts`) from the field's footprint and the eyes round it
+ *      (`EYES`): the row's `cameraRoom`, inside which no triangle stands — it fails if that seed is not
  *      clear, naming the nodes in the way;
- *   5. dedup, prune, weld; textures resized to `maxTexture`, then KTX2 (Basis ETC1S for colour,
+ *   5. dedup, prune, weld; textures resized to `maxTexture` (normal maps to `maxNormal`), then KTX2 (Basis ETC1S for colour,
  *      UASTC for normal maps, sRGB only where the slot is colour); geometry meshopt-compressed;
  *   6. write the GLB and print the row's numbers (`file`, `bytes`, `tris`, `cameraRoom`).
  * Nothing is decimated by rule: a simplified copy is added only for a tier that measurably needs one.
@@ -41,11 +43,22 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GROUND_Z = -0.75;
 /** the box that must be clear before anything grows: the field and a driver's reach round it */
 const SEED: VenueBox = { min: [-(BB_HALF_X + 60), -(BB_HALF_Y + 60), GROUND_Z], max: [BB_HALF_X + 60, BB_HALF_Y + 60, 110] };
-/** how far the clear box may grow: past the orbit camera's 620-in reach, and a high roof */
-const LIMIT: VenueBox = { min: [-900, -900, GROUND_Z], max: [900, 900, 900] };
 /** the orbit and free eyes stop this far inside the clear box */
 const CAMERA_MARGIN_IN = 24;
+/**
+ * THE EYES THE CAMERA RIG DOES NOT HOLD IN A ROOM, plus the margin: the driver eye at every screen
+ * shape and height (x ±209, y ±24, z ≤ 80, since the 2026-11-04 driver view), the chase eye (x ±126,
+ * z 40) and the menu stage's home eye (y −205, z 150), measured by the RENDER lane's `sweepMatchEyes`.
+ * It is part of the seed, so the clear box contains it or the build fails naming what is in the way.
+ * Without it the growth is greedy: a court's box grew out to the hoops first, and the rims then
+ * capped its ceiling at 112 in, under the home eye.
+ */
+const EYES: VenueBox = { min: [-209 - CAMERA_MARGIN_IN, -205 - CAMERA_MARGIN_IN, GROUND_Z], max: [209 + CAMERA_MARGIN_IN, 24 + CAMERA_MARGIN_IN, 150 + CAMERA_MARGIN_IN] };
+/** how far the clear box may grow: past the orbit camera's 620-in reach, and a high roof */
+const LIMIT: VenueBox = { min: [-900, -900, GROUND_Z], max: [900, 900, 900] };
 const IN_PER_M = 39.37007874;
+/** the material extensions that switch on three's transmission pass (see `build`) */
+const TRANSMISSIVE = new Set(['KHR_materials_transmission', 'KHR_materials_volume', 'KHR_materials_diffuse_transmission']);
 
 const mod = async (rel: string): Promise<any> => import(pathToFileURL(join(TOOLS, 'node_modules', rel)).href);
 
@@ -176,7 +189,7 @@ function place(t: Tools, doc: any, src: Pick<VenueModelSource, 'scale' | 'yawDeg
   venue.setRotation(q).setScale([s, s, s]).setTranslation([-rx * s, -ry * s, GROUND_Z - src.floor * s]);
 }
 
-async function inspect(t: Tools, src: VenueModelSource): Promise<void> {
+async function inspect(t: Tools, src: VenueModelSource, every = false): Promise<void> {
   const file = sourceFile(src);
   const doc = await t.io.read(file);
   place(t, doc, { scale: src.scale, yawDeg: 0, fieldAt: [0, 0], floor: 0 });
@@ -185,15 +198,22 @@ async function inspect(t: Tools, src: VenueModelSource): Promise<void> {
     if (!node.getMesh()) continue;
     const b = t.core.getBounds(node);
     let tris = 0;
-    for (const p of node.getMesh().listPrimitives()) tris += (p.getIndices()?.getCount() ?? p.getAttribute('POSITION')?.getCount() ?? 0) / 3;
-    rows.push({ name: node.getName(), tris, min: b.min.map((x: number) => x / IN_PER_M), max: b.max.map((x: number) => x / IN_PER_M) });
+    const mats = new Set<string>();
+    for (const p of node.getMesh().listPrimitives()) {
+      tris += (p.getIndices()?.getCount() ?? p.getAttribute('POSITION')?.getCount() ?? 0) / 3;
+      mats.add(p.getMaterial()?.getName() ?? '-');
+    }
+    // a SketchUp export names every node after a material, so the materials are what tell parts apart
+    rows.push({ name: `${node.getName()} {${[...mats].join(', ')}}`, tris, min: b.min.map((x: number) => x / IN_PER_M / src.scale), max: b.max.map((x: number) => x / IN_PER_M / src.scale) });
   }
   rows.sort((a, b) => b.tris - a.tris);
   const all = t.core.getBounds(doc.getRoot().getDefaultScene() ?? doc.getRoot().listScenes()[0]);
   console.log(`${src.id}: ${file}`);
-  console.log(`bounds (z-up metres, unplaced): min ${all.min.map((x: number) => (x / IN_PER_M).toFixed(2)).join(', ')}  max ${all.max.map((x: number) => (x / IN_PER_M).toFixed(2)).join(', ')}`);
+  // in the source's own units, z up: the units `fieldAt` and `floor` are given in
+  const u = (x: number): string => (x / IN_PER_M / src.scale).toFixed(2);
+  console.log(`bounds (z-up source units, unplaced): min ${all.min.map(u).join(', ')}  max ${all.max.map(u).join(', ')}`);
   console.log(`triangles ${rows.reduce((a, r) => a + r.tris, 0)} in ${rows.length} meshes; the largest:`);
-  for (const r of rows.slice(0, 40)) console.log(`  ${String(r.tris).padStart(8)}  ${r.name}  [${r.min.map((x) => x.toFixed(2)).join(', ')}] .. [${r.max.map((x) => x.toFixed(2)).join(', ')}]`);
+  for (const r of every ? rows : rows.slice(0, 40)) console.log(`  ${String(r.tris).padStart(8)}  ${r.name}  [${r.min.map((x) => x.toFixed(2)).join(', ')}] .. [${r.max.map((x) => x.toFixed(2)).join(', ')}]`);
   for (const tex of doc.getRoot().listTextures()) {
     const size = tex.getSize();
     console.log(`  texture ${tex.getName() || tex.getURI()} ${tex.getMimeType()} ${size ? size.join('x') : '?'} ${tex.getImage()?.byteLength ?? 0} B`);
@@ -207,22 +227,34 @@ async function build(t: Tools, src: VenueModelSource, input: string | any, out: 
   const root = doc.getRoot();
   // 2. what the venue must not carry
   for (const node of root.listNodes()) if (src.drop.some((re) => re.test(node.getName()))) node.dispose();
+  const dropMat = src.dropMaterials ?? [];
+  if (dropMat.length) for (const mesh of root.listMeshes()) for (const prim of mesh.listPrimitives()) if (dropMat.some((re) => re.test(prim.getMaterial()?.getName() ?? ''))) prim.dispose();
   for (const node of root.listNodes()) node.setCamera(null);
   for (const a of root.listAnimations()) a.dispose();
   for (const e of root.listExtensionsUsed()) if (e.extensionName === 'KHR_lights_punctual') e.dispose();
+  // ⚠️ NO TRANSMISSION: one transmissive material makes three draw every opaque object a second time
+  // into its transmission target, every frame. The court's windows (alpha 0.25 glass) cost its room
+  // more than its million triangles did; blended alpha reads the same from the field.
+  for (const e of root.listExtensionsUsed()) if (TRANSMISSIVE.has(e.extensionName)) e.dispose();
   // 3. placement
   place(t, doc, { scale: src.scale, yawDeg: src.yawDeg, fieldAt: src.fieldAt, floor: src.floor });
   await doc.transform(t.fns.dedup(), t.fns.prune(), t.fns.weld());
   // 4. the clear box
   const { tris, owner } = worldTris(t, doc);
   const obstacles = obstacleTris(tris, GROUND_Z);
-  const inSeed = trisInBox(tris, obstacles, SEED);
+  // the seed holds the field, the eyes and (a generated source's) KEEP_CLEAR, so the grown box
+  // contains all three whatever order its faces grow in
+  const boxes = keepClear ? [SEED, EYES, keepClear] : [SEED, EYES];
+  const lo = (i: number): number => Math.min(...boxes.map((b) => b.min[i]));
+  const hi = (i: number): number => Math.max(...boxes.map((b) => b.max[i]));
+  const seed: VenueBox = { min: [lo(0), lo(1), lo(2)], max: [hi(0), hi(1), hi(2)] };
+  const inSeed = trisInBox(tris, obstacles, seed);
   if (inSeed.length > 0) {
     const names = new Map<string, number>();
     for (const i of inSeed) names.set(owner[i], (names.get(owner[i]) ?? 0) + 1);
-    throw new Error(`${src.id}: the field's footprint is not clear: ${[...names].map(([n, c]) => `${n} (${c})`).join(', ')}. Move fieldAt, or drop those nodes.`);
+    throw new Error(`${src.id}: the field's footprint and the eyes round it${keepClear ? " (and the generator's KEEP_CLEAR)" : ''} are not clear: ${[...names].map(([n, c]) => `${n} (${c})`).join(', ')}. Move fieldAt, or drop those nodes.`);
   }
-  const clear = growClearBox(tris, obstacles, SEED, LIMIT);
+  const clear = growClearBox(tris, obstacles, seed, LIMIT);
   const cameraRoom = insetCameraRoom(clear, CAMERA_MARGIN_IN);
   // a GENERATED source states the box its author kept clear for the sim's eyes; the grown box must
   // contain it, or the generator let something stand where an eye goes
@@ -237,13 +269,20 @@ async function build(t: Tools, src: VenueModelSource, input: string | any, out: 
   // joists, truss sections and fixtures, and its neighbouring fields, as shared meshes)
   await doc.transform(t.fns.instance({ min: 2 }));
   // 5. textures, then geometry
+  for (const cap of src.textureCaps ?? []) {
+    await doc.transform(t.fns.textureCompress({ encoder: t.sharp, resize: [cap.max, cap.max], pattern: cap.match }));
+  }
+  if (src.maxNormal && src.maxNormal < src.maxTexture) {
+    await doc.transform(t.fns.textureCompress({ encoder: t.sharp, resize: [src.maxNormal, src.maxNormal], slots: /normalTexture/ }));
+  }
   await doc.transform(t.fns.textureCompress({ encoder: t.sharp, resize: [src.maxTexture, src.maxTexture] }));
   const imageDecoder = async (buffer: Uint8Array) => {
     const { data, info } = await t.sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     return { data: new Uint8Array(data), width: info.width, height: info.height };
   };
   const basis = { generateMipmap: true, imageDecoder };
-  await doc.transform(t.ktx2({ ...basis, isUASTC: true, isNormalMap: true, isSetKTX2SRGBTransferFunc: false, slots: /normalTexture/ }));
+  // RDO lets zstd find runs in the UASTC blocks: a 2048² noisy normal map was 4–5 MB without it
+  await doc.transform(t.ktx2({ ...basis, isUASTC: true, isNormalMap: true, enableRDO: true, rdoQualityLevel: 1, isSetKTX2SRGBTransferFunc: false, slots: /normalTexture/ }));
   await doc.transform(t.ktx2({ ...basis, isUASTC: false, qualityLevel: 160, isSetKTX2SRGBTransferFunc: true, slots: /baseColorTexture|emissiveTexture|diffuseTexture/ }));
   await doc.transform(t.ktx2({ ...basis, isUASTC: false, qualityLevel: 160, isSetKTX2SRGBTransferFunc: false }));
   await doc.transform(t.fns.meshopt({ encoder: t.meshopt.MeshoptEncoder, level: 'medium' }));
@@ -338,7 +377,7 @@ async function main(): Promise<void> {
     await build(t, src, doc, join(REPO, 'public', 'venues', `${src.id}.glb`), { min: [kc.min[0], kc.min[1], GROUND_Z], max: [kc.max[0], kc.max[1], kc.max[2] + GROUND_Z] });
     return;
   }
-  if (args.includes('--inspect')) await inspect(t, src);
+  if (args.includes('--inspect')) await inspect(t, src, args.includes('--all'));
   else await build(t, src, sourceFile(src), join(REPO, 'public', 'venues', `${src.id}.glb`));
 }
 

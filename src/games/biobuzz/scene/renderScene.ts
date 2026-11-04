@@ -639,19 +639,16 @@ class BiobuzzScene implements GameScene {
     // a MODELED venue (`renderModelVenue.ts`) from High up: the procedural one stands while it
     // loads, stays on Low/Medium, and stays if the file cannot load
     const model = def.model && bbModelDetail(s, this.tier) ? def.model : null;
-    // a SPLAT venue (`renderSplatVenue.ts`, the trial) the same way
-    const splat = !model && def.splat && bbModelDetail(s, this.tier) ? def.splat : null;
-    const key = `${def.id}:${detail}:${model ? 'model' : splat ? 'splat' : ''}`;
+    const key = `${def.id}:${detail}:${model ? 'model' : ''}`;
     if (key !== this.venueKey) {
       this.swapVenue(buildBiobuzzVenue(def.venue, detail), def);
       this.venueKey = key;
       if (model) this.loadModel(def, key);
-      else if (splat) this.loadSplat(def, key);
     }
-    // the orbit and free cameras stay inside a modeled or captured room from the moment it is
-    // picked (not when it lands, which would jump a zoomed-out camera in), and stop in front of a
-    // procedural venue's seating banks, where it has any
-    this.cameras.setRoom(model ? model.cameraRoom : splat ? splat.cameraRoom : venueCameraRoom(def.venue, detail));
+    // the orbit and free cameras stay inside a modeled room from the moment it is picked (not when
+    // it lands, which would jump a zoomed-out camera in), and stop in front of a procedural venue's
+    // seating banks, where it has any
+    this.cameras.setRoom(model ? model.cameraRoom : venueCameraRoom(def.venue, detail));
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
     this.syncSurfaces();
@@ -710,10 +707,10 @@ class BiobuzzScene implements GameScene {
       this.withSurfaces('could not be removed', (sf) => sf.revertVenue(old));
       this.scene.remove(old);
       disposeObject3D(old);
-      freeVenueExtras(old);
+      freeModelTextures(old);
     }
     this.venue = next;
-    this.modelLive = next.userData.modelVenue === true || next.userData.splatVenue === true;
+    this.modelLive = next.userData.modelVenue === true;
     this.withSurfaces('could not be applied', (sf) => sf.applyVenue(next, def));
     this.probeDirty = true;
     /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
@@ -724,14 +721,14 @@ class BiobuzzScene implements GameScene {
        camera stands at a driver station, side-on like the driver camera. */
     applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free, ...(this.xrRig ? [this.xrRig.camera] : [])]);
     this.scene.add(next);
-    // a venue that lands late (a modeled room, a splat capture) brings transparent objects of its own
+    // a venue that lands late (a modeled room) brings transparent objects of its own
     this.split.collect(this.scene, [this.sun, this.hemi]);
   }
 
   /**
    * FETCH a modeled venue and swap it in when it lands, if the scene still wants that same venue
    * (`key`). Fire-and-forget like `env.apply`; a failure keeps the procedural venue standing, says
-   * so once, and is remembered (`modelBlocked`) so a scene build does not ask again. The upload and
+   * so once, and is remembered (`venueBlocked`) so a scene build does not ask again. The upload and
    * the shader link happen before the swap, so the frame the room appears on does not hitch.
    */
   private loadModel(def: EnvironmentDef, key: string): void {
@@ -744,7 +741,7 @@ class BiobuzzScene implements GameScene {
         const room = await m.loadModelVenue(model, this.renderer, aniso);
         if (stale()) {
           disposeObject3D(room);
-          freeVenueExtras(room);
+          freeModelTextures(room);
           return;
         }
         try {
@@ -756,7 +753,7 @@ class BiobuzzScene implements GameScene {
         // the await is a window in which the player can have picked another venue or left
         if (stale()) {
           disposeObject3D(room);
-          freeVenueExtras(room);
+          freeModelTextures(room);
           return;
         }
         this.lateSwap(room, def, stale, () => this.tuneMaterials());
@@ -781,7 +778,7 @@ class BiobuzzScene implements GameScene {
       done = true;
       if (stale()) {
         disposeObject3D(room);
-        freeVenueExtras(room);
+        freeModelTextures(room);
         return;
       }
       this.swapVenue(room, def);
@@ -795,29 +792,6 @@ class BiobuzzScene implements GameScene {
     } catch {
       commit();
     }
-  }
-
-  /** FETCH a splat venue (the trial) and swap it in when it lands, on the same terms as `loadModel`.
-   * Spark sorts on its own worker; the capture's first sort lands a frame or two after the swap. */
-  private loadSplat(def: EnvironmentDef, key: string): void {
-    const splat = def.splat!;
-    const stale = (): boolean => this.disposed || this.venueKey !== key;
-    this.modelLoading = import('./renderSplatVenue')
-      .then(async (m) => {
-        if (venueBlocked(venueAssetUrl(splat.file), Date.now())) return;
-        const room = await m.loadSplatVenue(splat, this.renderer);
-        if (stale()) {
-          disposeObject3D(room);
-          freeVenueExtras(room);
-          return;
-        }
-        this.lateSwap(room, def, stale);
-      })
-      .catch((err: unknown) => {
-        if (stale()) return;
-        console.warn(`BIOBUZZ 3D: the ${def.name} capture failed to load; keeping the generated room.`, err);
-        this.onQualityEvent?.(`Couldn’t load the ${def.name} capture. Showing a generated room instead.`);
-      });
   }
 
   /**
@@ -1393,7 +1367,7 @@ class BiobuzzScene implements GameScene {
       const hidden = this.probeHidden();
       const def = environmentDefFor(this.settings.environment);
       this.withSurfaces('failed while capturing reflections', (sf) => {
-        sf.recapture(this.renderer, this.scene, hidden, def, this.modelLive ? (def.model ?? def.splat)?.cameraRoom : undefined);
+        sf.recapture(this.renderer, this.scene, hidden, def, this.modelLive ? def.model?.cameraRoom : undefined);
       });
     }
 
@@ -1540,8 +1514,7 @@ class BiobuzzScene implements GameScene {
     this.pipCamera.bottom = -ext;
     this.pipCamera.position.set(0, 0, 300);
     // the near plane cuts at a modeled room's ceiling, like the overhead camera's (`renderCameras.ts`)
-    const live = environmentDefFor(this.settings.environment);
-    const top = this.modelLive ? ((live.model ?? live.splat)?.cameraRoom.max[2] ?? Infinity) : Infinity;
+    const top = this.modelLive ? (environmentDefFor(this.settings.environment).model?.cameraRoom.max[2] ?? Infinity) : Infinity;
     this.pipCamera.near = Number.isFinite(top) ? Math.max(1, 300 - top) : 1;
     // `up` is the driver's own screen-up in world space (`rot({0,1}, -viewAngle)`), so the
     // minimap is oriented exactly like the 2D map the same player sees when they press `t`
@@ -1632,7 +1605,7 @@ class BiobuzzScene implements GameScene {
         /* teardown carries on: a leak beats a scene that cannot be disposed */
       }
     }
-    if (this.venue) freeVenueExtras(this.venue);
+    if (this.venue) freeModelTextures(this.venue);
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();
@@ -1811,7 +1784,7 @@ export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().setting
  */
 function prefetchVenue(settings: GraphicsSettings, tier: GraphicsTier): void {
   const def = environmentDefFor(settings.environment);
-  const file = def.model?.file ?? def.splat?.file;
+  const file = def.model?.file;
   if (!file || !bbModelDetail(settings, tier)) return;
   warmFetch(venueAssetUrl(file));
   if (def.model) void import('./renderModelVenue').catch(() => {});
@@ -1830,14 +1803,11 @@ function transparentDrawables(root: THREE.Object3D): THREE.Object3D[] {
   return out;
 }
 
-/** what a modeled or captured venue holds that `disposeObject3D` does not free: a model's textures
- * (it frees only `map`, and a glTF material fills up to a dozen slots; `renderModelVenue.ts` lists
- * them on the group) and a capture's Spark objects (`renderSplatVenue.ts` leaves a `dispose`) */
-function freeVenueExtras(group: THREE.Object3D): void {
+/** a modeled venue's textures: `disposeObject3D` frees only `map`, and a glTF material fills up to
+ * a dozen slots (`renderModelVenue.ts` lists them on the group as it prepares it) */
+function freeModelTextures(group: THREE.Object3D): void {
   const texs = group.userData.textures as THREE.Texture[] | undefined;
-  if (texs) for (const t of texs) t.dispose();
+  if (!texs) return;
+  for (const t of texs) t.dispose();
   group.userData.textures = [];
-  const extra = group.userData.dispose as (() => void) | undefined;
-  group.userData.dispose = undefined;
-  extra?.();
 }

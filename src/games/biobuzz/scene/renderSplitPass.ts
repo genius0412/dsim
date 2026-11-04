@@ -201,7 +201,7 @@ export function createSplitPass(): BbSplitPass {
       const bg = scene.background;
       const exposure = renderer.toneMappingExposure;
       // 1. opaque, tone-mapped per sample. A transparent mesh that neither casts nor receives is
-      // left out of this call (a splat venue is millions of splats); one that does is MUTED instead,
+      // left out of this call; one that does is MUTED instead,
       // because VSM draws casters and receivers into the sun's map inside this call. A COLOUR
       // background is a clear, which no material tone-maps, so it is cleared to its own display
       // value here. (A material made opaque since `collect` keeps drawing in this half.)

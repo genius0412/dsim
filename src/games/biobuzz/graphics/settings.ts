@@ -283,7 +283,9 @@ export type PerfOverlay = 'off' | 'fps' | 'full';
  * Nine are PROCEDURAL (2026-09-21): they are painted, they cost no download, and they are
  * therefore live on every tier including the two where image-based lighting is off. The tenth,
  * `monochrome-studio`, is a fetched HDRI. The eleventh, `grb` (2026-11-04), is a MODEL generated in
- * this repo (the GRB's FTC championship hall), drawn from High up over its procedural stand-in.
+ * this repo (the GRB's FTC championship hall), drawn from High up over its procedural stand-in, and
+ * three more models are CC BY 4.0 downloads (an event stage, a basketball court, an aircraft hangar),
+ * drawn the same way.
  * High's column (`grb`) is also what the fixed-High replay export renders in, so it is a CONTRACT,
  * not merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it). The five PHOTOGRAPHED
  * venues (2026-10-10 to 2026-11-04) are retired: see `RETIRED_ENVIRONMENTS`.
@@ -292,6 +294,9 @@ export type EnvironmentId =
   | 'room'
   | 'arena'
   | 'grb'
+  | 'events-stage'
+  | 'basketball-court'
+  | 'aircraft-hangar'
   | 'gym'
   | 'workshop'
   | 'overcast'
@@ -308,6 +313,9 @@ export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'room',
   'arena',
   'grb',
+  'events-stage',
+  'basketball-court',
+  'aircraft-hangar',
   'gym',
   'workshop',
   'overcast',

@@ -6,7 +6,7 @@
  *
  * The placement numbers are null until the file has been looked at: `build.ts <id> --inspect` prints
  * its nodes, bounds and textures, in the source's own frame (glTF is y up; `build.ts` turns it z up
- * first, so `fieldAt` and `floor` are read in that z-up frame, metres).
+ * first, so `fieldAt` and `floor` are read in that z-up frame, in the source's own units).
  */
 
 export interface VenueModelSource {
@@ -21,19 +21,28 @@ export interface VenueModelSource {
   title: string;
   author: string;
   page: string;
-  /** source units per metre's worth of glTF unit, when the author modelled at another scale (1 =
-   * the glTF's metres are metres) */
+  /** metres per source unit, when the author modelled at another scale (1 = the glTF's units are
+   * metres, as the spec says; 0.0254 = a SketchUp export left in inches) */
   scale: number;
-  /** where the field's centre stands, x and y in the source's z-up frame, metres (null: not read) */
+  /** where the field's centre stands, x and y in the source's z-up frame, in its own units (null: not read) */
   fieldAt: readonly [number, number] | null;
-  /** the source's floor height at that point, metres (null: not read) */
+  /** the source's floor height at that point, in its own units (null: not read) */
   floor: number | null;
   /** turn about z so the drivers' line of sight (field x) runs along the room, degrees */
   yawDeg: number;
   /** node names (regex) removed before anything else: another author's model, a camera rig */
   drop: readonly RegExp[];
+  /** material names (regex) whose primitives are removed: a SketchUp export names every node after a
+   * material and merges each material's faces into one mesh, so a part is only addressable this way */
+  dropMaterials?: readonly RegExp[];
   /** the longest texture side kept, px; a texture larger than this is resized before KTX2 */
   maxTexture: number;
+  /** the same for normal maps, where it is smaller: UASTC is several times ETC1S's size, and a normal
+   * map's detail is the first thing distance loses */
+  maxNormal?: number;
+  /** smaller caps for named textures (matched against the texture's name or file): the set behind a
+   * stage and the seats in the dark are not the floor the field stands on */
+  textureCaps?: readonly { match: RegExp; max: number }[];
   /** another credited work inside this one, kept (credited) unless `drop` removes it */
   includes?: readonly { title: string; author: string; page: string }[];
 }
@@ -57,57 +66,63 @@ export const VENUE_MODEL_SOURCES: readonly VenueModelSource[] = [
     maxTexture: 1024,
   },
   {
+    // A STEEL HANGAR exported from SketchUp IN INCHES (19.5 x 35.6 m, 6.3 m to the ridge), every node
+    // named after a material. The field stands in the north half, turned so the DA42 parked in the
+    // south half is behind it from the audience side.
     id: 'aircraft-hangar',
     uid: 'a5b17ba2e3494873abd313f720097614',
     title: 'Aircraft Hangar',
     author: 'jimbogies',
-    page: 'https://sketchfab.com/3d-models/a5b17ba2e3494873abd313f720097614',
-    scale: 1,
-    fieldAt: null,
-    floor: null,
-    yawDeg: 0,
-    // the DA42 is a separate CC BY work (helijah) placed in the hangar; it is removed rather than
-    // credited, because it stands where the field goes. If it is kept, move it to `includes`.
-    drop: [/da.?42/i],
-    maxTexture: 2048,
+    page: 'https://sketchfab.com/3d-models/aircraft-hangar-a5b17ba2e3494873abd313f720097614',
+    scale: 0.0254,
+    fieldAt: [25, 330],
+    floor: 4.875,
+    yawDeg: 180,
+    drop: [],
+    // SketchUp's edge colours: six stray triangles strung across the room
+    dropMaterials: [/^edge_color/],
+    // its materials tile (the concrete every 3–4 m, the block wall every 1.6 m), so 1024 is still a
+    // few mm a texel at a driver's distance; four 2048² normal maps were 18.7 of the first build's
+    // 25.9 MB, and a texture does not shrink over the wire (Vercel's brotli takes 7 % off)
+    maxTexture: 1024,
+    maxNormal: 512,
+    // the parked aircraft is helijah's work, credited by the hangar's own page
+    includes: [{ title: 'Diamond Da42 "Twin Star"', author: 'helijah', page: 'https://sketchfab.com/3d-models/diamond-da42-twin-star-d83b6e776955401f87f7bc2ad5d5a252' }],
   },
   {
+    // A GYM modelled at no one scale: the court art is 10.4 x 18.4 units, the rims 2.72 up and the doors
+    // 1.94 tall. x1.12 puts the rims at 10 ft and the doors at 2.17 m. Turned so the drivers face down
+    // the court at the hoops, with the field between the two banks of bleachers, nearer the far bank
+    // so the audience-side eyes clear the near one.
     id: 'basketball-court',
     uid: '943a9bc962974d02aa34592084687c3c',
     title: 'Indoor Basketball Court',
-    author: 'NGUYENNGHIAKK',
-    page: 'https://sketchfab.com/3d-models/943a9bc962974d02aa34592084687c3c',
-    scale: 1,
-    fieldAt: null,
-    floor: null,
-    yawDeg: 0,
+    author: 'nguyennghiakk',
+    page: 'https://sketchfab.com/3d-models/indoor-basketball-court-943a9bc962974d02aa34592084687c3c',
+    scale: 1.12,
+    fieldAt: [0.45, 0],
+    floor: 0.1042,
+    yawDeg: 90,
     drop: [],
     maxTexture: 2048,
   },
   {
-    id: 'sports-hall',
-    uid: '128c39da6a8e4a8ba169bf87e2d4fa91',
-    title: 'Basketball Badminton Hall',
-    author: 'flaviafabbri',
-    page: 'https://sketchfab.com/3d-models/128c39da6a8e4a8ba169bf87e2d4fa91',
-    scale: 1,
-    fieldAt: null,
-    floor: null,
-    yawDeg: 0,
-    drop: [],
-    maxTexture: 2048,
-  },
-  {
+    // AN AUDITORIUM in metres: a 42.6 x 15 m stage 0.82 m up, a screen and set behind it, four blocks
+    // of seats in front. The field stands on the stage like a finals field, the seats at the audience
+    // side; the deck runs 1.8 m in front of the field's centre and 3.8 m behind it to the set.
     id: 'events-stage',
     uid: 'd74b3baa5a74430fb3717cfa3d883476',
-    title: 'Venue stage for great events',
+    title: 'venue stage for great events',
     author: 'QuarizonStudio',
-    page: 'https://sketchfab.com/3d-models/d74b3baa5a74430fb3717cfa3d883476',
+    page: 'https://sketchfab.com/3d-models/venue-stage-for-great-events-d74b3baa5a74430fb3717cfa3d883476',
     scale: 1,
-    fieldAt: null,
-    floor: null,
+    fieldAt: [0, 0.6],
+    floor: 0.8199,
     yawDeg: 0,
     drop: [],
     maxTexture: 2048,
+    // its textures are unique baked art, so the deck, the set and the big screen keep 2048; the props,
+    // the seats in the dark house, the rigging and the side screen do not need it (2.2 MB of 4.3)
+    textureCaps: [{ match: /plant|seat|silver_frame|spot|light|dec|wall1|screen2/, max: 1024 }],
   },
 ];

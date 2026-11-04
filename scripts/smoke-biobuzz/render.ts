@@ -479,7 +479,7 @@ import { neighbourFields } from '../venue-models/grb/generate';
 import { BB_HIVE_TILT_DEG as NEIGHBOUR_STOP_DEG } from '../../src/games/biobuzz/config';
 // -- the modeled venues (2026-11-04) ----------------------------------------------------------------
 import { VENUE_MAX_TRIES, bbModelDetail, noteVenueFailure, venueAssetUrl, venueBlocked } from '../../src/games/biobuzz/graphics/venueFiles';
-import { SPLAT_FLOOR_KEEP_IN, growClearBox, inVenueBox, insetCameraRoom, obstacleTris, splatHiddenBoxes, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
+import { growClearBox, inVenueBox, insetCameraRoom, obstacleTris, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
 import { modelTexturesOf, prepareModelVenue } from '../../src/games/biobuzz/scene/renderModelVenue';
 import { POSES as MENU_POSES } from '../../src/ui/menuStagePoses';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
@@ -13504,8 +13504,8 @@ function environmentAndReadoutChecks(check: Check): void {
     );
     check('every id resolves to a def with that id', BB_ENVIRONMENTS.every((e) => environmentDef(e.id) === e));
     check(
-      'eleven environments: the five photographed venues retired, the GRB hall (a generated model) added (2026-11-04), the room still first',
-      BB_ENVIRONMENTS.length === 11 && BB_ENVIRONMENTS[0].id === 'room',
+      'fourteen environments: the five photographed venues retired, the GRB hall (a generated model) and three downloaded models added (2026-11-04), the room still first',
+      BB_ENVIRONMENTS.length === 14 && BB_ENVIRONMENTS[0].id === 'room',
       String(BB_ENVIRONMENTS.length),
     );
 
@@ -13518,7 +13518,8 @@ function environmentAndReadoutChecks(check: Check): void {
         coerceGraphicsSettings({ environment: id }, GFX_PRESETS.medium).environment === id,
       );
     }
-    for (const junk of ['school_hall', 'gym-01', '', null, 7, {}] as unknown[]) {
+    // `sports-hall` was a modeled room planned and turned down before it shipped (2026-11-04)
+    for (const junk of ['school_hall', 'gym-01', 'sports-hall', '', null, 7, {}] as unknown[]) {
       check(
         `an unknown stored environment (${JSON.stringify(junk)}) falls back to the tier column`,
         coerceGraphicsSettings({ environment: junk }, GFX_PRESETS.high).environment === GFX_PRESETS.high.environment,
@@ -13617,7 +13618,7 @@ function environmentAndReadoutChecks(check: Check): void {
     // none (three's own `RoomEnvironment` plus the THEMED letterbox) and neither does a fetched
     // HDRI (the HDRI is the surround).
     const painted = BB_ENVIRONMENTS.filter((e) => e.look);
-    check('nine painted domes: the eight added on 2026-09-21 and the GRB hall’s', painted.length === 9, String(painted.length));
+    check('twelve painted domes: the eight added on 2026-09-21, the GRB hall’s and the three downloaded models’', painted.length === 12, String(painted.length));
     check('no environment is both painted and fetched', BB_ENVIRONMENTS.every((e) => !(e.look && e.hdri)));
     check(
       'the room is neither: it is three’s RoomEnvironment on the themed backdrop',
@@ -15653,16 +15654,12 @@ function modelVenueChecks(check: Check): void {
     const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
     check('venue model: the loader is a lazy chunk (renderScene imports it only dynamically)', /import\('\.\/renderModelVenue'\)/.test(sc) && !/from '\.\/renderModelVenue'/.test(sc));
     check('venue model: the procedural venue goes in first, the model is fetched only from High up', /this\.swapVenue\(buildBiobuzzVenue\(def\.venue, detail\), def\);\s*\n\s*this\.venueKey = key;\s*\n\s*if \(model\) this\.loadModel\(def, key\);/.test(sc) && /def\.model && bbModelDetail\(s, this\.tier\)/.test(sc));
-    check('venue model: the cameras are held in the model’s room from the moment it is picked', /this\.cameras\.setRoom\(model \? model\.cameraRoom : splat \? splat\.cameraRoom : venueCameraRoom\(def\.venue, detail\)\)/.test(sc));
-    check('venue model: a swap frees the old venue’s model textures and Spark objects, and so does the scene', (sc.match(/freeVenueExtras\(/g) ?? []).length >= 6);
+    check('venue model: the cameras are held in the model’s room from the moment it is picked', /this\.cameras\.setRoom\(model \? model\.cameraRoom : venueCameraRoom\(def\.venue, detail\)\)/.test(sc));
+    check('venue model: a swap frees the old venue’s model textures, and so does the scene', (sc.match(/freeModelTextures\(/g) ?? []).length >= 6);
     check('venue model: an export waits for the model like the light map', /this\.envLoading, this\.modelLoading\]/.test(sc));
-    check('venue model: the probe projects against the model’s (or capture’s) room when it is live', /this\.modelLive \? \(def\.model \?\? def\.splat\)\?\.cameraRoom : undefined/.test(sc));
-    // the splat trial (Spark) rides the same seam
-    check('venue splat: Spark is a lazy chunk (renderScene imports the splat venue only dynamically)', /import\('\.\/renderSplatVenue'\)/.test(sc) && !/from '\.\/renderSplatVenue'/.test(sc) && !/@sparkjsdev/.test(sc));
-    check('venue splat: a capture is fetched from High up when the row has no model, and holds the cameras in its room', /const splat = !model && def\.splat && bbModelDetail\(s, this\.tier\)/.test(sc) && /model \? model\.cameraRoom : splat \? splat\.cameraRoom : venueCameraRoom/.test(sc));
-    const sv = readFileSync(join(SCENE_DIR, 'renderSplatVenue.ts'), 'utf8');
-    check('venue splat: the capture is drawn first among the transparents, under a shadow catcher, with both hiding edits', /spark\.renderOrder = SPLAT_RENDER_ORDER/.test(sv) && /SPLAT_RENDER_ORDER = -1000/.test(sv) && /new THREE\.ShadowMaterial/.test(sv) && /catcher\.receiveShadow = true/.test(sv) && /for \(const b of splatHiddenBoxes\(v\.cameraRoom\)\) edit\.addSdf/.test(sv));
-    check('venue splat: a box SDF is sized by HALF its extent (Spark reads scale as the half-size)', /sdf\.scale\.set\(\(max\[0\] - min\[0\]\) \/ 2, \(max\[1\] - min\[1\]\) \/ 2, \(max\[2\] - min\[2\]\) \/ 2\)/.test(sv));
+    check('venue model: the probe projects against the model’s room when it is live', /this\.modelLive \? def\.model\?\.cameraRoom : undefined/.test(sc));
+    // the splat trial is gone (owner, 2026-11-04: "I dont want the rest"); nothing of Spark may come back in
+    check('venue model: no splat renderer, no Spark dependency', !existsSync(join(SCENE_DIR, 'renderSplatVenue.ts')) && !/sparkjsdev|splat/i.test(sc) && !/sparkjsdev/.test(readFileSync(join(root, 'package.json'), 'utf8')));
     check('venue model: the minimap cuts at the model’s ceiling like the overhead camera', /this\.pipCamera\.near = Number\.isFinite\(top\) \? Math\.max\(1, 300 - top\) : 1;/.test(sc));
     const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
     check('venue model: the dev server serves KTX2Loader from node_modules, so its transcoder URL resolves', /optimizeDeps: \{ exclude: \['three\/examples\/jsm\/loaders\/KTX2Loader\.js'\] \}/.test(vite));
@@ -15675,6 +15672,13 @@ function modelVenueChecks(check: Check): void {
     const onDisk = existsSync(path) ? statSync(path).size : -1;
     check(`venue model ${e.id}: ${m.file} is the ${m.bytes} bytes its row states`, onDisk === m.bytes, String(onDisk));
     check(`venue model ${e.id}: its URL is versioned by those bytes`, venueFileBytes(m.file) === m.bytes && venueAssetUrl(m.file).endsWith(`?v=${m.bytes}`));
+    // one transmissive material makes three draw every opaque object again into its transmission
+    // target, every frame: the court's windows cost it more than its million triangles (2026-11-04)
+    if (existsSync(path)) {
+      const glb = readFileSync(path);
+      const used = (JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8')) as { extensionsUsed?: string[] }).extensionsUsed ?? [];
+      check(`venue model ${e.id}: no transmissive material (no second opaque pass)`, !used.some((x) => /^KHR_materials_(transmission|volume|diffuse_transmission)$/.test(x)), used.join(', '));
+    }
     if (isGeneratedModel(m)) {
       // a venue GENERATED in this repo: nobody's work to credit, but its generator and the research
       // its numbers come from must be here, so it can be rebuilt and checked against its sources
@@ -15730,28 +15734,6 @@ function modelVenueChecks(check: Check): void {
     const v = modelRoomVerdict(tris, m.cameraRoom);
     check(`venue model ${e.id}: no triangle stands inside its camera room`, v.inside === 0, String(v.inside));
     check(`venue model ${e.id}: every in-match eye stands inside it`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
-  }
-  // ---- the splat trial's two hidden boxes: the captured floor under the field, and the camera room above the floor
-  {
-    const room: VenueBox = { min: [-400, -380, -0.75], max: [420, 360, 300] };
-    const [under, inside] = splatHiddenBoxes(room);
-    check(
-      'venue splat: the captured floor is hidden under the whole field and no higher than the floor’s own fuzz',
-      under.min[0] < -BB_HALF_X && under.max[0] > BB_HALF_X && under.min[1] < -BB_HALF_Y && under.max[1] > BB_HALF_Y && under.max[2] === -0.75 + SPLAT_FLOOR_KEEP_IN,
-    );
-    check(
-      'venue splat: everything inside the camera room above the floor is hidden, so no capture can block a sight line',
-      inside.min[0] === room.min[0] && inside.max[0] === room.max[0] && inside.min[1] === room.min[1] && inside.max[1] === room.max[1] && inside.max[2] === room.max[2] && inside.min[2] === -0.75 + SPLAT_FLOOR_KEEP_IN,
-    );
-  }
-  for (const e of BB_ENVIRONMENTS.filter((x) => x.splat)) {
-    const sp = e.splat!;
-    const path = join(root, 'public', sp.file);
-    const onDisk = existsSync(path) ? statSync(path).size : -1;
-    check(`venue splat ${e.id}: ${sp.file} is the ${sp.bytes} bytes its row states`, onDisk === sp.bytes, String(onDisk));
-    check(`venue splat ${e.id}: CC BY 4.0, credited`, sp.license === 'CC BY 4.0' && sp.licenseUrl === CC_BY_4 && sp.authors.length > 0);
-    const v = modelRoomVerdict({ positions: [], indices: null }, sp.cameraRoom);
-    check(`venue splat ${e.id}: every in-match eye stands inside its camera room`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
   }
   check('venue model: a model file under public/venues is a row’s, and a row’s model is a file there', readdirSync(join(root, 'public', 'venues')).filter((f) => f.endsWith('.glb')).every((f) => BB_ENVIRONMENTS.some((e) => e.model?.file === `venues/${f}`)));
 }
@@ -15962,7 +15944,7 @@ function displayResolveChecks(check: Check): void {
   check(
     'a late room goes in through the host’s gate (SceneOptions.onLateSwap), committed exactly once, freed when stale',
     /private lateSwap\(room: THREE\.Group, def: EnvironmentDef, stale: \(\) => boolean, after\?: \(\) => void\): void \{\s*let done = false;/.test(stageSceneSrc) &&
-      (stageSceneSrc.match(/this\.lateSwap\(room, def, stale/g) ?? []).length === 2,
+      (stageSceneSrc.match(/this\.lateSwap\(room, def, stale/g) ?? []).length === 1,
   );
   check(
     'a live scene starts its modeled room’s file and loader with the field (prefetchVenue), and reads the warm fetch’s body',

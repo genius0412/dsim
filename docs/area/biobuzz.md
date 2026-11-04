@@ -125,7 +125,7 @@ now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 **THE HOLDING BOX'S NECTAR ARE THE FIELD'S (2026-11-04).** Owner: "the nectar in the box should match the graphics of the nectar in the field." `renderField.ts` filled each box with plain spheres of its own, so on High a player saw smooth glossy balls beside the perforated field NECTAR. Now the box is only the tray, and `updateBiobuzzElements` draws each `stock` NECTAR in its slot (`bbNectarBoxSlot`, filled in order) through the field's own instanced mesh: same element detail, material, orientation and shadow mode. The 2D box takes a loose NECTAR's fill and rim (`elementInk.ts`, a leaf module because `draw.ts` imports `drawField.ts`). The RENDER lane drives the real `updateBiobuzzElements` for it.
 
-⚠️ **NO PHOTOGRAPH IS PROJECTED ONTO GEOMETRY, ANYWHERE (owner decision, 2026-11-04).** From 2026-10-10 five environments (`school-hall`, `events-hall`, `hangar`, `court`, `quad`) were Poly Haven panoramas projected onto an approximate room: a box, then MoGe-2 relief with furniture painted out, a keep-out shader, a stretch limit and a photographed floor tile. A projection is correct only from the lens that took it; every camera here (driver, chase, orbit, free, overhead, the menu stage, VR) stands somewhere else, so every one warped it. Five rounds of tuning (2026-10-21 to 2026-11-04) each came back "still distorted", then "EXTREMELY warped". The rows, `renderPhotoVenue.ts`, `scripts/venues/` and every file under `public/venues/` were deleted, not switched off. A stored pick reads as the painted room the row named as its stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`: the school hall → `gym`, the events hall → `grb`, hangar → `workshop`, court and quad → `overcast`), and High, Ultra and Extreme (the replay export's column) default to `grb`, the generated championship hall (below), since the same day. A real place comes back as real geometry (a modeled room or a splat capture), never as a picture on a mesh. The RENDER lane's `retiredVenueChecks` holds all of it, including that no picture file is left in `public/venues/`.
+⚠️ **NO PHOTOGRAPH IS PROJECTED ONTO GEOMETRY, ANYWHERE (owner decision, 2026-11-04).** From 2026-10-10 five environments (`school-hall`, `events-hall`, `hangar`, `court`, `quad`) were Poly Haven panoramas projected onto an approximate room: a box, then MoGe-2 relief with furniture painted out, a keep-out shader, a stretch limit and a photographed floor tile. A projection is correct only from the lens that took it; every camera here (driver, chase, orbit, free, overhead, the menu stage, VR) stands somewhere else, so every one warped it. Five rounds of tuning (2026-10-21 to 2026-11-04) each came back "still distorted", then "EXTREMELY warped". The rows, `renderPhotoVenue.ts`, `scripts/venues/` and every file under `public/venues/` were deleted, not switched off. A stored pick reads as the painted room the row named as its stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`: the school hall → `gym`, the events hall → `grb`, hangar → `workshop`, court and quad → `overcast`), and High, Ultra and Extreme (the replay export's column) default to `grb`, the generated championship hall (below), since the same day. A real place comes back as real geometry (a modeled room), never as a picture on a mesh. The RENDER lane's `retiredVenueChecks` holds all of it, including that no picture file is left in `public/venues/`.
 
 ⚠️ **MODELED VENUES (2026-11-04): REAL GEOMETRY FROM HIGH UP** (`ModelVenue` on an environment row,
 `scene/renderModelVenue.ts`, `scripts/venue-models/`). A CC BY 4.0 Sketchfab glTF, built into one
@@ -134,7 +134,7 @@ room's floor at the procedural ground's height (−0.75 in), lights/cameras/anim
 geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by rule. Rules:
 - **Drawn on High, Ultra and Extreme with the high mesh detail only** (`bbModelDetail`). The row's
   procedural `venue` is built first, stands while the file loads, stays on Low/Medium, and stays if the
-  file fails (one quality line; two tries, then five minutes: `modelBlocked`). The loader is a lazy
+  file fails (one quality line; two tries, then five minutes: `venueBlocked`). The loader is a lazy
   chunk (`venuemodel` in `bundleaudit`: loader 25 KB gz, Basis transcoder 263 KB gz, fetched only
   then); upload and shader link happen before the swap. The row's painted `look` and `rig` light it.
 - ⚠️ **NOTHING STANDS BETWEEN AN EYE AND THE FIELD, BY CONSTRUCTION** (`graphics/venueRoom.ts`). The
@@ -155,7 +155,48 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
   Contributors page credits any work a model includes (`ModelVenue.includes`). `public/venues/README.md`
   lists every source.
 - **Adding one**: `scripts/venue-models/README.md` (inspect, place, build, add the row, sweep, capture).
-  The four Sketchfab sources still wait on the owner's downloads (Sketchfab needs a login).
+- ⚠️ **THREE DOWNLOADED ROOMS SHIP (2026-11-04): `events-stage`, `basketball-court`, `aircraft-hangar`**
+  (CC BY 4.0 Sketchfab, credited; each one's placement and the reason for it are in
+  `scripts/venue-models/venues.ts`). The field stands on the auditorium's stage like a finals field; in the
+  gym between the bleachers, the drivers facing the hoops; in the hangar's north half, the DA42 parked
+  behind it. The GRB hall stays High's default: it is the FTC's own hall, and no new room beats it by
+  enough to move a default (below): the court is a little smaller over the wire and draws the same, the
+  stage and the hangar draw at half its cost but are twice its bytes. What they taught the build:
+  - **The seed holds the eyes, and the ceiling grows first** (`EYES` in `build.ts`: every driver eye at
+    every screen shape and height since the 2026-11-04 driver view, x ±209; the chase eye; the menu's
+    home eye at y −205, z 150; plus the margin. `growClearBox` grows +z before the walls). Grown from
+    the field alone, the court's box ran out to the hoops first and the rims then capped its ceiling at
+    112 in, under the home eye; walls first put the hangar's ceiling at the home eye's height under its
+    eaves. A generated source's `KEEP_CLEAR` is part of the seed too.
+  - **Units and names lie.** The hangar is a SketchUp export left in inches (`scale` 0.0254) with every
+    node named after a material, so its parts are dropped by material (`dropMaterials`: six stray
+    edge-colour triangles strung across the room). The court is modelled at no one scale (rims 2.72
+    units up, doors 1.94); ×1.12 puts the rims at 10 ft. Floor heights are probed from the triangles:
+    the inspect bounds were 2–3 cm off.
+  - ⚠️ **No transmission.** The court's windows were `KHR_materials_transmission`, which makes three draw
+    every opaque object a second time into its transmission target, every frame. The build drops it
+    (blended alpha reads the same from the field) and the RENDER lane fails on a file that carries it.
+  - **Textures are what a player waits for.** Vercel serves `.glb` with brotli, which takes meshopt
+    geometry down 4–5× and KTX2 textures by a few percent. The hangar's first build was 25.9 MB, 18.7 of
+    it four 2048² UASTC normal maps; RDO UASTC, 1024 colour and 512 normals (its materials tile every
+    1.6–4 m) made it 4.06 MB. The stage keeps 2048 for its deck, set and big screen and halves its props,
+    seats and rigging (`textureCaps`).
+  - **The stage's light is baked**: every material carries its colour texture as emissive at 1.0, so it
+    reads as the light it was captured in and the rig adds little; drawn as authored.
+  - The hangar's DA42 is helijah's work, credited through `includes` as the hangar's own page credits it.
+  - Measured 2026-11-04 on the dev PC (RTX 4070 Ti SUPER, 1920 × 1080, DPR 1, offscreen Electron). GPU:
+    the whole frame by the disjoint timer, p50 over 90 frames, driver / orbit / broadcast (the menu's
+    home pose). Reveal: `npm run firstload -- --tiers=high --cpu=1 --runs=3 --env=<id>`, a cold first
+    visit from a local preview (no network time), median; every run one reveal with the room in.
+
+    | room | file | over the wire (brotli) | triangles | reveal | High | Ultra | Extreme |
+    |---|---|---|---|---|---|---|---|
+    | `grb` (default) | 4.81 MB | 1.6–1.8 MB | 4.13M | 1.62 s | 2.47 / 2.43 / 2.31 | 2.34 / 2.45 / 2.31 | 5.54 / 5.15 / 5.09 |
+    | `events-stage` | 7.28 MB | 2.9–3.0 MB | 0.57M | 1.56 s | 1.18 / 1.12 / 1.03 | 1.18 / 1.12 / 1.17 | 3.50 / 3.10 / 3.16 |
+    | `basketball-court` | 6.94 MB | 1.3–1.45 MB | 0.97M | 1.59 s | 2.44 / 2.35 / 2.43 | 2.47 / 2.32 / 2.31 | 5.30 / 4.97 / 5.19 |
+    | `aircraft-hangar` | 4.06 MB | 3.1–3.3 MB | 0.12M | 1.55 s | 0.84 / 0.83 / 0.80 | 0.88 / 0.88 / 0.80 | 2.96 / 2.55 / 2.62 |
+
+    With its windows transmissive the court was 4.7–5.0 ms on High and 7.9–8.1 on Extreme.
 - ⚠️ **A MODEL CAN BE GENERATED IN THE REPO, AND `grb` IS** (2026-11-04; `GeneratedModelVenue`,
   `scripts/venue-models/grb/`, research and every source in `docs/venues/grb.md`). The GRB's Hall B3 as
   the FTC used it at the 2026 Championship, built from measured numbers (GRB's vector CAD, FIRST's 2026
@@ -204,19 +245,9 @@ geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by 
     and back are velour skirting with seeded irregular folds (`drapeSheet`).
   - Measured on the dev PC's 4070 Ti SUPER at 1080p: the whole frame 2.2–2.8 ms GPU on High (gym
     0.6–0.8), 4.0–4.1 on Ultra, 5.2–6.2 on Extreme (gym 2.1–2.7); 4.81 MB once, 4.13M triangles.
-- ⚠️ **THE SPLAT TRIAL (`SplatVenue`, `scene/renderSplatVenue.ts`, Spark 2.4.0).** A captured room in the
-  file's own format (SOG/SPZ/PLY), placed by the row's `transform`, drawn from High up when the row has
-  no model, through the same procedural-first swap. Spark is its own lazy chunk (`splatvenue`, 939 KB
-  gz: its sorter's wasm is inlined). Lighting is baked into a capture, so: a `ShadowMaterial` catcher
-  (±60 in round the field) takes the robots' shadows; one `SplatEdit` hides the captured floor under
-  the field's footprint (its fuzz pokes through the mat) and every splat inside `cameraRoom` above the
-  floor's fuzz (`splatHiddenBoxes`, `graphics/venueRoom.ts`), so the convex-room rule holds by
-  construction; and Spark's renderer is drawn FIRST among the transparents (`renderOrder` −1000)
-  because three sorts transparent objects whole, so the field's polycarbonate blends over the room.
-  ⚠️ A Spark box SDF reads its SCALE AS THE HALF-SIZE: a full-size scale hid the whole capture. Checked
-  in Chromium on a synthetic capture (floor, walls, a floater in the camera room): floor kept, floater
-  gone, mat clean, shadow on the captured floor; 4M splats cost 7.9 ms of GPU per frame at 1920 × 1080
-  on the dev PC's GPU. Waiting on the DFK Arena file (superspl.at needs a login); no splat row ships.
+- **THE SPLAT TRIAL IS GONE (owner, 2026-11-04: "I dont want the rest").** Spark (a 939 KB gz chunk)
+  and its renderer, row type, bundle route and checks were removed with the badminton hall's source;
+  the RENDER lane fails if a splat renderer or the `@sparkjsdev/spark` dependency comes back.
 
 **NOTHING A VENUE DRAWS STANDS IN FRONT OF THE PLAY (2026-11-01).** Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or just look weird." Captured offscreen from every in-match camera (driver fitted and height-accurate on 16:9, 21:9, 4:3 and both phone shapes, chase, orbit and free at their limits, overhead). The procedural venues' blockers and their fixes are below under the venue rules; the RENDER lane's `venueSightChecks` sweeps every in-match eye (`sweepMatchEyes`) through the real camera code against every part a venue builds.
 
@@ -1098,8 +1129,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       Extreme 2.53 → 2.66; Low, now multisampled, 0.04 → 0.09. At Ultra's 4K the decode is 0.19 ms
       and the second resolve most of the rest. Resolving DEPTH on every resolve was 0.18 ms that
       nothing read (`resolveDepthBuffer: false` on the scene target now). A transparent mesh that
-      neither casts nor receives is left out of the opaque half rather than muted (a splat venue
-      is millions of splats); muting the rest costs 0.02 ms. CPU: one more `render` call, +0.1 to
+      neither casts nor receives is left out of the opaque half rather than muted; muting the rest
+      costs 0.02 ms. CPU: one more `render` call, +0.1 to
       0.3 ms, with the world matrices not walked twice. Memory: nothing new on High and up; Low's
       first target is 18 MB (32 bytes a pixel at 0.6 MP), Medium's 4x is 29 MB more.
     - ⚠️ **AT DPR 2, AN OFFSCREEN CAPTURE RESAMPLES EVEN A NATIVE CANVAS.** Under device emulation

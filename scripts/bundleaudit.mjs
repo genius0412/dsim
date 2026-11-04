@@ -73,10 +73,6 @@
  *                `renderScene.ts`'s `import('./renderModelVenue')` when a modeled venue is picked
  *                from High up. Matched by FILENAME. The venue files themselves are static files
  *                under `public/venues/`, not chunks.
- *   splatvenue — BIOBUZZ 3D's SPLAT VENUE TRIAL (`renderSplatVenue-*.js`, 2026-11-04): Spark 2.4.0
- *                (MIT), the Gaussian-splat renderer, with its sorter's wasm inlined, reached only
- *                through `renderScene.ts`'s `import('./renderSplatVenue')` when a splat row is picked
- *                from High up. Matched by FILENAME. The capture itself is a static file.
  *   bay        — BIOBUZZ 3D's BAY (`renderBay-*.js`, 2026-10-11): the hardware under a robot's deck on
  *                High (drive motors, hubs, battery, leads) and the layout and lead router that place
  *                it, reached only through `renderRobots.ts`'s `import('./renderBay')` the first time a
@@ -217,9 +213,6 @@ function routeFor(file, buf) {
   // here would recognise it. If a future chunking ever merged it into the scene chunk, the name
   // would change and the `scene` marker below would claim it, which is the right answer.
   if (/^renderPost-[^/]*\.js$/.test(base)) return 'postfx';
-  // three's post-processing `Pass` base class, split into its own 0.4 KB file once Spark (the splat
-  // venue, 2026-11-04) imported it too: it is the post chunk's, fetched with whichever comes first
-  if (/^Pass-[^/]*\.js$/.test(base)) return 'postfx';
   // The physical-materials chunk (the `materials` row), by FILENAME for the same reason: Vite
   // names it after `renderSurfaces.ts`, its `renderSurface*.ts` helpers are merged into it (only
   // it imports them), and it imports three.js from `renderScene-*.js` rather than containing it.
@@ -230,8 +223,6 @@ function routeFor(file, buf) {
   if (/^renderXR-[^/]*\.js$/.test(base)) return 'xr';
   // The modeled venue loader and the Basis transcoder KTX2Loader fetches, by FILENAME (route table)
   if (/^renderModelVenue-[^/]*\.js$/.test(base) || /^basis_transcoder-[^/]*\.(js|wasm)$/.test(base)) return 'venuemodel';
-  // The splat venue trial (Spark), by FILENAME (route table)
-  if (/^renderSplatVenue-[^/]*\.js$/.test(base)) return 'splatvenue';
   // THE ROBOT IMPORTER, by FILENAME (see the route table). `engineLoader-*.js` exists only in the
   // measurement build, where the loader is an entry of its own; in the app it is inlined.
   // `geometry-*.js` is the measurement code (`src/robotImport/geometry.ts`) once the editor and the
@@ -720,9 +711,6 @@ const BASELINE = {
   // Lazy: fetched only when a modeled venue is drawn (High and up), the wasm only when its first KTX2
   // texture is decoded.
   venuemodel: { gzip: 287.81 * 1000 },
-  // 2026-11-04: NEW, MEASURED: Spark 2.4.0 and the splat venue's loader, 939.05 KB, nearly all of it
-  // Spark (its sorter's wasm is inlined as base64). Lazy: fetched only when a splat row is drawn.
-  splatvenue: { gzip: 939.05 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.

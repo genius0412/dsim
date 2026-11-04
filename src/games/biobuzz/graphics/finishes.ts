@@ -513,6 +513,10 @@ export const VENUE_FLOOR_FINISH: Record<EnvironmentId, FinishId> = {
   arena: 'sportsVinyl',
   // the procedural stand-in's ground (Low/Medium, and while the model loads): the GRB's slab
   grb: 'sealedConcrete',
+  // the three downloaded models' procedural stand-ins: a stage's deck, a court, a hangar's slab
+  'events-stage': 'sportsVinyl',
+  'basketball-court': 'mapleFloor',
+  'aircraft-hangar': 'sealedConcrete',
   gym: 'mapleFloor',
   workshop: 'sealedConcrete',
   overcast: 'outdoorAggregate',
