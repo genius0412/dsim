@@ -7262,6 +7262,167 @@ async function main(): Promise<void> {
     check('feed/db: another game has an empty feed of its own', (await repo.recentRecords({ game: 'decode', balanceVersion: BV, since: null })).length === 0);
   }
 
+  // -------------------------------------------- the prod → alpha sync (scripts/sync-alpha-db.ts)
+  /* Two more databases, both on every migration, as the production and alpha branches are right
+     after a promotion. Production is wrapped so ANY write statement reaching it throws: the sync
+     must only ever read there. */
+  {
+    const { syncAlpha } = await import('./sync-alpha-db');
+    const prodDb = new PGlite();
+    const alphaDb = new PGlite();
+    await prodDb.waitReady;
+    await alphaDb.waitReady;
+    for (const d of [prodDb, alphaDb]) {
+      setPoolForTests(adapt(d));
+      await migrate();
+    }
+    setPoolForTests(adapt(db));
+    const prodWrites: string[] = [];
+    const prodRaw = await adapt(prodDb).connect();
+    const prodConn = {
+      query: (text: string, params?: unknown[]) => {
+        if (/^\s*(insert|update|delete|create|alter|drop|truncate|grant|copy|merge)\b/i.test(text)) {
+          prodWrites.push(text.slice(0, 60));
+          throw new Error('dbtest: a write reached production');
+        }
+        return prodRaw.query(text, params);
+      },
+    };
+    const alphaConn = await adapt(alphaDb).connect();
+    const RP_PROD = '00000000-0000-4000-8000-0000000000a1'; // a log only production has
+    const RP_BOTH = '00000000-0000-4000-8000-0000000000a2'; // a log from before the branch
+    const seed = async (d: PGlite, sql: string) => d.exec(sql);
+    const both = `
+      create schema neon_auth;
+      create table neon_auth."user" (id uuid primary key, email text, "emailVerified" boolean not null);
+      insert into replays (id, format, balance_version, seed, ticks, setups, tracks)
+        values ('${RP_BOTH}', 1, 5, 1, 1, '[]', '[]');`;
+    await seed(prodDb, `${both}
+      insert into neon_auth."user" values ('00000000-0000-4000-8000-00000000000c', 'c@x', true);
+      insert into seasons (game, balance_version, act, active) values ('biobuzz', 4, 1, false), ('biobuzz', 5, 2, true);
+      insert into profiles (user_id, handle, username, settings, role) values
+        ('00000000-0000-4000-8000-00000000000c', 'Shared', 'shared', '{"from":"prod"}', null),
+        ('u-tester', 'Tester', 'tester', '{"from":"prod"}', null),
+        ('u-prodonly', 'Prod only', 'taken', '{"from":"prod"}', null);
+      insert into replays (id, format, balance_version, seed, ticks, setups, tracks)
+        values ('${RP_PROD}', 1, 5, 2, 1, '[]', '[]');
+      insert into records (id, user_id, mode, drivetrain, score, balance_version, replay_id, game) values
+        ('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-00000000000c', 'solo', 'mecanum', 120, 5, '${RP_PROD}', 'biobuzz'),
+        ('00000000-0000-4000-8000-0000000000b2', 'u-tester', 'solo', 'tank', 90, 5, '${RP_BOTH}', 'biobuzz');
+      insert into matches (id, mode, balance_version) values ('00000000-0000-4000-8000-0000000000d1', '1v1', 5);
+      insert into match_participants (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after) values
+        ('00000000-0000-4000-8000-0000000000d1', '00000000-0000-4000-8000-00000000000c', 'red', 'mecanum', 50, true, 1500, 1520),
+        ('00000000-0000-4000-8000-0000000000d1', 'u-prodonly', 'blue', 'tank', 40, false, 1500, 1480);
+      insert into elo_ratings (user_id, mode, game, act, rating) values ('00000000-0000-4000-8000-00000000000c', '1v1', 'biobuzz', 2, 1600);
+      insert into reward_grants (id, user_id, grant_key, source) values
+        ('00000000-0000-4000-8000-0000000000e1', '00000000-0000-4000-8000-00000000000c', 'stargazer', 'star'),
+        ('00000000-0000-4000-8000-0000000000e2', '00000000-0000-4000-8000-00000000000c', 'team:dev', 'team');
+      insert into reward_periods (game, board, period) values ('biobuzz', 'ranked_act', 1);`);
+    await seed(alphaDb, `${both}
+      insert into neon_auth."user" values ('00000000-0000-4000-8000-00000000000c', 'c@x', false);
+      insert into seasons (game, balance_version, act, active) values ('biobuzz', 4, 1, true), ('biobuzz', 6, 1, true);
+      insert into profiles (user_id, handle, username, settings, role) values
+        ('00000000-0000-4000-8000-00000000000c', 'Old name', 'shared', '{"from":"alpha"}', null),
+        ('u-tester', 'Tester', 'tester', '{"from":"alpha import"}', null),
+        ('u-staff', 'Staff', 'staff', '{"from":"alpha"}', 'admin'),
+        ('u-alphaonly', 'Alpha only', 'taken', '{"from":"alpha"}', null);
+      insert into access_members (user_id, grp, granted_by) values ('u-tester', 'beta', 'owner'), ('u-alphaonly', 'beta', 'owner');
+      update maintenance set active = true, scope = 'site', bypass = '{beta,dev,contributor}' where id = 1;
+      insert into records (id, user_id, mode, drivetrain, score, balance_version, game) values
+        ('00000000-0000-4000-8000-0000000000b3', 'u-alphaonly', 'solo', 'mecanum', 77, 5, 'biobuzz');
+      insert into elo_ratings (user_id, mode, game, act, rating) values
+        ('00000000-0000-4000-8000-00000000000c', '1v1', 'biobuzz', 2, 1400),
+        ('u-tester', '1v1', 'biobuzz', 1, 1450);
+      insert into reward_grants (id, user_id, grant_key, source) values
+        ('00000000-0000-4000-8000-0000000000e3', '00000000-0000-4000-8000-00000000000c', 'stargazer', 'star'),
+        ('00000000-0000-4000-8000-0000000000e4', 'u-tester', 'team:beta', 'team');`);
+    const rowsOf = async (d: PGlite, sql: string) => (await d.query<Record<string, unknown>>(sql)).rows;
+    const fingerprint = async (d: PGlite) =>
+      JSON.stringify(
+        await rowsOf(d, `select (select count(*) from profiles) p, (select count(*) from records) r, (select count(*) from reward_grants) g,
+          (select string_agg(user_id || ':' || coalesce(username, '-') || ':' || settings::text, ',' order by user_id) from profiles) u`),
+      );
+    const prodBefore = await fingerprint(prodDb);
+
+    // A DRY RUN writes nothing and still counts
+    const alphaBefore = await fingerprint(alphaDb);
+    const dry = await syncAlpha(prodConn, alphaConn, { apply: false, pageSize: 2 });
+    const dryProfiles = dry.tables.find((t) => t.table === 'profiles');
+    check('sync: a dry run writes nothing to alpha', (await fingerprint(alphaDb)) === alphaBefore);
+    check('sync: a dry run counts per table (profiles: 1 new, 2 overwritten, 2 alpha-only)',
+      dryProfiles?.insert === 1 && dryProfiles.update === 2 && dryProfiles.alphaOnly === 2, JSON.stringify(dryProfiles));
+    check('sync: with matching migrations nothing is refused', dry.refused.length === 0, dry.refused.join('; '));
+
+    // THE APPLY
+    const run = await syncAlpha(prodConn, alphaConn, { apply: true, pageSize: 2 });
+    check('sync: applies in one go when both have the same migrations', run.applied && run.refused.length === 0, run.refused.join('; '));
+    check('sync: not one write statement reached production', prodWrites.length === 0, prodWrites.join(' | '));
+    check('sync: production is unchanged', (await fingerprint(prodDb)) === prodBefore);
+    const prof = async (id: string) => (await rowsOf(alphaDb, `select * from profiles where user_id = '${id}'`))[0];
+    const shared = await prof('00000000-0000-4000-8000-00000000000c');
+    check('sync: a production row overwrites the alpha copy (prod wins)',
+      shared?.handle === 'Shared' && JSON.stringify(shared?.settings) === '{"from":"prod"}');
+    check('sync: a production-only account is copied', (await prof('u-prodonly'))?.username === 'taken');
+    check('sync: a tester keeps their alpha settings (imported robots live there)',
+      JSON.stringify((await prof('u-tester'))?.settings) === '{"from":"alpha import"}');
+    check('sync: staff keep their alpha role and settings', (await prof('u-staff'))?.role === 'admin');
+    const alphaOnly = await prof('u-alphaonly');
+    check('sync: an alpha-only account survives', !!alphaOnly && alphaOnly.handle === 'Alpha only');
+    check('sync: ...and gives up a username production gives another account', alphaOnly?.username === null);
+    const grants = await rowsOf(alphaDb, `select user_id, grp from access_members order by user_id`);
+    check('sync: every alpha access grant survives, the alpha-only tester’s included',
+      grants.map((g) => `${g.user_id}:${g.grp}`).join() === 'u-alphaonly:beta,u-tester:beta');
+    const lock = (await rowsOf(alphaDb, `select active, scope from maintenance where id = 1`))[0];
+    check('sync: the alpha lockdown is untouched', lock?.active === true && lock?.scope === 'site');
+    const recs = await rowsOf(alphaDb, `select id::text, replay_id::text from records order by id`);
+    const rec = (id: string) => recs.find((r) => r.id === id);
+    check('sync: production records copy over', !!rec('00000000-0000-4000-8000-0000000000b1') && !!rec('00000000-0000-4000-8000-0000000000b2'));
+    check('sync: an alpha-only record survives', !!rec('00000000-0000-4000-8000-0000000000b3'));
+    check('sync: a record whose log is not on alpha is copied with no replay',
+      rec('00000000-0000-4000-8000-0000000000b1')?.replay_id === null);
+    check('sync: a record whose log alpha has keeps it', rec('00000000-0000-4000-8000-0000000000b2')?.replay_id === RP_BOTH);
+    check('sync: matches and their participants copy over',
+      Number((await rowsOf(alphaDb, `select count(*)::int n from match_participants where match_id = '00000000-0000-4000-8000-0000000000d1'`))[0].n) === 2);
+    const elo = await rowsOf(alphaDb, `select user_id, act, rating from elo_ratings order by user_id`);
+    check('sync: a rating on both takes production’s, an alpha-only one stays',
+      elo.find((e) => e.user_id === '00000000-0000-4000-8000-00000000000c')?.rating === 1600 && elo.find((e) => e.user_id === 'u-tester')?.rating === 1450);
+    const rg = await rowsOf(alphaDb, `select id::text, grant_key from reward_grants order by grant_key, id`);
+    check('sync: a grant both have for one account and key is production’s, once',
+      rg.filter((g) => g.grant_key === 'stargazer').map((g) => g.id).join() === '00000000-0000-4000-8000-0000000000e1');
+    check('sync: team badges stay per deployment (production’s not copied, the alpha’s kept)',
+      rg.some((g) => g.grant_key === 'team:beta') && !rg.some((g) => g.grant_key === 'team:dev'));
+    const seasons = await rowsOf(alphaDb, `select balance_version, active from seasons where game = 'biobuzz' order by 1`);
+    check('sync: production’s season roll wins (its active season, the rest inactive)',
+      seasons.map((s) => `${s.balance_version}:${s.active}`).join() === '4:false,5:true,6:false');
+    check('sync: Neon Auth’s verified flag is corrected from production',
+      (await rowsOf(alphaDb, `select "emailVerified" v from neon_auth."user"`))[0]?.v === true);
+    const withLogs = await syncAlpha(prodConn, alphaConn, { apply: true, replays: true, pageSize: 2 });
+    check('sync: --replays copies the missing log and points the record back at it',
+      withLogs.extras['replay logs copied'] === 1 &&
+        (await rowsOf(alphaDb, `select replay_id::text r from records where id = '00000000-0000-4000-8000-0000000000b1'`))[0]?.r === RP_PROD);
+    const again = await syncAlpha(prodConn, alphaConn, { apply: true, pageSize: 2 });
+    check('sync: a second run changes nothing', again.tables.every((t) => t.insert === 0 && t.update === 0), JSON.stringify(again.tables.filter((t) => t.insert || t.update)));
+
+    // A SCHEMA MISMATCH REFUSES: alpha has run a migration production has not
+    await alphaDb.exec(`insert into schema_migrations (name) values ('9999_alpha_ahead.sql');
+      update profiles set handle = 'edited on alpha' where user_id = 'u-prodonly';`);
+    const before = await fingerprint(alphaDb);
+    const refused = await syncAlpha(prodConn, alphaConn, { apply: true });
+    check('sync: refuses when alpha’s applied migrations differ from production’s',
+      !refused.applied && refused.refused.some((r) => r.includes('9999_alpha_ahead.sql')), refused.refused.join('; '));
+    check('sync: ...and writes nothing', (await fingerprint(alphaDb)) === before &&
+      (await prof('u-prodonly'))?.handle === 'edited on alpha');
+    await alphaDb.exec(`delete from schema_migrations where name = '9999_alpha_ahead.sql'; alter table records add column if not exists alpha_extra int;`);
+    const cols = await syncAlpha(prodConn, alphaConn, { apply: true });
+    check('sync: refuses when a copied table’s columns differ', !cols.applied && cols.refused.some((r) => r.includes('alpha_extra')), cols.refused.join('; '));
+    const dryMismatch = await syncAlpha(prodConn, alphaConn, { apply: false });
+    check('sync: a dry run on a mismatch still counts, and says it would refuse',
+      dryMismatch.refused.length > 0 && dryMismatch.tables.length > 0);
+    check('sync: still nothing written to production', prodWrites.length === 0 && (await fingerprint(prodDb)) === prodBefore);
+    await prodDb.close();
+    await alphaDb.close();
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

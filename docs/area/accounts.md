@@ -168,6 +168,41 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   behind an editor was by itself enough to keep the game server — which auto-stops when idle —
   permanently awake.
 
+### The alpha's own database: only the sign-in is shared (2026-11-04)
+
+⚠️ **"YOUR ACCOUNT WORKS ON THE ALPHA" IS HALF TRUE, AND THE CLOSED SCREEN SAID IT FOR WEEKS.**
+Both apps' `NEON_AUTH_URL` is the same Neon Auth project, so the same email and password sign in
+on both. Everything DSIM stores is per database, and `dsim-alpha`'s `DATABASE_URL` is the `alpha`
+Neon branch, a child of `production` taken 2026-08-10 (one project, `dsim`). So the profile,
+username, settings and saved robots (`profiles.settings`), records, ratings, match history,
+badges and rewards on the alpha were the 2026-08-10 copy, plus whatever was done on the alpha.
+- **`neon_auth` on the alpha branch is FROZEN at the branch point.** Neon Auth writes only the
+  production branch's `neon_auth` schema: on 2026-11-04 production had 2,998 users and the alpha
+  664, none created after 2026-08-10. The email gate reads `neon_auth."user"."emailVerified"`
+  first (`authEmailVerified`), so on the alpha, where `REQUIRE_VERIFIED_EMAIL` is on, an address
+  verified since then reads UNVERIFIED (50 accounts that day). The sync below corrects that one
+  column; between syncs it drifts again.
+- **`scripts/sync-alpha-db.ts` (`npm run sync:alpha`) copies production into the alpha**, one
+  way, right after a promotion (runbook: `docs/deploy.md`). Upsert, production wins on the same
+  key, ONE alpha transaction, production read in a read-only snapshot. It refuses unless both
+  have applied the same migrations, which is only true right after a promotion.
+  - **Copied:** `seasons`, `profiles`, `elo_ratings`, `elo_history`, `user_activity`,
+    `account_standing`, `matches`, `match_participants`, `records`, `reward_periods`,
+    `reward_grants` (not `team:*`), and `neon_auth."user"."emailVerified"`. Replay logs only with
+    `--replays` (3.4 GB on production against ~100 MB for the rest); without it a copied row
+    whose log is not on the alpha has no replay, the state a season purge leaves.
+  - **Never written:** `access_members`, `maintenance`, `banners`, `admin_audit`, `admin_notes`,
+    `announcements`, competitions, analytics, notices, reports, presence. Every alpha-only row
+    in a copied table stays too, so tester access cannot be lost by a sync, even half-way.
+  - **Kept from the alpha on a shared row:** `profiles.role` (each app's own `ADMIN_USER_IDS`
+    projection) and, for an account IN USE there (an access group or staff), `profiles.settings`:
+    the robot importer is alpha-only, so a tester's imported robots exist only in that blob.
+  - **Bigserial tables are not copied**: after the split both branches hand out the same id to
+    different rows, so "same key" stops meaning "same row".
+  - **Deletions do not propagate.** A record cleared or an account deleted on production stays on
+    the alpha; the dry run counts the alpha-only rows. A username production gives another account
+    is cleared on the alpha holder, who picks a new one at the prompt.
+
 ### Lockdown and access groups (0023, 0051)
 
 The one `maintenance` row is the LOCKDOWN. `server/siteState.ts` caches it (10 s) and owns the
@@ -195,8 +230,9 @@ rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
   `access.username`, and the alpha's closed screen says to send that name to the team (the 20 s
   status poll lifts the screen after the grant). The alpha signs in with production's Neon Auth
   project, so "Create account" with an address that plays on playdsim.com is refused; the closed
-  screen says the playdsim.com account works there, and the sign-up failure says to sign in if
-  the address already has one, without confirming that it does.
+  screen says the playdsim.com email and password work there and that the alpha keeps its own
+  profile, records and robots (see "The alpha's own database" below), and the sign-up failure
+  says to sign in if the address already has one, without confirming that it does.
 - **ACCESS GROUPS** (`access_members`): `beta`, `dev`, `contributor`, keyed by USER ID and
   cascading with the profile. Granted by player tag (`resolvePlayerTag`: id, then @username,
   then display name; a shared display name is an error naming the @usernames), listed with
@@ -544,6 +580,8 @@ second "is this account allowed" check. It is OFF unless `REQUIRE_VERIFIED_EMAIL
 email/password account that exists today is unverified and the sender domain is an owner dashboard
 action (`docs/deploy.md` §4) — default-on would refuse ranked to everybody with no way to fix it.
 `null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently. When the JWT carries no claim, the answer comes from Neon Auth's own `neon_auth."user"` row in the game DB (`authEmailVerified`), then `/get-session`. ON on `dsim-alpha` since 2026-09-25.
+⚠️ On the alpha that row is a frozen copy (see "The alpha's own database"): a `false` there can be
+stale, and only a `null` falls through to `/get-session`.
 ⚠️ **THE RECORD GATE LIVES IN `server/index.ts`, NOT `Room.startMatch`** beside the duo-record
 guard it belongs with — `server/room.ts` is bundled into the LAN host worker and may not import
 `jose` or read `process.env`.

@@ -269,3 +269,7 @@ if [ "$deploy_rc" -ne 0 ]; then
 fi
 
 echo "==> done. verify: fly machine list -a $APP"
+# A promotion of alpha is the one moment both databases have applied the same migrations, so it
+# is when the alpha's copy of production's profiles and records can be refreshed (docs/deploy.md).
+# A reminder only: the script refuses on its own while alpha's migrations are still ahead.
+echo "    if this deploy promoted alpha: npm run sync:alpha -- --env <file with NEON_API_KEY>  (dry run, then --apply)"

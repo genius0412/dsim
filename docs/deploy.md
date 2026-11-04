@@ -39,7 +39,9 @@ fly apps create dsim-alpha
 **2. Make a Neon branch for it.** In the Neon console → your project → **Branches** →
 **New branch** off `main`, name it `alpha`. Copy its pooled connection string. A branch is
 copy-on-write, so this costs approximately nothing and starts as a snapshot of production —
-which is what you want: real profiles to test standing and reports against.
+which is what you want: real profiles to test standing and reports against. It does not stay
+one: from then on only `npm run sync:alpha` brings production's data over (see "Syncing the
+alpha database" below).
 
 **3. Set the secrets** (the same ones production has, with the alpha database):
 ```bash
@@ -51,7 +53,9 @@ fly secrets set -a dsim-alpha \
 ```
 Double-check `DATABASE_URL` before the first deploy: it is the one setting that decides
 whether alpha writes land in the preview or in production. Migrations run at boot, so the
-alpha branch self-migrates on the first start.
+alpha branch self-migrates on the first start. The shared `NEON_AUTH_URL` is why the same
+email and password sign in on both sites; everything else about an account (profile, records,
+ratings, saved robots, badges) lives in each app's own database.
 
 **4. Deploy:**
 ```bash
@@ -110,11 +114,44 @@ the production config under whichever app name it was given.
 | always-warm machine | yes (the matchmaker) | no — idles to zero, wakes on connect |
 | VM | shared-cpu-4x (iad) | shared-cpu-2x |
 | database | production Neon | the `alpha` Neon branch |
+| accounts | the one Neon Auth project | same sign-in; its own profiles and records, copied from production by `npm run sync:alpha` |
 | alpha results persist | never | yes |
 | robot importer | closed | open (`SERVER_CHANNEL`/`VITE_APP_CHANNEL` = `alpha`; robot-import.md "Where it ships") |
 
 Cost is close to zero while nobody is testing: the machine stops when idle and Fly bills
 only the rootfs.
+
+### Syncing the alpha database from production (after every promotion)
+
+The alpha's profiles, records, ratings, saved robots and badges are its own copy. Bring
+production's over right AFTER alpha has been promoted to production and the production server
+is running that build: that is the one moment both databases have applied the same migrations.
+At any other time alpha's migrations are ahead and the script refuses. Rules and the table list:
+`docs/area/accounts.md`, "The alpha's own database".
+
+```bash
+# from an alpha checkout with node_modules; the env file supplies NEON_API_KEY
+npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env            # dry run: counts, writes nothing
+npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env --apply    # one transaction on alpha
+```
+
+- **Read the dry run first.** Per table: production rows, alpha rows, new, overwritten, same,
+  and alpha-only rows kept; then the usernames it would clear, the grants it would replace and
+  the replay logs it would leave behind. The last line says whether `--apply` would refuse.
+- **Production is never written.** Its session is opened with `default_transaction_read_only=on`
+  and read in one `REPEATABLE READ, READ ONLY` transaction; the script checks both and refuses
+  to write a branch that is the project's default.
+- **Tester access is never touched.** Access groups, the lockdown, banners and the admin log are
+  not in the copy, and every alpha-only account, record and grant is kept.
+- **Restore point.** Before writing, `--apply` asks Neon for a snapshot of the alpha branch and
+  prints alpha's WAL position with the exact rollback `curl` (Neon restores the alpha branch to
+  that point and keeps the synced state under another name). The WAL rollback works for the
+  project's history window, 6 hours on the current plan; the snapshot is kept 14 days (restore it
+  from the Neon console, Backup & restore).
+- **`--replays`** also copies the replay logs of copied records and matches: about 1.8 GB the
+  first time (2026-11-04), then only new ones. Without it those rows have no Watch button on the
+  alpha.
+- No restart is needed: the alpha server reads the copied rows on its next query.
 
 ### Protocol compatibility still matters, just less
 
@@ -280,6 +317,10 @@ The order, then:
    runs in): `./scripts/fly-deploy.sh`, or the announce-first `announce-deploy.sh` if
    `/api/presence` shows anyone online.
 3. Watch `/health` and the Fly logs for the first BIOBUZZ room to open in 3D.
+4. Once the production server has booted (its migrations apply at boot), sync the alpha
+   database from production: `npm run sync:alpha -- --env D:/Projects/2ddecodesim/.env`, read
+   the dry run, then the same with `--apply` (see "Syncing the alpha database" above). This
+   step belongs to EVERY promotion of alpha to production, not only this one.
 
 ⚠️ **Every BIOBUZZ record and personal best set before this publish disappears from the
 boards** — not deleted, filtered: they are `'2d'` rows on a board that now shows `'3d'`.
