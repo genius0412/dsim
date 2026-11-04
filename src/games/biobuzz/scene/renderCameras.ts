@@ -596,6 +596,9 @@ export interface BbCameras {
   setRoom(room: CameraRoom | null): void;
 }
 
+/** the overhead camera's height, inches (orthographic: the height sets only what its near plane cuts) */
+export const OVERHEAD_EYE_Z = 800;
+
 /** scratch target for `driver.lookAt` — one object, mutated every frame, never reallocated. */
 const scratchTarget = new THREE.Vector3();
 
@@ -802,11 +805,14 @@ export function createCameras(): BbCameras {
     overhead.right = halfW;
     overhead.top = halfH;
     overhead.bottom = -halfH;
-    overhead.near = 1;
+    // ⚠️ THE NEAR PLANE CUTS AT THE ROOM'S CEILING (2026-11-04). This eye stands at z 800, above
+    // any modeled venue's roof, which would otherwise be all it sees. Nothing stands between the
+    // room's top and the field (`graphics/venueRoom.ts`), so the cut takes the roof and nothing else.
+    overhead.near = room && Number.isFinite(room.max[2]) ? Math.max(1, OVERHEAD_EYE_Z - room.max[2]) : 1;
     overhead.far = 4000;
     // the ortho box just set IS the virtual image; the window onto it is the whole canvas
     applyViewOffset(overhead);
-    overhead.position.set(0, 0, 800);
+    overhead.position.set(0, 0, OVERHEAD_EYE_Z);
     // screen-up on the overhead view is world "forward" (into the field from the driver's own
     // wall), matching `worldToScreen`'s rotation for the 2D view
     overhead.up.set(fwd.x, fwd.y, 0);

@@ -204,6 +204,37 @@ export interface VenueSpec {
   gridded?: boolean;
 }
 
+/**
+ * ── A MODELED VENUE (2026-11-04) ───────────────────────────────────────────────────────────
+ *
+ * A real room as real geometry: a CC BY 4.0 glTF (Sketchfab), processed by
+ * `scripts/venue-models/build.mjs` into one GLB under `public/venues/` (meshopt geometry, KTX2
+ * textures, inches, z up, the field's floor at the origin) and drawn by `scene/renderModelVenue.ts`
+ * from High up. Nothing is projected: every surface is the model's own mesh with its own PBR
+ * material, lit and shadowed by the row's `rig` like the procedural rooms. The row's `venue` is still
+ * built first and stays on Low/Medium, while the file loads, and if it cannot.
+ */
+export interface ModelVenue {
+  /** the processed GLB, relative to the app's base URL (`venueAssetUrl` versions it by `bytes`) */
+  file: string;
+  bytes: number;
+  /** triangles in the file, for the picker's note and the docs */
+  tris: number;
+  /** the room the orbit and free eyes stay inside (`BbCameras.setRoom`): its walls, its ceiling
+   * or the front of its stands, whichever is nearer, less a margin, field inches */
+  cameraRoom: { min: readonly [number, number, number]; max: readonly [number, number, number] };
+  /** what the source is and who made it, for the credit line (CC BY 4.0 requires all four) */
+  title: string;
+  page: string;
+  authors: readonly { name: string; role: string }[];
+  license: 'CC BY 4.0';
+  licenseUrl: string;
+  /** another credited work drawn inside this one (a model placed in the scene by its author) */
+  includes?: readonly { title: string; page: string; author: string }[];
+}
+
+export const CC_BY_4 = 'https://creativecommons.org/licenses/by/4.0/';
+
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -223,6 +254,8 @@ export interface EnvironmentDef {
    * `RoomEnvironment` for `room` (whose background is the THEMED letterbox colour), the fetched
    * image for an `hdri` entry. */
   look?: EnvironmentLook;
+  /** a MODELED venue (`ModelVenue`), drawn from High up; `venue` stands everywhere else */
+  model?: ModelVenue;
   /** absent for a procedural entry: it is generated, it has no author and it costs nothing. */
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
@@ -721,6 +754,10 @@ export function hdriEnvironments(): EnvironmentDef[] {
 /** WHO TO CREDIT for an environment that is somebody's work — a fetched HDRI — or null for a
  * generated one. What the Contributors page renders, per entry. */
 export function environmentCredit(e: EnvironmentDef): {
+  /** the credited work's own title, where it is not the row's name (a model's) */
+  title?: string;
+  /** where it was published: a CC BY credit names it */
+  source: string;
   page: string;
   authors: readonly { name: string; role: string }[];
   license: string;
@@ -729,9 +766,21 @@ export function environmentCredit(e: EnvironmentDef): {
 } | null {
   if (e.hdri) {
     const h = e.hdri;
-    return { page: h.page, authors: h.authors, license: h.license, licenseUrl: h.licenseUrl, use: 'BIOBUZZ 3D environment lighting' };
+    return { source: 'Poly Haven', page: h.page, authors: h.authors, license: h.license, licenseUrl: h.licenseUrl, use: 'BIOBUZZ 3D environment lighting' };
+  }
+  if (e.model) {
+    const m = e.model;
+    return { title: m.title, source: 'Sketchfab', page: m.page, authors: m.authors, license: m.license, licenseUrl: m.licenseUrl, use: `BIOBUZZ 3D venue: ${e.name}` };
   }
   return null;
+}
+
+/** THE VERSION A VENUE FILE'S URL CARRIES — its size in bytes, as its row states it. `vercel.json`
+ * serves `/venues` immutable for a year, which is only safe because a rebuilt file comes with a new
+ * URL; the RENDER lane checks every row's byte count against the file on disk. */
+export function venueFileBytes(path: string): number | undefined {
+  const clean = path.replace(/^\/+/, '');
+  return BB_ENVIRONMENTS.find((e) => e.model?.file === clean)?.model?.bytes;
 }
 
 /** every environment that is somebody's photograph — what the Contributors page credits. */

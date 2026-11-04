@@ -458,7 +458,11 @@ import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
 import type { SceneOverlayView } from '../../src/games/module';
 import { THIRD_PARTY } from '../../src/contributors';
 // -- the retired photographed venues (2026-11-04) and the venue sight lines (2026-11-01) -----------
-import { creditedEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { CC_BY_4, creditedEnvironments, environmentCredit, venueFileBytes } from '../../src/games/biobuzz/graphics/environments';
+// -- the modeled venues (2026-11-04) ----------------------------------------------------------------
+import { bbModelDetail, venueAssetUrl } from '../../src/games/biobuzz/graphics/venueFiles';
+import { growClearBox, inVenueBox, insetCameraRoom, obstacleTris, triTouchesBox, trisInBox, type VenueBox, type VenueTris } from '../../src/games/biobuzz/graphics/venueRoom';
+import { MODEL_MAX_TRIES, modelBlocked, modelTexturesOf, noteModelFailure, prepareModelVenue } from '../../src/games/biobuzz/scene/renderModelVenue';
 import { POSES as MENU_POSES } from '../../src/ui/menuStagePoses';
 import { VENUE_OVERHEAD_LAYER } from '../../src/games/biobuzz/scene/renderVenue';
 import type { EnvironmentDef } from '../../src/games/biobuzz/graphics/environments';
@@ -1937,6 +1941,7 @@ export function renderChecks(check: Check): void {
   importedRobotChecks(check);
   fixedShooterChecks(check);
   retiredVenueChecks(check);
+  modelVenueChecks(check);
   venueSightChecks(check);
   hidpiBudgetChecks(check);
 }
@@ -14733,7 +14738,7 @@ function retiredVenueChecks(check: Check): void {
   const pictures = shipped.filter((f) => /\.(webp|jpe?g|png|hdr|exr|avif|ktx2)$/i.test(f));
   check('retired venues: no picture is left in public/venues (nothing to project)', pictures.length === 0, pictures.join(', '));
   check('retired venues: the projection renderer and its pipeline are gone', !existsSync(join(SCENE_DIR, 'renderPhotoVenue.ts')) && !existsSync(join(root, 'scripts', 'venues')));
-  const importers = walkTs(join(root, 'src')).filter((f) => /renderPhotoVenue|photoEnvironments|venueFileBytes/.test(readFileSync(f, 'utf8')));
+  const importers = walkTs(join(root, 'src')).filter((f) => /renderPhotoVenue|photoEnvironments/.test(readFileSync(f, 'utf8')));
   check('retired venues: nothing under src/ names the projection path', importers.length === 0, importers.map((f) => relative(root, f)).join(', '));
   for (const t of GFX_TIERS) {
     for (const [from, to] of Object.entries(RETIRED_ENVIRONMENTS)) {
@@ -14750,7 +14755,7 @@ function retiredVenueChecks(check: Check): void {
   check('retired venues: a Custom keeps its other rows', custom.preset === 'custom' && custom.settings.shadows === 'off' && custom.settings.environment === 'workshop', JSON.stringify(custom.settings));
   check(
     'retired venues: every credited environment is on the Contributors page',
-    creditedEnvironments().every((e) => THIRD_PARTY.some((a) => a.name === e.name)),
+    creditedEnvironments().every((e) => THIRD_PARTY.some((a) => a.name === (environmentCredit(e)!.title ?? e.name))),
   );
   check(
     'moved defaults: every moved row names a value no tier it covers still defaults to',
@@ -14761,6 +14766,220 @@ function retiredVenueChecks(check: Check): void {
     'moved defaults: every write stamps the revision, so a migration runs once',
     /localStorage\.setItem\(GRAPHICS_KEY, JSON\.stringify\(\{ \.\.\.next, rev: GFX_STATE_REV \}\)\)/.test(settingsSrc),
   );
+}
+
+/** a box as triangles (12), field inches */
+function boxTris(lo: readonly number[], hi: readonly number[]): number[] {
+  const c = (i: number): number[] => [i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]];
+  const quads = [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]];
+  const out: number[] = [];
+  for (const [a, b, d, e] of quads) out.push(...c(a), ...c(b), ...c(d), ...c(a), ...c(d), ...c(e));
+  return out;
+}
+
+/** a modeled venue's triangles in the file's own placement (the `venue` node's transform applied),
+ *  parsed through three's GLTFLoader with meshopt, its KTX2 textures stood in for (geometry only) */
+async function parseModelTris(file: string): Promise<VenueTris | null> {
+  try {
+    const buf = readFileSync(join(root, 'public', file));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    // the textures are not what this lane reads: any KTX2 image becomes an empty texture
+    loader.setKTX2Loader({ load: (_u: string, onLoad: (t: THREE.Texture) => void) => onLoad(new THREE.Texture()), detectSupport() {} } as never);
+    const scene = await new Promise<THREE.Group | null>((res) => loader.parse(ab, '', (g) => res(g.scene), () => res(null)));
+    if (!scene) return null;
+    scene.updateMatrixWorld(true);
+    const pos: number[] = [];
+    const v = new THREE.Vector3();
+    scene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const g = m.geometry as THREE.BufferGeometry;
+      const p = g.getAttribute('position');
+      const idx = g.getIndex();
+      const n = idx ? idx.count : p.count;
+      for (let i = 0; i < n; i++) {
+        v.fromBufferAttribute(p, idx ? idx.getX(i) : i).applyMatrix4(m.matrixWorld);
+        pos.push(v.x, v.y, v.z);
+      }
+    });
+    return { positions: pos, indices: null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * EVERY MODELED VENUE KEEPS THE PLAY IN SIGHT (2026-11-04, `graphics/venueRoom.ts`). The rule is the
+ * clear box: no triangle above the floor inside the row's `cameraRoom`, and every in-match eye inside
+ * it (the orbit and free eyes are held there; the driver, chase and menu eyes must already be). Run
+ * here on a placeholder room the build's own placeholder mirrors, so the rule is proven to fail
+ * where it should, and on every shipped row's real file.
+ */
+function modelRoomVerdict(tris: VenueTris, room: VenueBox): { inside: number; eyesOut: string[]; eyes: number } {
+  const inside = trisInBox(tris, obstacleTris(tris, -0.75), room).length;
+  const eyesOut: string[] = [];
+  let eyes = 0;
+  sweepMatchEyes(room, (label, cam) => {
+    eyes++;
+    // a top-down (orthographic) eye stands above every roof: what holds for it is that its near
+    // plane cuts at the room's ceiling, so the roof is not drawn
+    if ((cam as THREE.OrthographicCamera).isOrthographicCamera) {
+      const o = cam as THREE.OrthographicCamera;
+      if (o.position.z - o.near > room.max[2] + 0.5 && eyesOut.length < 6) eyesOut.push(`${label} cuts at ${(o.position.z - o.near).toFixed(0)}`);
+      return;
+    }
+    if (!inVenueBox(cam.position.toArray(), { min: [room.min[0] - 0.5, room.min[1] - 0.5, room.min[2] - 0.5], max: [room.max[0] + 0.5, room.max[1] + 0.5, room.max[2] + 0.5] })) {
+      if (eyesOut.length < 6) eyesOut.push(`${label} ${cam.position.toArray().map((x) => x.toFixed(0)).join(',')}`);
+    }
+  });
+  return { inside, eyesOut, eyes };
+}
+
+const MODEL_FILES: Map<string, VenueTris | null> = new Map(
+  await Promise.all(BB_ENVIRONMENTS.filter((e) => e.model).map(async (e) => [e.id, await parseModelTris(e.model!.file)] as const)),
+);
+
+function modelVenueChecks(check: Check): void {
+  // ---- the clear box, on a placeholder hall: 1900 × 1100 in, a 390-in roof, a stand along −y, a
+  //      pillar at (550, 300) and a floor that is not an obstacle
+  const hall: number[] = [
+    ...boxTris([-950, -550, -4.7], [950, 550, -0.75]),
+    ...boxTris([-950, -560, -0.75], [950, -550, 400]),
+    ...boxTris([-950, 550, -0.75], [950, 560, 400]),
+    ...boxTris([-960, -550, -0.75], [-950, 550, 400]),
+    ...boxTris([950, -550, -0.75], [960, 550, 400]),
+    ...boxTris([-950, -550, 390], [950, 550, 394]),
+    ...boxTris([-394, -551, -0.75], [394, -394, 78]),
+    ...boxTris([538, 288, -0.75], [562, 312, 393]),
+  ];
+  const soup: VenueTris = { positions: hall, indices: null };
+  const obstacles = obstacleTris(soup, -0.75);
+  // the floor slab (12 triangles) and the bottom face of every standing box (6 boxes × 2) lie on it
+  check('venue model: the floor is not an obstacle, everything standing is', obstacles.length === hall.length / 9 - 24, `${obstacles.length} of ${hall.length / 9}`);
+  const seed: VenueBox = { min: [-130, -130, -0.75], max: [130, 130, 110] };
+  const limit: VenueBox = { min: [-900, -900, -0.75], max: [900, 900, 900] };
+  const clear = growClearBox(soup, obstacles, seed, limit);
+  check(
+    'venue model: the clear box stops at the stand (−y), the pillar (+y), the roof, and the limit along x',
+    Math.abs(clear.min[1] + 394) < 1.01 && Math.abs(clear.max[1] - 288) < 1.01 && Math.abs(clear.max[2] - 390) < 1.01 && clear.min[0] === -900 && clear.max[0] === 900,
+    JSON.stringify(clear),
+  );
+  check('venue model: ...and nothing standing touches it', trisInBox(soup, obstacles, clear).length === 0);
+  let threw = false;
+  try {
+    growClearBox(soup, obstacles, { min: [500, 250, 0], max: [600, 350, 100] }, limit);
+  } catch {
+    threw = true;
+  }
+  check('venue model: a seed that is not clear (the pillar in the field) is refused, not grown around', threw);
+  check(
+    'venue model: the triangle-box test sees a sliver that crosses a box with every corner outside it',
+    triTouchesBox(-100, 0, 50, 100, 0, 50, 0, 0, 500, { min: [-10, -10, 40], max: [10, 10, 60] }) &&
+      !triTouchesBox(-100, 50, 50, 100, 50, 50, 0, 50, 500, { min: [-10, -10, 40], max: [10, 10, 60] }),
+  );
+  const room = insetCameraRoom(clear, 24);
+  const good = modelRoomVerdict(soup, room);
+  check('venue model: in the placeholder hall no triangle stands inside the camera room', good.inside === 0, String(good.inside));
+  check('venue model: ...and every in-match eye (driver, chase, orbit, free, menu) stands inside it', good.eyes > 400 && good.eyesOut.length === 0, `${good.eyes} eyes; out: ${good.eyesOut.join(' | ')}`);
+  const tight = modelRoomVerdict(soup, { min: [-200, -200, -0.75], max: [200, 200, 150] });
+  check('venue model: ...while a room too small for the driver and chase eyes is caught', tight.eyesOut.length > 0, tight.eyesOut.join(' | '));
+  const blocked = modelRoomVerdict({ positions: [...hall, ...boxTris([150, -10, -0.75], [170, 10, 300])], indices: null }, room);
+  check('venue model: ...and a pillar standing inside the camera room is caught', blocked.inside > 0, String(blocked.inside));
+
+  // ---- the tiers: from High up, with the high mesh detail
+  check(
+    'venue model: drawn on High, Ultra and Extreme only, and only with the high mesh detail',
+    !bbModelDetail({ meshDetail: 'high' }, 'low') && !bbModelDetail({ meshDetail: 'high' }, 'medium') &&
+      bbModelDetail({ meshDetail: 'high' }, 'high') && bbModelDetail({ meshDetail: 'high' }, 'extreme') && !bbModelDetail({ meshDetail: 'low' }, 'ultra'),
+  );
+
+  // ---- the loader's preparation, on a scene that carries what a Sketchfab file can
+  {
+    const src = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ map: new THREE.Texture(), normalMap: new THREE.Texture(), roughnessMap: new THREE.Texture() });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+    mesh.castShadow = true;
+    src.add(mesh, new THREE.PointLight(), new THREE.PerspectiveCamera());
+    const g = prepareModelVenue(src, 8);
+    let lights = 0;
+    let cams = 0;
+    g.traverse((o) => {
+      if ((o as THREE.Light).isLight) lights++;
+      if ((o as THREE.Camera).isCamera) cams++;
+    });
+    const texs = modelTexturesOf(g);
+    check('venue model: the file’s own lights and cameras are dropped (the row’s rig lights the room)', lights === 0 && cams === 0);
+    check('venue model: every mesh receives the sun’s shadow and casts none', mesh.receiveShadow && !mesh.castShadow);
+    check(
+      'venue model: every texture slot is collected for freeing (disposeObject3D frees only map) and takes the anisotropy row',
+      texs.length === 3 && texs.every((t) => t.anisotropy === 8) && (g.userData.textures as THREE.Texture[]).length === 3 && g.userData.modelVenue === true,
+    );
+  }
+
+  // ---- a failed file: two tries, then five minutes of not asking
+  {
+    const url = 'venues/__smoke__.glb';
+    const t = 1_000_000;
+    const fresh = !modelBlocked(url, t);
+    noteModelFailure(url, t);
+    const once = modelBlocked(url, t);
+    for (let i = 1; i < MODEL_MAX_TRIES; i++) noteModelFailure(url, t);
+    check('venue model: one failure is a blip, two stop the requests, and the count expires', fresh && !once && modelBlocked(url, t + 1) && !modelBlocked(url, t + 5 * 60_000 + 1));
+  }
+
+  // ---- credits: CC BY 4.0 needs the title, the author, a link and the licence, and the same for a work inside
+  {
+    const def = {
+      ...environmentDef('gym'),
+      id: 'gym' as EnvironmentId,
+      model: {
+        file: 'venues/x.glb', bytes: 1, tris: 1, cameraRoom: { min: [0, 0, 0], max: [1, 1, 1] },
+        title: 'Aircraft Hangar', page: 'https://sketchfab.com/3d-models/a', authors: [{ name: 'jimbogies', role: 'Model' }],
+        license: 'CC BY 4.0', licenseUrl: CC_BY_4, includes: [{ title: 'DA42', page: 'https://sketchfab.com/3d-models/b', author: 'helijah' }],
+      },
+    } as EnvironmentDef;
+    const c = environmentCredit(def)!;
+    check(
+      'venue model: a model is credited by its title, author, page and CC BY 4.0 with the licence link, from Sketchfab',
+      c.title === 'Aircraft Hangar' && c.authors[0].name === 'jimbogies' && c.page.startsWith('https://sketchfab.com/') && c.license === 'CC BY 4.0' && c.licenseUrl === CC_BY_4 && c.source === 'Sketchfab',
+    );
+    const contrib = readFileSync(join(root, 'src', 'contributors.ts'), 'utf8');
+    check('venue model: the Contributors page also credits each work a model includes', /e\.model\?\.includes/.test(contrib) && /licenseUrl: CC_BY_4/.test(contrib));
+  }
+
+  // ---- the wiring, by source
+  {
+    const sc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    check('venue model: the loader is a lazy chunk (renderScene imports it only dynamically)', /import\('\.\/renderModelVenue'\)/.test(sc) && !/from '\.\/renderModelVenue'/.test(sc));
+    check('venue model: the procedural venue goes in first, the model is fetched only from High up', /this\.swapVenue\(buildBiobuzzVenue\(def\.venue, detail\), def\);\s*\n\s*this\.venueKey = key;\s*\n\s*if \(model\) this\.loadModel\(def, key\);/.test(sc) && /def\.model && bbModelDetail\(s, this\.tier\)/.test(sc));
+    check('venue model: the cameras are held in the model’s room from the moment it is picked', /this\.cameras\.setRoom\(model \? model\.cameraRoom : venueCameraRoom\(def\.venue, detail\)\)/.test(sc));
+    check('venue model: a swap frees the old venue’s model textures, and so does the scene', (sc.match(/freeModelTextures\(/g) ?? []).length >= 5);
+    check('venue model: an export waits for the model like the light map', /this\.envLoading, this\.modelLoading\]/.test(sc));
+    check('venue model: the probe projects against the model’s room when it is live', /this\.modelLive && def\.model \? def\.model\.cameraRoom : undefined/.test(sc));
+    check('venue model: the minimap cuts at the model’s ceiling like the overhead camera', /this\.pipCamera\.near = Number\.isFinite\(top\) \? Math\.max\(1, 300 - top\) : 1;/.test(sc));
+    const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
+    check('venue model: the dev server serves KTX2Loader from node_modules, so its transcoder URL resolves', /optimizeDeps: \{ exclude: \['three\/examples\/jsm\/loaders\/KTX2Loader\.js'\] \}/.test(vite));
+  }
+
+  // ---- every SHIPPED model: its file, its version, and the play in sight from every eye
+  for (const e of BB_ENVIRONMENTS.filter((x) => x.model)) {
+    const m = e.model!;
+    const path = join(root, 'public', m.file);
+    const onDisk = existsSync(path) ? statSync(path).size : -1;
+    check(`venue model ${e.id}: ${m.file} is the ${m.bytes} bytes its row states`, onDisk === m.bytes, String(onDisk));
+    check(`venue model ${e.id}: its URL is versioned by those bytes`, venueFileBytes(m.file) === m.bytes && venueAssetUrl(m.file).endsWith(`?v=${m.bytes}`));
+    check(`venue model ${e.id}: CC BY 4.0, credited`, m.license === 'CC BY 4.0' && m.licenseUrl === CC_BY_4 && m.authors.length > 0 && /^https:\/\/sketchfab\.com\/3d-models\//.test(m.page));
+    check(`venue model ${e.id}: a painted dome lights it and a procedural venue stands in for it`, !!e.look && !e.hdri && !!e.venue);
+    const tris = MODEL_FILES.get(e.id) ?? null;
+    check(`venue model ${e.id}: the file parses`, tris !== null && tris.positions.length > 0);
+    if (!tris) continue;
+    const v = modelRoomVerdict(tris, m.cameraRoom);
+    check(`venue model ${e.id}: no triangle stands inside its camera room`, v.inside === 0, String(v.inside));
+    check(`venue model ${e.id}: every in-match eye stands inside it`, v.eyesOut.length === 0, v.eyesOut.join(' | '));
+  }
+  check('venue model: a model file under public/venues is a row’s, and a row’s model is a file there', readdirSync(join(root, 'public', 'venues')).filter((f) => f.endsWith('.glb')).every((f) => BB_ENVIRONMENTS.some((e) => e.model?.file === `venues/${f}`)));
 }
 
 /**

@@ -57,8 +57,8 @@ const OUTDOOR_SKY_IN = 5000;
 
 /** a box in field inches */
 export interface ProbeBox {
-  min: [number, number, number];
-  max: [number, number, number];
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
 }
 
 /** the proxy box the reflections are projected against, in field inches — plain numbers, so the

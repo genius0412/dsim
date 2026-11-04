@@ -199,4 +199,9 @@ export default defineConfig({
   // random quick-tunnel subdomain, so a fresh tunnel never needs a config edit.
   server: { allowedHosts: ['.trycloudflare.com'] },
   preview: { allowedHosts: ['.trycloudflare.com'] },
+  // KTX2Loader finds its Basis transcoder with `new URL('../libs/basis/…', import.meta.url)`. The
+  // dev server's dependency pre-bundle moves the loader into its cache, where that path 404s and the
+  // worker evaluates the SPA's HTML (a modeled venue, `renderModelVenue.ts`). Served from
+  // node_modules, the path holds; the production build emits the transcoder as hashed assets either way.
+  optimizeDeps: { exclude: ['three/examples/jsm/loaders/KTX2Loader.js'] },
 });

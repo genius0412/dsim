@@ -1,0 +1,92 @@
+/**
+ * THE MODELED VENUES' SOURCES (2026-11-04) — what `build.ts` reads and how it places each one.
+ * Every source is CC BY 4.0 on Sketchfab and is downloaded BY THE OWNER (Sketchfab needs a login),
+ * as the glTF download, into `D:\Projects\dsim\venue-sources\<uid>\` (the zip, or it extracted).
+ * Raw downloads never go in git; only `public/venues/<id>.glb` does.
+ *
+ * The placement numbers are null until the file has been looked at: `build.ts <id> --inspect` prints
+ * its nodes, bounds and textures, in the source's own frame (glTF is y up; `build.ts` turns it z up
+ * first, so `fieldAt` and `floor` are read in that z-up frame, metres).
+ */
+
+export interface VenueModelSource {
+  /** the environment id the row will carry */
+  id: string;
+  /** the Sketchfab uid, which is also the folder under `venue-sources/` */
+  uid: string;
+  title: string;
+  author: string;
+  page: string;
+  /** source units per metre's worth of glTF unit, when the author modelled at another scale (1 =
+   * the glTF's metres are metres) */
+  scale: number;
+  /** where the field's centre stands, x and y in the source's z-up frame, metres (null: not read) */
+  fieldAt: readonly [number, number] | null;
+  /** the source's floor height at that point, metres (null: not read) */
+  floor: number | null;
+  /** turn about z so the drivers' line of sight (field x) runs along the room, degrees */
+  yawDeg: number;
+  /** node names (regex) removed before anything else: another author's model, a camera rig */
+  drop: readonly RegExp[];
+  /** the longest texture side kept, px; a texture larger than this is resized before KTX2 */
+  maxTexture: number;
+  /** another credited work inside this one, kept (credited) unless `drop` removes it */
+  includes?: readonly { title: string; author: string; page: string }[];
+}
+
+export const VENUE_MODEL_SOURCES: readonly VenueModelSource[] = [
+  {
+    id: 'aircraft-hangar',
+    uid: 'a5b17ba2e3494873abd313f720097614',
+    title: 'Aircraft Hangar',
+    author: 'jimbogies',
+    page: 'https://sketchfab.com/3d-models/a5b17ba2e3494873abd313f720097614',
+    scale: 1,
+    fieldAt: null,
+    floor: null,
+    yawDeg: 0,
+    // the DA42 is a separate CC BY work (helijah) placed in the hangar; it is removed rather than
+    // credited, because it stands where the field goes. If it is kept, move it to `includes`.
+    drop: [/da.?42/i],
+    maxTexture: 2048,
+  },
+  {
+    id: 'basketball-court',
+    uid: '943a9bc962974d02aa34592084687c3c',
+    title: 'Indoor Basketball Court',
+    author: 'NGUYENNGHIAKK',
+    page: 'https://sketchfab.com/3d-models/943a9bc962974d02aa34592084687c3c',
+    scale: 1,
+    fieldAt: null,
+    floor: null,
+    yawDeg: 0,
+    drop: [],
+    maxTexture: 2048,
+  },
+  {
+    id: 'sports-hall',
+    uid: '128c39da6a8e4a8ba169bf87e2d4fa91',
+    title: 'Basketball Badminton Hall',
+    author: 'flaviafabbri',
+    page: 'https://sketchfab.com/3d-models/128c39da6a8e4a8ba169bf87e2d4fa91',
+    scale: 1,
+    fieldAt: null,
+    floor: null,
+    yawDeg: 0,
+    drop: [],
+    maxTexture: 2048,
+  },
+  {
+    id: 'events-stage',
+    uid: 'd74b3baa5a74430fb3717cfa3d883476',
+    title: 'Venue stage for great events',
+    author: 'QuarizonStudio',
+    page: 'https://sketchfab.com/3d-models/d74b3baa5a74430fb3717cfa3d883476',
+    scale: 1,
+    fieldAt: null,
+    floor: null,
+    yawDeg: 0,
+    drop: [],
+    maxTexture: 2048,
+  },
+];

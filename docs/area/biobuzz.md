@@ -118,6 +118,38 @@ now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 ⚠️ **NO PHOTOGRAPH IS PROJECTED ONTO GEOMETRY, ANYWHERE (owner decision, 2026-11-04).** From 2026-10-10 five environments (`school-hall`, `events-hall`, `hangar`, `court`, `quad`) were Poly Haven panoramas projected onto an approximate room: a box, then MoGe-2 relief with furniture painted out, a keep-out shader, a stretch limit and a photographed floor tile. A projection is correct only from the lens that took it; every camera here (driver, chase, orbit, free, overhead, the menu stage, VR) stands somewhere else, so every one warped it. Five rounds of tuning (2026-10-21 to 2026-11-04) each came back "still distorted", then "EXTREMELY warped". The rows, `renderPhotoVenue.ts`, `scripts/venues/` and every file under `public/venues/` were deleted, not switched off. A stored pick reads as the painted room the row named as its stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`: halls → `gym`, hangar → `workshop`, court and quad → `overcast`), and High, Ultra and Extreme (the replay export's column) default to `gym`. A real place comes back as real geometry (a modeled room or a splat capture), never as a picture on a mesh. The RENDER lane's `retiredVenueChecks` holds all of it, including that no picture file is left in `public/venues/`.
 
+⚠️ **MODELED VENUES (2026-11-04): REAL GEOMETRY FROM HIGH UP** (`ModelVenue` on an environment row,
+`scene/renderModelVenue.ts`, `scripts/venue-models/`). A CC BY 4.0 Sketchfab glTF, built into one
+`public/venues/<id>.glb`: z up, inches, the field's centre at the origin on a clear stretch of the
+room's floor at the procedural ground's height (−0.75 in), lights/cameras/animations removed, meshopt
+geometry, KTX2 textures (UASTC normals, ETC1S colour in sRGB). No decimation by rule. Rules:
+- **Drawn on High, Ultra and Extreme with the high mesh detail only** (`bbModelDetail`). The row's
+  procedural `venue` is built first, stands while the file loads, stays on Low/Medium, and stays if the
+  file fails (one quality line; two tries, then five minutes: `modelBlocked`). The loader is a lazy
+  chunk (`venuemodel` in `bundleaudit`: loader 25 KB gz, Basis transcoder 263 KB gz, fetched only
+  then); upload and shader link happen before the swap. The row's painted `look` and `rig` light it.
+- ⚠️ **NOTHING STANDS BETWEEN AN EYE AND THE FIELD, BY CONSTRUCTION** (`graphics/venueRoom.ts`). The
+  build grows the largest box round the field that no triangle above the floor touches (it refuses a
+  field footprint that is not clear, naming the meshes in the way); its 24-in inset is the row's
+  `cameraRoom`. A box is convex, so a sight line from any eye inside it to the field cannot be
+  blocked. The orbit and free eyes are held in it from the moment the row is picked; the driver,
+  chase and menu eyes are not held, so the RENDER lane sweeps all 505 (`sweepMatchEyes`) and fails if
+  one stands outside it, and fails if any triangle stands inside it.
+- ⚠️ **THE TOP-DOWN CAMERAS CUT AT THE CEILING.** The overhead eye is at z 800 and the minimap's at
+  300, above any real roof, which was all they would see. Their near planes start at the room's top
+  (`OVERHEAD_EYE_Z`, `pipCamera.near`); the clear box guarantees nothing below it hides the field.
+- **Textures are freed with the venue** (`userData.textures`): `disposeObject3D` frees only `map`.
+- **Dev server**: KTX2Loader finds its transcoder by `new URL(..., import.meta.url)`, which Vite's
+  dependency pre-bundle breaks; `vite.config.ts` excludes the loader from it. Production emits the
+  transcoder as hashed assets either way.
+- **Credits**: `environmentCredit` gives a model's title, author, page and CC BY 4.0, and the
+  Contributors page credits any work a model includes (`ModelVenue.includes`). `public/venues/README.md`
+  lists every source.
+- **Adding one**: `scripts/venue-models/README.md` (inspect, place, build, add the row, sweep, capture).
+  As of 2026-11-04 no model row ships: the four sources and the DFK Arena splat wait on the owner's
+  downloads (both sites need a login). The splat trial (Spark, a lazy chunk) is built when its file is
+  in `venue-sources/f5fa43b3/`.
+
 **NOTHING A VENUE DRAWS STANDS IN FRONT OF THE PLAY (2026-11-01).** Owner: "The scenes inside the actual game sometimes block the game view or are also distorted or just look weird." Captured offscreen from every in-match camera (driver fitted and height-accurate on 16:9, 21:9, 4:3 and both phone shapes, chase, orbit and free at their limits, overhead). The procedural venues' blockers and their fixes are below under the venue rules; the RENDER lane's `venueSightChecks` sweeps every in-match eye (`sweepMatchEyes`) through the real camera code against every part a venue builds.
 
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via

@@ -55,6 +55,7 @@ import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, 
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
+import { bbModelDetail, venueAssetUrl } from '../graphics/venueFiles';
 import { createStats, type BbStats } from './renderStats';
 import { loadOptionalChunk } from '../../../optionalChunks';
 /**
@@ -307,6 +308,11 @@ class BiobuzzScene implements GameScene {
   /** the environment's light-gathering map in flight (settled either way) — what `assetsSettled`
    * waits on, so an export does not start on the room's ambient and cut to the HDRI a second in */
   private envLoading: Promise<void> = Promise.resolve();
+  /** a MODELED venue's file in flight (settled either way, `renderModelVenue.ts`), for the same
+   * reason: an export must not start in the procedural room and cut to the model a second in */
+  private modelLoading: Promise<void> = Promise.resolve();
+  /** whether the live venue is the modeled one (its room box is then the probe's) */
+  private modelLive = false;
 
   private cssW = 1;
   private cssH = 1;
@@ -619,13 +625,19 @@ class BiobuzzScene implements GameScene {
     // It is added BEFORE `tuneMaterials` so the ground's own texture gets the anisotropy row,
     // which is the most grazing-angle surface in the scene once a driver camera is on it.
     const detail = bbVenueDetail(s, this.tier);
-    const key = `${def.id}:${detail}`;
+    // a MODELED venue (`renderModelVenue.ts`) from High up: the procedural one stands while it
+    // loads, stays on Low/Medium, and stays if the file cannot load
+    const model = def.model && bbModelDetail(s, this.tier) ? def.model : null;
+    const key = `${def.id}:${detail}:${model ? 'model' : ''}`;
     if (key !== this.venueKey) {
       this.swapVenue(buildBiobuzzVenue(def.venue, detail), def);
       this.venueKey = key;
+      if (model) this.loadModel(def, key);
     }
-    // the orbit and free cameras stop in front of the seating banks, where a venue has any
-    this.cameras.setRoom(venueCameraRoom(def.venue, detail));
+    // the orbit and free cameras stay inside a modeled room from the moment it is picked (not
+    // when it lands, which would jump a zoomed-out camera in), and stop in front of a procedural
+    // venue's seating banks, where it has any
+    this.cameras.setRoom(model ? model.cameraRoom : venueCameraRoom(def.venue, detail));
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
     this.syncSurfaces();
@@ -651,8 +663,10 @@ class BiobuzzScene implements GameScene {
       this.withSurfaces('could not be removed', (sf) => sf.revertVenue(old));
       this.scene.remove(old);
       disposeObject3D(old);
+      freeModelTextures(old);
     }
     this.venue = next;
+    this.modelLive = next.userData.modelVenue === true;
     this.withSurfaces('could not be applied', (sf) => sf.applyVenue(next, def));
     this.probeDirty = true;
     /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
@@ -663,6 +677,48 @@ class BiobuzzScene implements GameScene {
        camera stands at a driver station, side-on like the driver camera. */
     applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free, ...(this.xrRig ? [this.xrRig.camera] : [])]);
     this.scene.add(next);
+  }
+
+  /**
+   * FETCH a modeled venue and swap it in when it lands, if the scene still wants that same venue
+   * (`key`). Fire-and-forget like `env.apply`; a failure keeps the procedural venue standing, says
+   * so once, and is remembered (`modelBlocked`) so a scene build does not ask again. The upload and
+   * the shader link happen before the swap, so the frame the room appears on does not hitch.
+   */
+  private loadModel(def: EnvironmentDef, key: string): void {
+    const model = def.model!;
+    const aniso = Math.min(this.settings.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
+    const stale = (): boolean => this.disposed || this.venueKey !== key;
+    this.modelLoading = import('./renderModelVenue')
+      .then(async (m) => {
+        if (m.modelBlocked(venueAssetUrl(model.file))) return;
+        const room = await m.loadModelVenue(model, this.renderer, aniso);
+        if (stale()) {
+          disposeObject3D(room);
+          freeModelTextures(room);
+          return;
+        }
+        try {
+          for (const t of m.modelTexturesOf(room)) this.renderer.initTexture(t);
+          await this.renderer.compileAsync(room, this.cameras.active, this.scene);
+        } catch {
+          /* the first draw pays instead */
+        }
+        // the await is a window in which the player can have picked another venue or left
+        if (stale()) {
+          disposeObject3D(room);
+          freeModelTextures(room);
+          return;
+        }
+        this.swapVenue(room, def);
+        this.tuneMaterials();
+        this.renderer.shadowMap.needsUpdate = true;
+      })
+      .catch((err: unknown) => {
+        if (stale()) return;
+        console.warn(`BIOBUZZ 3D: the ${def.name} model failed to load; keeping the generated room.`, err);
+        this.onQualityEvent?.(`Couldn’t load the ${def.name} model. Showing a generated room instead.`);
+      });
   }
 
   /**
@@ -1228,7 +1284,7 @@ class BiobuzzScene implements GameScene {
       const hidden = this.probeHidden();
       const def = environmentDefFor(this.settings.environment);
       this.withSurfaces('failed while capturing reflections', (sf) => {
-        sf.recapture(this.renderer, this.scene, hidden, def);
+        sf.recapture(this.renderer, this.scene, hidden, def, this.modelLive && def.model ? def.model.cameraRoom : undefined);
       });
     }
 
@@ -1356,6 +1412,9 @@ class BiobuzzScene implements GameScene {
     this.pipCamera.top = ext;
     this.pipCamera.bottom = -ext;
     this.pipCamera.position.set(0, 0, 300);
+    // the near plane cuts at a modeled room's ceiling, like the overhead camera's (`renderCameras.ts`)
+    const top = this.modelLive ? (environmentDefFor(this.settings.environment).model?.cameraRoom.max[2] ?? Infinity) : Infinity;
+    this.pipCamera.near = Number.isFinite(top) ? Math.max(1, 300 - top) : 1;
     // `up` is the driver's own screen-up in world space (`rot({0,1}, -viewAngle)`), so the
     // minimap is oriented exactly like the 2D map the same player sees when they press `t`
     const theta = -frame.viewAngle;
@@ -1378,9 +1437,9 @@ class BiobuzzScene implements GameScene {
   }
 
   /** `GameScene.assetsSettled`: every imported robot's mesh in `world`, parsed or known absent —
-   * and the environment's light-gathering map, loaded or failed */
+   * and the environment's light-gathering map and a modeled venue's file, loaded or failed */
   assetsSettled(world: World): Promise<void> {
-    return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.envLoading]).then(() => undefined);
+    return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.envLoading, this.modelLoading]).then(() => undefined);
   }
 
   /**
@@ -1445,6 +1504,7 @@ class BiobuzzScene implements GameScene {
         /* teardown carries on: a leak beats a scene that cannot be disposed */
       }
     }
+    if (this.venue) freeModelTextures(this.venue);
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();
@@ -1583,9 +1643,10 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
 /**
  * WARM EVERYTHING A 3D BIOBUZZ SCENE WILL ASK FOR, while the player is on some other screen
  * (`preloadRoomView` → `GameModule.warmScene`; same chunk, same specifier as `scene`). The effects
- * chunks its settings want, the bay chunk if its robots would be High, and the field's file,
- * fetched at low priority so it only fills the cache (the real load then reads it; `/models`
- * revalidates). A generated venue fetches nothing. Idempotent per URL, every failure ignored: the
+ * chunks its settings want, the bay chunk if its robots would be High, and the field's file and a
+ * modeled venue's, fetched at low priority so they only fill the cache (the real load then reads
+ * them; `vercel.json` serves `/venues` immutable, each URL versioned by `venueAssetUrl`, and
+ * `/models` revalidates). A generated venue fetches nothing. Idempotent per URL, every failure ignored: the
  * scene's own load is the error path. Only where a match is a click away (`preloadRoomView`).
  */
 const warmed = new Set<string>();
@@ -1600,4 +1661,15 @@ export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().setting
     void fetch(url, { priority: 'low' } as RequestInit).catch(() => {});
   };
   get(resolveGlbUrl('models/biobuzz', settings.meshDetail));
+  const model = environmentDefFor(settings.environment).model;
+  if (model && bbModelDetail(settings, tier)) get(venueAssetUrl(model.file));
+}
+
+/** a modeled venue's textures: `disposeObject3D` frees only `map`, and a glTF material fills up to
+ * a dozen slots (`renderModelVenue.ts` lists them on the group as it prepares it) */
+function freeModelTextures(group: THREE.Object3D): void {
+  const texs = group.userData.textures as THREE.Texture[] | undefined;
+  if (!texs) return;
+  for (const t of texs) t.dispose();
+  group.userData.textures = [];
 }

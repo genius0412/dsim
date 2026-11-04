@@ -1,4 +1,4 @@
-import { creditedEnvironments, environmentCredit } from './games/biobuzz/graphics/environments';
+import { CC_BY_4, creditedEnvironments, environmentCredit } from './games/biobuzz/graphics/environments';
 
 /**
  * The Contributors page's roster: the team, the people whose work is in the GitHub repo, and
@@ -250,18 +250,31 @@ const FIELD_CAD_CREDIT: ThirdPartyAsset = {
 /**
  * ── WHY THE HDRI PART IS DERIVED AND NOT TYPED OUT ─────────────────────────────────────────
  * These entries are built from `BB_ENVIRONMENTS` (`src/games/biobuzz/graphics/environments.ts`),
- * which is the list the Graphics section's environment picker renders from. So adding an HDRI
- * credits it by CONSTRUCTION: there is no second list to remember to update, and the
+ * which is the list the Graphics section's environment picker renders from. So adding an HDRI or a
+ * modeled venue credits it by CONSTRUCTION: there is no second list to remember to update, and the
  * failure this prevents — a shipped asset with no credit on the credits page — is the kind
  * nobody notices until somebody outside the project does.
  *
  * Poly Haven's assets are CC0, which requires no attribution at all. It is given anyway, with
- * the author roles the API reports, because "we did not have to" is not a reason not to.
+ * the author roles the API reports, because "we did not have to" is not a reason not to. A modeled
+ * venue is CC BY 4.0, which does require it: its title, its author, a link to it and the licence,
+ * and the same for any work its author placed inside it (`ModelVenue.includes`).
  */
-const HDRI_CREDITS: ThirdPartyAsset[] = creditedEnvironments().map((e) => {
-  // a fetched HDRI (`environmentCredit`)
+const HDRI_CREDITS: ThirdPartyAsset[] = creditedEnvironments().flatMap((e) => {
   const c = environmentCredit(e)!;
-  return { name: e.name, credits: c.authors, license: c.license, licenseUrl: c.licenseUrl, page: c.page, use: c.use, source: 'Poly Haven' };
+  const own: ThirdPartyAsset = { name: c.title ?? e.name, credits: c.authors, license: c.license, licenseUrl: c.licenseUrl, page: c.page, use: c.use, source: c.source };
+  const inside = (e.model?.includes ?? []).map(
+    (w): ThirdPartyAsset => ({
+      name: w.title,
+      credits: [{ name: w.author, role: 'Model' }],
+      license: 'CC BY 4.0',
+      licenseUrl: CC_BY_4,
+      page: w.page,
+      use: `Inside the BIOBUZZ 3D venue: ${e.name}`,
+      source: 'Sketchfab',
+    }),
+  );
+  return [own, ...inside];
 });
 
 export const THIRD_PARTY: ThirdPartyAsset[] = [

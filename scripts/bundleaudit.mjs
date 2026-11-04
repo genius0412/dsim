@@ -67,6 +67,12 @@
  *                `import('./renderPost')` and fetched only when one of them is on. It imports
  *                three.js from the scene chunk rather than carrying it, so it has none of the
  *                `scene` markers and would otherwise land in `other`. Matched by FILENAME.
+ *   venuemodel — BIOBUZZ 3D's MODELED VENUE LOADER (`renderModelVenue-*.js` and three's Basis
+ *                transcoder, `basis_transcoder-*.js|wasm`, 2026-11-04): KTX2Loader and the
+ *                transcoder it fetches from this build's own assets, reached only through
+ *                `renderScene.ts`'s `import('./renderModelVenue')` when a modeled venue is picked
+ *                from High up. Matched by FILENAME. The venue files themselves are static files
+ *                under `public/venues/`, not chunks.
  *   bay        — BIOBUZZ 3D's BAY (`renderBay-*.js`, 2026-10-11): the hardware under a robot's deck on
  *                High (drive motors, hubs, battery, leads) and the layout and lead router that place
  *                it, reached only through `renderRobots.ts`'s `import('./renderBay')` the first time a
@@ -215,6 +221,8 @@ function routeFor(file, buf) {
   if (/^renderBay-[^/]*\.js$/.test(base)) return 'bay';
   // The WebXR driver station, by FILENAME for the same reason (see the route table)
   if (/^renderXR-[^/]*\.js$/.test(base)) return 'xr';
+  // The modeled venue loader and the Basis transcoder KTX2Loader fetches, by FILENAME (route table)
+  if (/^renderModelVenue-[^/]*\.js$/.test(base) || /^basis_transcoder-[^/]*\.(js|wasm)$/.test(base)) return 'venuemodel';
   // THE ROBOT IMPORTER, by FILENAME (see the route table). `engineLoader-*.js` exists only in the
   // measurement build, where the loader is an entry of its own; in the app it is inlined.
   // `geometry-*.js` is the measurement code (`src/robotImport/geometry.ts`) once the editor and the
@@ -692,6 +700,11 @@ const BASELINE = {
   // open an `immersive-vr` session. As a static import it took `scene` to 249.12 over its 248.08
   // tolerance line; lazy, `scene` measures 247.99 (alpha was 247.33 before #123 and #119).
   xr: { gzip: 1.77 * 1000 },
+  // 2026-11-04: NEW, MEASURED on the build that introduced it: the loader chunk 25.16 KB (KTX2Loader,
+  // its worker source and Zstandard decoder) and three's Basis transcoder (wasm 247.62 KB, js ~15 KB).
+  // Lazy: fetched only when a modeled venue is drawn (High and up), the wasm only when its first KTX2
+  // texture is decoded.
+  venuemodel: { gzip: 287.81 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.
