@@ -16,6 +16,7 @@ import { CHUNK_RELOAD_KEY } from './storageKeys';
 import { optionalChunkFailed } from './optionalChunks';
 import { appBuild, probePrimary } from './net/env';
 import { dismissBoot } from './ui/screenFade';
+import { AppBoundary } from './ui/AppBoundary';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -136,11 +137,14 @@ function Root() {
         asking ? null : <ClosedScreen />
       ) : ready ? (
         <>
-          {/* Wraps everything because the game screen renders OUTSIDE the app shell
-              (App returns it early), and that is where the ad columns live. */}
-          <AdsProvider>
-            <App />
-          </AdsProvider>
+          {/* a throw anywhere in the app is a card with a way Home, never an empty page (`AppBoundary`) */}
+          <AppBoundary full>
+            {/* Wraps everything because the game screen renders OUTSIDE the app shell
+                (App returns it early), and that is where the ad columns live. */}
+            <AdsProvider>
+              <App />
+            </AdsProvider>
+          </AppBoundary>
           <BannerStack />
           {/* CONTROLLER NAVIGATION. Beside `<App/>` rather than inside it, for the reason the ad
               provider wraps it: the game, lobby, record and ranked screens are returned EARLY and

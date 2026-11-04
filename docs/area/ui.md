@@ -710,6 +710,14 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   match (`.ds-arrive` on `.ds-app`, decided at mount by `bootDone`; never flipped onto a mounted
   element, which would start the fade on a screen already showing). The stage itself does not fade
   on return: its ground is there at once and its field fades in on its own.
+- ⚠️ **NEVER A BLANK SCREEN** (owner, 2026-11-04: a tester left a room and sat on Play's field with
+  no bar, rail or modes; the cause was not reproduced). Two nets. `AppBoundary`: a page that throws
+  shows "Couldn’t show this page." and Back to Home under the bar (reset by the next page), and a
+  throw outside the shell gets a full card whose button reloads Home (`main.tsx`). `useStageWatch`
+  (`shellWatch.ts`) on Home, Play and the popups over Play: when none of the page's own UI is on
+  screen (faded out, hidden, off screen, or under the stage) for 3 s it finishes the shell's
+  fades, removes a boot screen that never left and resets the scroll; 2 s later, still blank, it
+  goes Home, once per page. Both log a warning (`[app]`, `[shell]`). Smoke: "blank page:".
 - ⚠️ **THE FIRST PLAY CLICK** (owner, same day: "Extreme lag when clicking play for the first time").
   Profiled: every card on Play carries a BIOBUZZ 3D picture, made on first sight, and with no builder
   turntable to borrow the batch made a scene of its own at the PLAYER's tier. On Ultra that scene built

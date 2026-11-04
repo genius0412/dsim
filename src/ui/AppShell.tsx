@@ -18,6 +18,8 @@ import { LanBanner } from './LanBanner';
 import { PresenceProvider, QueueCounts } from './QueueCounts';
 import { RAIL_ITEMS } from './NavRail';
 import { bootDone, fadeIn } from './screenFade';
+import { AppBoundary } from './AppBoundary';
+import { useStageWatch } from './shellWatch';
 import type { Presence, RoomInvite } from '../net/api';
 
 export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
@@ -172,6 +174,15 @@ export function AppShell({
     shownPage.current = page;
     fadeIn(mainRef.current);
   }, [page]);
+  // a stage page that shows nothing of its own is brought back, or sent Home (`shellWatch.ts`)
+  const appRef = useRef<HTMLDivElement>(null);
+  useStageWatch(!!stage, page, appRef, () => onNav('home'));
+  // a page that throws says so, under the bar, instead of unmounting the app (`AppBoundary`)
+  const content = (
+    <AppBoundary resetKey={page} onHome={() => onNav('home')}>
+      {children}
+    </AppBoundary>
+  );
   return (
     // ONE poller for the whole shell — every menu that shows queue depth reads this
     // value rather than starting its own (see QueueCounts.tsx)
@@ -179,6 +190,7 @@ export function AppShell({
     <FootContext.Provider value={{ game, onDownload, onContributors, onPrivacy, onTerms, onDonate, onChangelog }}>
     {/* `is-home` is Home OFF the stage (a phone), where the footer is the "More" sheet instead */}
     <div
+      ref={appRef}
       className={`${stage ? `ds-app on-stage stage-${stage}` : home ? 'ds-app is-home' : 'ds-app'}${barNav ? ' has-barnav' : ''}${arrive ? ' ds-arrive' : ''}`}
     >
       <header className="ds-bar">
@@ -273,11 +285,11 @@ export function AppShell({
       {stage === 'setup' ? (
         // THE PLAY PAGE OVER THE STAGE: the robot is the picture, so no page ad under it and no friends
         // panel beside it (owner, 2026-10-18); the banner strip below still runs
-        <main ref={mainRef} className="ds-main ds-main-stage">{children}</main>
+        <main ref={mainRef} className="ds-main ds-main-stage">{content}</main>
       ) : !home ? (
         <div className="ds-body">
           <main ref={mainRef} className={wide ? 'ds-main wide' : 'ds-main'}>
-            {children}
+            {content}
             {/* The SAFE ad inventory: a shell page is not a gameplay page, so
                 there is no clearance rule and no frame budget to protect. It
                 sits BELOW the page content, after the thing the visitor came
@@ -297,7 +309,7 @@ export function AppShell({
         // The home screen deliberately gets NO ad of any kind (no page ad, and no top strip above). It is the first thing a new
         // visitor sees and the page an AdSense reviewer lands on; it should read
         // as a product, not as inventory.
-        <main ref={mainRef} className="ds-main ds-main-home">{children}</main>
+        <main ref={mainRef} className="ds-main ds-main-home">{content}</main>
       )}
 
       {/* floating friend-request / challenge notifications. A live match mounts its own

@@ -18680,6 +18680,56 @@ const recordDrive: CommandSource = (tick) => {
   check('bot swap: a bot seated afterwards does not accept the old request', !!partner(r)?.bot && !partner(r)?.swapReq && !hookStep(r) && roleOf(r, me(r)) === after);
 }
 
+/* NEVER A BLANK SCREEN (owner, 2026-11-04: a tester left a room onto Play's field with no menu at all).
+   The watch's decision (`shellWatch.ts`) and the boundary's reset, plus the wiring that makes them run. */
+{
+  const { pageBlank, watchStep, WATCH_START, BLANK_MS, RETRY_MS, WATCH_EVERY_MS } = await import('../src/ui/shellWatch');
+  const shown = { onScreen: true, visible: true, opacity: 1, underStage: false };
+  check('blank page: one piece of UI on screen is a page', !pageBlank([{ ...shown, opacity: 0 }, shown]));
+  check('blank page: nothing at all is blank', pageBlank([]));
+  check(
+    'blank page: faded out, hidden, off screen or under the stage all count as not shown',
+    pageBlank([{ ...shown, opacity: 0.01 }, { ...shown, visible: false }, { ...shown, onScreen: false }, { ...shown, underStage: true }]),
+  );
+
+  const run = (blanks: boolean[]): string[] => {
+    let s = WATCH_START;
+    return blanks.map((b) => {
+      const step = watchStep(s, b, WATCH_EVERY_MS);
+      s = step.state;
+      return step.action;
+    });
+  };
+  const ticks = (BLANK_MS + RETRY_MS) / WATCH_EVERY_MS;
+  const stuck = run(Array(ticks + 3).fill(true));
+  check(
+    'blank page: repaired once at BLANK_MS, Home once at BLANK_MS + RETRY_MS, then left alone',
+    stuck.indexOf('repair') === BLANK_MS / WATCH_EVERY_MS - 1 &&
+      stuck.lastIndexOf('repair') === stuck.indexOf('repair') &&
+      stuck.indexOf('home') === ticks - 1 &&
+      stuck.lastIndexOf('home') === stuck.indexOf('home'),
+    stuck.join(','),
+  );
+  check('blank page: a fade shorter than BLANK_MS is never touched', run([true, true, false, true, true, false]).every((a) => a === 'none'));
+  check('blank page: a page that comes back after the repair is not sent Home', !run([true, true, true, false, true]).includes('home'));
+
+  const { AppBoundary } = await import('../src/ui/AppBoundary');
+  check('blank page: a page that threw shows its card', AppBoundary.getDerivedStateFromError().failed === true);
+  check(
+    'blank page: the next page clears the failure, the same page keeps it',
+    AppBoundary.getDerivedStateFromProps({ children: null, resetKey: 'rooms' }, { failed: true, key: 'modes' })?.failed === false &&
+      AppBoundary.getDerivedStateFromProps({ children: null, resetKey: 'modes' }, { failed: true, key: 'modes' }) === null,
+  );
+
+  const main = readFileSync('src/main.tsx', 'utf8');
+  const shell = readFileSync('src/ui/AppShell.tsx', 'utf8');
+  check('blank page: the whole app sits inside the full boundary', /<AppBoundary full>\s*(\{\/\*[\s\S]*?\*\/\}\s*)?<AdsProvider>\s*<App \/>/.test(main));
+  check(
+    'blank page: every shell page renders through the page boundary, and stage pages are watched',
+    (shell.match(/\{content\}/g) ?? []).length === 3 && !/<main[^>]*>\{children\}<\/main>/.test(shell) && /useStageWatch\(!!stage, page,/.test(shell),
+  );
+}
+
 // ---- room settings: the host-controlled shape (rooms plan M1) ------------------
 {
   const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');
