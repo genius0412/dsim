@@ -486,13 +486,36 @@ step, all three games, allowed in ranked.
   a tank side floats alone unless the command is the arcade mix (`arcadeTank`, `arcadeCancel`).
   ⚠️ The one real case this gives up: a gamepad with BOTH sticks pegged gives exactly ±1 and the
   usual mix cancels to an exact 0, which floats on a real robot. DSIM cannot tell that from a key.
-- **THE STICK'S RETURN IS NOT ADDED.** A released stick sweeps back through the deadzone and for
-  those milliseconds the motors are below their back-EMF. A DSIM gamepad already samples its own
-  stick doing that every frame. No measured return time was found, the hub's partial-power decay
-  mode is undocumented, and the FLOAT data below is taken with an instant zero, so the keyboard
-  stays an instant zero. Measured sensitivity, for the record: a 33 ms ramp cuts the default
-  mecanum's roll-out 131 → 105 in, but that is DSIM's full-authority `motorStep` brake, which
-  overstates a real motor's braking at partial power.
+- **HOW THE SETTING WORKS INSIDE, AND WHY REVERSING STOPS A COASTER LIKE A BRAKED ROBOT.** The SDK's
+  `setZeroPowerBehavior` reaches the hub as `LynxSetMotorChannelModeCommand`, whose payload is the
+  motor, the run mode and one byte, `floatAtZero` (0 for BRAKE, 1 for FLOAT; SDK source,
+  `com.qualcomm.hardware.lynx.commands.core`). The flag is named for the zero-power state and the
+  `DcMotor` javadoc says the same: the behavior "when a power level of zero is applied". With any
+  power the H-bridge drives the motor. REV publishes nothing on the hub's PWM decay at partial
+  power (firmware closed, no doc or forum statement found), so whether FLOAT changes it is
+  unknown; DSIM treats partial power alike in both modes. Physics: driven in reverse the winding
+  sees −V against back-EMF +E, current (−V−E)/R, against BRAKE's shorted −E/R: plugging brakes up
+  to twice as hard and an FTC drive is traction-limited either way (stall torque at the wheel
+  exceeds μ·g; `BASE_DRIVE_ACCEL`). DSIM's `motorStep` already brakes at one rate,
+  `MOTOR_BRAKE_MULT`, whenever the command opposes the motion, zero or reverse. So the owner's
+  real-robot observation holds and held in DSIM: forward at top speed then straight to full
+  reverse stops bit-identically in both modes, every drivetrain (mecanum 11.2 in, tank 12.0,
+  swerve 8.7, x-drive 11.7, butterfly 11.2).
+- **...EXCEPT THROUGH AN EXACT ZERO, SO A LET-GO WHEEL BRAKES FOR `COAST_SETTLE_S` (2 ticks) FIRST**
+  (`settleCoast`, per-wheel `RobotState.coastIdle`, coast robots only). DSIM reads input once per
+  frame and steps every tick of the frame on it, so a flick through centre sampled inside the
+  deadzone holds an exact zero for a frame, two ticks at 30 fps; a released stick springs back
+  through powered values first, which a key cannot (no measured return time exists anywhere we
+  found; deliberate full stick motions take 9-45 ms). Before the settle, a coaster reversing
+  through one tick of zero stopped 1.0-1.7 in long; keyboard gaps of 50 / 100 / 150 ms cost
+  +3-5 / +6-10 / +9-15 in. After: 0-2 ticks identical; 50 ms +0.7-1.4; 100 ms +2.9-5.6; 150 ms
+  +5.1-9.7 (mecanum +1.2 / +4.7 / +8.1). ⚠️ The settle cannot cover a key's own release-to-press
+  gap: braking every release for 150 ms stops a released median robot from 66 in/s in 4.7 in,
+  exactly brake (measured: 17 ms 49 in, 33 ms 38, 50 ms 29, 100 ms 10). A gap that long is a
+  stick held at centre, and it floats. The cost of the two ticks: a release from speed loses one
+  settle of brake first — the median robot rolls 38 in (61 without it), the default mecanum about
+  104 (131). That applies to a code-commanded zero too (an auto), which on a real robot floats at
+  once; the sim cannot tell a stick from code.
 - **THE WHEELS ARE RECOVERED FROM THE CHASSIS MODEL.** The drive is chassis-level, so `coastStep`
   splits the brake answer across wheel rows in normalised chassis coordinates (each axis over its
   own free speed, where a wheel's power is a row of signs times the command). It keeps the powered
@@ -538,11 +561,12 @@ step, all three games, allowed in ranked.
   sideways speed) whatever the hub does, so by virtual work their friction is a pure sideways
   force of √2 times the roller's; an x-drive's omnis roll square to their hubs, so theirs acts
   along the roll line (1, ±1)/√2 and also slows it driving straight. Spinning engages both.
-- **MEASURED** (open floor, brake / coast from loaded top speed, coast unchanged forward except
-  x-drive): default 500 rpm builds — mecanum 12 / 131 in (2.9 s), tank 13 / 228 (longer than the
-  field: 106 in/s on the least friction), swerve 10 / 150, x-drive 15 / 63 (was 85), butterfly
-  13 / 121; at 435 rpm and 26 lb — mecanum 9 / 101, tank 9 / 176, swerve 7 / 108, x-drive 11 / 49
-  (was 66). The median robot rolls 62 in
+- **MEASURED BEFORE THE SETTLE** (2026-11-04, the float itself; a release now brakes for
+  `COAST_SETTLE_S` first, above. Open floor, brake / coast from loaded top speed, coast unchanged
+  forward except x-drive): default 500 rpm builds — mecanum 12 / 131 in (2.9 s), tank 13 / 228
+  (longer than the field: 106 in/s on the least friction), swerve 10 / 150, x-drive 15 / 63 (was
+  85), butterfly 13 / 121; at 435 rpm and 26 lb — mecanum 9 / 101, tank 9 / 176, swerve 7 / 108,
+  x-drive 11 / 49 (was 66). The median robot rolls 62 in
   from its 66 in/s, against the data's 68. STRAFE from top speed, mecanum: default 8 / 43 in (was
   67), 435 rpm 6 / 33 (was 52). STOP ON A MARK (let go where the braked robot stops on it),
   default mecanum: full forward 81 in past, half stick 29, full strafe 35 (was 59). Let go
@@ -552,6 +576,7 @@ step, all three games, allowed in ranked.
   tank 40 → 80, swerve 32 → 69, x-drive 22 → 34, butterfly 30 → 61; side-on by a tank: a tank
   3.9 → 3.9 (treads), a mecanum 10 → 65 (was 80). A "Traditional" tank releasing one side at
   speed for 0.5 s turns 135° braked, 17° coasting; W + a turn key now turns every coaster exactly
-  as braked. Smoke pins the median-robot decels (±5%), the ratio's quartiles, and 13 coast scenes
-  at hash + distance.
+  as braked. Smoke pins the median-robot decels (±5%, wheels already settled: the tuner's own
+  code-set zero), the ratio's quartiles, reversal equality at 0-2 ticks of zero and the 50 ms gap
+  within 1.5 in, and 15 coast scenes at hash + distance, settle included.
 

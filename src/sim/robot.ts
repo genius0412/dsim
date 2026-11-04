@@ -3,7 +3,7 @@ import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
-import { arcadeCancel, coastDecel, coastStep, floatingWheels, rollerDrive, wheelRows } from './zeroPower';
+import { arcadeCancel, coastDecel, coastStep, floatingWheels, rollerDrive, settleCoast, wheelRows } from './zeroPower';
 import { robotIntersectsConvex } from './physics';
 import { importedInertia, importedWheels } from './imported';
 import { decodeImportLaunchZ, decodeImportMouth, decodeImportTurret } from './importedMech';
@@ -438,12 +438,12 @@ export function updateRobot(
   /**
    * ...AND A COASTING WHEEL AT ZERO POWER IS NOT HELD (`src/sim/zeroPower.ts`). Everything above
    * is BRAKE, the model as it always was; a coast robot with floating wheels (`floatingWheels`:
-   * the whole drive let go, or a tank side on its own) has the brake step re-split across its
-   * wheels, the unpowered ones' parts replaced by their friction. Brake, a spec without the
-   * field, never gets here.
+   * the whole drive let go, or a tank side on its own, and kept let go for `COAST_SETTLE_S`) has
+   * the brake step re-split across its wheels, the unpowered ones' parts replaced by their
+   * friction. Brake, a spec without the field, never gets here.
    */
   const powered = wheelPower
-    ? floatingWheels(dp.saturation, wheelPower, dp.saturation === 'tank' && arcadeCancel(cmd))
+    ? settleCoast(r, floatingWheels(dp.saturation, wheelPower, dp.saturation === 'tank' && arcadeCancel(cmd)), dt)
     : null;
   if (powered) {
     const pos = wheelLocals(r.spec);

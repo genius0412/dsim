@@ -83,6 +83,24 @@ export function floatingWheels(
 }
 
 /**
+ * ...AND A LET-GO WHEEL BRAKES FOR `COAST_SETTLE_S` BEFORE IT FLOATS: a stick flicked through
+ * centre, sampled once at zero, or springing back to it. Counts each let-go wheel's ticks on
+ * `r.coastIdle` (dropped once every wheel is driven again) and returns `floatingWheels`' answer
+ * with only the settled wheels still floating, or null when none is.
+ */
+export function settleCoast(r: { coastIdle?: number[] }, powered: readonly boolean[] | null, dt: number): boolean[] | null {
+  if (!powered) {
+    delete r.coastIdle;
+    return null;
+  }
+  const settle = Math.round(C.COAST_SETTLE_S / dt);
+  const idle = powered.map((on, i) => (on ? 0 : Math.min((r.coastIdle?.[i] ?? 0) + 1, settle + 1)));
+  r.coastIdle = idle;
+  const out = powered.map((on, i) => on || idle[i] <= settle);
+  return out.every(Boolean) ? null : out;
+}
+
+/**
  * THE FULL-ROBOT DECELERATION of four freewheeling drive wheels, in/s². Two terms:
  *  • motor friction through the gearbox: the no-load current is the torque a free-spinning motor
  *    spends on its own bearings, brushes and gears (`kt · I0`), and back-driven through the

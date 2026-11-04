@@ -1397,6 +1397,22 @@ export const COAST_ROLLER_FRICTION = 0.0416;
 /** in/s of hub speed under which a coasting wheel's friction fades out linearly, so a robot
  * rolling to rest settles instead of reversing on the friction's sign. */
 export const COAST_STICTION_SPEED = 2;
+/**
+ * HOW LONG A LET-GO WHEEL BRAKES BEFORE IT FLOATS (`RobotState.coastIdle`, `settleCoast`).
+ *
+ * FLOAT acts only at exactly zero power (the SDK sends the hub one `floatAtZero` byte), and a
+ * driver reversing does not stop at zero: under reverse power every wheel is driven, identical in
+ * both modes. But DSIM reads input once per FRAME and steps every tick of that frame on it, so a
+ * stick flicked through centre that happens to be sampled inside the deadzone holds an exact zero
+ * for a whole frame: two ticks at 30 fps. Floating there cost a reversing coaster 1.0-1.7 in.
+ * A released stick also springs back through powered values before it rests (no measured return
+ * time exists; deliberate full stick motions take 9-45 ms), which a key cannot do.
+ *
+ * So two ticks. Longer cannot be justified: the keys' own release-to-press gap reversing (50-150
+ * ms) would need it all, and braking every release that long stops a released median robot from
+ * 66 in/s in 4.7 in at 150 ms — exactly brake, where real robots measure about 68 in of float.
+ */
+export const COAST_SETTLE_S = 2 / 60;
 
 // --- PUSHING POWER ----------------------------------------------------------
 /**

@@ -630,6 +630,13 @@ export interface RobotState {
   slipX?: number;
   slipY?: number;
   slipW?: number;
+  /**
+   * A COAST ROBOT ONLY: ticks each wheel (`WHEEL_CORNERS` order) has been let go, capped one past
+   * `COAST_SETTLE_S`. A let-go wheel floats only once it has stayed let go that long, so a stick
+   * flicked through centre reverses as a braked robot does (`src/sim/zeroPower.ts`). Absent while
+   * every wheel is driven, and always for brake, so a brake robot's state is unchanged.
+   */
+  coastIdle?: number[];
   angVel: number;
   turretHeading: number; // field frame
   /**

@@ -7998,12 +7998,17 @@ function ramOffCentreSamples(
     st(new Map([[0, FULL]]));
     const p0 = { ...r.pos };
     const v0 = Math.hypot(r.vel.x, r.vel.y);
+    // where and how fast once a coaster's let-go wheels have settled (`COAST_SETTLE_S`, braked)
+    const settle = Math.round(IMPC.COAST_SETTLE_S / SIM_DT);
+    let dS = 0;
+    let vS = v0;
     let t = 0;
     for (; t < ticks; t++) {
       st(new Map([[0, ZERO]]));
+      if (t === settle - 1) { dS = Math.hypot(r.pos.x - p0.x, r.pos.y - p0.y); vS = Math.hypot(r.vel.x, r.vel.y); }
       if (Math.hypot(r.vel.x, r.vel.y) < 0.5) break;
     }
-    return { v0, d: Math.hypot(r.pos.x - p0.x, r.pos.y - p0.y), t: (t + 1) * SIM_DT, hash: worldHash(w), r, w };
+    return { v0, dS, vS, d: Math.hypot(r.pos.x - p0.x, r.pos.y - p0.y), t: (t + 1) * SIM_DT, hash: worldHash(w), r, w };
   };
   /** robot 0 (a default tank) drives into an idle robot 1 for 1.5 s; returns 1's displacement */
   const zpPush = (g: GameId | 'bb3d', victim: Partial<RobotSpec>, side: boolean, pusher: Partial<RobotSpec> = { drivetrain: 'tank' }, touching = false) => {
@@ -8087,11 +8092,11 @@ function ramOffCentreSamples(
     // an x-drive's omnis turn their rollers driving straight, at v/√2, and their friction is along that roll
     const rollers = dt === 'xdrive' ? (IMPC.COAST_ROLLER_FRICTION * IMPC.GRAVITY) / Math.SQRT2 : 0;
     const decel = coastDecel(coerceSpec({ ...DEFAULT_SPEC, ...spec })) + rollers;
-    const ideal = (c.v0 * c.v0) / (2 * decel);
-    roll.push(`${dt} ${b.d.toFixed(1)}→${c.d.toFixed(1)}in (v²/2a ${ideal.toFixed(1)})`);
-    rollOk &&= c.d > 4 * b.d && Math.abs(c.d - ideal) < 0.05 * ideal + 1;
+    const ideal = c.dS + (c.vS * c.vS) / (2 * decel);
+    roll.push(`${dt} ${b.d.toFixed(1)}→${c.d.toFixed(1)}in (settle + v²/2a ${ideal.toFixed(1)})`);
+    rollOk &&= c.d > 3.5 * b.d && c.vS < c.v0 && Math.abs(c.d - ideal) < 0.05 * ideal + 1;
   }
-  check('zero power: a coasting robot let go at top speed rolls on against its friction alone, 4x+ further than brake stops it (every drivetrain)', rollOk, roll.join(', '));
+  check('zero power: a coasting robot let go at top speed brakes through the settle, then rolls on against its friction alone, 3.5x+ further than brake stops it (every drivetrain)', rollOk, roll.join(', '));
 
   // with every wheel powered the two modes drive the same: FTC's setting acts only at zero power
   const same = (dt: RobotSpec['drivetrain'], c: RobotCommand) => {
@@ -8119,7 +8124,7 @@ function ramOffCentreSamples(
   };
   const halfB = half({});
   const halfC = half(COAST);
-  check('zero power: per wheel — a tank releasing one side at speed: brake pivots on it, coast curves gently on the free side', halfB > 90 && halfC > 3 && halfC < halfB / 4, `turned ${halfB.toFixed(1)}° brake, ${halfC.toFixed(1)}° coast in 0.5 s`);
+  check('zero power: per wheel — a tank releasing one side at speed: brake pivots on it, coast brakes that side through the settle, then curves on it', halfB > 90 && halfC > 3 && halfC < halfB / 2, `turned ${halfB.toFixed(1)}° brake, ${halfC.toFixed(1)}° coast in 0.5 s`);
   // a mecanum driving a pure diagonal has two wheels at zero power that the motion never turns:
   // coast accelerates it exactly as brake does
   const diag = (s: Partial<RobotSpec>) => {
@@ -8184,13 +8189,16 @@ function ramOffCentreSamples(
   // Pedro Pathing's zero-power tuners set FLOAT, drive to 30 in/s, set power to exactly 0 and
   // average the deceleration to rest. 498 robots' committed results: forward 35.2 in/s² median,
   // sideways 67.1, on a median 12 kg robot with a measured top speed of 72 in/s (353 rpm here).
-  /** let go at v0 along the diagonal, driving forward or strafing left; also whether its spin ever reversed */
-  const zpRoll = (spec: Partial<RobotSpec>, v0: number, strafe: boolean, spin = 0) => {
+  /** let go at v0 along the diagonal, driving forward or strafing left; also whether its spin ever
+   *  reversed. `settled`: its wheels already let go past `COAST_SETTLE_S` (the tuner's own case, a
+   *  power of exactly 0 set by code: no stick to come back through centre) */
+  const zpRoll = (spec: Partial<RobotSpec>, v0: number, strafe: boolean, spin = 0, settled = false) => {
     const { w, st } = zpWorld('decode', [spec]);
     const r = w.robots[0];
     const h = Math.PI / 4;
     r.pos = { x: -58, y: -58 }; r.heading = strafe ? h - Math.PI / 2 : h; r.angVel = spin; r.fieldCentric = false;
     r.vel = { x: v0 * Math.cos(h), y: v0 * Math.sin(h) };
+    if (settled) r.coastIdle = [99, 99, 99, 99];
     const p0 = { ...r.pos };
     let t = 0;
     let turned = 0;
@@ -8206,8 +8214,8 @@ function ramOffCentreSamples(
     return { a: v0 / (t * SIM_DT), d: Math.hypot(r.pos.x - p0.x, r.pos.y - p0.y), t: t * SIM_DT, deg: (turned * 180) / Math.PI, reversed, hash: worldHash(w) };
   };
   const median = { drivetrain: 'mecanum', driveRpm: 353, massLb: 26.5, ...COAST } as Partial<RobotSpec>;
-  const aF = zpRoll(median, 30, false).a;
-  const aL = zpRoll(median, 30, true).a;
+  const aF = zpRoll(median, 30, false, 0, true).a;
+  const aL = zpRoll(median, 30, true, 0, true).a;
   check('zero power: the median FTC robot coasts forward to rest as real robots measured on FLOAT do (35.2 in/s², ±5%)', Math.abs(aF - 35.2) < 0.05 * 35.2, `${aF.toFixed(1)} in/s²`);
   check('zero power: ...and sideways (67.1 in/s², ±5%): strafing turns its rollers as well as its hubs, so a coasting mecanum does not skate', Math.abs(aL - 67.1) < 0.05 * 67.1, `${aL.toFixed(1)} in/s²`);
   check('zero power: ...sideways over forward inside the measured quartiles (1.54-2.15)', aL / aF > 1.54 && aL / aF < 2.15, (aL / aF).toFixed(2));
@@ -8216,15 +8224,55 @@ function ramOffCentreSamples(
   check('zero power: let go spinning, a coaster spins on further than brake and never reverses (every drivetrain)',
     spins.every(([, c, b]) => !c.reversed && c.deg >= b.deg - 0.5), spins.map(([dt, c, b]) => `${dt} ${b.deg.toFixed(0)}→${c.deg.toFixed(0)}°${c.reversed ? ' REVERSED' : ''}`).join(', '));
 
+  // ---- REVERSING STOPS A COASTER AS IT STOPS A BRAKED ROBOT ---------------------------------
+  // FLOAT acts only at exactly zero power; under reverse power every wheel is driven, the same in
+  // both modes. A stick flicked through centre can still be SAMPLED at zero for a frame (one tick
+  // at 60 fps, two at 30), and a key leaves its own release-to-press gap: `COAST_SETTLE_S` brakes
+  // a let-go wheel for two ticks before it floats.
+  const REV = cmd({ driveY: -1, leftDrive: -1, rightDrive: -1 });
+  /** from rest to speed along the diagonal, `gap` ticks at zero, then full reverse to a stop */
+  const zpReverse = (spec: Partial<RobotSpec>, gap: number) => {
+    const { w, st } = zpWorld('decode', [spec]);
+    const r = w.robots[0];
+    const h = Math.PI / 4;
+    r.pos = { x: -62, y: -62 }; r.heading = h; r.vel = { x: 0, y: 0 }; r.angVel = 0; r.fieldCentric = false;
+    for (let i = 0; i < 75; i++) st(new Map([[0, FULL]]));
+    const p0 = { ...r.pos };
+    for (let t = 0; t < 600; t++) {
+      st(new Map([[0, t < gap ? ZERO : REV]]));
+      if (r.vel.x * Math.cos(h) + r.vel.y * Math.sin(h) <= 0.3) break;
+    }
+    return { d: (r.pos.x - p0.x) * Math.cos(h) + (r.pos.y - p0.y) * Math.sin(h), state: JSON.stringify([r.pos, r.vel, r.heading, r.angVel]), r, hash: worldHash(w) };
+  };
+  const revSame: string[] = [];
+  const revGap: string[] = [];
+  let gap50 = true;
+  let longer = true;
+  for (const dt of DTS) {
+    for (const gap of [0, 1, 2]) {
+      if (zpReverse({ drivetrain: dt }, gap).state !== zpReverse({ drivetrain: dt, ...COAST }, gap).state) revSame.push(`${dt} ${gap}`);
+    }
+    const ex = [3, 6, 9].map((gap) => zpReverse({ drivetrain: dt, ...COAST }, gap).d - zpReverse({ drivetrain: dt }, gap).d);
+    revGap.push(`${dt} +${ex.map((e) => e.toFixed(1)).join('/+')}`);
+    gap50 &&= ex[0] >= 0 && ex[0] < 1.5;
+    longer &&= ex[0] < ex[1] && ex[1] < ex[2] && ex[2] < 10;
+  }
+  check('zero power: full forward then full reverse, a coaster stops exactly as braked — straight through, or through a flick sampled at zero for one or two ticks (every drivetrain)', revSame.length === 0, revSame.join(', '));
+  check('zero power: ...a keyboard\'s 50 ms release-to-press gap stops within 1.5 in of braked', gap50, revGap.join(', '));
+  check('zero power: ...a longer gap floats for the time past the settle, as a stick held at centre would (100 / 150 ms: growing, under 10 in)', longer, revGap.join(', '));
+  const revB = zpReverse({ drivetrain: 'mecanum' }, 6);
+  const revC = zpReverse({ drivetrain: 'mecanum', ...COAST }, 6);
+  check('zero power: the settle rides a coast robot only, and only while a wheel is let go (brake never carries it)', !('coastIdle' in revB.r) && revC.r.coastIdle === undefined, JSON.stringify([revB.r.coastIdle, revC.r.coastIdle]));
+
   // ---- THE COAST NUMBERS, pinned (2026-11-04): hash + distance (in) or degrees -------------
   // 300 rpm / 30 lb so every roll fits the field diagonal; spins from 6 rad/s at the default build
   const COAST_PINS: Record<string, string> = {
-    'roll mecanum': '279664895 43.63', 'strafe mecanum': '1421366365 14.84', 'spin mecanum': '557454613 95.79',
-    'roll tank': '3701553984 73.65', 'spin tank': '556929212 13.87',
-    'roll swerve': '2942129393 53.03', 'spin swerve': '253156530 16.92',
-    'roll xdrive': '2068761342 21.47', 'strafe xdrive': '3496500061 21.47', 'spin xdrive': '4142079621 112.19',
-    'roll butterfly': '1771253889 39.01', 'spin butterfly': '728642468 95.24',
-    'push-side mecanum': '3813775126 64.64',
+    'roll mecanum': '2702007345 25.99', 'strafe mecanum': '1851512076 8.18', 'spin mecanum': '993971154 61.70',
+    'roll tank': '910241960 39.62', 'spin tank': '556929212 13.87',
+    'roll swerve': '957659362 29.53', 'spin swerve': '253156530 16.92',
+    'roll xdrive': '2493560263 16.43', 'strafe xdrive': '4183257617 16.43', 'spin xdrive': '1777139861 94.46',
+    'roll butterfly': '3497420616 23.45', 'spin butterfly': '1120454965 66.94',
+    'push-side mecanum': '4066368451 63.51', 'reverse-100ms mecanum': '1976094312 15.91', 'reverse-100ms tank': '3349082702 17.57',
   };
   const coastGot: string[] = [];
   const pinned = (k: string, hash: number, v: number) => {
@@ -8245,6 +8293,10 @@ function ramOffCentreSamples(
   }
   const sideCoast = zpPush('decode', { drivetrain: 'mecanum', ...COAST }, true, undefined, true);
   pinned('push-side mecanum', sideCoast.hash, sideCoast.d);
+  for (const dt of ['mecanum', 'tank'] as const) {
+    const rv = zpReverse({ drivetrain: dt, ...COAST }, 6);
+    pinned(`reverse-100ms ${dt}`, rv.hash, rv.d);
+  }
   check('zero power: COAST stops, strafes, spins down and is shoved at its pinned numbers', coastGot.length === 0, coastGot.join(', '));
 
   // ---- every game ----------------------------------------------------------------
