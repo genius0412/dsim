@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HudSnapshot, EloResultRow } from '../game';
 import { appChannel, lanActive } from '../net/env';
 import { PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
@@ -352,8 +352,12 @@ type VersusSection = readonly [string, readonly (readonly [string, number, numbe
  * in reading 0 and left them sitting there for over a second before they counted up. The old
  * flat 55 ms ramp hid that; a per-section rhythm does not.
  *
- * ⚠️ The `<Fragment key={title}>` boundary is what keeps `key={label}` unique — BIOBUZZ
- * prints `PARK (robots)` in two different sections. Do not flatten these to get an index. */
+ * ⚠️ ONE `<tbody>` PER SECTION, and it is load-bearing twice. Its `key={title}` is what keeps
+ * `key={label}` unique — BIOBUZZ prints PARK in two different sections; do not flatten these to
+ * get an index. And it is the only element that holds a section's heading and rows together:
+ * on a window too short or narrow for one column the table flows into two (`styles.css`, "THE
+ * BREAKDOWN IN TWO COLUMNS"), and a flat `<tbody>` of sibling rows let a column break land
+ * INSIDE a section, so FLOWER's second row opened the next column with no heading over it. */
 function BreakdownTable({
   sections,
   rowsActive,
@@ -364,63 +368,60 @@ function BreakdownTable({
   const cls = `resx-row${rowsActive ? ' in' : ''}`;
   return (
     <table className="resx-breakdown" aria-label="Score breakdown">
-      <tbody>
-        {sections.map(([title, rows], s) => (
-          <Fragment key={title}>
-            <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
-              <th className="resx-section-label" colSpan={3} scope="colgroup">
-                {title}
-              </th>
+      {sections.map(([title, rows], s) => (
+        <tbody key={title}>
+          <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
+            <th className="resx-section-label" colSpan={3} scope="rowgroup">
+              {title}
+            </th>
+          </tr>
+          {rows.map(([label, rv, bv], r) => (
+            <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
+              <td className="resx-rv">
+                <RowVal value={rv} run={rowsActive} delay={rowDelay(s, r)} />
+              </td>
+              <td className="resx-cat">{label}</td>
+              <td className="resx-bv">
+                <RowVal value={bv} run={rowsActive} delay={rowDelay(s, r)} />
+              </td>
             </tr>
-            {rows.map(([label, rv, bv], r) => (
-              <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
-                <td className="resx-rv">
-                  <RowVal value={rv} run={rowsActive} delay={rowDelay(s, r)} />
-                </td>
-                <td className="resx-cat">{label}</td>
-                <td className="resx-bv">
-                  <RowVal value={bv} run={rowsActive} delay={rowDelay(s, r)} />
-                </td>
-              </tr>
-            ))}
-          </Fragment>
-        ))}
-      </tbody>
+          ))}
+        </tbody>
+      ))}
     </table>
   );
 }
 
 /** the SOLO breakdown, sitting beside the total inside the one alliance half — same
- * cascading rows, single value column. */
+ * cascading rows, single value column, and the same one `<tbody>` per section, for the same two
+ * reasons (`BreakdownTable`). */
 function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[]; rowsActive: boolean }) {
   const cls = `resx-row${rowsActive ? ' in' : ''}`;
   return (
     <table className="resx-breakdown resx-breakdown-solo" aria-label="Score breakdown">
-      <tbody>
-        {sections.map(([title, rows], s) => (
-          <Fragment key={title}>
-            {/* ⚠️ colSpan ONE, not two — the heading's box must stay the LABEL's box, whatever
-                the label column is. It is the only in-flow column now (`.resx-val` is
-                positioned; see its CSS), so one column is the whole table and the heading
-                centres exactly where the labels do. Spanning two also happens to land there
-                today, but it would drift again the moment the value column returned to
-                flow. */}
-            <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
-              <th className="resx-section-label" scope="colgroup">
-                {title}
-              </th>
+      {sections.map(([title, rows], s) => (
+        <tbody key={title}>
+          {/* ⚠️ colSpan ONE, not two — the heading's box must stay the LABEL's box, whatever
+              the label column is. It is the only in-flow column now (`.resx-val` is
+              positioned; see its CSS), so one column is the whole table and the heading
+              centres exactly where the labels do. Spanning two also happens to land there
+              today, but it would drift again the moment the value column returned to
+              flow. */}
+          <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
+            <th className="resx-section-label" scope="rowgroup">
+              {title}
+            </th>
+          </tr>
+          {rows.map(([label, v], r) => (
+            <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
+              <td className="resx-cat">{label}</td>
+              <td className="resx-val">
+                <RowVal value={v} run={rowsActive} delay={rowDelay(s, r)} />
+              </td>
             </tr>
-            {rows.map(([label, v], r) => (
-              <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
-                <td className="resx-cat">{label}</td>
-                <td className="resx-val">
-                  <RowVal value={v} run={rowsActive} delay={rowDelay(s, r)} />
-                </td>
-              </tr>
-            ))}
-          </Fragment>
-        ))}
-      </tbody>
+          ))}
+        </tbody>
+      ))}
     </table>
   );
 }

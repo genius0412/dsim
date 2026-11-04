@@ -2361,40 +2361,18 @@ button {
 
 /* ---- A SHORT OR NARROW WINDOW MUST NOT SCROLL THE RESULTS (UX redesign, 2026-10-10) ----
    Measured with a real solo match at six sizes: 1920x1080, 1366x768 and 1280x720 fit, and 1024x600,
-   844x390 and 390x844 scrolled by 63, 320 and 244px. Two causes, and one fix each:
-   - the breakdown is ONE column of ~15 rows, and `--resx-u` bottoms out at 7px, so on a window under
-     ~640px tall the column alone is taller than the window. It becomes TWO columns of the same rows
-     (the solo table only: the versus table is three columns across two halves and is left alone).
+   844x390 and 390x844 scrolled by 63, 320 and 244px. Three causes, and one fix each:
+   - `--resx-u` bottoms out at 7px, so under ~640px tall the breakdown's 15 lines at full size are
+     taller than the window. Here the table steps down to 2.2u and the eyebrow and season line go,
+     which is enough for ONE column down to ~521px (measured, 2026-11-04).
+   - under that, or on a phone upright, one column cannot fit at any size worth reading, and the
+     table flows into TWO (the next block).
    - stacked on a phone, each half had `min-height: 40vh`, which is a third of the height before the
      breakdown or the buttons arrive. It is a floor now, not a share.
    The edge inset also shrinks here: 24px of padding on every side is a real fraction of 390px. */
 @media (max-height: 640px), (max-width: 720px) {
   .resx-stage {
     --resx-pad: clamp(12px, 2.4vmin, 24px);
-  }
-  .resx-breakdown-solo,
-  .resx-breakdown-solo tbody {
-    display: block;
-  }
-  .resx-breakdown-solo tbody {
-    column-count: 2;
-    column-gap: calc(2 * var(--resx-u));
-  }
-  .resx-breakdown-solo tr {
-    display: block;
-    break-inside: avoid;
-  }
-  .resx-breakdown-solo .resx-section {
-    break-after: avoid;
-  }
-  .resx-breakdown-solo .resx-section th,
-  .resx-breakdown-solo .resx-cat {
-    display: block;
-  }
-  /* the value is out of flow at the row's right edge, so the label only has to clear it */
-  .resx-breakdown-solo .resx-cat {
-    padding-inline: 0.4em 2.4em;
-    text-align: left;
   }
   /* the season line repeats what the eyebrow and the panel say, and a heading must not wrap */
   .resx-season {
@@ -2412,38 +2390,9 @@ button {
   .resx-section th {
     letter-spacing: 0.08em;
   }
-}
-/* ---- THE VERSUS BOARD on a short or narrow window (measured offline with a BIOBUZZ solo match and
-   an AI opponent, the one way to get both alliances onto the board without a second driver) ----
-   Before this, 844x390 scrolled by 241px and 390x844 by 141px. The centre table is value | label |
-   value, 15 rows tall; the SAME two-column split the solo table uses applies, with each row a
-   three-cell grid. The alliance halves also step their big type down so they stay inside their cell. */
-@media (max-height: 640px), (max-width: 720px) {
-  .resx-body:not(.resx-body-solo) .resx-breakdown,
-  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
-    display: block;
-  }
-  .resx-body:not(.resx-body-solo) .resx-breakdown tbody {
-    column-count: 2;
-    column-gap: calc(2 * var(--resx-u));
-  }
-  .resx-body:not(.resx-body-solo) .resx-breakdown tr {
-    display: grid;
-    grid-template-columns: minmax(2.4ch, auto) minmax(0, 1fr) minmax(2.4ch, auto);
-    align-items: baseline;
-    break-inside: avoid;
-  }
-  .resx-body:not(.resx-body-solo) .resx-breakdown .resx-section {
-    display: block;
-    break-after: avoid;
-  }
-  .resx-body:not(.resx-body-solo) .resx-breakdown td,
-  .resx-body:not(.resx-body-solo) .resx-breakdown th {
-    padding: 0.16em 0.4em;
-  }
-  .resx-body:not(.resx-body-solo) .resx-cat {
-    text-align: center;
-  }
+  /* the VERSUS halves step their big type down so it stays inside its cell (measured offline with
+     a BIOBUZZ solo match and an AI opponent, the one way to get both alliances onto the board
+     without a second driver: before this, 844x390 scrolled by 241px and 390x844 by 141px) */
   .resx-body:not(.resx-body-solo) .resx-total-num {
     font-size: calc(8 * var(--resx-u));
   }
@@ -2454,8 +2403,78 @@ button {
     font-size: calc(2.8 * var(--resx-u));
   }
 }
+/* ---- THE BREAKDOWN IN TWO COLUMNS: only where one column cannot fit (2026-11-04) ----
+   A phone on its side (844x390) or upright (390x844). It used to start at 640px tall, which is an
+   ordinary laptop browser (1366x768 less the browser's chrome, 1920x1080 at 150%), and the owner
+   met it there and read it as a broken screen. Three things were wrong with the split:
+   - a SECTION could break across the two columns: the rows were siblings in one `<tbody>`, so the
+     column break landed wherever the height fell, and FLOWER's second row opened the next column
+     with no heading over it. A section is its own `<tbody>` now (Results.tsx) and never breaks.
+   - the HEADINGS sat flush left: the row went `display: block`, but its `th` stayed a table cell,
+     which wraps itself in an anonymous table that shrink-wraps to the text. The solo table always
+     made its heading a block; the versus copy of the split forgot to. Both take it from here.
+   - on a laptop the split broke the board's anatomy for nothing: the red value no longer sat
+     against the red panel nor the blue against the blue, and one column fits there (block above).
+   WHERE ONE COLUMN FITS, measured: ~525px of height with the actions on one row, and ~570 when
+   they wrap to two, which they do in a centre column under ~450px (a window under ~1000px wide at
+   24% halves), hence the third condition.
+   `npm run resultsaudit` renders every board at the sizes that matter and fails on each of these. */
+@media (max-height: 540px), (max-width: 720px), (max-width: 1000px) and (max-height: 600px) {
+  /* the TABLE is the multicol container and a section is the unit it flows.
+     ⚠️ THE LINE A WHOLE SECTION COSTS. Kept whole, BIOBUZZ's 3+3+3+2+2+2 lines and DECODE's
+     5+4+3+3 can only split 9 | 6, where loose rows split 8 | 7, and the board fit 844x390 with no
+     slack at all. The line comes back here: type at 2u (the headings' size) instead of 2.2u, on
+     the heading line-height, rows at 0.06em instead of 0.16em, headings at 0.5u above and nothing
+     below, and no margin round the table. */
+  .resx-body .resx-breakdown {
+    display: block;
+    column-count: 2;
+    column-gap: calc(2 * var(--resx-u));
+    margin-block: 0;
+    font-size: calc(2 * var(--resx-u));
+    line-height: var(--ds-lh-heading);
+  }
+  .resx-breakdown tbody {
+    display: block;
+    break-inside: avoid;
+  }
+  .resx-breakdown .resx-section th {
+    display: block;
+    padding-top: calc(0.5 * var(--resx-u));
+    padding-bottom: 0;
+  }
+  /* VERSUS: each row a three-cell grid, value | label | value */
+  .resx-body:not(.resx-body-solo) .resx-breakdown tr {
+    display: grid;
+    grid-template-columns: minmax(2.4ch, auto) minmax(0, 1fr) minmax(2.4ch, auto);
+    align-items: baseline;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown .resx-section {
+    display: block;
+  }
+  .resx-body:not(.resx-body-solo) .resx-breakdown td {
+    padding: 0.06em 0.25em;
+  }
+  /* SOLO: a block per row, the value out of flow at its right edge (`.resx-breakdown-solo .resx-val`) */
+  .resx-breakdown-solo tr,
+  .resx-breakdown-solo .resx-cat {
+    display: block;
+  }
+  /* the label only has to clear the value. `.resx-body` in front for the reason the 2.2u rule above
+     gives: the base `.resx-breakdown-solo .resx-cat` (centred, 4em gutters) is LATER in the file, and
+     at a tie it won — the split's labels were centred in 4em gutters and wrapped to three lines. */
+  .resx-body .resx-breakdown-solo .resx-cat {
+    padding: 0.06em 2.4em 0.06em 0.4em;
+    text-align: left;
+  }
+  .resx-body .resx-breakdown-solo .resx-val {
+    padding-block: 0.06em;
+  }
+}
 @media (max-height: 640px) and (min-width: 721px) {
-  /* the centre column takes the room the two halves give back, so two table columns fit in it */
+  /* the centre column takes the room the two halves give back: two table columns below 540px,
+     and above it the actions on ONE row (at 30% halves, 1024 wide, they wrap to two and the one
+     column no longer fits under 600px tall) */
   .resx-body:not(.resx-body-solo) {
     grid-template-columns: 24% minmax(0, 1fr) 24%;
   }

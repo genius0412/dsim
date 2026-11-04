@@ -368,7 +368,7 @@ export function coreChecks(check: Check): void {
       labels.join(' | '),
     );
     // `label` is the React key and PARK appears in TWO sections, so uniqueness is only ever
-    // per-section — the `<Fragment key={title}>` boundary in Results.tsx is what holds that.
+    // per-section — each section's own `<tbody key={title}>` in Results.tsx is what holds that.
     for (const [title, rs] of rows?.({ alliance: 'red' } as unknown as HudSnapshot) ?? []) {
       const ls = rs.map(([l]) => l);
       check(`${title}: its row labels are unique within the section`, new Set(ls).size === ls.length, ls.join(' | '));

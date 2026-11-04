@@ -1401,8 +1401,30 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   The results ad
   (`ResultsAd`, a 300x250 in the one column) cost ~264px and scrolled even a 1080p stage, so it mounts only
   at `min-height: 1180px`; that is inventory traded for the no-scroll rule, and moving it into the alliance
-  panel's empty middle is the way to win it back. To re-measure: `scratch/shot-results.cjs` style drive
-  (start Solo practice, press Enter, wait for `.resx-stage`, compare `scrollHeight` to `clientHeight`).
+  panel's empty middle is the way to win it back. To re-measure: **`npm run resultsaudit`** (below).
+- ⚠️ **THE BREAKDOWN SPLITS INTO TWO COLUMNS ONLY WHERE ONE CANNOT FIT (2026-11-04).** The split above
+  started at 640px tall, which is an ordinary laptop browser (1366x768 less the browser's chrome, 1920x1080
+  at 150%). The owner met it there on alpha and read it as a broken screen: two loose columns, headings
+  flush left, FLOWER's second row heading the next column, values nowhere near their alliance panel.
+  Nothing had changed that day; it was the 2026-10-10 layout (`49b4b59c`), never pictured below 768px tall.
+  Now: at 541-640px tall the board stays ONE column at 2.2u (it fits down to ~521px, measured), and the
+  split is `(max-height: 540px), (max-width: 720px), (max-width: 1000px) and (max-height: 600px)` (the
+  last because under ~450px of centre column the actions wrap to two rows). In the split, a section is
+  its own `<tbody>` (`Results.tsx`) with `break-inside: avoid`, so it never breaks across columns; its
+  heading is a block, so it centres over its own rows (as a lone table cell it shrink-wrapped to the left
+  edge); and the line a whole section costs (9 | 6 where loose rows went 8 | 7) is bought back with 2u
+  type, 0.06em rows and 0.5u headings, so 844x390 and 390x844 still fit.
+- **`npm run resultsaudit` (~30s, no build, no server)** renders the real `<Results>` and stylesheets on
+  fixture props (`scripts/results-fixture/`): BIOBUZZ, DECODE and Chain Reaction, versus and one-panel,
+  both themes, at 1920x1080, 1366x768, 1366x625, 1280x600, 1024x600, 844x390 and 390x844, and fails on
+  a scrolling stage, a half off its chip colour, a section broken across columns, a heading off the centre
+  of its rows, two columns where one fits, or a value away from its alliance's edge. It fails 362 ways on
+  `49b4b59c`'s layout. Run it after any change to `Results.tsx` or a `.resx-*` rule; `--shots=DIR`
+  writes a PNG of every board. Not in `npm test`, for `contrast`'s reason.
+- **`.resx-body .resx-breakdown-solo .resx-cat`**, not `.resx-breakdown-solo .resx-cat`, in the split: the
+  base rule of that name (centred, 4em gutters) sits LATER in `styles.css` and won the tie, so the split's
+  solo labels were centred and wrapped to three lines. Any `.resx-*` override in a media block above its
+  base rule needs one more class than the base, for the same reason as the 2.2u rule.
 - ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
   `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
   match `shell.css` by hand — change one, grep for the other.
