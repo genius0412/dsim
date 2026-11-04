@@ -3253,6 +3253,110 @@ export async function recordRank(
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
 
+/**
+ * IS THIS RUN A NEW WORLD RECORD — strictly above every OTHER full run on the game's OVERALL board
+ * for its season × mode, in the board's era? The overall board is the one a visitor lands on and
+ * the one the records feed reads (`recentRecords`). A tie is not a new record: it shares the
+ * place. One `exists` over the board's runs, asked once per record run, after `submitRecord`.
+ */
+export async function isNewWorldRecord(opts: {
+  recordId: string;
+  mode: 'solo' | 'duo';
+  score: number;
+  balanceVersion: number;
+  game?: Game;
+}): Promise<boolean> {
+  const phys = await boardPhysics(g(opts.game), opts.balanceVersion);
+  const rows = await q<{ beaten: boolean }>(
+    `select exists (
+       select 1 from records
+        where balance_version = $1 and mode = $2 and game = $3 and run_length = 'full'
+          and score >= $4 and id::text <> $5
+          ${phys ? 'and physics = $6' : ''}
+     ) as beaten`,
+    [opts.balanceVersion, opts.mode, g(opts.game), opts.score, opts.recordId, ...(phys ? [phys] : [])],
+  );
+  return rows[0] ? !rows[0].beaten : false;
+}
+
+// ------------------------------------------------------ community events -------
+// Migration 0065. The rules (who is announced, what a client is told) are `server/communityEvents.ts`.
+// NOT the `announcements` table above (0008, the "What's new" patch notes).
+
+/** one `community_events` row, as the cache holds it */
+export interface CommunityEventRow {
+  id: number;
+  kind: string;
+  game: string | null;
+  userId: string | null;
+  partnerId: string | null;
+  data: Record<string, unknown>;
+  /** epoch ms */
+  at: number;
+}
+
+/** how many rows the table keeps, and for how long: a page of history, never a log */
+export const COMMUNITY_KEEP_ROWS = 200;
+export const COMMUNITY_KEEP_HOURS = 24;
+
+/**
+ * Write one community event and prune the table, in one transaction. Returns the new id. The prune
+ * is the table's whole retention policy, so it runs on every write rather than on a timer: no
+ * write, no work.
+ */
+export async function insertCommunityEvent(a: {
+  kind: string;
+  game: string | null;
+  userId: string | null;
+  partnerId: string | null;
+  data: Record<string, unknown>;
+}): Promise<number> {
+  return tx(async (query) => {
+    const rows = await query<{ id: string }>(
+      `insert into community_events (kind, game, user_id, partner_id, data)
+       values ($1, $2, $3, $4, $5::jsonb) returning id`,
+      [a.kind, a.game, a.userId, a.partnerId, JSON.stringify(a.data)],
+    );
+    const id = Number(rows[0]?.id ?? 0);
+    await query(
+      `delete from community_events
+        where id <= $1 - $2::int or created_at < now() - make_interval(hours => $3::int)`,
+      [id, COMMUNITY_KEEP_ROWS, COMMUNITY_KEEP_HOURS],
+    );
+    return id;
+  });
+}
+
+/**
+ * The rows after `afterId`, oldest first, at most `limit`. With `afterId` 0 (a machine's first
+ * read) the NEWEST `limit` rows, still oldest first, so a cold cache starts at the head rather than
+ * walking a day of history. Either way a primary-key range scan.
+ */
+export async function listCommunityEvents(afterId: number, limit = 20): Promise<CommunityEventRow[]> {
+  const rows = await q<{
+    id: string; kind: string; game: string | null; user_id: string | null; partner_id: string | null;
+    data: Record<string, unknown> | string | null; at: string | number;
+  }>(
+    afterId > 0
+      ? `select id, kind, game, user_id, partner_id, data, (extract(epoch from created_at) * 1000)::float8 as at
+           from community_events where id > $1 order by id asc limit $2`
+      : `select * from (
+           select id, kind, game, user_id, partner_id, data, (extract(epoch from created_at) * 1000)::float8 as at
+             from community_events where $1::bigint = 0 order by id desc limit $2
+         ) t order by id asc`,
+    [afterId, limit],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    kind: r.kind,
+    game: r.game,
+    userId: r.user_id,
+    partnerId: r.partner_id,
+    data: typeof r.data === 'string' ? (JSON.parse(r.data) as Record<string, unknown>) : (r.data ?? {}),
+    at: Number(r.at),
+  }));
+}
+
 // --------------------------------------------------- admin moderation -------
 /** one moderation row: the best run per player in a bucket, WITH its record +
  * replay id so an admin can delete it (the public board omits these ids). */

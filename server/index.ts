@@ -60,6 +60,7 @@ import {
   announceRestart,
   cancelRestart,
 } from './siteState';
+import { communityFeed, refreshCommunityEvents } from './communityEvents';
 import { serveClient, servingClient } from './static';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
@@ -2902,13 +2903,19 @@ const httpServer = createServer((req, res) => {
    * A signed-in caller's profile row is made here if it does not exist yet. That is what lets
    * the owner grant a tester BY NAME on the alpha database: signing in once on the closed
    * screen is enough for the tag to resolve.
+   *
+   * `?ev=<cursor>` asks for the COMMUNITY ANNOUNCEMENTS since the cursor (`server/communityEvents.ts`).
+   * The parameter is the capability: without it the body is exactly what it always was.
    */
   if (req.method === 'GET' && new URL(req.url ?? '/', 'http://x').pathname === '/api/status') {
     const auth = req.headers['authorization'];
     const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+    const evCursor = new URL(req.url ?? '/', 'http://x').searchParams.get('ev');
     void (async () => {
-      await Promise.all([refreshLockdown(), refreshBanners()]);
+      await Promise.all([refreshLockdown(), refreshBanners(), evCursor !== null ? refreshCommunityEvents() : null]);
       const body: SiteStatus = siteStatus();
+      const ev = communityFeed(evCursor);
+      if (ev) body.ev = ev;
       if (token) {
         const user = await verifyAuthToken(token).catch(() => null);
         if (user) {

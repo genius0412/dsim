@@ -1,5 +1,28 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { FOCUSABLE } from './PadNavLayer';
+
+/**
+ * HOW MANY DIALOGS ARE OPEN, for the one thing outside them that must not talk over one: the event
+ * toasts (`EventToasts.tsx`) wait while this is above zero. Every shell dialog, popup (a joined
+ * room, ranked, the record runs) and modal goes through `useDialog`, so counting here counts them
+ * all without each remembering to.
+ */
+let openDialogs = 0;
+const dialogSubs = new Set<() => void>();
+const bumpDialogs = (by: number): void => {
+  openDialogs = Math.max(0, openDialogs + by);
+  dialogSubs.forEach((f) => f());
+};
+export function useOpenDialogs(): number {
+  return useSyncExternalStore(
+    (cb) => {
+      dialogSubs.add(cb);
+      return () => dialogSubs.delete(cb);
+    },
+    () => openDialogs,
+    () => openDialogs,
+  );
+}
 
 /**
  * The ONE dialog behaviour (design review C07): attach the returned ref to the element that
@@ -30,6 +53,7 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose?: () =
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    bumpDialogs(1);
     const atOpen = document.activeElement as HTMLElement | null;
     const first = openerRef.current;
     const opener = first && !el.contains(first) ? first : atOpen && !el.contains(atOpen) ? atOpen : null;
@@ -64,6 +88,7 @@ export function useDialog<T extends HTMLElement = HTMLDivElement>(onClose?: () =
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
+      bumpDialogs(-1);
       if (opener?.isConnected) opener.focus();
     };
   }, []);

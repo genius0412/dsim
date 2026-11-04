@@ -1240,6 +1240,12 @@ export interface GameSettings {
   pace?: PaceSource;
   /** the replay `pace: 'replay'` runs against, per game — a replay belongs to one game */
   paceReplays?: Partial<Record<GameId, PaceReplayRef>>;
+  /**
+   * "Show community announcements": the corner toasts about OTHER people (a new world record, a new
+   * No.1 in ranked, a new supporter; `src/eventToasts.ts`). Absent reads ON, which is every blob
+   * written before it existed. Toasts about you (your best, your rating, your badge) are always on.
+   */
+  communityToasts?: boolean;
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;

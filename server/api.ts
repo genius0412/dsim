@@ -94,7 +94,9 @@ import {
   userMatchHistory,
   usernameAvailable,
   UsernameTakenError,
+  profileNames,
 } from './db/repo';
+import { announce, supporterAnnouncement } from './communityEvents';
 import {
   analyticsReport,
   classify,
@@ -1564,6 +1566,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         amount?: string;
         currency?: string;
         is_subscription_payment?: boolean;
+        is_first_subscription_payment?: boolean;
+        /** the payer let Ko-fi show the payment publicly — the only way they are named (`supporterAnnouncement`) */
+        is_public?: boolean;
         tier_name?: string;
       };
       try {
@@ -1619,6 +1624,22 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           `[kofi] parked ${payload.message_id} (${event.kind}, ${event.amount ?? '?'} ${event.currency ?? '?'}, ${months}mo) - awaiting claim`,
         );
       }
+      // A NEW SUPPORTER IS EVERYONE'S NEWS (`server/communityEvents.ts`), named only when the payment is
+      // public AND linked to an account. After the grant is committed; never throws.
+      const linkedName = r.fresh && r.autoGrantedTo && payload.is_public
+        ? ((await profileNames([r.autoGrantedTo]).catch(() => null))?.get(r.autoGrantedTo)?.username ?? null)
+        : null;
+      const supporterNews = supporterAnnouncement({
+        fresh: r.fresh,
+        months,
+        isSubscription: event.isSubscription,
+        isFirstSubscriptionPayment: payload.is_first_subscription_payment,
+        isPublic: payload.is_public,
+        linkedUserId: r.autoGrantedTo,
+        linkedUsername: linkedName,
+      });
+      // not awaited: Ko-fi is waiting on this answer, and `announce` never throws
+      if (supporterNews) void announce(supporterNews);
       return (
         json(200, { ok: true, recorded: r.fresh, granted: !!r.autoGrantedTo, months }),
         true

@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { BannerStack } from './ui/BannerStack';
+import { EventToasts } from './ui/EventToasts';
 import { ClosedScreen } from './ui/ClosedScreen';
 import { useShellState } from './ui/shellState';
 import { BOOT_WAIT_MS, BUILD_CLOSED, getSiteState, isClosed, loadSiteStatus, useSiteState } from './net/siteStatus';
@@ -146,6 +147,9 @@ function Root() {
             </AdsProvider>
           </AppBoundary>
           <BannerStack />
+          {/* THE EVENT TOASTS (`src/eventToasts.ts`): your best, your rating, a badge, the community's
+              news. Beside `<App/>` for the banner stack's reason: on every page, early returns included. */}
+          <EventToasts />
           {/* CONTROLLER NAVIGATION. Beside `<App/>` rather than inside it, for the reason the ad
               provider wraps it: the game, lobby, record and ranked screens are returned EARLY and
               would each have to remember to mount this. It renders through a portal to `body`, so

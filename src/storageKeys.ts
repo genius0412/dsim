@@ -125,6 +125,8 @@ export const ROBOT_LIBRARY_DB = 'decodesim.robots';
 export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
 /** Home's player and game counts as last fetched, shown until the fresh ones land (`HomeMenu.tsx`) */
 export const HOME_STATS_KEY = 'decodesim.homeStats.v1';
+/** the reward grants a toast has already announced on this device, so a reload does not repeat one (`src/eventToasts.ts`) */
+export const TOASTS_SEEN_KEY = 'decodesim.toastsSeen.v1';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -331,6 +333,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     category: 'preference',
     purpose:
       'Light, dark, or follow your system. Read before the first paint, so the page does not flash the wrong theme.',
+    retention: 'Until you clear your browser data.',
+  },
+  {
+    key: TOASTS_SEEN_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Which unlocked badges a corner notice has already told you about, as a list of the last 50 reward ids, so a reload does not tell you again.',
     retention: 'Until you clear your browser data.',
   },
   {

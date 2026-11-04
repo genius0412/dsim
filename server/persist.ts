@@ -5,7 +5,9 @@ import {
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
+  isNewWorldRecord,
   personalBest,
+  profileNames,
   recentStandingCount,
   recordRank,
   saveReplay,
@@ -22,6 +24,8 @@ import { competitionCallFailed, competitionMatchPlayed } from './competitions';
 // scrubbing too: repo.ts is the one funnel all three replay writers share, and persist.ts
 // imports repo.ts, so repo.ts importing it back from here would be a cycle.
 import { scrubSpecNames } from './moderation';
+import { announce } from './communityEvents';
+import type { GameId } from '../src/games/types';
 import { recordScore } from '../src/sim/replay';
 import { isImportedSpec, setupsHaveImported } from '../src/net/imported';
 import { simModuleFor } from '../src/games/sim';
@@ -238,6 +242,12 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
       console.log(
         `[persist] WROTE record ${id}: user=${primary.userId} score=${score} dt=${drivetrain} rank=${rank}/${total} pb=${info.isPB} wr=${info.isWR} season=${bv}`,
       );
+      // A NEW WORLD RECORD IS EVERYONE'S NEWS (`server/communityEvents.ts`). Only a run that is already
+      // No.1 of its own bucket and a new best for its entry can be one, so an ordinary run costs
+      // no extra read; fire-and-forget, so the result below is never held up by it.
+      if (info.isWR && info.isPB) {
+        void announceWorldRecord({ recordId: id, mode, score, bv, game, userId: primary.userId!, partnerId: partner?.userId ?? null });
+      }
       return { record: info };
     } else {
       const ids: { matchId?: string } = {};
@@ -280,6 +290,44 @@ async function archiveMatch(o: MatchOutcome, archived: ArchivedIds): Promise<Per
     console.error('[persist] FAILED writing to DB:', e);
   }
   return {};
+}
+
+/**
+ * Announce a record run to everyone online when it is a new No.1 on the game's OVERALL board,
+ * strictly (a tie shares the place and is not a new record). Never throws: the run is already
+ * written and the player already has their result.
+ */
+export async function announceWorldRecord(r: {
+  recordId: string;
+  mode: 'solo' | 'duo';
+  score: number;
+  bv: number;
+  game: GameId;
+  userId: string;
+  partnerId: string | null;
+}): Promise<boolean> {
+  try {
+    if (!(await isNewWorldRecord({ recordId: r.recordId, mode: r.mode, score: r.score, balanceVersion: r.bv, game: r.game }))) return false;
+    const names = await profileNames([r.userId, ...(r.partnerId ? [r.partnerId] : [])]);
+    const nameOf = (id: string | null): string | null => {
+      const n = id ? names.get(id) : undefined;
+      return n ? (n.username ?? n.handle) : null;
+    };
+    await announce({
+      kind: 'record',
+      game: r.game,
+      userId: r.userId,
+      partnerId: r.partnerId,
+      name: nameOf(r.userId),
+      partner: nameOf(r.partnerId),
+      mode: r.mode,
+      score: r.score,
+    });
+    return true;
+  } catch (e) {
+    console.error('[community] world record check failed:', e);
+    return false;
+  }
 }
 
 /**

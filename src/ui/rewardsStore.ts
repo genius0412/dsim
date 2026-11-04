@@ -9,6 +9,7 @@ import {
 } from '../net/api';
 import { withBadgeEquipped } from '../badges';
 import { compareGrants, grantCards, grantCosmetics, type RewardGrant, type RewardItem } from '../rewards';
+import { noteRewardGrants } from '../eventToasts';
 
 /**
  * THE ACCOUNT'S REWARD STATE, ONE COPY FOR THE WHOLE SHELL — pending grants, badge counts,
@@ -80,6 +81,9 @@ export async function loadRewards(userId: string | null): Promise<void> {
     const s = await fetchRewards();
     if (mine !== seq) return;
     set({ status: 'ready', state: sorted(s) });
+    // THE BADGE TOAST rides this read (`src/eventToasts.ts`): a stargazer grant this device has
+    // not announced yet. Records-based badges never toast — the world record already did.
+    noteRewardGrants(s.pending ?? []);
   } catch (e) {
     if (mine !== seq) return;
     if (e instanceof FriendsUnavailableError) {

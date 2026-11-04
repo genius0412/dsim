@@ -894,7 +894,11 @@ names a setpoint wheel's speed (and preset) and READY / SPIN UP.
   curve equals the re-simulated one. While a NEW run's curve is still being made the tag reads `—`,
   never the previous run's curve under the new run's name (`usePace`'s `shownRun`).
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
-  in the top-right chips. ONE exception, owner 2026-10-12 ("allow notifications from people while in
+  in the top-right chips. The EVENT TOASTS (`EventToasts.tsx`, rules in `docs/area/accounts.md`)
+  keep this by WAITING: the queue is held while the match screen is up, results included, while a
+  replay plays, and while any `useDialog` is open, and a toast on screen when a hold starts goes
+  back to the front of the queue. They sit bottom-LEFT (the friend toasts and the queue bar own the
+  bottom-right), and on a phone they lift above both. ONE exception, owner 2026-10-12 ("allow notifications from people while in
   match"): friend toasts (`FriendToasts inMatch`, top-left, information only — no Accept on an invite,
   no profile link, because either would leave the match). The ranked search is a bottom-RIGHT
   pinned card (`QueueBar`, owner 2026-10-24; it was bottom-left), with the friend toasts stacked above it;

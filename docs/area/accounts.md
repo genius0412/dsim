@@ -1,4 +1,4 @@
-<!-- governs: server/db/**, server/ranked.ts, server/ratingRecalc.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/notices.ts, server/notices.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
+<!-- governs: server/db/**, server/ranked.ts, server/ratingRecalc.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/notices.ts, server/notices.ts, src/playtime.ts, src/eventToasts.ts, server/communityEvents.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
 # Accounts, ranked, leaderboards, records, staff roles
 
 Glicko-2, per-game boards and periods, the badge rules, challenges and the party token, and the background ranked queue.
@@ -654,6 +654,68 @@ told what, AFTER the outcome is committed, and never throws into a route.
   client never asks. Notices are in the account export and cascade on deletion.
 Tests: `npm test` ("notices:" — wording, copy rules, the refund rule, the route wiring) and
 `npm run dbtest` ("notices:", "refund:", "who:").
+
+**EVENT TOASTS — personal and community (migration 0065, 2026-11-04).** Owner: "a global
+achievement message/alert/toast system where IMPORTANT EVENTS … would be displayed everywhere.
+Make this lightweight and do not put too much new load on the servers." One compact toast in the
+bottom-left corner of every page (`src/ui/EventToasts.tsx`, beside `<App/>` in `main.tsx`); the
+rules, the queue and the copy are `src/eventToasts.ts` (DOM-free, held by `npm test`).
+- **PERSONAL, always on, zero new bytes.** Built from the message that already carries the result
+  to this client: `recordResult` (a new personal best, or #1 of the bucket, which the results
+  screen calls a world record), `eloResult` (the rating change; silent through placement, then
+  "Placement done" on the last placement game; silent when nothing moved, e.g. a voided 2v2), and
+  the rewards read (`rewardsStore.loadRewards`) for the **Stargazer** badge. Never for a
+  spectator. **Records-based badges never toast** (owner): the season's record award is the same
+  news the world-record toast already gave. A stargazer grant toasts once per device
+  (`TOASTS_SEEN_KEY`); its click reopens the claim on Appearance.
+- **COMMUNITY, Configure ▸ Audio and Visual ▸ "Show community announcements"** (`GameSettings.
+  communityToasts`, absent = on). Three kinds, written to `community_events` by whichever machine
+  saw them (`server/communityEvents.ts`, never throws, after the commit):
+  - `record`: a run strictly above every OTHER full run on the game's OVERALL board for its season
+    × mode, in the board's era (`isNewWorldRecord`). A tie is not a new record. Asked only of a run
+    that is already #1 of its bucket and a new best for its entry, so an ordinary run costs nothing.
+  - `ranked1`: a rated match that changed who is #1 on the live ladder (game × mode × act). ONE
+    read, the top `players + 1` placed rows after the match; `newRankedTop` rebuilds the board
+    before it from those rows and the players' own rows from before the match (nothing else moved).
+    The new #1 can be someone who did not play. A board with under two placed players is skipped.
+  - `supporter` (`supporterAnnouncement`): a Ko-fi payment that bought at least one month and is not
+    a subscription renewal. NAMED by DSIM @username only when Ko-fi marks it public AND it is linked
+    to an account (`profiles.kofi_email`); otherwise "A new supporter joined DSIM". A FIRST payment is
+    not linked yet (the claim links it, later), so it is anonymous and the claim announces nothing:
+    one payment, one toast.
+  An event naming you is skipped on your own client (`uid`/`pid`): the personal toast said it. A
+  season hidden on the client's channel never toasts.
+- **TRANSPORT: the status poll every page already makes.** `GET /api/status?ev=<cursor>`
+  (`NoticePoller`, 20 s while somebody is at the keyboard). The PARAMETER IS THE CAPABILITY: no
+  parameter, no `ev` key, so an older client sees nothing new, and an older server ignores the
+  parameter. A first read (empty cursor) gets the head alone, so nothing from before the page
+  opened replays; a cursor at the head gets no key at all; behind it, the newer events younger than
+  15 min; ahead of it (a lagging machine), the head, and the client dedupes by id. Each machine
+  caches the newest 20 rows, re-read at most every 10 s (the banners' TTL) and only when a poll
+  asks; the machine that wrote an event re-reads at once. That is what crosses Fly machines,
+  satellites and room workers: persistence, and so every emission, is on the socket thread.
+- **THE TABLE STAYS TINY.** Every insert prunes to the newest 200 rows and the last 24 h, in the
+  same transaction. Both foreign keys (`user_id`, `partner_id`) cascade and lead an index. It is
+  NOT `announcements` (0008), which is the "What's new" patch notes.
+- **LOAD AT 2,000 ONLINE** (measured sizes, 2026-11-04). Polls are unchanged in number (~6,000/min
+  if everyone is active). Bytes: 0 on a poll with nothing new (the common case); 16 on a tab's first
+  read; ~180 per record or ranked event and ~90 per anonymous supporter, once per online client. At
+  10 community events an hour that is ~30 bytes per client per minute, ~3.6 MB an hour across 2,000
+  clients, ~2.6 GB a month: cents of egress. Personal toasts add nothing. DB: ≤ 6 cursor reads a
+  minute per machine that is answering polls (the router sends them to the primary, so ~6 in
+  total), whatever the client count, inside the window the banner read already keeps Neon awake;
+  plus one insert per event, one top-of-ladder read per rated ranked match, one `exists` per record
+  run that is already its bucket's #1, and one username read per public linked Ko-fi payment.
+- **UI.** One at a time, 5 s, paused on hover or focus; a click opens the page (the game's
+  leaderboard, switching season if it has to; Donate; Appearance) and closes it. Personal toasts
+  first; community at most one per 30 s, and whatever arrived in between collapses into one ("3 new
+  world records", or "New on DSIM · 2 new world records · 1 new supporter"). HELD during the match
+  screen (results included), a replay, and any open dialog (`useDialog` counts them, and every
+  popup and modal uses it); a toast on screen when a hold starts goes back to the front of the
+  queue. `aria-live="polite"`, reduced motion respected, fixed so nothing moves.
+Tests: `npm test` ("community:", "ranked No.1:", "supporter:", "toasts:") and `npm run dbtest`
+("community/db:"). **A server change: deploy it** (the table, the route, the emitters). An older
+server simply never answers `ev`, and the personal toasts work against any server.
 
 **PLAY A FRIEND — challenges (chess.com's model), DONE.** A challenge (`room_invites` +
 migration `0019`) carries a **`format`**: `casual1v1`/`casual2v2` (a `versus` room),

@@ -4,6 +4,7 @@ import { isClosed as rulesIsClosed, bypassLine as rulesBypassLine } from './site
 import { appChannel, gameServerConfigured, gameServerHttpUrl } from './env';
 import { authEnabled, getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
+import { noteCommunityFeed, statusCursor } from '../eventToasts';
 
 /**
  * THE SITE STATUS ON THIS CLIENT: the lockdown, the banners, and whether the signed-in account
@@ -121,7 +122,9 @@ async function readStatus(forceToken: boolean): Promise<void> {
     token = await getAuthToken(forceToken).catch(() => null);
   }
   try {
-    const res = await fetch(base + '/api/status', {
+    // `ev` is the community-event cursor (`src/eventToasts.ts`): the parameter is the capability,
+    // so an older server ignores it and an older client never sends it
+    const res = await fetch(`${base}/api/status?ev=${encodeURIComponent(statusCursor())}`, {
       headers: token ? { authorization: `Bearer ${token}` } : {},
       cache: 'no-store',
     });
@@ -132,6 +135,7 @@ async function readStatus(forceToken: boolean): Promise<void> {
     if (!res.ok) throw new Error(`status ${res.status}`);
     const body = (await res.json()) as SiteStatus;
     applyStatus(body, wantToken ? (token ? (body.access ?? null) : null) : undefined);
+    noteCommunityFeed(body.ev);
     // the restart countdown also feeds the start guard (`App`), exactly as the presence poll did
     setServerNotice(body.notice ?? null);
     // the anonymous read found a lockdown the account might pass: ask again, with the token

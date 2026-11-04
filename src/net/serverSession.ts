@@ -4,6 +4,7 @@ import type { MatchResultInfo, NetSession, NetStatus, RematchVote, Snapshot } fr
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
 import { applyPushedStatus } from './siteStatus';
+import { notePersonal, ratingToast, recordToast } from '../eventToasts';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
 import { restoreWireClocks } from './wireClocks';
 import { importVisuals } from './importVisualsClient';
@@ -555,8 +556,12 @@ export class ServerSession implements NetSession {
       this.resultCb?.(this.matchResult);
     } else if (m.t === 'eloResult') {
       this.eloResults = m.results;
+      // YOUR rating, as a toast once you leave the results (`src/eventToasts.ts`); a spectator has none
+      if (!this.spectator) notePersonal(ratingToast(m.results, this.localRobotId, this.game, this.setups.length));
     } else if (m.t === 'recordResult') {
       this.recordResult = m.info;
+      // a new best or a record, the same way; a duo's partner gets it too, it is their run as well
+      if (!this.spectator) notePersonal(recordToast(m.info, this.game));
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
     } else if (m.t === 'siteStatus') {

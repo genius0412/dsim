@@ -4,13 +4,16 @@ import type { MatchOutcome, MatchParticipant } from './room';
 import {
   actForSeason,
   addMatchParticipants,
+  boardMinGames,
   dropUntouchedRatings,
+  eloLeaderboard,
   getRatingsFull,
   saveMatch,
   upsertEloHistory,
   upsertRating,
 } from './db/repo';
 import { tx } from './db/pool';
+import { announce, newRankedTop } from './communityEvents';
 
 /**
  * Ranked ratings — Glicko-2 (the chess.com model). Beyond a single Elo number,
@@ -474,6 +477,8 @@ export async function persistVersusMatch(
 
   let updates: EloBoardUpdate[] = [];
   const gamesAfter = new Map<string, number>(); // userId -> board games after this match
+  /** each player's board row BEFORE this match, for the new-No.1 check after it */
+  const ladderBefore = new Map<string, { rating: number; games: number } | null>();
   // ELO is keyed by ACT (persists across seasons); resolve this season's act once, OUTSIDE the
   // transaction — it is a read of `seasons`, and nothing here writes that table.
   const act = ranked ? await actForSeason(balanceVersion, game) : 0;
@@ -501,6 +506,10 @@ export async function persistVersusMatch(
       // ONE query for every player's rating, not one per player. Glicko-2's sequencing lives
       // in `computeGlicko`, which takes the whole set at once.
       const ratingsBefore = await getRatingsFull(authed.map((p) => p.userId!), mode, act, game, query, true);
+      for (const p of authed) {
+        const r = ratingsBefore.get(p.userId!);
+        ladderBefore.set(p.userId!, r ? { rating: r.rating, games: r.games } : null);
+      }
       const parts: EloParticipant[] = authed.map((p) => {
         const r = ratingsBefore.get(p.userId!)!;
         return {
@@ -564,6 +573,10 @@ export async function persistVersusMatch(
   });
   if (out) out.matchId = String(matchId);
 
+  // A NEW No.1 ON THE LADDER IS EVERYONE'S NEWS (`server/communityEvents.ts`). Fire-and-forget, after
+  // the commit: the reveal below must never wait on it, and it never throws.
+  if (ranked && updates.some((u) => !u.voided)) void announceRankedTop(mode, act, game, ladderBefore);
+
   // the rating change per player, for the results-screen reveal (ranked only;
   // custom returns nothing so no reveal fires)
   return updates.map((u) => ({
@@ -573,4 +586,37 @@ export async function persistVersusMatch(
     rd: u.rd,
     games: gamesAfter.get(u.userId) ?? 0,
   }));
+}
+
+/**
+ * Announce a ranked match that changed who is No.1 on its live ladder (game × mode × act).
+ *
+ * ONE read: the top `players + 1` placed rows after the match. `newRankedTop` reconstructs the
+ * No.1 before the match from those rows and the players' own rows from before it (the only rows
+ * the match moved). Named by @username, else display name. Never throws.
+ */
+export async function announceRankedTop(
+  mode: '1v1' | '2v2',
+  act: number,
+  game: GameId | undefined,
+  before: ReadonlyMap<string, { rating: number; games: number } | null>,
+): Promise<string | null> {
+  try {
+    const after = await eloLeaderboard({ mode, act, game, limit: before.size + 1 });
+    const top = newRankedTop(after, before, boardMinGames(mode, game));
+    if (!top) return null;
+    const row = after[0];
+    await announce({
+      kind: 'ranked1',
+      game: game ?? 'decode',
+      userId: top,
+      name: row.username ?? row.handle,
+      mode,
+      score: Math.round(row.rating),
+    });
+    return top;
+  } catch (e) {
+    console.error('[community] ranked No.1 check failed:', e);
+    return null;
+  }
 }

@@ -228,6 +228,13 @@ export function AudioSection({
             value={settings.showEventLog}
             onPick={(showEventLog) => onChange({ ...settings, showEventLog })}
           />
+          {/* the corner toasts about OTHER people (`src/eventToasts.ts`). Your own best, rating
+              and badge always show; they are about you. */}
+          <ToggleRow
+            label="Show community announcements"
+            value={settings.communityToasts !== false}
+            onPick={(communityToasts) => onChange({ ...settings, communityToasts })}
+          />
           {/**
             * THE PERFORMANCE READ-OUT'S LEVEL — beside the messages toggle, because they are
             * the two read-outs a match draws over the field and they sit in opposite corners

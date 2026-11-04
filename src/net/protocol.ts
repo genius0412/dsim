@@ -1720,4 +1720,51 @@ export interface SiteStatus {
   notice?: { kind: 'restart' | 'info'; message: string; until?: number } | null;
   /** server time, so a client with a wrong clock still counts a window down correctly */
   now?: number;
+  /**
+   * COMMUNITY ANNOUNCEMENTS since the caller's cursor (`server/communityEvents.ts`, migration 0065).
+   * Sent ONLY to a request carrying `?ev=` — that parameter is the capability, so an older client
+   * never sees the key — and only when there is something to say: the first read (no cursor) gets
+   * the head alone, a cursor behind the head gets the newer events, a cursor AT the head gets
+   * nothing at all. Absent from an older server.
+   */
+  ev?: CommunityFeed;
+}
+
+/* ── COMMUNITY ANNOUNCEMENTS (migration 0065, `server/communityEvents.ts`, `src/eventToasts.ts`) ─── */
+
+/** what a community announcement is about. A kind this build does not know is skipped. */
+export type CommunityKind = 'record' | 'ranked1' | 'supporter';
+export const COMMUNITY_KINDS: readonly CommunityKind[] = ['record', 'ranked1', 'supporter'];
+
+/**
+ * ONE ANNOUNCEMENT, as every online client is told it. Facts, never prose: the client words it
+ * (`src/eventToasts.ts`), so copy changes need no server deploy.
+ *  - `record`    a new No.1 on a game's OVERALL record board (solo or duo), strictly above every
+ *                other run on it: `name` (+ `partner` for a duo), `mode`, `score`
+ *  - `ranked1`   a new No.1 on a game's live ranked ladder: `name`, `mode` ('1v1' | '2v2'), `score` (the rating)
+ *  - `supporter` a Ko-fi payment that bought a membership: `name` is the DSIM @username when the
+ *                payment was PUBLIC and its payer is LINKED to an account, else null (anonymous)
+ */
+export interface CommunityEvent {
+  /** global, increasing (the table's bigserial) — the cursor */
+  id: number;
+  kind: CommunityKind;
+  game: string | null;
+  /** epoch ms, server clock */
+  at: number;
+  name?: string | null;
+  partner?: string | null;
+  /** the account(s) it names, so a client can skip the one about itself (it got the personal toast) */
+  uid?: string | null;
+  pid?: string | null;
+  mode?: string;
+  score?: number;
+}
+
+/** `SiteStatus.ev` */
+export interface CommunityFeed {
+  /** the newest id the answering machine knows: the caller's next cursor */
+  h: number;
+  /** events after the caller's cursor, oldest first (absent on a first read) */
+  items?: CommunityEvent[];
 }

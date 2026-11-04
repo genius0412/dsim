@@ -679,6 +679,7 @@ export function coerceSettings(raw: unknown): GameSettings {
     // drift from the sliders (see the `audio` type for why they still exist)
     Object.assign(out.audio, audioMirrors(out.audio.volume));
     if (typeof s.showEventLog === 'boolean') out.showEventLog = s.showEventLog;
+    if (typeof s.communityToasts === 'boolean') out.communityToasts = s.communityToasts;
     /**
      * THE PERFORMANCE READ-OUT'S LEVEL, and the one migration it needs.
      *

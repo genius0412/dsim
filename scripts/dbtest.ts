@@ -7282,6 +7282,111 @@ async function main(): Promise<void> {
     check('feed/db: another game has an empty feed of its own', (await repo.recentRecords({ game: 'decode', balanceVersion: BV, since: null })).length === 0);
   }
 
+  /*
+   * COMMUNITY EVENTS (migration 0065): the table behind the global toasts. Its schema (two foreign
+   * keys, each leading an index — the generic rule above holds them too, this names them), the
+   * round trip, the prune that is its whole retention policy, the cascade, and the three emitters
+   * end to end: a world record (strictly above every other run; a tie is not one), a new No.1 in
+   * ranked, and the status cache a poll is answered from.
+   */
+  {
+    const ce = await import('../server/communityEvents');
+    const { announceWorldRecord } = await import('../server/persist');
+    const { announceRankedTop } = await import('../server/ranked');
+    ce.resetCommunityEventsForTests();
+    const tablesNow = (await db.query<{ table_name: string }>(`select table_name from information_schema.tables where table_schema = 'public'`)).rows.map((r) => r.table_name);
+    check('community/db: 0065 created community_events (and left the patch-notes `announcements` alone)',
+      tablesNow.includes('community_events') && tablesNow.includes('announcements'));
+    const fkIdx = await db.query<{ col: string; indexed: boolean }>(`
+      select a.attname as col,
+             exists (select 1 from pg_index i where i.indrelid = c.conrelid and (i.indkey::int2[])[0] = c.conkey[1]) as indexed
+        from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+       where c.conrelid = 'community_events'::regclass and c.contype = 'f' order by 1`);
+    check('community/db: both foreign keys (user_id, partner_id) lead an index of their own',
+      fkIdx.rows.map((r) => `${r.col}:${r.indexed}`).join() === 'partner_id:true,user_id:true', JSON.stringify(fkIdx.rows));
+
+    for (const u of ['ce-a', 'ce-b', 'ce-c', 'ce-d', 'ce-gone']) await repo.ensureProfile(u, u.toUpperCase());
+    for (const u of ['ce-a', 'ce-b', 'ce-c']) await db.query(`update profiles set username = $2 where user_id = $1`, [u, u.replace('-', '_')]);
+
+    const id1 = await repo.insertCommunityEvent({ kind: 'record', game: 'chain', userId: 'ce-a', partnerId: 'ce-b', data: { name: 'ce_a', partner: 'ce_b', mode: 'duo', score: 9 } });
+    const back = await repo.listCommunityEvents(id1 - 1);
+    check('community/db: a row round-trips with its facts, and its time as epoch ms',
+      back.length === 1 && back[0].userId === 'ce-a' && back[0].partnerId === 'ce-b' && back[0].data.score === 9 && Math.abs(back[0].at - Date.now()) < 60_000,
+      JSON.stringify(back));
+    await repo.insertCommunityEvent({ kind: 'supporter', game: null, userId: 'ce-gone', partnerId: null, data: { name: 'gone' } });
+    await db.query(`delete from profiles where user_id = 'ce-gone'`);
+    check('community/db: an account deletion takes the events naming it (cascade)',
+      Number((await db.query<{ n: string }>(`select count(*) as n from community_events where user_id = 'ce-gone'`)).rows[0].n) === 0);
+
+    // the prune: newest 200 rows and the last day, on every write
+    await db.query(`insert into community_events (kind, game, data) select 'supporter', null, '{}'::jsonb from generate_series(1, 230)`);
+    await db.query(`update community_events set created_at = now() - interval '2 days' where id = (select max(id) from community_events)`);
+    const last = await repo.insertCommunityEvent({ kind: 'supporter', game: null, userId: null, partnerId: null, data: {} });
+    const left = (await db.query<{ n: string; lo: string; old: string }>(
+      `select count(*) as n, min(id) as lo, count(*) filter (where created_at < now() - interval '1 day') as old from community_events`)).rows[0];
+    check('community/db: every write prunes the table to its newest rows and its last day',
+      Number(left.n) <= repo.COMMUNITY_KEEP_ROWS && Number(left.lo) > last - repo.COMMUNITY_KEEP_ROWS && Number(left.old) === 0, JSON.stringify(left));
+    const head = await repo.listCommunityEvents(0, 5);
+    check('community/db: a cold cache (cursor 0) reads the NEWEST rows, oldest first',
+      head.length === 5 && head[4].id === last && head.every((r, i) => i === 0 || r.id > head[i - 1].id));
+
+    // ---- a world record, end to end: strictly above every other run on the overall board
+    const G = 'chain' as const;
+    const BV = 961;
+    await db.query(`insert into seasons (game, balance_version, act, active) values ($1, $2, 4, false) on conflict (game, balance_version) do nothing`, [G, BV]);
+    const run = async (u: string, score: number, dt = 'tank'): Promise<string> =>
+      (await db.query<{ id: string }>(
+        `insert into records (user_id, mode, drivetrain, score, balance_version, game) values ($1, 'solo', $2, $3, $4, $5) returning id`,
+        [u, dt, score, BV, G],
+      )).rows[0].id;
+    await run('ce-b', 300, 'mecanum');
+    const tieId = await run('ce-a', 300);
+    const before = Number((await db.query<{ n: string }>(`select count(*) as n from community_events where kind = 'record'`)).rows[0].n);
+    check('community/db: a run that only TIES the record is not a new world record',
+      !(await announceWorldRecord({ recordId: tieId, mode: 'solo', score: 300, bv: BV, game: G, userId: 'ce-a', partnerId: null })));
+    const wrId = await run('ce-a', 320);
+    check('community/db: a run strictly above every other run on the overall board (any drivetrain) is one',
+      await announceWorldRecord({ recordId: wrId, mode: 'solo', score: 320, bv: BV, game: G, userId: 'ce-a', partnerId: null }));
+    const wrRow = (await db.query<{ user_id: string; game: string; data: { name?: string; score?: number; mode?: string } }>(
+      `select user_id, game, data from community_events where kind = 'record' order by id desc limit 1`)).rows[0];
+    check('community/db: ...and is written once, named by @username, with the score and mode',
+      Number((await db.query<{ n: string }>(`select count(*) as n from community_events where kind = 'record'`)).rows[0].n) === before + 1 &&
+        wrRow.user_id === 'ce-a' && wrRow.game === G && wrRow.data.name === 'ce_a' && wrRow.data.score === 320 && wrRow.data.mode === 'solo',
+      JSON.stringify(wrRow));
+
+    // ---- a new No.1 in ranked, end to end: ONE read of the top players+1 after the match
+    const ACT = 77;
+    const elo = (u: string, rating: number, games: number) =>
+      db.query(
+        `insert into elo_ratings (user_id, mode, game, act, rating, rd, vol, games) values ($1, '1v1', $2, $3, $4, 80, 0.06, $5)
+         on conflict do nothing`,
+        [u, G, ACT, rating, games],
+      );
+    await elo('ce-c', 1700, 30); // the No.1 before the match
+    await elo('ce-a', 1710, 21); // after the match: ahead of it
+    await elo('ce-b', 1550, 25);
+    const top = await announceRankedTop('1v1', ACT, G, new Map([['ce-a', { rating: 1690, games: 20 }], ['ce-b', { rating: 1570, games: 24 }]]));
+    const rankRow = (await db.query<{ user_id: string; data: { name?: string; score?: number; mode?: string } }>(
+      `select user_id, data from community_events where kind = 'ranked1' order by id desc limit 1`)).rows[0];
+    check('community/db: a ranked match that puts a player above the No.1 announces them',
+      top === 'ce-a' && rankRow?.user_id === 'ce-a' && rankRow.data.name === 'ce_a' && rankRow.data.score === 1710 && rankRow.data.mode === '1v1',
+      JSON.stringify({ top, rankRow }));
+    check('community/db: the same No.1 winning again announces nothing',
+      (await announceRankedTop('1v1', ACT, G, new Map([['ce-a', { rating: 1705, games: 20 }], ['ce-b', { rating: 1555, games: 24 }]]))) === null);
+
+    // ---- the cache a status poll is answered from
+    ce.resetCommunityEventsForTests();
+    await ce.refreshCommunityEvents(true);
+    const first = ce.communityFeed('');
+    check('community/db: a poll without a cursor gets the head and nothing else', !!first && first.h > 0 && first.items === undefined, JSON.stringify(first));
+    check('community/db: an older client (no parameter) gets nothing', ce.communityFeed(null) === undefined);
+    await ce.announce({ kind: 'supporter', game: null, name: null });
+    const next = ce.communityFeed(String(first!.h));
+    check('community/db: an event written on this machine reaches its very next poll (no wait for the TTL)',
+      next?.items?.length === 1 && next.items[0].kind === 'supporter' && next.items[0].name === undefined, JSON.stringify(next));
+    ce.resetCommunityEventsForTests();
+  }
+
   // -------------------------------------------- the prod → alpha sync (scripts/sync-alpha-db.ts)
   /* Two more databases, both on every migration, as the production and alpha branches are right
      after a promotion. Production is wrapped so ANY write statement reaching it throws: the sync

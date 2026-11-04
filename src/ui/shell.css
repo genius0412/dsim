@@ -11933,3 +11933,117 @@ body:has(.ds-popup-host > :not(.ds-popup))
     animation-iteration-count: 1;
   }
 }
+
+/* ---- event toasts (EventToasts.tsx; the rules are src/eventToasts.ts) ---
+   ONE compact notice on every page: your best, your rating, a badge, and the community's news.
+   BOTTOM-LEFT, because the friend toasts and the ranked queue bar own the bottom-right and the
+   app bar owns the top. Fixed, so it never moves the page, and it never sits over a field or a
+   choice: the component holds it during a match, a replay and any open dialog. A card like the
+   friend toasts (block shadow, no stripe); a toast about YOU titles in the accent.
+   `--ds-toast-lift` is set by the component when a card already fixed to the bottom shares the
+   toast's columns (a phone, where the queue bar and the friend toasts span the same edge). */
+.ds-toasts {
+  --ds-toast-lift: 0px;
+  position: fixed;
+  left: max(var(--ds-s-4), env(safe-area-inset-left));
+  bottom: calc(max(var(--ds-s-4), env(safe-area-inset-bottom)) + var(--ds-toast-lift));
+  z-index: 60;
+  width: min(320px, calc(100vw - 32px));
+  pointer-events: none; /* the card re-enables it; the empty region never eats a click */
+}
+.ds-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-2) var(--ds-s-1) var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block);
+  animation: ds-toast-in var(--ds-dur-fade) ease-out;
+}
+@keyframes ds-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ds-toast-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ds-round-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.ds-toast-main {
+  cursor: pointer;
+}
+button.ds-toast-main:hover .ds-toast-title {
+  text-decoration: underline;
+}
+button.ds-toast-main:active {
+  transform: translateY(1px);
+}
+button.ds-toast-main:disabled {
+  cursor: default;
+}
+.ds-toast-title {
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-toast.personal .ds-toast-title {
+  color: var(--ds-accent);
+}
+.ds-toast-detail {
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-toast-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ds-round-sm);
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+}
+.ds-toast-x:hover {
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+}
+.ds-toast-x:active {
+  transform: translateY(1px);
+}
+.ds-toast-x:disabled {
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-toast {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
+  }
+}

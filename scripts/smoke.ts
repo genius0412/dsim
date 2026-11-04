@@ -19447,6 +19447,189 @@ const recordDrive: CommandSource = (tick) => {
   check('feed: an empty board is an empty feed', feedFromRows([], null, 10).length === 0);
 }
 
+/**
+ * THE EVENT TOASTS (`server/communityEvents.ts`, `src/eventToasts.ts`, `EventToasts.tsx`): who is
+ * announced, what a status poll is told for its cursor (and that an OLD client is told nothing),
+ * the client's cursor, the personal copy, the hold during a match, and burst collapsing.
+ */
+{
+  const ce = await import('../server/communityEvents');
+  const et = await import('../src/eventToasts');
+  type Ev = import('../src/net/protocol').CommunityEvent;
+  const T = Date.UTC(2026, 10, 4, 12, 0);
+  const ev = (id: number, over: Partial<Ev> = {}): Ev => ({ id, kind: 'record', game: 'decode', at: T, name: `p${id}`, mode: 'solo', score: 100 + id, uid: `u${id}`, ...over });
+
+  // ---- the server's answer for a cursor: the `ev` parameter IS the capability
+  const ring = [ev(4), ev(5), ev(6, { at: T - 20 * 60_000 })];
+  check('community: a poll WITHOUT the parameter (an older client) is told nothing at all', ce.feedSince(null, ring, 6, T) === undefined);
+  check('community: a first read (no cursor) gets the head alone, so nothing before the page opened replays',
+    JSON.stringify(ce.feedSince('', ring, 6, T)) === '{"h":6}');
+  check('community: a cursor AT the head costs no bytes (no key at all)', ce.feedSince('6', ring, 6, T) === undefined);
+  const behind = ce.feedSince('3', ring, 6, T);
+  check('community: a cursor behind the head gets the newer events, oldest first, minus stale ones',
+    behind?.h === 6 && behind.items?.map((e) => e.id).join() === '4,5', JSON.stringify(behind));
+  check('community: a cursor AHEAD of this machine (a lagging copy) re-syncs to the head', JSON.stringify(ce.feedSince('9', ring, 6, T)) === '{"h":6}');
+  check('community: a junk cursor is treated as a first read', JSON.stringify(ce.feedSince('abc', ring, 6, T)) === '{"h":6}');
+  check('community: a stored row of a kind this build does not know is skipped',
+    ce.eventOf({ id: 1, kind: 'mystery', game: null, userId: null, partnerId: null, data: {}, at: T }) === null &&
+      ce.eventOf({ id: 2, kind: 'supporter', game: null, userId: null, partnerId: null, data: {}, at: T })?.kind === 'supporter');
+  check('community: the ring keeps the newest, deduped, oldest first',
+    ce.mergeRing([ev(1), ev(2)], [ev(2), ev(3)], 2).map((e) => e.id).join() === '2,3');
+
+  // ---- emission, through the server module itself (no database: the ring is the store, as banners)
+  ce.resetCommunityEventsForTests();
+  await ce.announce({ kind: 'record', game: 'decode', userId: 'ua', name: 'alice', mode: 'solo', score: 412 });
+  await ce.announce({ kind: 'ranked1', game: 'chain', userId: 'ub', name: 'bob', mode: '1v1', score: 1650 });
+  const sup = ce.supporterAnnouncement({ fresh: true, months: 1, isSubscription: false, isPublic: true, linkedUserId: null, linkedUsername: null });
+  if (sup) await ce.announce(sup);
+  const all = ce.communityFeed('0');
+  check('community: each event type is emitted and reaches a poll (record, ranked No.1, supporter)',
+    all?.items?.map((e) => e.kind).join() === 'record,ranked1,supporter', JSON.stringify(all));
+  check('community: ...an older client still gets nothing', ce.communityFeed(null) === undefined);
+  check('community: ...and a client already at the head gets nothing', ce.communityFeed(String(all?.h)) === undefined);
+  const rec = all?.items?.[0];
+  check('community: an event carries facts, never prose', rec?.name === 'alice' && rec.score === 412 && rec.mode === 'solo' && rec.uid === 'ua' && !('title' in (rec ?? {})));
+  ce.resetCommunityEventsForTests();
+
+  // ---- who is announced: a new No.1 in ranked (one read of the top players+1 rows after the match)
+  const L = (userId: string, rating: number, games = 20) => ({ userId, rating, games });
+  const before = (rows: [string, number, number][]) => new Map(rows.map(([u, r, g]) => [u, { rating: r, games: g }] as const));
+  check('ranked No.1: a player who overtakes the No.1 is the news',
+    ce.newRankedTop([L('a', 1710), L('top', 1700), L('b', 1600)], before([['a', 1690, 19], ['b', 1620, 30]]), 10) === 'a');
+  check('ranked No.1: the No.1 winning again is not news',
+    ce.newRankedTop([L('top', 1720), L('x', 1650), L('b', 1590)], before([['top', 1700, 19], ['b', 1600, 30]]), 10) === null);
+  check('ranked No.1: the No.1 LOSING to someone below can crown a third player who did not play',
+    ce.newRankedTop([L('two', 1690), L('top', 1680), L('b', 1600)], before([['top', 1700, 19], ['b', 1580, 30]]), 10) === 'two');
+  check('ranked No.1: a player who PLACES straight into No.1 is the news; unplaced before does not count',
+    ce.newRankedTop([L('new', 1800, 10), L('top', 1700)], before([['new', 1780, 9], ['c', 1500, 3]]), 10) === 'new');
+  check('ranked No.1: a board with one placed player has no No.1 worth announcing',
+    ce.newRankedTop([L('solo', 1600, 10)], before([['solo', 1500, 9]]), 10) === null);
+  check('ranked No.1: a tie on rating is decided as the board decides it (games, then id)',
+    ce.ladderAhead(L('a', 1600, 30), L('b', 1600, 20)) && !ce.ladderAhead(L('b', 1600, 20), L('a', 1600, 30)) && ce.ladderAhead(L('a', 1600), L('b', 1600)));
+
+  // ---- who is announced: a supporter (owner's privacy rule)
+  const pay = (over: Partial<Parameters<typeof ce.supporterAnnouncement>[0]>) =>
+    ce.supporterAnnouncement({ fresh: true, months: 1, isSubscription: false, isPublic: true, linkedUserId: 'u1', linkedUsername: 'alice', ...over });
+  check('supporter: public + linked + a @username is named by that @username', pay({})?.name === 'alice' && pay({})?.userId === 'u1');
+  check('supporter: a PRIVATE payment is anonymous even when linked', pay({ isPublic: false })?.name === null && pay({ isPublic: false })?.userId === null);
+  check('supporter: an unlinked (first, unclaimed) payment is anonymous', pay({ linkedUserId: null, linkedUsername: null })?.name === null);
+  check('supporter: a linked account with no @username is anonymous', pay({ linkedUsername: null })?.name === null);
+  check('supporter: a subscription RENEWAL is not a new supporter', pay({ isSubscription: true, isFirstSubscriptionPayment: false }) === null);
+  check('supporter: a subscription’s first payment is', pay({ isSubscription: true, isFirstSubscriptionPayment: true }) !== null);
+  check('supporter: a tip below the tier (0 months) and a Ko-fi retry are not announced', pay({ months: 0 }) === null && pay({ fresh: false }) === null);
+
+  // ---- the client's cursor: the first answer replays nothing, later ones deliver once
+  const cur = new et.CommunityCursor();
+  check('toasts: the first status read sends an empty cursor', cur.param() === '');
+  check('toasts: the first answer carries only the head; nothing older is shown', cur.accept({ h: 7, items: [ev(7)] }).length === 0 && cur.param() === '7');
+  check('toasts: an answer from an older server (no ev) changes nothing', cur.accept(undefined).length === 0 && cur.param() === '7');
+  check('toasts: newer events are delivered', cur.accept({ h: 9, items: [ev(8), ev(9)] }).map((e) => e.id).join() === '8,9');
+  check('toasts: a lagging machine re-syncs the cursor down, and the id set stops a second delivery',
+    cur.accept({ h: 8 }).length === 0 && cur.param() === '8' && cur.accept({ h: 9, items: [ev(9)] }).length === 0);
+
+  // ---- what a viewer is shown
+  const prefs = { me: 'u3', community: true, visible: (g: string) => g !== 'hidden' };
+  check('toasts: a community event is shown by default', et.communityWanted(ev(1), prefs));
+  check('toasts: "Show community announcements" off drops it', !et.communityWanted(ev(1), { ...prefs, community: false }));
+  check('toasts: a season this build hides never toasts', !et.communityWanted(ev(1, { game: 'hidden' }), prefs));
+  check('toasts: your OWN record or No.1 is not repeated as community news (the personal toast said it)',
+    !et.communityWanted(ev(3), prefs) && !et.communityWanted(ev(4, { kind: 'ranked1', mode: '1v1', uid: 'zz', pid: 'u3' }), prefs));
+  check('toasts: a kind this build cannot word is dropped', !et.communityWanted(ev(1, { kind: 'mystery' as never }), prefs));
+
+  // ---- the personal copy, off the messages that already carry the result
+  const info = (over: Partial<import('../src/net/protocol').RecordRankInfo>) => ({ mode: 'solo' as const, drivetrain: 'mecanum', score: 412, rank: 3, total: 40, isPB: false, isWR: false, ...over });
+  const wr = et.recordToast(info({ isWR: true, isPB: true, rank: 1 }), 'decode');
+  const pb = et.recordToast(info({ isPB: true }), 'chain');
+  check('toasts: a record result that is a WR says so, personally', wr?.scope === 'personal' && wr.title === 'World record' && /412 in DECODE solo · Mecanum/i.test(wr.detail ?? ''), wr?.detail);
+  check('toasts: a personal best says so with the rank', pb?.title === 'New personal best' && pb.detail === '412 in Chain Reaction solo · #3 of 40', pb?.detail);
+  check('toasts: a run that is neither is silent', et.recordToast(info({}), 'decode') === null);
+  const elo = (games: number, before: number, after: number) => [{ robotId: 1, before, after, rd: 80, games }];
+  check('toasts: a placement game says nothing until the last one', et.ratingToast(elo(4, 1000, 1030), 1, 'decode', 2) === null);
+  const placed = et.ratingToast(elo(10, 1000, 1032), 1, 'decode', 2);
+  check('toasts: the last placement game says where you placed', placed?.title === 'Placement done' && placed.detail === 'Rated 1032 in DECODE 1v1', placed?.detail);
+  check('toasts: 2v2 placement is its own count (7)', et.ratingToast(elo(7, 1000, 1010), 1, 'decode', 4)?.title === 'Placement done');
+  const up = et.ratingToast(elo(20, 1500, 1532), 1, 'biobuzz', 2);
+  const down = et.ratingToast(elo(20, 1500, 1482), 1, 'biobuzz', 2);
+  check('toasts: after placement a rating change says what moved', up?.title === 'Rating +32' && up.detail === 'Now 1532 in BIOBUZZ 1v1' && down?.title === 'Rating −18', `${up?.title} ${down?.title}`);
+  check('toasts: a voided match (nothing moved) is silent', et.ratingToast(elo(20, 1500, 1500), 1, 'decode', 4) === null);
+  check('toasts: another driver’s delta is not yours', et.ratingToast(elo(20, 1500, 1532), 2, 'decode', 2) === null);
+  check('toasts: the Stargazer badge toasts', et.badgeToast({ id: 'g1', source: 'stargazer' })?.title === 'Stargazer badge unlocked');
+  check('toasts: records-based (and every other) badge does NOT — it would repeat the record toast',
+    et.badgeToast({ id: 'g2', source: 'record_season' }) === null && et.badgeToast({ id: 'g3', source: 'ranked_act' }) === null);
+  const copy = [wr, pb, placed, up, down, et.badgeToast({ id: 'g1', source: 'stargazer' }), ...[ev(1), ev(2, { kind: 'ranked1', mode: '2v2' }), ev(3, { kind: 'supporter', name: null }), ev(4, { kind: 'supporter', name: 'alice' })].map(et.communityToast)]
+    .flatMap((t) => (t ? [t.title, t.detail ?? ''] : []));
+  check('toasts: the copy follows the house rules (no ASCII apostrophe, no exclamation, no " - " dash)',
+    copy.every((s) => !/'|!| - /.test(s)), copy.filter((s) => /'|!| - /.test(s)).join(' | '));
+  check('toasts: an anonymous supporter reads "A new supporter joined DSIM"', et.communityToast(ev(3, { kind: 'supporter', name: null }))?.title === 'A new supporter joined DSIM');
+
+  // ---- bursts collapse, and one community toast per 30 s
+  const burst = et.collapseCommunity([ev(1), ev(2), ev(3)]);
+  check('toasts: a burst of one kind is ONE toast ("3 new world records"), newest names first',
+    burst?.title === '3 new world records' && burst.detail === 'p3, p2 and 1 more', `${burst?.title} / ${burst?.detail}`);
+  const mixed = et.collapseCommunity([ev(1), ev(2, { kind: 'supporter', name: null }), ev(3)]);
+  check('toasts: a mixed burst says what is in it', mixed?.title === 'New on DSIM' && mixed.detail === '2 new world records · 1 new supporter', mixed?.detail);
+  check('toasts: one event is itself, not a burst', et.collapseCommunity([ev(5)])?.title === 'New world record');
+
+  // ---- the queue and the hold: nothing shows during a match, it all shows after
+  const r = new et.ToastRunner();
+  r.setHeld(true, T);
+  r.queue.pushCommunity(ev(11));
+  r.queue.pushCommunity(ev(12));
+  r.queue.pushPersonal(pb!);
+  check('toasts: HELD (a match, a replay, a dialog), nothing shows however much is waiting', !r.step(T + 1000) && r.current === null && r.queue.waiting === 3);
+  check('toasts: ...and nothing wakes the clock while held', r.nextWakeMs(T + 1000) === null);
+  r.setHeld(false, T + 60_000);
+  check('toasts: released, the PERSONAL toast shows first', r.current?.key === pb!.key);
+  r.step(T + 60_000 + et.SHOW_MS);
+  check('toasts: then the community backlog, collapsed into one', r.current?.title === '2 new world records', r.current?.title);
+  r.queue.pushCommunity(ev(13));
+  r.step(T + 60_000 + 2 * et.SHOW_MS);
+  check('toasts: one community toast per 30 s: the next waits out the gap', r.current === null && (r.nextWakeMs(T + 60_000 + 2 * et.SHOW_MS) ?? 0) > 20_000);
+  r.step(T + 60_000 + et.SHOW_MS + et.COMMUNITY_GAP_MS);
+  check('toasts: ...and shows once the gap has run', r.current?.key === 'ev:13');
+  check('toasts: a repeat of an event is not queued twice', !r.queue.pushCommunity(ev(13)) && !r.queue.pushPersonal(pb!));
+  const r2 = new et.ToastRunner();
+  r2.queue.pushPersonal(wr!);
+  r2.step(T);
+  r2.setHeld(true, T + 1000);
+  check('toasts: a toast on screen when a match starts goes back to the front of the queue', r2.current === null && r2.queue.waiting === 1);
+  r2.setHeld(false, T + 600_000);
+  check('toasts: ...and shows in full after it', r2.current?.key === wr!.key && r2.nextWakeMs(T + 600_000) === et.SHOW_MS);
+  r2.pause(T + 600_000 + 1000);
+  check('toasts: hovered or focused, it does not time out', !r2.step(T + 600_000 + 60_000) && r2.current?.key === wr!.key);
+  r2.resume(T + 600_000 + 60_000);
+  check('toasts: let go, it gets the rest of its time', r2.nextWakeMs(T + 600_000 + 60_000) === et.SHOW_MS - 1000);
+  r2.dismiss(T + 600_000 + 61_000);
+  check('toasts: dismissed, it is gone', r2.current === null);
+
+  // ---- the wiring, pinned at the source (the React halves cannot be imported headlessly)
+  const host = readFileSync('src/ui/EventToasts.tsx', 'utf8');
+  check('toasts: the host holds on the match screen, a replay, and any open dialog',
+    /const held = shell\.inMatch \|\| shell\.replay \|\| dialogs > 0;/.test(host) && /runner\.setHeld\(held/.test(host));
+  check('toasts: the region is polite, always mounted, and paused on hover and focus',
+    /aria-live="polite"/.test(host) && /onMouseEnter=\{\(\) => runner\.pause/.test(host) && /onFocus=\{\(\) => runner\.pause/.test(host));
+  const dlg = readFileSync('src/ui/useDialog.ts', 'utf8');
+  check('toasts: every useDialog counts as an open dialog, and uncounts on close', /bumpDialogs\(1\)/.test(dlg) && /bumpDialogs\(-1\)/.test(dlg));
+  const app = readFileSync('src/ui/App.tsx', 'utf8');
+  check('toasts: the shell reports the replay viewer', /replay: screen === 'replay'/.test(app));
+  check('toasts: the community switch reaches the store, absent reading ON', /community: settings\.communityToasts !== false/.test(app));
+  const sess = readFileSync('src/net/serverSession.ts', 'utf8');
+  check('toasts: personal toasts ride eloResult and recordResult, never for a spectator',
+    /if \(!this\.spectator\) notePersonal\(ratingToast\(/.test(sess) && /if \(!this\.spectator\) notePersonal\(recordToast\(/.test(sess));
+  check('toasts: the status read carries the cursor', /\/api\/status\?ev=\$\{encodeURIComponent\(statusCursor\(\)\)\}/.test(readFileSync('src/net/siteStatus.ts', 'utf8')));
+  const idx = readFileSync('server/index.ts', 'utf8');
+  check('toasts: the status route answers `ev` only for a request that sent it',
+    /const evCursor = new URL\([^)]*\)\.searchParams\.get\('ev'\);/.test(idx) && /const ev = communityFeed\(evCursor\);\s*if \(ev\) body\.ev = ev;/.test(idx));
+  const persistSrc = readFileSync('server/persist.ts', 'utf8');
+  check('toasts: a record run that is No.1 of its bucket and a new best is checked for a world record',
+    /if \(info\.isWR && info\.isPB\) \{\s*void announceWorldRecord\(/.test(persistSrc));
+  check('toasts: a rated ranked match is checked for a new No.1', /void announceRankedTop\(mode, act, game, ladderBefore\)/.test(readFileSync('server/ranked.ts', 'utf8')));
+  check('toasts: the Ko-fi webhook announces through the privacy rule', /supporterAnnouncement\(\{[\s\S]{0,400}?isPublic: payload\.is_public/.test(readFileSync('server/api.ts', 'utf8')));
+  // two tables, two words: `announcements` (0008) is the "What's new" patch notes, `community_events` the toasts
+  check('toasts: the patch-notes route still reads the patch notes, not the community events',
+    /url\.pathname === '\/api\/announcements'\) \{\s*const rows = dbEnabled \? await listAnnouncements\(/.test(readFileSync('server/api.ts', 'utf8')));
+}
+
 /** WHO NEVER SEES AN AD, and the in-match ad layout (`src/ads/adFree.ts`, `GameView`, styles.css). */
 {
   const { isAdFree } = await import('../src/ads/adFree');

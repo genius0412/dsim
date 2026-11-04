@@ -10,7 +10,7 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-445 classes · 146 families · 3 with no reference found.
+451 classes · 148 families · 3 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
@@ -393,6 +393,16 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-opt-del` | src/ui/shell.css:5242 | 2 |
 | `.ds-opt-edit` | src/ui/shell.css:5267 | 1 |
 | `.ds-opt-slot` | src/ui/shell.css:5234 | 4 |
+
+## `ds-toast` — 5
+
+| class | declared | used |
+|---|---|---|
+| `.ds-toast` | src/ui/shell.css:11954 | 9 |
+| `.ds-toast-detail` | src/ui/shell.css:12013 | 1 |
+| `.ds-toast-main` | src/ui/shell.css:11976 | 2 |
+| `.ds-toast-title` | src/ui/shell.css:11992 | 1 |
+| `.ds-toast-x` | src/ui/shell.css:12021 | 1 |
 
 ## `ds-acct` — 4
 
@@ -1014,7 +1024,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-queuebar` | src/ui/shell.css:7816 | 3 |
+| `.ds-queuebar` | src/ui/shell.css:7816 | 5 |
 
 ## `ds-queuechip` — 1
 
@@ -1165,6 +1175,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-title` | src/ui/shell.css:4975 | 5 |
+
+## `ds-toasts` — 1
+
+| class | declared | used |
+|---|---|---|
+| `.ds-toasts` | src/ui/shell.css:11945 | 1 |
 
 ## `ds-username` — 1
 

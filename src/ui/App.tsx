@@ -25,6 +25,8 @@ import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { useSiteState } from '../net/siteStatus';
 import { setShellState } from './shellState';
+import { setToastNavigator, setToastPrefs, type ToastTarget } from '../eventToasts';
+import { reopenRewards } from './rewardsStore';
 /**
  * THE WHOLE ADMIN CONSOLE IS A LAZY CHUNK, and this import is the split point.
  *
@@ -738,9 +740,9 @@ export function App() {
   // the site gate and the banner stack live beside this component (main.tsx): tell them
   // whether a match is on screen and which game the player is on
   useEffect(() => {
-    setShellState({ inMatch: screen === 'game', game: settings.game });
+    setShellState({ inMatch: screen === 'game', replay: screen === 'replay', game: settings.game });
   }, [screen, settings.game]);
-  useEffect(() => () => setShellState({ inMatch: false }), []);
+  useEffect(() => () => setShellState({ inMatch: false, replay: false }), []);
 
   /* Mirror the two pad-nav preferences into the module store the navigation layer reads. The
      layer is mounted beside `<App/>` (main.tsx) and cannot see this state; `setPadNavPrefs` is a
@@ -1187,6 +1189,36 @@ export function App() {
     settingsRef.current = next;
     update(next);
   };
+
+  /**
+   * THE EVENT TOASTS (`src/eventToasts.ts`, drawn beside this component by `EventToasts`). A click
+   * opens the page the toast is about; a record or a rating names its GAME, so the leaderboard
+   * opens on that game's board, switching season if it has to, the way the season picker does.
+   * Read through a ref because the toast host outlives every render.
+   */
+  const toastNavRef = useRef<(t: ToastTarget) => void>(() => {});
+  toastNavRef.current = (t: ToastTarget): void => {
+    if (t.to === 'donate') return navigate('donate');
+    if (t.to === 'rewards') {
+      // the claim dialog comes back on the page where badges are worn
+      reopenRewards();
+      return navigate('account', { sub: 'appearance' });
+    }
+    const g = (GAME_IDS as readonly string[]).includes(t.game) && gameVisible(t.game as GameId) ? (t.game as GameId) : null;
+    if (g) selectGame(g);
+    navigate('records', { sub: 'leaderboard' });
+  };
+  useEffect(() => {
+    setToastNavigator((t) => toastNavRef.current(t));
+    return () => setToastNavigator(null);
+  }, []);
+  useEffect(() => {
+    setToastPrefs({
+      me: accountUserId,
+      community: settings.communityToasts !== false,
+      visible: (g) => (GAME_IDS as readonly string[]).includes(g) && gameVisible(g as GameId),
+    });
+  }, [accountUserId, settings.communityToasts]);
 
   const onSyncUser = useCallback((id: string | null) => setAccountUserId(id), []);
   const onSyncLoad = useCallback((s: GameSettings) => {
