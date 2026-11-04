@@ -88,6 +88,8 @@ import { InputManager } from './input/input';
 import { actionMode, effectiveBindings, type ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
+import { CardLedger, PenaltyCuePlayer, pinViews, type FedEvent, type PinView } from './penaltyFeed';
+import { cardSubject } from './sim/penaltyLog';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { fromSeat, localizeCommand } from './net/protocol';
 import { LeadController } from './net/leadControl';
@@ -375,6 +377,17 @@ const PERF_SERIES_LEN = 100;
  * sparkline allocates nothing at all. */
 const EMPTY_SERIES: readonly number[] = [];
 
+/** one carded robot, as the HUD's card signal (`src/ui/CardSignal.tsx`) draws it */
+export interface HudCard {
+  colour: CardColor;
+  /** the robot as the card's event line names it (`cardSubject`) */
+  who: string;
+  /** the rule that drew it, or null when this client never saw the line */
+  rule: string | null;
+  /** the local robot's own card */
+  mine: boolean;
+}
+
 export interface HudSnapshot {
   /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
@@ -437,9 +450,10 @@ export interface HudSnapshot {
   provisionalPattern: number;
   /** fouls committed BY each alliance (counts, for the HUD chip) */
   fouls: Record<Alliance, { minor: number; major: number }>;
-  /** the CARD the local robot's team currently holds, or null. A card is issued to a TEAM
-   * and a RED voids its alliance's match points, so the driver has to be able to see it. */
-  card: CardColor | null;
+  /** every CARD on the viewed ALLIANCE's robots, the local robot's first — what the card signal
+   * draws. A card is issued to a TEAM (a robot here) and a RED voids its ALLIANCE's match points,
+   * so a partner's card is this driver's business too. It replaced `card`, the local robot's only. */
+  cards: HudCard[];
   /** ...and whether the local alliance's score has been VOIDED by a red card, which is
    * what the score bar and the results screen have to say rather than a number. */
   voided: boolean;
@@ -623,6 +637,18 @@ export class GameController {
   private prevFireTick: Record<number, number> = {};
   private prevIntakeTick: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
+  /** fouls, cards, warnings and pin counts → at most one cue a frame, each line once
+   *  (`src/penaltyFeed.ts`; `handlePenaltyAudio` feeds it) */
+  private readonly penaltyCues = new PenaltyCuePlayer((cue) => this.audio.sfxPenalty(cue));
+  /** ONLINE: this frame's authoritative lines, with their absolute log index as the id
+   *  (`collectNetEvents` fills it beside `netEvents`, so a predicted line never reaches it) */
+  private penaltyFeed: FedEvent[] = [];
+  /** SOLO: the running id of a drained line. The log is emptied every frame, so it is a count. */
+  private soloEventSeq = 0;
+  /** ONLINE: the pins as the last snapshot had them, read before a replay re-steps the world */
+  private authPins: PinView[] | null = null;
+  /** the rule that drew each card, for the card signal (the world keeps only the colour) */
+  private readonly cardLedger = new CardLedger();
   private prevBeamOn: Record<number, number> = {}; // wheels-on-a-beam per robot (CR terrain SFX)
 
   /** which game this controller builds its INITIAL world for (solo: the player's
@@ -1050,6 +1076,7 @@ export class GameController {
     this.audio.gateVolume = settings.audio.volume.gate;
     this.audio.beepVolume = settings.audio.volume.beep;
     this.audio.alertVolume = settings.audio.volume.alert;
+    this.audio.penaltyVolume = settings.audio.volume.penalty;
     this.audio.voiceVolume = settings.audio.volume.voice;
     /**
      * THE BINDINGS FOR THIS GAME, not the player's whole map.
@@ -1863,6 +1890,61 @@ export class GameController {
     }
   }
 
+  /**
+   * FOULS, CARDS, WARNINGS AND PIN COUNTS — sounded from the AUTHORITATIVE log, never the
+   * prediction. Online the lines come from `collectNetEvents` (the server's log, by absolute
+   * index) and the pins from the last snapshot; solo has no other world, so it reads its own.
+   * `PenaltyCuePlayer` drops an id it has already played, picks the strongest of the frame and
+   * rate-limits it (`src/penaltyFeed.ts`). The card ledger learns each card's rule on the way.
+   */
+  private handlePenaltyAudio(): void {
+    let events: FedEvent[];
+    let pins: PinView[] | null;
+    if (this.session) {
+      events = this.penaltyFeed;
+      this.penaltyFeed = [];
+      pins = this.authPins;
+    } else {
+      events = this.world.events.map((text) => ({ id: this.soloEventSeq++, text }));
+      pins = this.pinViewsOf(this.world);
+    }
+    for (const e of events) this.cardLedger.noteText(e.text);
+    this.penaltyCues.viewer = this.penaltyViewer();
+    this.penaltyCues.frame(events, pins, performance.now());
+  }
+
+  /** whose sanctions sound: the local alliance's; a spectator has no side, so both (null) */
+  private penaltyViewer(): Alliance | null {
+    return this.spectator ? null : this.viewAlliance();
+  }
+
+  private pinViewsOf(w: World): PinView[] {
+    return pinViews(w.penalties?.pins, (id) => w.robots.find((r) => r.id === id)?.alliance);
+  }
+
+  /** a new world (restart, rematch, a tutorial step): nothing sanctioned yet, nothing latched */
+  private resetPenaltyPresentation(): void {
+    this.penaltyCues.reset();
+    this.cardLedger.clear();
+    this.penaltyFeed = [];
+    this.authPins = null;
+  }
+
+  /** the card signal's rows: the viewed alliance's carded robots, the local robot first */
+  private hudCards(w: World, a: Alliance): HudCard[] {
+    const out: HudCard[] = [];
+    for (const r of w.robots) {
+      const colour = r.alliance === a ? w.penalties?.carded[r.id] : undefined;
+      if (!colour) continue;
+      const who = cardSubject(r.spec, r.id);
+      const mine = !this.spectator && r.id === this.localRobotId;
+      const card: HudCard = { colour, who, rule: this.cardLedger.ruleFor(r.alliance, who, colour), mine };
+      if (mine) out.unshift(card);
+      else out.push(card);
+    }
+    return out;
+  }
+
   /** announcer: "Match begins in 3, 2, 1". ONE path now — the SIM owns the countdown and the
    *  pre→auto transition in every mode, and this only voices it (audio is non-authoritative).
    *  Solo used to run its own off a keypress, which is what made a solo run unrecordable; see
@@ -1975,6 +2057,7 @@ export class GameController {
     this.handlePhaseAudio();
     this.handleActionAudio();
     this.handleRematchAudio();
+    this.handlePenaltyAudio(); // BEFORE the drain below empties solo's `world.events`
 
     // SOLO drains world.events directly; MULTIPLAYER drains netEvents (the de-duped
     // authoritative tail collected at reconcile), ignoring prediction/replay events.
@@ -2333,6 +2416,7 @@ export class GameController {
    */
   private rebuildForTutorial(): void {
     this.adoptWorld(this.makeWorld());
+    this.resetPenaltyPresentation();
     this.prevPhase = this.world.match.phase;
     this.acc = 0;
     this.warningPlayed = false;
@@ -3419,12 +3503,23 @@ export class GameController {
    * protocol change and `CLIENT_CAPS` work, not a one-liner.
    */
   private collectNetEvents(first: boolean, evs: string[] = this.world.events): void {
-    if (evs.length < this.shownEventCount) this.shownEventCount = 0;
+    if (evs.length < this.shownEventCount) {
+      this.shownEventCount = 0;
+      // a new log: its ids start again from 0, so the cue player's high-water mark must too
+      this.resetPenaltyPresentation();
+    }
     if (first) {
+      // the history is adopted silently, cue-wise — but a joiner still learns which rule drew a
+      // card that is already on the field, so the card signal can name it
+      for (const t of evs) this.cardLedger.noteText(t);
+      this.penaltyCues.skipTo(evs.length - 1);
       this.shownEventCount = evs.length;
       return;
     }
-    for (let i = this.shownEventCount; i < evs.length; i++) this.netEvents.push(evs[i]);
+    for (let i = this.shownEventCount; i < evs.length; i++) {
+      this.netEvents.push(evs[i]);
+      this.penaltyFeed.push({ id: i, text: evs[i] });
+    }
     this.shownEventCount = evs.length;
   }
 
@@ -3469,6 +3564,7 @@ export class GameController {
       this.reconciles++;
       this.skippedReconciles++;
       this.collectNetEvents(false, snap.world.events);
+      this.authPins = this.pinViewsOf(snap.world);
       this.lastServerTick = snap.serverTick;
       this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
       this.lastCorrection = 0;
@@ -3507,6 +3603,13 @@ export class GameController {
     const tAdopt = performance.now();
     this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
+    // ...and the pins, for the same reason: the replay below re-steps this very object. A
+    // joiner's first snapshot latches the pins already counting without sounding them.
+    this.authPins = this.pinViewsOf(this.world);
+    if (firstSnap) {
+      this.penaltyCues.viewer = this.penaltyViewer();
+      this.penaltyCues.adoptPins(this.authPins);
+    }
     this.lastServerTick = snap.serverTick;
     this.gotSnapshot = true;
     this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
@@ -3584,6 +3687,7 @@ export class GameController {
   private rebuildFromNet(): void {
     this.audio.stopSpeech();
     this.adoptWorld(this.makeWorld());
+    this.resetPenaltyPresentation();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.chimesPlayed.clear();
@@ -3680,6 +3784,7 @@ export class GameController {
     if (this.world.match.phase !== 'pre') return;
     if (this.world.match.preCountdown != null) return; // already counting down
     this.adoptWorld(this.makeWorld(false));
+    this.resetPenaltyPresentation();
     this.world.match.preCountdown = C.PRE_COUNTDOWN;
     this.prevPhase = this.world.match.phase;
     this.practice = null;
@@ -3720,6 +3825,7 @@ export class GameController {
     // results screen to show it on.
     this.harvestPracticeRun(false);
     this.adoptWorld(this.makeWorld());
+    this.resetPenaltyPresentation();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.chimesPlayed.clear();
@@ -3866,7 +3972,7 @@ export class GameController {
       oppScore: w.match.scores[opp],
       provisionalPattern: w.match.provisionalPattern[a],
       fouls: { red: { ...w.match.fouls.red }, blue: { ...w.match.fouls.blue } },
-      card: w.penalties.carded[r.id] ?? null,
+      cards: this.hudCards(w, a),
       voided: w.match.scores[a].voided ?? false,
       fieldCentric: r.fieldCentric,
       aimAssist: r.aimAssist,

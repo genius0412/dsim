@@ -979,28 +979,79 @@ button {
   background: var(--ds-purple);
 }
 
-/* CARD — a small filled rectangle reading like a real referee's card, reusing the two
-   fills `.chip.prompt`/`.chip.bad` already carry for these colours. */
-.card-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 12px;
-  height: 16px;
-  border-radius: var(--ds-round-sm);
+/* THE CARD SIGNAL (`CardSignal.tsx`) — a referee's card, raised: the card in its own colour,
+   the colour in WORDS beside it (design review 17-06: never hue alone), and one line naming the
+   rule's code and the robot. Its own HUD card under the game's card, the same surface and edge
+   as `.sub-hud`, so it reads as HUD chrome and not as a popup over the field. */
+.card-signal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  padding: var(--ds-s-2) var(--ds-s-3);
+}
+
+.card-sig {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+}
+
+/* the CARD: a real referee card's 3:4 portrait, tilted the way a raised card is held. A FIXED fill
+   (category 2), so it is the same card in both themes and on the 3D scrim; the --ds-mut rim is
+   what bounds the yellow on the light card (~1.5:1 by fill), the pips' doctrine. Drawn with
+   `transform` and `box-shadow`, which move nothing (§1.4). */
+.card-sig-card {
   flex: none;
-  /* the Y / R letter inside (design review 17-06): yellow and red are not told apart by
-     hue alone. The inks are the two fills' own fixed inks, from `.chip.prompt`/`.chip.bad`. */
-  font: 700 var(--ds-t-xs) / 1 var(--ds-font-mono);
+  /* one-off geometry: a card's 3:4 at the size the two text lines stand beside */
+  width: 15px;
+  height: 20px;
+  border-radius: var(--ds-round-sm);
+  box-shadow: 0 0 0 1px var(--ds-mut);
+  transform: rotate(-8deg);
 }
 
-.card-icon.yellow {
-  background: var(--ds-gold);
-  color: #1a1206;
+.card-sig.yellow .card-sig-card {
+  background: var(--ds-card-yellow);
 }
 
-.card-icon.red {
-  background: var(--ds-red);
-  color: #2b0b0b;
+.card-sig.red .card-sig-card {
+  background: var(--ds-card-red);
+}
+
+.card-sig-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-0);
+  min-width: 0;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  line-height: var(--ds-lh-tight);
+  white-space: nowrap;
+}
+
+/* the colour, as type: the THEMED inks the rest of the HUD speaks caution and danger in (both are
+   redefined on the 3D scrim), never the fills, which fail as text on the light card */
+.card-sig.yellow .card-sig-head {
+  color: var(--ds-warn);
+}
+
+.card-sig.red .card-sig-head,
+.card-sig-sub.void {
+  color: var(--ds-red-ink);
+}
+
+/* a robot name is the player's own (up to 24 characters): it ellipsizes rather than widening the
+   cluster across the field */
+.card-sig-sub {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ds-ink-dim);
 }
 
 .hopper {
@@ -3460,6 +3511,11 @@ button {
     flex-direction: row-reverse;
     flex-wrap: wrap;
     align-items: flex-start;
+    /* (3) ABOVE THE EVENT LOG. Both start under the top row here, and the log comes later in
+       the DOM, so a penalty toast (the longest lines it prints) painted straight over the card
+       signal for the 2.5 s it lasted, the very moment the card landed (captured 2026-11-04). The
+       standing state wins over the fading copy of it. */
+    z-index: 1;
   }
   /* BIOBUZZ's 2D/3D cap holds the corner: the row stops short of it on the left too */
   .game-root:has(.mobile-view-btn) .status-wrap {
@@ -3621,6 +3677,28 @@ button {
     padding: 4px 8px;
     flex-wrap: nowrap;
     overflow: hidden;
+  }
+  /* THE CARD SIGNAL, ONE LINE: the card and its colour word. At two lines it was ~120px wide, and
+     beside BIOBUZZ's card in a gutter the 2D/3D cap narrows it fell under the card and pushed the
+     read-out down over the chip column (844 x 390, captured 2026-11-04). The rule, the robot and
+     SCORE VOID stay for a screen reader (`.ds-sr`'s technique) and are in the event log line. */
+  .card-signal {
+    padding: 4px 8px;
+  }
+  .card-sig {
+    gap: var(--ds-s-2);
+  }
+  .card-sig-card {
+    width: 12px;
+    height: 16px;
+  }
+  .card-sig-word,
+  .card-sig-sub {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
   /* the DRIVE / TURN label goes INSIDE the ring's top: above it, it lay across the score stack's
      last tile in the left gutter (844 × 390, measured). The handle starts 33px down. */

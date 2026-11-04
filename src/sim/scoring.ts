@@ -3,7 +3,7 @@ import * as C from '../config';
 import { baseZone, inDepot, inRect, launchSegments, other } from './field';
 import { robotCorners, robotHullWorld, wheelContacts } from './physics';
 import { distToSegment, hyp } from '../math';
-import { cardEventText, foulEventText } from './penaltyLog';
+import { cardEventText, cardSubject, foulEventText } from './penaltyLog';
 
 export function emptyScore(): ScoreBreakdown {
   return {
@@ -87,7 +87,8 @@ export function awardCard(world: World, robot: RobotState, rule: string): CardCo
   } else {
     tally.yellow += 1;
   }
-  const who = robot.spec.teamNumber ? `#${robot.spec.teamNumber}` : robot.spec.name || `robot ${robot.id}`;
+  // `cardSubject` is the one formula, so the HUD's card signal can find this line again
+  const who = cardSubject(robot.spec, robot.id);
   world.events.push(cardEventText(colour, robot.alliance, who, rule));
   return colour;
 }

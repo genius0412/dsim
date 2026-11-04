@@ -1216,6 +1216,8 @@ export interface GameSettings {
       gate: number;
       beep: number;
       alert: number;
+      /** fouls, cards, and the warnings before them (pin counts, BIOBUZZ's verbal warnings) */
+      penalty: number;
       voice: number;
     };
     /** LEGACY mirrors, re-derived from `volume` on every coerce — never read these

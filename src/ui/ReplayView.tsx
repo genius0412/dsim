@@ -44,7 +44,9 @@ import { parsePenaltyEvent } from '../sim/penaltyLog';
 import { PenaltyLog, ScoreEditor, type PenaltyEntry } from './ReplayRail';
 import { importedTopsSettled } from '../render/importedAssets';
 import { curveFor } from './pace/store';
-import type { GameId, PaceReplayRef } from '../types';
+import type { GameId, GameSettings, PaceReplayRef } from '../types';
+import { MatchAudio } from '../audio';
+import { PenaltyCuePlayer, pinViews, type FedEvent, type PinView } from '../penaltyFeed';
 
 /** the longest an export waits for an imported robot's picture or mesh before its first frame (ms):
  *  a GLB of the library's 4 MB cap parses in well under a second; past this it is not coming */
@@ -139,7 +141,10 @@ export function ReplayView({
   onClose,
   paceKeys,
   onUsePace,
+  volume,
 }: {
+  /** the player's audio levels; absent plays no sound at all (the penalty cues are a replay's only one) */
+  volume?: GameSettings['audio']['volume'];
   replayId?: string;
   /** a replay already in hand (just-played run) — skips the fetch */
   preloadReplay?: Replay;
@@ -214,6 +219,22 @@ export function ReplayView({
   const logLen = useRef(-1);
   /** the rail: the penalty timeline, and the score editor when an admin opened a match */
   const [railOpen, setRailOpen] = useState(false);
+  /**
+   * THE PENALTY CUES, IN SYNC WITH THE REPLAY CLOCK. A line sounds on the frame playback steps
+   * past it, at whatever speed is picked, through the same `PenaltyCuePlayer` a live match uses
+   * (one cue a frame, rate-limited). A SEEK skips what it stepped over; a rebuilt player starts
+   * the log again (`replacePlayer`). Only the master and "Penalties and warnings" levels apply:
+   * nothing else in a replay makes a sound.
+   */
+  const cueAudio = useRef<MatchAudio | null>(null);
+  cueAudio.current ??= new MatchAudio();
+  cueAudio.current.masterVolume = volume?.master ?? 0;
+  cueAudio.current.penaltyVolume = volume?.penalty ?? 0;
+  const penaltyCues = useRef<PenaltyCuePlayer>(null!);
+  penaltyCues.current ??= new PenaltyCuePlayer((cue) => cueAudio.current?.sfxPenalty(cue));
+  /** how much of the on-screen player's log the cues have read */
+  const cueSeen = useRef(0);
+  useEffect(() => () => cueAudio.current?.dispose(), []);
 
   const renderer = useRef<Renderer | null>(null);
   const player = useRef<ReplayPlayer | null>(null);
@@ -392,6 +413,9 @@ export function ReplayView({
     const rend = renderer.current!;
     // watch it from the seat the WATCHER actually sat in — see `replayViewpoint`
     const { robotId: localId, alliance } = replayViewpoint(r.setups, viewerRobotId);
+    // the penalty cues hear the DRIVER's alliance, as they did live; a replay watched without
+    // a driver (somebody else's) hears both, like a spectator
+    penaltyCues.current.viewer = viewerRobotId != null ? alliance : null;
     // CR's field is larger (protruding goals) — configure the camera with the game's
     // bounds so a CR replay isn't cropped to DECODE's field.
     const bounds = moduleFor(r.game).bounds;
@@ -498,6 +522,7 @@ export function ReplayView({
          * replay is a thing you watch, not a clock you set your watch by.
          */
         if (acc > SIM_DT * 4) acc = SIM_DT * 4;
+        cuePlayback(p);
         if (p.done && playingRef.current) {
           playingRef.current = false;
           setPlaying(false);
@@ -719,6 +744,19 @@ export function ReplayView({
     const prev = player.current;
     player.current = next;
     if (prev && prev !== next) disposePhysics3dFor(prev.world);
+    // a new player's log starts empty: the cues start over with it
+    cueSeen.current = 0;
+    penaltyCues.current.reset();
+  };
+  /** the pins of the replay's world, for the cue player (`pinViews`) */
+  const replayPins = (p: ReplayPlayer): PinView[] =>
+    pinViews(p.world.penalties?.pins, (id) => p.world.robots.find((rb) => rb.id === id)?.alliance);
+  /** sound the lines PLAYBACK just stepped past (never a seek's — see `seek`) */
+  const cuePlayback = (p: ReplayPlayer): void => {
+    const fed: FedEvent[] = [];
+    for (let i = cueSeen.current; i < p.log.length; i++) fed.push({ id: i, text: p.log[i].text });
+    cueSeen.current = p.log.length;
+    penaltyCues.current.frame(fed, replayPins(p), performance.now());
   };
   const rebuild = (): void => {
     if (!replay.current) return;
@@ -744,6 +782,11 @@ export function ReplayView({
       replacePlayer(p);
     }
     while (p.world.tick < target && !p.done) p.stepOnce();
+    // a SEEK is silent: everything it stepped over is marked heard, and a pin it landed inside
+    // is latched without a cue
+    cueSeen.current = p.log.length;
+    penaltyCues.current.skipTo(p.log.length - 1);
+    penaltyCues.current.adoptPins(replayPins(p));
     sync();
   };
 

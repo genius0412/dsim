@@ -118,6 +118,7 @@ export function AudioSection({
   audio.gateVolume = vol.gate;
   audio.beepVolume = vol.beep;
   audio.alertVolume = vol.alert;
+  audio.penaltyVolume = vol.penalty;
   audio.voiceVolume = vol.voice;
 
   const silent = vol.master <= 0;
@@ -192,6 +193,15 @@ export function AudioSection({
                 muted={silent}
                 onChange={(beep) => setVolume({ beep })}
                 onAudition={() => audio.beep()}
+              />
+              {/* fouls, cards and the warnings before them; the audition is a MAJOR, the cue a
+                  driver hears most at full strength (`src/penaltyFeed.ts` has the whole set) */}
+              <VolumeRow
+                label="Penalties and warnings"
+                value={vol.penalty}
+                muted={silent}
+                onChange={(penalty) => setVolume({ penalty })}
+                onAudition={() => audio.sfxPenalty('major')}
               />
               <VolumeRow
                 label="Match alerts"

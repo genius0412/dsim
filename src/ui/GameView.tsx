@@ -18,6 +18,7 @@ import { MobileControls } from './MobileControls';
 import { timerPanel } from './timerPanel';
 import { autoHudLine, autoPreNotice } from './autoHud';
 import { FoulChip } from './FoulChip';
+import { CardSignal } from './CardSignal';
 import { AdSlot, useAdUnitActive } from './AdSlot';
 import { SponsorGameChip } from './Sponsor';
 import { Results } from './Results';
@@ -1278,7 +1279,8 @@ function Hud({
                       (`GamePinnedNotice` / `eventlog-pinned`), because each is a call to action
                       rather than a standing fact — shown whatever the messages toggle says;
                     · FOULS → `FoulChip`, in every game's breakdown row (design review C39);
-                    · REVERSED / butterfly / card → the `.sub-hud` under this card;
+                    · REVERSED / butterfly → the `.sub-hud` under this card; a referee's card →
+                      `CardSignal`, between the two;
                     · Chain Reaction's mult/catalyst/hold state → `ChainHudChips` (`GameChips`
                       above), its ASCENDED/PARKED status → the `.park-status` card below;
                     · 🎮 gamepad → nowhere. A pad that is plugged in says so by driving the
@@ -1288,15 +1290,19 @@ function Hud({
                   one spectator chip took the band from 83px to 227px in BIOBUZZ. */}
             </div>
           </div>
+          {/* A REFEREE'S CARD, directly under the game's own card: a sanction outranks the drive
+              modes below it, and it stands for the rest of the match. Not in `[data-hud-band]`
+              (like the sub-hud), so its arrival never re-frames the 3D field. */}
+          <CardSignal cards={hud.cards} />
           {/* a SECOND card, below the first — rows for state that's active only sometimes
-              (reversed drive, a butterfly's wheel set, a card), so it appears and grows downward
+              (reversed drive, a butterfly's wheel set, a fixed flywheel), so it appears and grows downward
               rather than permanently reserving chip width in the row above.
               EACH GLYPH CARRIES A VISIBLE WORD (design review 05-06). They explained themselves
               through `title`, and `.hud` is `pointer-events: none`, so no tooltip ever showed —
               a new driver could not learn what two amber rings meant. The word is `aria-hidden`
               because the glyph's own `aria-label` already says it in full. This card is NOT in
               `[data-hud-band]`, so a word here never re-frames the 3D field. */}
-          {(hud.frontFlipped || hud.butterflyMode || hud.flywheel || hud.card || autoLine) && (
+          {(hud.frontFlipped || hud.butterflyMode || hud.flywheel || autoLine) && (
             <div className="sub-hud">
               {/* THE ZENITH AUTO driving this robot, and the step it is on: a standing fact while
                   AUTO runs, so it lives on this card (HUD-RELOCATION.md), in words */}
@@ -1342,22 +1348,6 @@ function Hud({
                     {hud.flywheel.presets > 1 ? `SPEED ${hud.flywheel.preset + 1} · ` : ''}
                     <span className="sub-hud-rpm">{hud.flywheel.setpoint} RPM · </span>
                     {hud.flywheel.ready ? 'READY' : 'SPIN UP'}
-                  </span>
-                </span>
-              )}
-              {hud.card && (
-                <span className="sub-hud-item">
-                  <span
-                    className={`card-icon ${hud.card}`}
-                    role="img"
-                    aria-label={`${hud.card === 'red' ? 'Red' : 'Yellow'} card issued.`}
-                  >
-                    {/* a LETTER as well as the fill (design review 17-06): yellow and red must not
-                        be told apart by hue alone */}
-                    {hud.card === 'red' ? 'R' : 'Y'}
-                  </span>
-                  <span className="sub-hud-lbl" aria-hidden="true">
-                    CARD
                   </span>
                 </span>
               )}

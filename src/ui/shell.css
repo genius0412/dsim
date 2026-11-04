@@ -175,6 +175,15 @@
   --ds-red-chip-ink: #ffffff;
   --ds-blue-chip-ink: #ffffff;
 
+  /* THE REFEREE CARDS — the glyph in the HUD's card signal (`.card-sig-card`, CardSignal.tsx).
+     CATEGORY 2: a yellow card is yellow in both themes, so these are declared HERE ONLY. Their
+     own names, because the hues they replaced each had another job: --ds-gold is SUPPORTER, and
+     --ds-red is the ALLIANCE red, which made a red card on a blue robot read as an alliance mark.
+     Glyph fills only, never type: the card's words carry the colour in --ds-warn / --ds-red-ink,
+     and the --ds-mut rim bounds the yellow on the light card. */
+  --ds-card-yellow: #ffd31a;
+  --ds-card-red: #e8283c; /* 3:1 or better on the HUD card in both themes by fill alone */
+
   /* ---- THE THREE REWARD HUES — one job each, all CATEGORY 2 (fills with fixed ink) ----
        --ds-gold          SUPPORTER. Paid for. The ♥ badge and its membership surfaces.
        --ds-podium-*      PLACED. A ranked podium, and a WORLD RECORD on the results stage.

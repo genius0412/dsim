@@ -274,6 +274,14 @@ const hudPairs = (t) => {
     ['HUD .breakdown-row .pace.behind', t('--ds-red-ink'), card, AA],
     ['HUD .breakdown-row .pace.level', t('--ds-ink'), card, AA],
     ['HUD .robot-status ink', t('--ds-ink-dim'), card, AA],
+    // THE CARD SIGNAL (`CardSignal.tsx`). The card's colour is said in WORDS in the themed
+    // caution/danger inks; the card glyph is a fixed fill (--ds-card-*) whose --ds-mut rim is
+    // what bounds it on the card (the yellow is ~1.5:1 on the light card by fill alone).
+    ['HUD .card-sig head (YELLOW CARD)', t('--ds-warn'), card, AA],
+    ['HUD .card-sig head (RED CARD) / SCORE VOID', t('--ds-red-ink'), card, AA],
+    ['HUD .card-sig-sub (rule · robot)', t('--ds-ink-dim'), card, AA],
+    ['HUD .card-sig-card rim (1.4.11)', t('--ds-mut'), card, NON_TEXT],
+    ['HUD .card-sig-card red fill on the card (1.4.11)', t('--ds-card-red'), card, NON_TEXT],
     ['HUD .game-btn ink', t('--ds-ink-dim'), card, AA],
     ['HUD .eventlog-line ink', t('--ds-ink-dim'), soft, AA],
     ['HUD .hopper-pip / .pg-bar ring (1.4.11)', t('--ds-mut'), card, NON_TEXT],
@@ -572,6 +580,11 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim .eventlog-line', s('--ds-ink-dim'), soft, AA],
     ['3D scrim .eventlog-pinned', s('--ds-warn'), soft, AA],
     ['3D scrim .eventlog-pinned.bad', s('--ds-red-ink'), soft, AA],
+    ['3D scrim .card-sig head (YELLOW CARD)', s('--ds-warn'), card, AA],
+    ['3D scrim .card-sig head (RED CARD) / SCORE VOID', s('--ds-red-ink'), card, AA],
+    ['3D scrim .card-sig-sub', s('--ds-ink-dim'), card, AA],
+    ['3D scrim .card-sig-card rim (1.4.11)', s('--ds-mut'), card, NON_TEXT],
+    ['3D scrim .card-sig-card yellow fill (1.4.11)', s('--ds-card-yellow'), card, NON_TEXT],
     ['3D scrim .chip.off in its well', s('--ds-mut'), well, AA],
     ['3D scrim .hopper-pip ring (1.4.11)', s('--ds-mut'), card, NON_TEXT],
     ['3D scrim .hopper-pip.next marker (1.4.11)', s('--ds-ink'), card, NON_TEXT],

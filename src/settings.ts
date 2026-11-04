@@ -115,7 +115,7 @@ export function defaultSettings(): GameSettings {
     // opting in is one button, opting out of a surprise is a support question.
     practiceBots: 'off',
     audio: {
-      volume: { master: 1, game: 1, shoot: 1, intake: 1, gate: 1, beep: 1, alert: 1, voice: 1 },
+      volume: { master: 1, game: 1, shoot: 1, intake: 1, gate: 1, beep: 1, alert: 1, penalty: 1, voice: 1 },
       sounds: true,
       voice: true,
     },
@@ -497,7 +497,7 @@ type AudioVolume = GameSettings['audio']['volume'];
  * master switch (is ANY audio audible) and `voice` the old voice-lines toggle. */
 function audioMirrors(av: AudioVolume): { sounds: boolean; voice: boolean } {
   const anyEffect =
-    av.game > 0 || av.shoot > 0 || av.intake > 0 || av.gate > 0 || av.beep > 0 || av.alert > 0;
+    av.game > 0 || av.shoot > 0 || av.intake > 0 || av.gate > 0 || av.beep > 0 || av.alert > 0 || av.penalty > 0;
   return {
     sounds: av.master > 0 && (anyEffect || av.voice > 0),
     voice: av.master > 0 && av.voice > 0,
@@ -663,7 +663,9 @@ export function coerceSettings(raw: unknown): GameSettings {
           out.audio.volume.gate = n;
           out.audio.volume.beep = n;
         }
-        for (const k of ['master', 'game', 'shoot', 'intake', 'gate', 'beep', 'alert', 'voice'] as const) {
+        // `penalty` is a NEW key (2026-11-04): an older client drops it when it saves, and the
+        // next load here reads the default — a level lost, never a mute gained
+        for (const k of ['master', 'game', 'shoot', 'intake', 'gate', 'beep', 'alert', 'penalty', 'voice'] as const) {
           const n = v[k];
           if (typeof n === 'number' && Number.isFinite(n)) out.audio.volume[k] = clamp(n, 0, 1);
         }

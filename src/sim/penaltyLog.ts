@@ -67,6 +67,14 @@ export const foulEventText = (
   rule: string,
 ): string => `${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL - ${SIDE(victim)} +${points} (${rule})`;
 
+/**
+ * How a card line NAMES its robot: the team number, else the robot's name, else its seat. The
+ * one formula, so the HUD's card signal can find the line for the robot it is drawing (the world
+ * keeps a card's colour and nothing else). Unchanged from what `awardCard` always wrote.
+ */
+export const cardSubject = (spec: { teamNumber?: number | string | null; name?: string }, id: number): string =>
+  spec.teamNumber ? `#${spec.teamNumber}` : spec.name || `robot ${id}`;
+
 /** `YELLOW CARD - RED #4239 (G408 excessive control)` */
 export const cardEventText = (
   colour: CardColor,

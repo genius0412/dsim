@@ -2295,6 +2295,7 @@ export function App() {
         replayId={route.replayId ?? undefined}
         preloadReplay={replayObj ?? undefined}
         viewerRobotId={replayObj ? replayRobot : null}
+        volume={settings.audio.volume}
         adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
         paceKeys={

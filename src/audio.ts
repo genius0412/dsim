@@ -1,3 +1,5 @@
+import { CUE_VOICES, type CueVoice, type PenaltyCue } from './penaltyFeed';
+
 /** Official FIRST field-management sounds (as played at FTC/FRC events).
  * Files live in public/sounds/. */
 export type Cue = 'start' | 'end' | 'resume' | 'warning' | 'match_result' | 'abort';
@@ -14,6 +16,67 @@ const FILES: Record<Cue, string> = {
 /** the WAV cues were mixed hot; this is the fixed trim they've always played at,
  * now the ceiling the `game` slider scales rather than a static per-element volume */
 const CUE_LEVEL = 0.55;
+
+/** a 0.25 s white-noise buffer for the percussive voices — one per context, since a buffer
+ *  belongs to the context that made it */
+export function makeNoiseBuffer(ctx: BaseAudioContext): AudioBuffer {
+  const len = Math.floor(ctx.sampleRate * 0.25);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return buf;
+}
+
+/** the attack every penalty voice opens with: an instant onset on a square wave clicks */
+const VOICE_ATTACK_S = 0.004;
+
+/**
+ * Schedule one penalty cue's voices (`CUE_VOICES`, `src/penaltyFeed.ts`) on any context — the
+ * live one, or an `OfflineAudioContext` rendering the same cue to a file. New nodes per voice,
+ * so overlapping cues mix the way the mechanism effects do.
+ */
+export function scheduleCueVoices(
+  ctx: BaseAudioContext,
+  dest: AudioNode,
+  voices: readonly CueVoice[],
+  level: number,
+  t0: number,
+  noise: AudioBuffer,
+): void {
+  for (const v of voices) {
+    const peak = level * v.vol;
+    if (peak <= 0) continue;
+    const t = t0 + v.at;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(peak, t + VOICE_ATTACK_S);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + v.dur);
+    gain.connect(dest);
+    if (v.kind === 'tone') {
+      const osc = ctx.createOscillator();
+      osc.type = v.wave ?? 'sine';
+      osc.frequency.setValueAtTime(v.f0, t);
+      if (v.f1 !== v.f0) osc.frequency.exponentialRampToValueAtTime(v.f1, t + v.dur);
+      osc.connect(gain);
+      osc.start(t);
+      osc.stop(t + v.dur + 0.01);
+    } else {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = v.q ?? 1.2;
+      bp.frequency.setValueAtTime(v.f0, t);
+      if (v.f1 !== v.f0) bp.frequency.exponentialRampToValueAtTime(v.f1, t + v.dur);
+      src.connect(bp).connect(gain);
+      src.start(t);
+      src.stop(t + v.dur + 0.01);
+    }
+  }
+}
+
+/** the penalty cues' ceiling under the slider, set so the loudest (red) peaks with the shooter */
+const PENALTY_LEVEL = 1;
 
 export class MatchAudio {
   private sounds = new Map<Cue, HTMLAudioElement>();
@@ -37,6 +100,9 @@ export class MatchAudio {
    *  plays when you are deliberately NOT looking at the game, so it wants to be
    *  louder than the in-match effects rather than tied to them. */
   alertVolume = 1;
+  /** fouls, cards and the warnings before them (`sfxPenalty`) — its own level, so a driver who
+   *  finds them distracting can turn them down without losing the field cues */
+  penaltyVolume = 1;
   /** announcer voice lines; at 0, countdowns fall back to beeps */
   voiceVolume = 1;
 
@@ -198,13 +264,25 @@ export class MatchAudio {
 
   /** cached 0.25s white-noise buffer for percussive effects */
   private noiseBuffer(ctx: AudioContext): AudioBuffer {
-    if (!this.noise) {
-      const len = Math.floor(ctx.sampleRate * 0.25);
-      this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
-      const data = this.noise.getChannelData(0);
-      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-    }
+    this.noise ??= makeNoiseBuffer(ctx);
     return this.noise;
+  }
+
+  /**
+   * A PENALTY CUE — a foul, a card, a warning, a pin count starting or ending. What fires one,
+   * and how often, is `PenaltyCuePlayer` (`src/penaltyFeed.ts`); this only sounds it, on the
+   * player's "Penalties and warnings" level under master.
+   */
+  sfxPenalty(cue: PenaltyCue): void {
+    const level = this.gain(this.penaltyVolume) * PENALTY_LEVEL;
+    if (level <= 0) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    try {
+      scheduleCueVoices(ctx, ctx.destination, CUE_VOICES[cue], level, ctx.currentTime, this.noiseBuffer(ctx));
+    } catch {
+      /* a closed context — the next cue builds a fresh one (see `dispose`) */
+    }
   }
 
   /** filtered noise burst: the percussive part of the mechanical effects */

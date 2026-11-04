@@ -142,14 +142,17 @@ const BASELINE = {
   // 29 → 26, 2026-09-22: design review wave 3.
   // 26 → 14, 2026-09-22: design review wave 4. The cinema's #05070b stage is --ds-stage-bg, the
   // alliance chips take their -chip-ink tokens and the prompt chip --ds-gold-ink.
-  'raw-colour': 14,
+  // 14 → 12, 2026-11-04: the HUD's card icon inked its Y / R with two literals; the card signal
+  // that replaced it has its own --ds-card-* fills and themed inks.
+  'raw-colour': 12,
   // measured 2026-09-22 (design review 14-12), when the rule and the --ds-lh-* tokens landed.
   // 78 on the day; the value-identical ones (1, 1.2, 1.45) and the off-standard 1.5 became
   // tokens in the same commit, leaving the odd values (1.02, 1.3, 1.35, 16px …) and the `/n`
   // inside `font:` shorthands.
   // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
   // → 29, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'literal-line-height': 28,
+  // 28 → 27, 2026-11-04: the card icon's `font: … / 1` shorthand went with it.
+  'literal-line-height': 27,
   // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
   // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
   // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in

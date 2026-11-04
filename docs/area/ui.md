@@ -1,4 +1,4 @@
-<!-- governs: src/ui/**, src/input/**, src/render/**, src/tutorial/**, src/settings.ts, src/theme.ts, src/audio.ts, src/main.tsx, src/optionalChunks.ts, src/seo.ts, src/download.ts, src/contributors.ts, src/desktop.ts, src/perfStats.ts -->
+<!-- governs: src/ui/**, src/input/**, src/render/**, src/tutorial/**, src/settings.ts, src/theme.ts, src/audio.ts, src/penaltyFeed.ts, src/main.tsx, src/optionalChunks.ts, src/seo.ts, src/download.ts, src/contributors.ts, src/desktop.ts, src/perfStats.ts -->
 # UI — controls, settings, audio, HUD, and the copy rules
 
 Rebindable controls, assists, persisted settings, HUD product rules, and the UI COPY house rules — which were settled by a measured audit, so read them before writing any user-visible string. `docs/ui-standard.md` is the CSS half.
@@ -292,6 +292,36 @@ that season has none) — then the bind panels —
   Shoot/intake/gate SFX are SYNTHESIZED (WebAudio, `sfx*` in `audio.ts`) and triggered by
   edge-detection on world state in `GameController.handleActionAudio` — **the sim core stays
   event-free for these**.
+- **PENALTY CUES** (`src/penaltyFeed.ts`, `MatchAudio.sfxPenalty`; 2026-11-04, owner: "proper,
+  appropriate sound effects for penalties and warnings"). Six synthesized cues, ordered by
+  severity: `cleared` (two soft falling notes: a pin ENDED), `warning` (one soft high tick: a pin
+  count STARTED, or BIOBUZZ's verbal WARNING line), `minor` (one low thud bending down), `major`
+  (the thud twice, the second lower), `yellow` (a bright two-strike stab), `red` (three falling
+  tritone strikes over a low floor, the longest). Nothing sampled and nothing shaped like the FIRST
+  WAVs. `npm test` holds the scale in order by an A-weighted estimate (`cueLoudness`) and the
+  non-card cues under 400 ms. Their own slider, Audio ▸ Individual sounds ▸ **Penalties and
+  warnings** (`volume.penalty`, a new key an older client drops back to the default).
+  ⚠️ **SOUNDED FROM THE AUTHORITATIVE LOG, NEVER THE PREDICTION.** Every sanction is one
+  `world.events` line (`parsePenaltyEvent`). Online the lines are fed from `collectNetEvents` by
+  their ABSOLUTE log index, and the cue player drops an id at or under its high-water mark, so a
+  reconcile that re-delivers a tick cannot sound it twice; pins are read off the snapshot BEFORE
+  the replay re-steps the world, and latched per pair (gone for `PIN_CLEAR_HOLD_MS` before it
+  counts as ended). Solo numbers its drained lines. One cue a frame (the strongest: a G408 tick
+  bills six MINORs and the card together), per-cue gaps (`CUE_GAP_MS`: warnings 2 s, fouls
+  600 ms, cards never), and no weaker cue over a stronger one still sounding. A driver hears their
+  own ALLIANCE's sanctions; a spectator, and a replay watched without a driver, hears both.
+  Replays sound them on the frame playback steps past the line, at any speed; a seek is silent.
+- **THE CARD SIGNAL** (`src/ui/CardSignal.tsx`, same day, owner: "The Y CARD UI looks very odd").
+  It was a 12×16 tile holding a "Y" beside the word CARD in the `.sub-hud`: it read "Y CARD", wore
+  the supporter gold and the alliance red, named no rule and no robot, showed only the local
+  robot's card, and on a landscape phone was a lone "Y". Now: its own HUD card directly under the
+  game's card, one row per carded robot on the viewed alliance (the driver's first, `YOU`), a 3:4
+  card glyph in `--ds-card-yellow` / `--ds-card-red` (category 2, its own tokens), the colour in
+  WORDS in the themed caution/danger inks, and `G408 · YOU` (the rule's CODE, `ruleCode`, and the
+  robot as the line names it, `cardSubject`). A red adds SCORE VOID. The rule comes from the card's
+  event line (`CardLedger`), since the world keeps only the colour; a mid-match joiner learns it
+  from the history it adopts. On a portrait phone `.status-wrap` is stacked above the event log, so
+  a toast no longer paints over the card the moment it lands.
 
 ## Controller navigation — the pad drives the MENUS too
 
@@ -801,7 +831,7 @@ where the settings are stored, which nobody picks a section by, and went as clut
   a radiogroup owes roving tabindex and arrow keys, and half that pattern is worse than none.
 - **RARE CONTROLS FOLD; THEY ARE NOT ROUTED ELSEWHERE.** `<details class="ds-fold">` — Graphics
   ▸ Advanced (the sixteen overrides the Quality preset already sets), Audio ▸ Individual sounds
-  (the five per-emitter trims). A fold is for a RARE control, not an ORPHAN one: Controls ▸ More
+  (the six per-emitter trims). A fold is for a RARE control, not an ORPHAN one: Controls ▸ More
   held touch controls and network prediction because neither was a binding, which put the one
   control a phone needs last on the page — touch is the first panel now, prediction is Network. Closed
   it is one row; open it is exactly where it was, so nothing is hidden from somebody who knows

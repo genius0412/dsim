@@ -390,10 +390,30 @@ import {
 } from '../src/sim/replay';
 import {
   cardEventText,
+  cardSubject,
   foulEventText,
   parsePenaltyEvent,
   warningEventText,
 } from '../src/sim/penaltyLog';
+import {
+  CardLedger,
+  CUE_GAP_MS,
+  CUE_RANK,
+  CUE_SPAN_MS,
+  CUE_VOICES,
+  PENALTY_CUES,
+  PIN_CLEAR_HOLD_MS,
+  PenaltyCueGate,
+  PenaltyCuePlayer,
+  PinWatch,
+  cueForEvent,
+  cueLoudness,
+  pinViews,
+  ruleCode,
+  strongestCue,
+  type PenaltyCue,
+} from '../src/penaltyFeed';
+import { bbAwardFoul } from '../src/games/biobuzz/penalties';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { advertisedCaps, importsOpen, IMPORTS_OPEN_HERE, roomPersists, SERVER_CHANNEL } from '../server/channel';
@@ -26851,6 +26871,221 @@ const dumperSetup = (): RobotSetup => {
     "penalty line: BIOBUZZ's own tariff emitter formats through penaltyLog too",
     bbPenSrc.includes('foulEventText(severity, victim, pts, rule)') &&
       bbPenSrc.includes('warningEventText(offender, rule)'),
+  );
+}
+
+/* ============================================================================
+   PENALTY CUES AND THE CARD SIGNAL (`src/penaltyFeed.ts`) — what a sanction sounds like,
+   when it may sound, and that it never sounds twice.
+   ============================================================================
+
+   Every input here is a line the SIM wrote (the real `awardFoul` / `awardCard` /
+   `bbAwardFoul`) or the sim's own pin state shape, so a template that drifted would fail here
+   rather than leave a game silent. */
+{
+  const mk = (): World =>
+    createWorld('match', 0x9003, [
+      { id: 0, alliance: 'red', spec: coerceSpec({ ...DEFAULT_SPEC, teamNumber: 4239 }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+      { id: 1, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+    ]);
+  const w = mk();
+  const line = (fn: () => void): string => {
+    w.events.length = 0;
+    fn();
+    return w.events[w.events.length - 1] ?? '';
+  };
+  const minorL = line(() => awardFoul(w, 'red', 'minor', 'G422 pinning'));
+  const majorL = line(() => awardFoul(w, 'red', 'major', 'G417 touching an opponent gate'));
+  const yellowL = line(() => awardCard(w, w.robots[0], 'G408 excessive control'));
+  const redL = line(() => awardCard(w, w.robots[0], 'G408 excessive control'));
+  const warnL = line(() => bbAwardFoul(w, 'red', 'warning', 'G407 CONTROL of more than 4 SCORING ELEMENTS'));
+  const bbMajorL = line(() => bbAwardFoul(w, 'red', 'major', 'G410 a NECTAR in a FLOWER'));
+
+  // EACH EVENT TYPE MAPS TO EXACTLY ONE CUE, and every cue is reached by something the sim emits
+  const mapped: [string, string, PenaltyCue][] = [
+    ['MINOR FOUL', minorL, 'minor'],
+    ['MAJOR FOUL', majorL, 'major'],
+    ["BIOBUZZ's 20-point MAJOR", bbMajorL, 'major'],
+    ['YELLOW CARD', yellowL, 'yellow'],
+    ['RED CARD (the second card)', redL, 'red'],
+    ['BIOBUZZ WARNING', warnL, 'warning'],
+  ];
+  for (const [name, text, want] of mapped) {
+    check(`penalty cue: the sim's ${name} line sounds as '${want}'`, cueForEvent(text, 'red') === want, text);
+    check(
+      `penalty cue: the sim's ${name} line is the OFFENDER's cue only (blue driver hears nothing, a spectator does)`,
+      cueForEvent(text, 'blue') === null && cueForEvent(text, null) === want,
+      text,
+    );
+  }
+  check(
+    'penalty cue: an ordinary event line sounds nothing',
+    ['LEAVE +3', 'DRIVER-CONTROLLED', 'GATE OPEN', 'TUTORIAL COMPLETE'].every((t) => cueForEvent(t, null) === null),
+  );
+  check(
+    'penalty cue: severity rises warning < minor < major < yellow < red, with cleared the softest',
+    CUE_RANK.cleared < CUE_RANK.warning &&
+      CUE_RANK.warning < CUE_RANK.minor &&
+      CUE_RANK.minor < CUE_RANK.major &&
+      CUE_RANK.major < CUE_RANK.yellow &&
+      CUE_RANK.yellow < CUE_RANK.red,
+  );
+
+  // THE CUES THEMSELVES: short, ordered, and the span the gate assumes is the span they play
+  const lenOf = (c: PenaltyCue): number => Math.max(...CUE_VOICES[c].map((v) => v.at + v.dur));
+  const energy = cueLoudness;
+  for (const c of PENALTY_CUES) {
+    const cardCue = c === 'yellow' || c === 'red';
+    check(
+      `penalty cue: '${c}' is ${cardCue ? 'a card, allowed past' : 'at most'} 400 ms (${Math.round(lenOf(c) * 1000)} ms) and its gate span covers it`,
+      (cardCue || lenOf(c) <= 0.4) && CUE_SPAN_MS[c] >= lenOf(c) * 1000,
+    );
+  }
+  check(
+    'penalty cue: each step up the scale is heavier to the ear (A-weighted) than the one below, by 25% at least',
+    PENALTY_CUES.every((c, i) => i === 0 || energy(c) > 1.25 * energy(PENALTY_CUES[i - 1])),
+    PENALTY_CUES.map((c) => `${c}=${(energy(c) * 1e4).toFixed(2)}`).join(' '),
+  );
+  check(
+    'penalty cue: red is the longest cue in the set',
+    PENALTY_CUES.every((c) => c === 'red' || lenOf(c) < lenOf('red')),
+  );
+
+  // ONE TICK, MANY LINES: a G408 tariff bills its MINORs and the card in the same tick
+  check(
+    'penalty cue: a batch plays its strongest cue only (six MINORs and a card is the card)',
+    strongestCue(['minor', 'minor', 'minor', 'minor', 'minor', 'minor', 'yellow', null]) === 'yellow' &&
+      strongestCue([null, null]) === null,
+  );
+
+  // THE RATE LIMIT
+  {
+    const g = new PenaltyCueGate();
+    const played = [0, 100, 300, 599, 600, 1300].filter((t) => g.offer('minor', t));
+    check(
+      `penalty cue: repeated MINORs are rate-limited to one per ${CUE_GAP_MS.minor} ms`,
+      JSON.stringify(played) === '[0,600,1300]',
+      JSON.stringify(played),
+    );
+    const gw = new PenaltyCueGate();
+    const warned = [0, 500, 1999, 2000].filter((t) => gw.offer('warning', t));
+    check(
+      `penalty cue: repeated warnings are rate-limited to one per ${CUE_GAP_MS.warning} ms`,
+      JSON.stringify(warned) === '[0,2000]',
+      JSON.stringify(warned),
+    );
+    const gc = new PenaltyCueGate();
+    check(
+      'penalty cue: cards are never rate-limited — a yellow then a red both sound',
+      gc.offer('yellow', 0) && gc.offer('red', 50),
+    );
+    const gm = new PenaltyCueGate();
+    check(
+      'penalty cue: a weaker cue never plays over a stronger one still sounding, and plays once it has ended',
+      gm.offer('yellow', 0) && !gm.offer('minor', 200) && gm.offer('minor', CUE_SPAN_MS.yellow + 1),
+    );
+  }
+
+  // NEVER TWICE: the same authoritative line re-delivered (a reconcile replaying a tick, a
+  // skipped reconcile handing the same snapshot's tail over again) is heard once
+  {
+    const heard: PenaltyCue[] = [];
+    const p = new PenaltyCuePlayer((c) => heard.push(c));
+    p.viewer = 'red';
+    p.frame([{ id: 7, text: majorL }], null, 0);
+    p.frame([{ id: 7, text: majorL }], null, 5000); // the same tick, re-delivered
+    p.frame([{ id: 6, text: minorL }], null, 6000); // an older id, after the fact
+    check(
+      'penalty cue: a reconcile re-delivering the same log id does not fire twice',
+      JSON.stringify(heard) === '["major"]',
+      JSON.stringify(heard),
+    );
+    p.frame([{ id: 8, text: minorL }], null, 7000);
+    check('penalty cue: ...and the next new id still sounds', heard.length === 2 && heard[1] === 'minor', JSON.stringify(heard));
+    p.reset(); // a new world: its log starts at 0 again
+    p.frame([{ id: 0, text: yellowL }], null, 7100);
+    check('penalty cue: after a reset (a new world) id 0 sounds again', heard[heard.length - 1] === 'yellow', JSON.stringify(heard));
+    const q = new PenaltyCuePlayer((c) => heard.push(c));
+    q.skipTo(3); // a mid-match join or a replay seek: the history is adopted silently
+    const before = heard.length;
+    q.frame([{ id: 2, text: redL }, { id: 3, text: majorL }], null, 0);
+    check('penalty cue: lines skipped by a join or a seek never sound', heard.length === before);
+  }
+
+  // PINS, from the sim's own state shape
+  {
+    const pinW = mk();
+    const st = (seconds: number) => ({ seconds, ox: 0, oy: 0, pox: 0, poy: 0, px: 0, py: 0, billed: 0, sepFor: 0, awayFor: 0 });
+    const ally = (id: number) => pinW.robots.find((r) => r.id === id)?.alliance;
+    pinW.penalties.pins['0-1'] = st(0); // tracked, not yet counting
+    const pw = new PinWatch();
+    check('pin cue: a pair that is tracked but not counting is silent', pw.update(pinViews(pinW.penalties.pins, ally), 'red', 0).length === 0);
+    pinW.penalties.pins['0-1'] = st(0.2);
+    const views = pinViews(pinW.penalties.pins, ally);
+    check(
+      'pin cue: the count starting is ONE warning, for the PINNER\'s alliance only',
+      JSON.stringify(pw.update(views, 'red', 100)) === '["warning"]' &&
+        new PinWatch().update(views, 'blue', 100).length === 0,
+    );
+    check('pin cue: a pin still counting stays quiet', pw.update(views, 'red', 400).length === 0);
+    // a misprediction corrected by a snapshot: gone for a frame, then back
+    const blink = [pw.update([], 'red', 450), pw.update(views, 'red', 480), pw.update(views, 'red', 900)].flat();
+    check('pin cue: a pin that blinks out for a frame and back is the same pin (no second warning, no clear)', blink.length === 0, JSON.stringify(blink));
+    const gone = [pw.update([], 'red', 1000), pw.update([], 'red', 1000 + PIN_CLEAR_HOLD_MS - 1), pw.update([], 'red', 1000 + PIN_CLEAR_HOLD_MS)];
+    check(
+      `pin cue: a pin gone for ${PIN_CLEAR_HOLD_MS} ms is 'cleared', once`,
+      gone[0].length === 0 && gone[1].length === 0 && JSON.stringify(gone[2]) === '["cleared"]' && pw.update([], 'red', 5000).length === 0,
+      JSON.stringify(gone),
+    );
+    const adopt = new PinWatch();
+    adopt.adopt(views, 'red');
+    check('pin cue: a pin already counting when the client joins is latched without a cue', adopt.update(views, 'red', 0).length === 0);
+  }
+
+  // THE CARD SIGNAL'S RULE: the ledger finds a card's line again from the robot it draws
+  {
+    const cw = mk();
+    cw.events.length = 0;
+    awardCard(cw, cw.robots[0], 'G408 excessive control');
+    const ledger = new CardLedger();
+    for (const t of cw.events) ledger.noteText(t);
+    const who = cardSubject(cw.robots[0].spec, cw.robots[0].id);
+    check(
+      'card signal: the rule that drew a card is found from the carded robot (cardSubject is the line\'s own naming)',
+      who === '#4239' && ledger.ruleFor('red', who, 'yellow') === 'G408 excessive control' && ledger.ruleFor('red', who, 'red') === null,
+      `${who} ${cw.events.join(' | ')}`,
+    );
+    check(
+      'card signal: a rule is shortened to its code for the HUD line',
+      ruleCode('G408 excessive control') === 'G408' &&
+        ruleCode('G408 REPEATED CONTROL of the opponent’s NECTAR') === 'G408' &&
+        ruleCode('G05 contact in the alliance section') === 'G05',
+    );
+  }
+
+  // THE SETTING: its own level, defaulting on, surviving a round trip, and on the Audio screen
+  check('penalty cue: "Penalties and warnings" has its own volume, defaulting on', coerceSettings({}).audio.volume.penalty === 1);
+  check(
+    'penalty cue: ...which survives a round trip',
+    coerceSettings({ audio: { volume: { penalty: 0.3 } } }).audio.volume.penalty === 0.3,
+  );
+  check(
+    'penalty cue: the Audio screen has the row, auditioning a cue',
+    /label="Penalties and warnings"[\s\S]{0,200}sfxPenalty\(/.test(readFileSync('src/ui/AudioSection.tsx', 'utf8')),
+  );
+  // ONLINE, ONLY THE AUTHORITATIVE TAIL FEEDS THE CUES: `penaltyFeed` is filled in exactly one
+  // place, beside `netEvents`, so a predicted line can never reach it
+  const gameSrc = readFileSync('src/game.ts', 'utf8');
+  const feedPushes = gameSrc.match(/this\.penaltyFeed\.push\(/g)?.length ?? 0;
+  const collect = gameSrc.slice(gameSrc.indexOf('private collectNetEvents('), gameSrc.indexOf('private noteDigest('));
+  check(
+    'penalty cue: online, only collectNetEvents (the server log) feeds the cue player',
+    feedPushes === 1 && collect.includes('this.penaltyFeed.push({ id: i, text: evs[i] })'),
+  );
+  check(
+    'penalty cue: the frame sounds penalties BEFORE the drain empties solo\'s world.events',
+    gameSrc.indexOf('this.handlePenaltyAudio();') > 0 &&
+      gameSrc.indexOf('this.handlePenaltyAudio();') < gameSrc.indexOf('const drain = this.session ? this.netEvents : this.world.events;'),
   );
 }
 
