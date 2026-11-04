@@ -15,6 +15,10 @@ COPY package.json package-lock.json ./
 # the Zenith packages are vendored tarballs (`file:` deps), so npm ci needs them first
 COPY vendor ./vendor
 RUN npm ci --no-audit --no-fund
+# They are OPTIONAL dependencies, so a clone without the tarballs still installs (docs/area/autos.md,
+# "Building without Zenith"), and npm ci skips a missing or mismatched one with only a warning. The
+# server must never be built that way: stop here, by name.
+RUN node -e "for (const p of ['core', 'schema', 'season-biobuzz']) { try { require.resolve('@horizon36596/zenith-' + p) } catch { console.error('@horizon36596/zenith-' + p + ' is not installed: vendor/zenith lacks its tarball (scripts/fetch-zenith.mjs)'); process.exit(1) } }"
 COPY tsconfig.server.json ./
 COPY server ./server
 COPY src ./src
@@ -32,6 +36,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY vendor ./vendor
 RUN npm ci --omit=dev --no-audit --no-fund
+RUN node -e "for (const p of ['core', 'schema', 'season-biobuzz']) { try { require.resolve('@horizon36596/zenith-' + p) } catch { console.error('@horizon36596/zenith-' + p + ' is not installed: vendor/zenith lacks its tarball (scripts/fetch-zenith.mjs)'); process.exit(1) } }"
 COPY --from=build /app/dist-server ./dist-server
 # migrate.ts resolves ./migrations relative to import.meta.url. In the bundle that
 # is /app/dist-server/index.js, so the SQL files must sit next to it (they are NOT

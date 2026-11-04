@@ -27,8 +27,12 @@ import { dirname, resolve } from 'node:path';
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
 
-/** `[name, relative tarball path]` for every Zenith dependency installed from a vendored file. */
-const vendored = Object.entries({ ...pkg.dependencies, ...pkg.devDependencies })
+/**
+ * `[name, relative tarball path]` for every Zenith dependency installed from a vendored file. They
+ * are OPTIONAL dependencies (so a clone without them still installs, docs/area/autos.md "Building
+ * without Zenith"), and missing that block here would read as "nothing to fetch".
+ */
+const vendored = Object.entries({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies })
   .filter(([name, spec]) => name.startsWith('@horizon36596/zenith-') && spec.startsWith('file:'))
   .map(([name, spec]) => [name, spec.slice('file:'.length)]);
 

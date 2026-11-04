@@ -14,7 +14,13 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "useDefineForClassFields": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "@horizon36596/zenith-core": ["./node_modules/@horizon36596/zenith-core/dist/index", "./src/auto/zenith-stub/core.ts"],
+      "@horizon36596/zenith-schema": ["./node_modules/@horizon36596/zenith-schema/dist/index", "./src/auto/zenith-stub/schema.ts"],
+      "@horizon36596/zenith-season-biobuzz": ["./node_modules/@horizon36596/zenith-season-biobuzz/dist/index", "./src/auto/zenith-stub/season-biobuzz.ts"],
+      "@horizon36596/zenith-season-biobuzz/field/*": ["./node_modules/@horizon36596/zenith-season-biobuzz/field/*", "./src/auto/zenith-stub/field/*"]
+    }
   },
   "include": ["src"]
 }

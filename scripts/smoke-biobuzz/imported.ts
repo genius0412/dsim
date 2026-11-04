@@ -36,6 +36,7 @@ import { clipHalf } from '../../src/sim/importedMech';
 import { isDeepStrictEqual } from 'node:util';
 import { biobuzzZenithRobot } from '../../src/games/biobuzz/auto';
 import { robotSchema } from '@horizon36596/zenith-schema';
+import { WITHOUT_ZENITH, skippedWithoutZenith } from './zenith';
 import { SIM_DT } from '../../src/config';
 import { rot } from '../../src/math';
 import type { ImportedRobot, RobotSpec, RobotState, Vec2, World } from '../../src/types';
@@ -225,14 +226,18 @@ export function importedChecks(check: Check): void {
       footprint: { startIn: { lengthIn: number; widthIn: number }; centreOfRotationIn: { xIn: number; yIn: number } };
       mouths: { side: string; offsetIn: { xIn: number; yIn: number }; widthIn: number; depthIn: number }[];
     };
-    const parsed = robotSchema.safeParse(file);
     const m = bbImportMouths(sp)[0];
     const fm = file.mouths[0];
-    check(
-      'import: the Zenith robot file is the HULL’s box with the origin where it sits in it (16 × 13, the wheelbase 2.5 in off the middle), and it parses',
-      parsed.success && file.footprint.startIn.lengthIn === 16 && file.footprint.startIn.widthIn === 13 && file.footprint.centreOfRotationIn.xIn === 0 && file.footprint.centreOfRotationIn.yIn === -2.5,
-      JSON.stringify({ box: file.footprint.startIn, cor: file.footprint.centreOfRotationIn, ok: parsed.success }),
-    );
+    // "and it parses" is Zenith's own schema, so a clone without Zenith skips this one (zenith.ts)
+    if (WITHOUT_ZENITH) skippedWithoutZenith('1 IMPORT check (the Zenith robot file parses)');
+    else {
+      const parsed = robotSchema.safeParse(file);
+      check(
+        'import: the Zenith robot file is the HULL’s box with the origin where it sits in it (16 × 13, the wheelbase 2.5 in off the middle), and it parses',
+        parsed.success && file.footprint.startIn.lengthIn === 16 && file.footprint.startIn.widthIn === 13 && file.footprint.centreOfRotationIn.xIn === 0 && file.footprint.centreOfRotationIn.yIn === -2.5,
+        JSON.stringify({ box: file.footprint.startIn, cor: file.footprint.centreOfRotationIn, ok: parsed.success }),
+      );
+    }
     check(
       'import: ...and its mouth is the PLACED one: on the placed span’s centre, its width, just inside the roller line',
       file.mouths.length === 1 && fm.side === 'FRONT' && Math.abs(fm.offsetIn.yIn - m.vc) < 1e-4 && Math.abs(fm.widthIn - 2 * m.half) < 1e-4 &&

@@ -58,7 +58,9 @@ fi
 # The image `npm ci`s the vendored Zenith tarballs (`COPY vendor`), which are never committed.
 # A no-op when they are present (or when Zenith comes from npm); otherwise it fetches them with
 # ZENITH_VENDOR_* from the environment and checks them against the lockfile, or stops here with
-# a message rather than letting the remote build fail on a missing file.
+# a message rather than letting the remote build fail on a missing file. The packages are OPTIONAL
+# dependencies (a contributor's clone builds without them), so the Dockerfile checks after each
+# `npm ci` that all three installed and fails the image by name if not: a server never ships without.
 node scripts/fetch-zenith.mjs
 
 if [ "$ALPHA" -eq 1 ]; then

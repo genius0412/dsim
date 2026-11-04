@@ -39,6 +39,7 @@ import { IMPORT_FELL_BACK, isImportedSpec } from '../net/imported';
 import { standardRobotFor } from '../settings';
 import { zeroPowerOf } from '../sim/zeroPower';
 import { activeZenithAuto } from '../auto/library';
+import { ZENITH_AVAILABLE } from '../auto/available';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
@@ -852,8 +853,9 @@ export function Lobby({
     announcePhysicsReady(lobby, roomGame);
     // THIS PLAYER'S ZENITH AUTO (custom rooms only; docs/area/autos.md): the one on in
     // Solo setup ▸ Autonomous, sent once the server says it can play it. Latched in the
-    // client like the readiness above, so a reconnect re-sends it. A record run never sends one.
-    if (!isRecord && moduleFor(roomGame).zenithAutos) {
+    // client like the readiness above, so a reconnect re-sends it. A record run never sends one,
+    // and nor does a build without Zenith (`ZENITH_AVAILABLE`): it could not play it either.
+    if (ZENITH_AVAILABLE && !isRecord && moduleFor(roomGame).zenithAutos) {
       void serverCaps().then((caps) => {
         if (!caps.includes('zenithAuto')) return;
         const active = activeZenithAuto(roomGame);

@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { zenithFallbackPlugin, zenithMissing, zenithRequired } from './scripts/zenith-fallback.mjs';
 
 // a stable build id (git sha, timestamp fallback) baked into the client AND emitted
 // to /version.json, so a running client can detect that a newer build has deployed.
@@ -63,8 +65,27 @@ if (process.env.ELECTRON === '1') {
     'https://ep-lingering-pine-ahq640vd.neonauth.c-3.us-east-1.aws.neon.tech/neondb/auth';
 }
 
+/**
+ * BUILDING WITHOUT ZENITH (docs/area/autos.md). The `@horizon36596/zenith-*` packages are optional
+ * dependencies from vendored tarballs that are never committed, so a contributor's clone has none.
+ * Then every Zenith import resolves to `src/auto/zenith-stub/` and `__DSIM_ZENITH__` is false, which
+ * turns autonomous off in the UI (`src/auto/available.ts`). With the packages installed nothing here
+ * changes what resolves. A DEPLOY must never ship the stand-ins: under Vercel or `ZENITH_REQUIRED=1`
+ * a missing package stops the build here, by name.
+ */
+const ROOT = fileURLToPath(new URL('.', import.meta.url));
+const ZENITH_MISSING = zenithMissing(ROOT);
+if (ZENITH_MISSING.length > 0 && zenithRequired()) {
+  throw new Error(
+    `Zenith is required for this build (VERCEL or ZENITH_REQUIRED=1) and ${ZENITH_MISSING.join(', ')} ` +
+      'did not resolve. Fetch the tarballs (node scripts/fetch-zenith.mjs) and reinstall; never deploy the stand-ins.',
+  );
+}
+const zenithFallback = () => zenithFallbackPlugin({ root: ROOT, missing: ZENITH_MISSING });
+
 export default defineConfig({
   plugins: [
+    zenithFallback(),
     react(),
     {
       name: 'emit-version-json',
@@ -169,6 +190,7 @@ export default defineConfig({
   define: {
     __BUILD_ID__: JSON.stringify(BUILD_ID),
     __THIRD_PARTY_VERSIONS__: JSON.stringify(THIRD_PARTY_VERSIONS),
+    __DSIM_ZENITH__: JSON.stringify(ZENITH_MISSING.length === 0),
   },
   /**
    * WORKERS ARE BUILT AS ES MODULES, because the LAN host worker code-splits.
@@ -185,8 +207,11 @@ export default defineConfig({
    * `{ type: 'module' }`, so the only thing that was out of step was the BUILD format. Module
    * workers are supported everywhere DSIM hosts from (Chromium — and therefore Electron —
    * since 80, Safari 15, Firefox 114).
+   *
+   * Top-level `plugins` do not reach a worker's build, and the LAN host worker imports the room,
+   * which imports the auto seat and with it Zenith: so the Zenith fallback is listed again here.
    */
-  worker: { format: 'es' },
+  worker: { format: 'es', plugins: () => [zenithFallback()] },
   // Absolute base for the WEB build so path-based routes (/leaderboard, /replay/…)
   // still resolve assets on a deep load / refresh (paired with the vercel.json SPA
   // rewrite). The Electron desktop build sets ELECTRON=1 (see the `dist` script) to

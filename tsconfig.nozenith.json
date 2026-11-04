@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@horizon36596/zenith-core": ["./src/auto/zenith-stub/core.ts"],
+      "@horizon36596/zenith-schema": ["./src/auto/zenith-stub/schema.ts"],
+      "@horizon36596/zenith-season-biobuzz": ["./src/auto/zenith-stub/season-biobuzz.ts"],
+      "@horizon36596/zenith-season-biobuzz/field/*": ["./src/auto/zenith-stub/field/*"]
+    }
+  }
+}

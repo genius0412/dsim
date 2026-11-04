@@ -44,6 +44,25 @@ npm run build      # tsc (strict) + vite build — must pass before a PR is "don
 
 See `CLAUDE.md` for the full architecture, invariants, and command reference.
 
+## Building without Zenith
+
+Autonomous routines (BIOBUZZ) run on Zenith, whose packages are not public yet. They are optional
+dependencies, so a clone without them installs and builds:
+
+- `npm ci`, `npm run dev`, `npm run build`, `npm run server:check` and `npm test` all work. During
+  the install npm warns that the three `@horizon36596/zenith-*` tarballs "seem to be corrupted";
+  that is npm skipping files you do not have, and it is expected.
+- Autonomous is off. Match setup shows "Autonomous isn’t included in this build." where the
+  Autonomous panel would be, and no match plays an auto. Everything else works as usual.
+- `npm test` skips what needs Zenith and says so on one line:
+  `SKIPPED (Zenith not installed): AUTO, AUTOUI, 1 IMPORT check (…)`.
+- You can’t run or test changes to autonomous itself (`src/auto/`, `src/games/biobuzz/auto/`).
+  Zenith imports resolve to stand-ins in `src/auto/zenith-stub/` that throw. If you import a new
+  name from a Zenith package, add a stand-in for it there; `npm test` checks.
+
+Deploys always build with Zenith: under Vercel or `ZENITH_REQUIRED=1` the build stops if it is
+missing. The rules are in `docs/area/autos.md`, "Building without Zenith".
+
 ## Ground rules
 
 - Run `npm test` and `npm run build` before opening a PR; keep both green.

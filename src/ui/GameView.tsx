@@ -29,6 +29,7 @@ import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { moduleFor } from '../games';
 import { activeZenithAuto } from '../auto/library';
+import { ZENITH_AVAILABLE } from '../auto/available';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, RobotSpec } from '../types';
@@ -501,11 +502,14 @@ export function GameView({
        * THE ZENITH AUTO CHUNK, before the world exists, for the same reason as the 3D one: the
        * controller seats the robot at the auto's start and builds its seat inside `makeWorld`.
        * Solo practice and Free Drive only — never a room, a record run (both have a session) or
-       * the tutorial. A failed load plays the practice without the auto and says so.
+       * the tutorial. A failed load plays the practice without the auto and says so. A build
+       * without Zenith (`ZENITH_AVAILABLE`) plays none, whatever the device's library holds.
        */
       let zenithAuto: GameControllerZenithAuto | undefined;
       const activeAuto =
-        !session && !runTutorial && !driveSpec && moduleFor(settings.game).zenithAutos ? activeZenithAuto(settings.game) : null;
+        ZENITH_AVAILABLE && !session && !runTutorial && !driveSpec && moduleFor(settings.game).zenithAutos
+          ? activeZenithAuto(settings.game)
+          : null;
       if (activeAuto) {
         try {
           zenithAuto = { ...activeAuto, module: await import('./zenithEditor') };

@@ -22,6 +22,7 @@ import { fixedChecks } from './fixed';
 import { rejectChecks } from './reject';
 import { controlChecks } from './control';
 import { menuStageChecks } from './menuStage';
+import { WITHOUT_ZENITH, skippedWithoutZenith, zenithChecks, zenithSkipLine } from './zenith';
 import type { Check } from './harness';
 
 /**
@@ -70,7 +71,12 @@ import type { Check } from './harness';
  * "everything is broken".
  */
 
-const LANES: { name: string; fn: (c: Check) => void }[] = [
+/**
+ * `zenith: true` marks a lane that needs the Zenith packages themselves. On a clone without them
+ * (`WITHOUT_ZENITH`, `zenith.ts`: no real package AND no vendored tarball) it is skipped and named on
+ * one `SKIPPED (Zenith not installed): …` line; wherever Zenith is meant to be, it always runs.
+ */
+const LANES: { name: string; fn: (c: Check) => void; zenith?: true }[] = [
   { name: 'CORE', fn: coreChecks },
   // step() output pinned per SIM_VERSION — see golden.ts and scripts/simGolden.ts
   { name: 'GOLDEN', fn: goldenChecks },
@@ -105,12 +111,15 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // lane because a TUTORIAL failure and a PHYSICS failure are different mornings, and because it
   // is the only lane that drives a staged world to a goal rather than asserting a number.
   { name: 'TUTORIAL', fn: tutorialChecks },
+  // what every Zenith import resolves to, that each name DSIM imports has a stand-in, and that a
+  // deploy refuses the stand-ins (docs/area/autos.md, "Building without Zenith"). Runs everywhere.
+  { name: 'ZENITH', fn: zenithChecks },
   // Zenith autos driven by an auto seat (docs/area/autos.md): no teleport, arrival, the heading
   // modes, the alliance rule, the commands, replay-without-seat, and the hand-back at the buzzer.
-  { name: 'AUTO', fn: autoChecks },
+  { name: 'AUTO', fn: autoChecks, zenith: true },
   // what the Autonomous panel and the match screen say and do about the player's autos: the
   // library's refusals and Undo, plurals, the pre-match line (docs/area/autos.md). DOM-free.
-  { name: 'AUTOUI', fn: autoUiChecks },
+  { name: 'AUTOUI', fn: autoUiChecks, zenith: true },
   // imported robots (docs/robot-import-plan.md): the mechanisms on a CAD hull — the placed mouth,
   // the 3D bands, the placed launchers and Box Tube. The cross-game checks are in smoke.ts.
   { name: 'IMPORT', fn: importedChecks },
@@ -242,7 +251,8 @@ function lane(name: string, fn: (c: Check) => void): number {
   return Date.now() - t0;
 }
 
-const timings = selected.map((l) => ({ name: l.name, ms: lane(l.name, l.fn) }));
+for (const l of selected) if (l.zenith && WITHOUT_ZENITH) skippedWithoutZenith(l.name);
+const timings = selected.filter((l) => !(l.zenith && WITHOUT_ZENITH)).map((l) => ({ name: l.name, ms: lane(l.name, l.fn) }));
 
 const laneTotal = timings.reduce((a, t) => a + t.ms, 0);
 const s = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
@@ -255,5 +265,7 @@ if (selected.length < LANES.length) {
   console.log(`PARTIAL RUN — lanes not run: ${skipped.join(', ')}`);
 }
 if (hidden > 0) console.log(`${hidden} passing checks hidden by --grep (they still RAN and still counted)`);
+const zenithSkips = zenithSkipLine();
+if (zenithSkips) console.log(zenithSkips);
 console.log(failures === 0 ? `\n${ran} CHECKS, ALL PASS` : `\n${failures} FAILURES of ${ran} checks`);
 process.exit(failures === 0 ? 0 : 1);

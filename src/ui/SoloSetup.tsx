@@ -15,6 +15,7 @@ import { OptRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
 import { lazy, useEffect, useState } from 'react';
 import { activeZenithAuto, AUTO_LIBRARY_CHANGED } from '../auto/library';
+import { AUTOS_UNAVAILABLE, ZENITH_AVAILABLE } from '../auto/available';
 import { ZENITH_AUTOS_KEY } from '../storageKeys';
 import { LoadBoundary } from './LoadBoundary';
 
@@ -106,7 +107,8 @@ export function SoloSetup({
   // Chain Reaction. Offering a driver nothing can play is worse than offering nothing.
   const botDriver = moduleFor(settings.game).bot;
   const seats = practiceSeatsFor(settings, settings.game);
-  const autoName = useActiveAutoName(settings.game, !!moduleFor(settings.game).zenithAutos);
+  // a build without Zenith plays no auto, so a library left on this device must not move the start
+  const autoName = useActiveAutoName(settings.game, !!moduleFor(settings.game).zenithAutos && ZENITH_AVAILABLE);
   const setSeat = (i: number, patch: Partial<PracticeSeat>): void => {
     const next = seats.map((x, j) => (j === i ? { ...x, ...patch } : x)) as PracticeSeats;
     set({ practiceSeats: { ...settings.practiceSeats, [settings.game]: next } });
@@ -198,11 +200,19 @@ export function SoloSetup({
           )}
         </section>
 
-        {moduleFor(settings.game).zenithAutos && (
-          <LoadBoundary what="the autonomous settings" fallback={<div className="ds-loading">Loading autonomous settings…</div>}>
-            <AutonomousSetup settings={settings} />
-          </LoadBoundary>
-        )}
+        {moduleFor(settings.game).zenithAutos &&
+          (ZENITH_AVAILABLE ? (
+            <LoadBoundary what="the autonomous settings" fallback={<div className="ds-loading">Loading autonomous settings…</div>}>
+              <AutonomousSetup settings={settings} />
+            </LoadBoundary>
+          ) : (
+            // A BUILD WITHOUT ZENITH (docs/area/autos.md): the section stays, so the player is told
+            // rather than left wondering where it went, and nothing from the autos chunk loads.
+            <section className="ds-sec">
+              <h2>Autonomous</h2>
+              <p className="ds-hint">{AUTOS_UNAVAILABLE}</p>
+            </section>
+          ))}
 
       </div>
     </section>

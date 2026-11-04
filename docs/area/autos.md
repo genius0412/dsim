@@ -1,4 +1,4 @@
-<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/zenith-e2e.mjs, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs -->
+<!-- governs: src/auto/**, scripts/zenith-sim.ts, scripts/zenith-e2e.mjs, scripts/vendor-zenith.mjs, scripts/fetch-zenith.mjs, scripts/zenith-fallback.mjs, scripts/smoke-biobuzz/zenith.ts -->
 # AUTOS: Zenith `*.auto.json` routines, driven by an auto seat
 
 A Zenith auto is the file a team's robot plays through Zenith's robot runtime, drawn and checked
@@ -101,8 +101,8 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   `zIn` and `radiusIn` kept). The AUTO lane walks Zenith's file beside the handed one, so a new
   point key fails by name. Zenith's HIVE legs are CAD numbers already, so the scale puts them
   0.44 in inboard; they still sit inside DSIM's measured leg footprint (lane tolerance 0.5 in).
-- ⚠️ **ZENITH IS A LAZY CHUNK.** Only `types.ts`, `coerce.ts` and `library.ts` are in the main
-  chunk, and none of them may import `@horizon36596/zenith-*` (types excepted). Everything else is
+- ⚠️ **ZENITH IS A LAZY CHUNK.** Only `types.ts`, `coerce.ts`, `library.ts` and `available.ts` are
+  in the main chunk, and none of them may import `@horizon36596/zenith-*` (types excepted). Everything else is
   reached through `import('./auto/zenithAutos')`, a facade NAMED so the chunk is not `index-*`
   (it once was, and `bundleaudit` billed it as main). `bundleaudit` routes it as `autos`.
   The CLIENT imports `src/ui/zenithEditor.ts` instead: the facade plus the editor popup
@@ -255,6 +255,50 @@ it the step kept the `endS` it opened with, and Zenith drew a 30 s run as 0.6 s.
 AUTO, closing). Run it after any change to `src/ui/zenith*.ts` or a re-vendor; its header lists the two
 dev servers it needs. The smoke lanes hold the pure parts; only this sees both windows.
 
+## Building without Zenith
+
+The repository is public and Zenith is not, so an outside contributor's clone has no tarballs. It
+must still `npm ci`, `npm run dev`, `npm run build`, `npm run server:check` and `npm test`, with
+autonomous simply off (2026-11-04, after a contributor could not build).
+
+- **THE PACKAGES ARE `optionalDependencies`.** `npm ci` skips a missing `file:` tarball with a
+  warning and installs everything else; with the tarball present the lockfile still pins its
+  sha512. Measured on npm 11: the skip happens only with an empty npm cache, because npm finds the
+  tarball by integrity in its cache, so test the no-Zenith path with `npm ci --cache <empty dir>`.
+- **EVERY RESOLVER FALLS BACK TO `src/auto/zenith-stub/`**, real package first:
+  `tsconfig.json` and `tsconfig.server.json` `paths` (for `tsc`, and for `tsx`, which reads the same
+  `paths`), and `vite.config.ts`'s `zenith-fallback` plugin (`scripts/zenith-fallback.mjs`, listed
+  again under `worker.plugins` because the LAN host worker imports the room). ⚠️ **The real entry
+  in `paths` is `dist/index` with NO extension**: the package directory resolves for `tsc` and not
+  for `tsx`, which then loaded the stand-in WITH Zenith installed; `dist/index.js` resolves for `tsx`
+  and makes `tsc` read the untyped `.js`. Extensionless gives `tsc` the `.d.ts` and `tsx` the `.js`.
+  A re-vendor that moves Zenith's entry breaks this, and the ZENITH lane says so.
+- **THE STAND-INS EXPORT EVERY NAME DSIM IMPORTS AND THROW.** Their types are loose, except where
+  DSIM hands a callback to something (`flattenSteps(...).map`, the live run's host): a callback on
+  an `any` is an implicit-any error under `strict`. The ZENITH lane reads every import of
+  `@horizon36596/zenith-*` in `src/` and `scripts/` and fails on a name without a stand-in, because a
+  box with Zenith never sees that break. A TYPE break (a callback on a new Zenith structure) only
+  `npm run typecheck:nozenith` sees (`tsconfig.nozenith.json`, stand-ins only, ~15 s): run it after
+  changing what `src/auto` reads off Zenith. `biobuzz.field.json` is an empty 144 in field:
+  `src/games/biobuzz/auto` reads it at import time.
+- **ONE FLAG: `ZENITH_AVAILABLE` (`src/auto/available.ts`, main chunk, imports nothing).** In the
+  client it is `__DSIM_ZENITH__`, baked in by `vite.config.ts`; under Node it reads where
+  `@horizon36596/zenith-core` resolves, and fails OPEN (anything it cannot check reads true), so the
+  production server can never turn autos off by mistake. False means: Solo setup shows the
+  Autonomous heading over `AUTOS_UNAVAILABLE` ("Autonomous isn’t included in this build.") and never
+  loads the panel; `GameView` seats no auto; the lobby sends none; `parseAutoText` and
+  `loadZenithAuto` throw `AutoLoadError` with that sentence, which is what a server without Zenith
+  answers a `zenithAuto` with.
+- ⚠️ **A DEPLOY NEVER SHIPS THE STAND-INS.** `zenithRequired()` is true under Vercel or
+  `ZENITH_REQUIRED=1` (`ZENITH_REQUIRED=0` overrides; plain `CI` does not count, so a contributor's
+  own CI builds), and `vite.config.ts` then throws before building if a package does not resolve.
+  The Fly image checks after each of its two `npm ci` that all three installed and fails by name.
+- **`npm test` SKIPS ONLY ON A CLONE WITHOUT ZENITH**: AUTO, AUTOUI and the one IMPORT check that
+  runs Zenith's robot schema, named on one `SKIPPED (Zenith not installed): …` line (`bbshard.mjs`
+  merges the shards' lines). `WITHOUT_ZENITH` needs no real package AND no tarball in
+  `vendor/zenith/`, so a box whose install skipped present tarballs runs those lanes against the
+  stand-ins and fails, and the ZENITH lane's first check names the cause.
+
 ## Vendoring
 
 ⚠️ **THE TARBALLS ARE NOT IN GIT, AND MUST NOT BE** (`.gitignore`): a packed package is its
@@ -264,8 +308,9 @@ landed after it. So until a release carries them, `vendor/zenith/*.tgz` are `fil
 `node scripts/vendor-zenith.mjs ../zenith` from a Zenith checkout holding those commits (it records
 the commit in `vendor/zenith/SOURCE.md`, takes the version from Zenith's `package.json`, writes the
 three tarballs' sha512 into `package-lock.json` in place, and runs `npm ci`: ⚠️ plain `npm install`
-keeps a changed tarball's OLD integrity hash, which `npm ci` then refuses, and installing the tarballs
-by path rewrites unrelated lockfile rows). The Dockerfile copies `vendor/` before `npm ci`.
+keeps a changed tarball's OLD integrity hash, which `npm ci` then SKIPS with only a "seems to be
+corrupted" warning, because the packages are optional (below), and installing the tarballs by path
+rewrites unrelated lockfile rows). The Dockerfile copies `vendor/` before `npm ci`.
 ⚠️ **ON WINDOWS, STOP EVERY DEV SERVER AND TEST RUN IN THAT CHECKOUT FIRST**: `npm ci` deletes
 `node_modules` before it installs, a running Vite or tsx holds `esbuild.exe`, and the install stops
 half done (`EPERM`). `npm install` puts the missing packages back; then restore `package-lock.json`.
@@ -297,7 +342,11 @@ push, or every build that fetches will refuse them (which is the point).
 2. Delete `vendor/`, `scripts/vendor-zenith.mjs`, `scripts/fetch-zenith.mjs` (and its lines in
    `vercel.json`'s `installCommand` and `scripts/fly-deploy.sh`), the Dockerfile's `COPY vendor`
    line, the `vendor/zenith/*.tgz` line in `.gitignore`, the three `ZENITH_VENDOR_*` Vercel env vars,
-   and this section down to this list; drop both scripts from this guide's `governs:`.
+   and this section down to this list; drop both scripts from this guide's `governs:`. Keep
+   "Building without Zenith" only if the packages stay optional; if they become plain dependencies,
+   delete it with `src/auto/zenith-stub/`, `scripts/zenith-fallback.mjs`, the `paths` in both
+   tsconfigs, the plugin and `__DSIM_ZENITH__` in `vite.config.ts`, the Dockerfile's two checks and
+   the ZENITH lane, and make `ZENITH_AVAILABLE` a plain `true`.
 3. `rm -rf node_modules && npm ci`, then `npm run build`, `server:check`, `npm run test:bb -- --lane
    AUTO`, `npm test`, `bundleaudit`, `docaudit`. Then the branch builds anywhere.
 

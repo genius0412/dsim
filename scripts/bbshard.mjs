@@ -60,7 +60,7 @@ const SOLO = new Set(['perf']);
  *  `npm run test:bb` when a lane's weight changes a lot. */
 const COST = {
   sim3d: 13.8, net3d: 12.7, ai: 11.3, aiplay: 10.7, field: 8.1, hive3d: 6.1, server: 4.7, flower3d: 4.2,
-  tutorial: 2.9, golden: 9.5, robot: 2.6, rules: 1.5, render: 0.9, stage: 0.4, predict: 0.3, core: 0.1, sponsor: 0.1,
+  tutorial: 2.9, golden: 9.5, robot: 2.6, rules: 1.5, render: 0.9, stage: 0.4, predict: 0.3, core: 0.1, sponsor: 0.1, zenith: 0.1,
   perf: 2.5, // SOLO: never packed, so its cost only matters to the median above
 };
 
@@ -122,6 +122,9 @@ for (const s of solo) results.push(await runShard(s));
 let ran = 0;
 let failures = 0;
 let broken = 0;
+/** what each shard skipped on a clone without Zenith (`smoke-biobuzz/zenith.ts`), merged into ONE line */
+const SKIP_PREFIX = 'SKIPPED (Zenith not installed): ';
+const zenithSkips = [];
 for (const r of results) {
   const lines = r.out.split(/\r?\n/);
   const all = lines.map((l) => /^(\d+) CHECKS, ALL PASS$/.exec(l)).find(Boolean);
@@ -136,6 +139,10 @@ for (const r of results) {
   for (const l of lines) {
     // the per-shard verdict and the "lanes not run" note describe the SHARD, not the suite
     if (/^PARTIAL RUN — /.test(l) || /^\d+ CHECKS, ALL PASS$/.test(l) || /^\d+ FAILURES of \d+ checks$/.test(l)) continue;
+    if (l.startsWith(SKIP_PREFIX)) {
+      for (const what of l.slice(SKIP_PREFIX.length).split(', ')) if (!zenithSkips.includes(what)) zenithSkips.push(what);
+      continue;
+    }
     if (QUIET && !/^FAIL {2}/.test(l) && !/ · {2}boot /.test(l)) continue;
     if (l.length > 0 || !QUIET) console.log(l);
   }
@@ -143,6 +150,7 @@ for (const r of results) {
 }
 const wall = ((Date.now() - t0) / 1000).toFixed(1);
 console.log(`\n[bbshard] ${lanes.length} lanes in ${results.length} shards · wall ${wall}s · ${results.map((r) => `${r.lanes.join('+')} ${(r.ms / 1000).toFixed(1)}s`).join('  ·  ')}`);
+if (zenithSkips.length > 0) console.log(`${SKIP_PREFIX}${zenithSkips.join(', ')}`);
 const bad = failures + broken;
 console.log(bad === 0 ? `\n${ran} CHECKS, ALL PASS` : `\n${bad} FAILURES of ${ran} checks`);
 process.exit(bad === 0 ? 0 : 1);

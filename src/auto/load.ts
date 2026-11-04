@@ -55,6 +55,7 @@ import {
 import type { Alliance, RobotSpec, StartPose } from '../types';
 import { datan2, dcos } from '../math';
 import type { GameAutoAdapter, ZenithAutoSetup } from './types';
+import { AUTOS_UNAVAILABLE, ZENITH_AVAILABLE } from './available';
 
 /** An auto that could not be loaded, with a sentence a player can act on. */
 export class AutoLoadError extends Error {}
@@ -231,6 +232,8 @@ export function autoStartPose(loaded: LoadedAuto, alliance: Alliance, adapter: G
 
 /** Parse an auto file's text on its own, for the library: its name, alliance and any error. */
 export function parseAutoText(text: string): Auto {
+  // a build without Zenith (src/auto/zenith-stub) says so, rather than "not a Zenith auto file"
+  if (!ZENITH_AVAILABLE) throw new AutoLoadError(AUTOS_UNAVAILABLE);
   try {
     const json = parseJson(text, 'auto file');
     refuseNewer(json, 'auto');
@@ -265,6 +268,7 @@ export function loadZenithAuto(
   spec: RobotSpec,
   adapter: GameAutoAdapter,
 ): LoadedAuto {
+  if (!ZENITH_AVAILABLE) throw new AutoLoadError(AUTOS_UNAVAILABLE);
   const field = loadField(adapter.field());
   const robot = loadRobot(adapter.robot(spec));
   const auto = parseAutoText(setup.auto);
