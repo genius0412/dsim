@@ -15,7 +15,6 @@ import {
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
-  BB_NECTAR_R,
   BB_WALL_T,
   BB_TAPE,
   BB_TILE_SEAMS,
@@ -28,10 +27,8 @@ import {
   BB_BOX_DEPTH,
   BB_BOX_H,
   BB_BOX_LEN,
-  BB_BOX_SLOTS,
   BB_BOX_T,
   bbNectarBoxCentre,
-  bbNectarBoxSlot,
 } from '../nectarBox';
 import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { cellPanelMaterial, loadFieldGlb, wallPanelMaterial, type FieldGroups } from './renderFieldGlb';
@@ -205,7 +202,6 @@ function texXform(size: number): { a: number; b: number; c: number; d: number; e
  * ribs and the robot silhouette all take this value; there is no second approximation left.
  */
 const ALLIANCE_BLUE = '#007be1';
-const ALLIANCE_BLUE_HEX = 0x007be1; // same value, numeric — `THREE.MeshStandardMaterial.color` below
 
 /** the tape colours `drawField.ts`'s `TAPE_GAFFER` uses — NOT a theme token there either (the
  * tape colour is the marking, per that file's own header). The red literal is copied, which is
@@ -748,9 +744,11 @@ function buildHive(alliance: Alliance): { group: THREE.Group; tray: THREE.Group 
 // 2026-09-19 note about the score bar), and for the point-symmetry rule. What is left below is
 // purely how it is BUILT in three.js.
 //
-// THE COUNT IS READ OFF THE WORLD, never stored: `spawn.ts` stages five `stock` NECTAR per
-// alliance and `play.ts` flips one to `ground` on each entry, so counting them here and counting
-// them in `hud.ts` cannot drift.
+// THE NECTAR IN IT ARE NOT DRAWN HERE (owner, 2026-11-04: "the nectar in the box should match the
+// graphics of the nectar in the field"). This file used to fill the box with its own plain spheres;
+// `renderElements.ts` now draws each `stock` NECTAR in its slot through the field's own meshes, so
+// the box shows what the world holds (`spawn.ts` stages five per alliance, `play.ts` flips one to
+// `ground` on each entry) in the field's finish, detail and shadows.
 //
 // ⚠️ THERE IS NO SIGN OVER IT ANY MORE (owner, 2026-09-19: "Get rid of the in-game 3d display").
 // A canvas plate reading "NECTAR LEFT 5" used to hang over the box, repainted whenever the count
@@ -760,8 +758,6 @@ function buildHive(alliance: Alliance): { group: THREE.Group; tray: THREE.Group 
 
 export interface BbNectarBox {
   group: THREE.Group;
-  /** the nectar spheres, shown/hidden by the remaining count. */
-  beads: THREE.Mesh[];
 }
 
 /** one alliance's holding box, OUTSIDE the perimeter face beside its own drive team area. */
@@ -802,43 +798,11 @@ function buildNectarBox(a: Alliance): BbNectarBox {
     group.add(end);
   }
 
-  const beadMat = new THREE.MeshStandardMaterial({
-    color: a === 'blue' ? ALLIANCE_BLUE_HEX : 0xe2564d, // red still matches `renderElements.ts`'s `NECTAR_COLORS`
-    roughness: 0.4,
-    metalness: 0.05,
-  });
-  const beads: THREE.Mesh[] = [];
-  for (let i = 0; i < BB_BOX_SLOTS; i++) {
-    const slot = bbNectarBoxSlot(a, i);
-    const bead = new THREE.Mesh(new THREE.SphereGeometry(BB_NECTAR_R, 12, 8), beadMat);
-    bead.name = `${group.name}:nectar${i}`;
-    // resting ON the box floor, not floating over it
-    bead.position.set(slot.x, slot.y, BB_BOX_T + BB_NECTAR_R);
-    bead.castShadow = true;
-    beads.push(bead);
-    group.add(bead);
-  }
-
-  return { group, beads };
+  return { group };
 }
 
 function buildNectarBoxes(): Record<Alliance, BbNectarBox> {
   return { red: buildNectarBox('red'), blue: buildNectarBox('blue') };
-}
-
-/** how many NECTAR are left in `a`'s human-player supply — the same balls `hud.ts` counts. */
-function stockLeft(world: World, a: Alliance): number {
-  let n = 0;
-  for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) n++;
-  return n;
-}
-
-function updateNectarBoxes(boxes: Record<Alliance, BbNectarBox>, world: World): void {
-  for (const a of ALLIANCES) {
-    const box = boxes[a];
-    const left = stockLeft(world, a);
-    for (let i = 0; i < box.beads.length; i++) box.beads[i].visible = i < left;
-  }
 }
 
 export interface BbFieldHandles {
@@ -856,7 +820,7 @@ export interface BbFieldHandles {
    * rotation on it every tick and that is a hot, tiny lookup worth keeping direct. */
   trays: Record<Alliance, THREE.Group>;
   /** the human players' NECTAR holding boxes, on the floor beside each LOADING ZONE outside the
-   * wall — `updateBiobuzzField` refills them from `world.balls`. */
+   * wall. Empty: the NECTAR in them are drawn with the field's (`renderElements.ts`). */
   boxes: Record<Alliance, BbNectarBox>;
 }
 
@@ -1031,7 +995,4 @@ export function updateBiobuzzField(handles: BbFieldHandles, world: World): void 
     const angle = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     handles.trays[a].rotation.set(angle, 0, 0);
   }
-  // the NECTAR holding boxes: one pass over `world.balls` and a visibility flip per bead. No
-  // canvas, no texture upload — the count plate that used to be repainted here is gone.
-  updateNectarBoxes(handles.boxes, world);
 }

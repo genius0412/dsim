@@ -362,14 +362,14 @@ export interface GraphicsSettings {
   hfov: number;
   cameraMotion: CameraMotion;
   /** the picture-in-picture overhead map in a corner. */
-  /**
-   * The PiP top-down aid. ⚠️ **OFF ON EVERY PRESET (owner, 2026-09-21).** Low and Medium
-   * used to default it ON, on the reasoning that the machines with the hardest-to-read 3D
-   * shot are the ones that want a top-down aid. It is still a SECOND FULL PASS over the
-   * scene, which is the cost those machines can least afford, and it covers a corner of
-   * the field it is meant to help with. It stays a one-click setting for anyone who wants
-   * it; it is simply not a thing a new player is given without asking.
-   */
+  /**
+   * The PiP top-down aid. ⚠️ **OFF ON EVERY PRESET (owner, 2026-09-21).** Low and Medium
+   * used to default it ON, on the reasoning that the machines with the hardest-to-read 3D
+   * shot are the ones that want a top-down aid. It is still a SECOND FULL PASS over the
+   * scene, which is the cost those machines can least afford, and it covers a corner of
+   * the field it is meant to help with. It stays a one-click setting for anyone who wants
+   * it; it is simply not a thing a new player is given without asking.
+   */
   minimap: boolean;
   perfOverlay: PerfOverlay;
 }
@@ -651,11 +651,11 @@ export function extremeTrialFor(g: GraphicsState, gpu: string): ExtremeTrial | u
 export const GFX_DEFAULT_TIER: GraphicsTier = 'medium';
 
 /**
- * THE MENUS' OWN TIER: Medium, or Low where the device's own tier is Low; never the player's match
- * settings. The menu stage draws at it (`MenuStage.tsx`, 2026-11-01), and so does every picture that
- * stands beside the stage, so a robot on Play and its card are one rendering. At the player's Ultra a
- * card's thumbnail scene built a room environment map and a shadowed first draw (~620 ms of shader
- * compiles on the first Play, 2026-11-02) for 96 px pictures.
+ * THE CARDS' OWN TIER: Medium, or Low where the device's own tier is Low; never the player's match
+ * settings. Play's robot cards draw at it: at the player's Ultra a card's thumbnail scene built a
+ * room environment map and a shadowed first draw (~620 ms of shader compiles on the first Play,
+ * 2026-11-02) for 96 px pictures. The menu stage drew at it too from 2026-11-01 and draws at the
+ * player's own graphics since 2026-11-04 (`MenuStage.tsx`).
  */
 export function menuTier(): 'low' | 'medium' {
   return getGraphics().tier === 'low' ? 'low' : 'medium';

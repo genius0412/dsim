@@ -687,11 +687,12 @@ export interface SceneOptions {
    */
   quality?: 'low' | 'medium' | 'high' | 'ultra';
   /**
-   * THE ROOM a fixed-`quality` scene draws, in place of the tier's own (a game's environment id;
-   * an unknown one is ignored). Ignored without `quality`. The menu stage is the case: it draws a
-   * procedural room at a fixed tier whatever the player picked for matches (`MenuStage.tsx`).
+   * `false`: draw at the player's own graphics and follow changes to them, but never let this
+   * scene's frame times step the player's stored tier. The menu stage is the case (`MenuStage.tsx`,
+   * 2026-11-04): it draws on demand, so its frame times say nothing about a match. Ignored with
+   * `quality`, which never steps it either.
    */
-  environment?: string;
+  tunesTier?: boolean;
   /**
    * `false` for a scene nobody is driving — an export, a still, a thumbnail. It binds no keys
    * and no pointer handlers, which matters because those are WINDOW-level: an off-screen export

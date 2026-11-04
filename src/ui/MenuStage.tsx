@@ -4,7 +4,6 @@ import type { GameId } from '../games/types';
 import type { GameScene, SceneInsets, ScenePose } from '../games/module';
 import { moduleFor } from '../games';
 import { getViewPref } from '../games/biobuzz/graphics/store';
-import { menuTier } from '../games/biobuzz/graphics/settings';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
 import { POSES, SHOW, STAGE_SEED, type StageView } from './menuStagePoses';
 import { holdBoot } from './screenFade';
@@ -19,8 +18,7 @@ import { holdBoot } from './screenFade';
  * - **3D** (BIOBUZZ): the match's own scene (`createBiobuzzScene`, lazy), drawn through a
  *   host-placed camera (`SceneFrame.pose`). It draws on demand, not every frame: nothing on the
  *   field moves, so it renders while the camera moves and once more when a late asset lands.
- *   ⚠️ AT ITS OWN FIXED TIER AND IN ITS OWN ROOM, not the player's match settings (2026-11-01,
- *   owner: Home "still distorted and EXTREMELY laggy on some devices"): see `STAGE_ROOM`.
+ *   AT THE PLAYER'S OWN GRAPHICS, room included (owner, 2026-11-04): see `tunesTier` below.
  * - **2D** (DECODE, Chain Reaction, and BIOBUZZ wherever 3D cannot run): the game's own 2D field,
  *   drawn once and shown FLAT, top-down, the way those games are played; the robot is the page's
  *   own 2D preview.
@@ -49,24 +47,16 @@ export function usePhone(): boolean {
 type StageMode = '2d' | '3d';
 
 /**
- * THE STAGE'S ROOM AND TIER (2026-11-01). The stage used to draw at the player's own graphics
- * settings, and on a machine Auto had put on High or above that meant the photographed events hall
- * (4k backdrop plus layers, ~45 MB of textures), MSAA 4x, soft or max shadows, reflections, and on
- * Extreme a 150 % supersampled target with SSAO, all of it for a menu. Two problems came with it:
- *  - DISTORTED. A photographed venue is exact only near its lens, and Home's camera is 150 in up at
- *    the corner: the floor around the field drew blurred and the window light smeared across it.
- *    The procedural rooms are geometry, so they are right from every eye. The arena is the darkest
- *    of them, which is what lets the field and the column's scrim read.
- *  - LAGGY. Every fly frame and every orbit drag paid the match's full cost, and Home's own load
- *    (the backdrop decode and upload, the post chain's shaders) stalled the page on a weak GPU. And
- *    the scene's quality governor measured MENU frames and could step the player's stored tier.
- * Medium is MSAA 2x, low shadows and no post. A device whose own tier is Low gets Low (`menuTier`,
- * which Play's robot cards draw at too). A fixed tier also measures without deciding, so the menu no
- * longer touches the match settings.
+ * THE STAGE DRAWS AT THE PLAYER'S GRAPHICS (owner, 2026-11-04: "the home/play menu's render should
+ * match the graphics selected by the user"): their tier, room, shadows, AA, element detail, render
+ * scale and the device's full pixel ratio, and it follows a change to them. From 2026-11-01 to
+ * 2026-11-04 it drew at its own Medium tier in the procedural arena, capped at 1.5 dpr, after Home was
+ * "still distorted and EXTREMELY laggy on some devices"; that ruling is reversed, and its two causes
+ * come back with the player's choice: a photographed venue is exact only near its lens, so Home's
+ * high corner shot can blur the floor round the field, and the first load and every fly frame pay
+ * the player's match cost. What stays: the scene draws on demand, boots on idle, shows no perf
+ * overlay, and `tunesTier: false` keeps menu frames from stepping the player's stored tier.
  */
-const STAGE_ROOM = 'arena';
-/** the stage's device-pixel cap: a menu backdrop at 2x on a 4K panel was 8 MP a frame */
-const STAGE_MAX_DPR = 1.5;
 
 /** fly time, Home ↔ Play (owner: "about 1 second"); zero under reduced motion */
 const FLY_MS = 1000;
@@ -465,7 +455,7 @@ function Stage3d({
       size = {
         w: Math.max(1, r.width),
         h: Math.max(1, r.height),
-        dpr: Math.min(window.devicePixelRatio || 1, STAGE_MAX_DPR),
+        dpr: window.devicePixelRatio || 1,
       };
       scene?.resize(size.w, size.h, size.dpr);
       kick();
@@ -483,7 +473,7 @@ function Stage3d({
     // screen) stands in for it.
     const boot = (): Promise<void> =>
       load()
-        .then((factory) => factory(host, { interactive: false, quality: menuTier(), environment: STAGE_ROOM }))
+        .then((factory) => factory(host, { interactive: false, tunesTier: false }))
         .then((s) => {
           if (dead) {
             s.dispose();

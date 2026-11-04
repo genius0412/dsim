@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
+import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxSlot } from '../nectarBox';
 import { biobuzzPhysics } from '../state';
 import type { ElementDetail, ElementShadows } from '../graphics/settings';
 import { loadElementGeometries } from './renderElementsGlb';
@@ -18,7 +19,11 @@ import { loadElementGeometries } from './renderElementsGlb';
  * POSITIONING. `ground`/`flight` balls are posed at `(pos.x, pos.y, z + r)` — `z` is already the
  * height ABOVE the tile a resting ball's centre sits at (a resting ground ball reads `z === 0`
  * in `draw.ts`/`play.ts`, so its drawn centre has to be lifted by its own radius; a flight ball's
- * `z` is real altitude). `held`/`stock` balls are off-field and hidden (scaled to zero).
+ * `z` is real altitude). `held` balls are inside a robot and hidden (scaled to zero). `stock`
+ * NECTAR is drawn in its alliance's holding box (`nectarBox.ts`), one per slot, through these same
+ * meshes: the box used to draw its own plain spheres, which a player on High saw as smooth, glossy
+ * balls beside the perforated ones on the field (owner, 2026-11-04: "the nectar in the box should
+ * match the graphics of the nectar in the field").
  *
  * `element` balls (parked in a HIVE cell or a FLOWER stack, `state.ts`'s `BallState`) already
  * carry a REAL, useful `pos`/`z` — but WHAT that z means depends on which solve wrote it, so
@@ -416,6 +421,8 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   const bottom = biobuzzPhysics(world) === '3d';
   const blobsOn = els.shadowMode === 'blob';
   const seenSpin = new Set<number>();
+  // how many of each alliance's `stock` NECTAR have been put in its box this frame
+  const boxed = { red: 0, blue: 0 };
   // A REWIND MOVES EVERY BALL AT ONCE, and none of them rolled to get there: a replay scrub, a
   // reconnect, a server snapshot older than what this client predicted. The displacement clamp
   // in `rollSpin` would catch most of them one ball at a time; this catches all of them for the
@@ -473,12 +480,19 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
      * its RELEASE a continuation rather than a teleport.
      */
     seenSpin.add(b.id);
+    // a STOCK NECTAR sits in its box, filling the slots in order as the old beads did; one past
+    // the box's slots is not drawn (`nectarBox.ts` says why that can only under-draw)
+    const slot = b.state.kind === 'stock' ? boxed[b.state.alliance]++ : -1;
+    const box = b.state.kind === 'stock' && slot < BB_BOX_SLOTS ? bbNectarBoxSlot(b.state.alliance, slot) : null;
     const spin =
       spinning && (b.state.kind === 'ground' || b.state.kind === 'flight')
         ? rollSpin(els, b.id, b.pos.x, b.pos.y, r)
-        : parkSpin(els, b.id, b.pos.x, b.pos.y);
+        : parkSpin(els, b.id, box ? box.x : b.pos.x, box ? box.y : b.pos.y);
 
-    if (b.state.kind === 'held' || b.state.kind === 'stock') {
+    if (box) {
+      // resting ON the box's floor slab
+      poseAtQuat(mesh, idx, box.x, box.y, BB_BOX_T + r, spin);
+    } else if (b.state.kind === 'held' || b.state.kind === 'stock') {
       mesh.setMatrixAt(idx, HIDE);
     } else if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
       const row = hiveIndex.get(b.id);

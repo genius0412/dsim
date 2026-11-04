@@ -1,3 +1,13 @@
+# HANDOFF — 2026-11-04 (Box NECTAR drawn as the field's; the menu stage at the player's graphics)
+
+**State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).
+
+- **Owner:** "In-game, the nectar in the box should match the graphics of the nectar in the field. Also, the home/play menu's render should match the graphics selected by the user."
+- **Box, measured:** `renderField.ts` filled each holding box with its own 12x8 spheres in their own material, so at High and up (perforated CAD elements) the box held smooth glossy balls. **Built:** the box is the tray only; `updateBiobuzzElements` draws each `stock` NECTAR in its slot through the field's NECTAR mesh (detail, material, orientation, shadow mode all shared). 2D: the box's discs take `ELEMENT_FILL`/`ELEMENT_LINE` (moved to `elementInk.ts`, re-exported by `draw.ts`, so `drawField.ts` imports them without a cycle). RENDER lane: the box draws one NECTAR per `stock` ball on its floor through the element mesh, an entered one leaves the box, `renderField.ts` builds none.
+- **Stage, measured:** at Ultra, Home and Play still drew Medium in the procedural `arena` (the 2026-11-01 ruling). **Built:** `MenuStage` asks for the player's graphics (`factory(host, { interactive: false, tunesTier: false })`), full device pixel ratio. New `SceneOptions.tunesTier` replaces the stage-only `environment` option: Auto measures menu frames but never steps the stored tier. A non-interactive scene shows no perf overlay. `menuTier()` now serves Play's robot cards only.
+- **Checked:** offscreen Electron at 1920x1080, Ultra stored and a first visit (Auto guessed Ultra): Home and Play draw the photographed hall, perforated elements and the High robot; in a match the box NECTAR are perforated like the hive's.
+- **Reversed ruling, its costs return with a High-or-up pick:** the photographed venue from Home's high corner shot (it looked fine in these captures), and the first load and fly frames at the match's cost. Play's cards stay at `menuTier()`, so on High they are plainer than the robot behind them.
+
 # HANDOFF — 2026-11-03e (Menu stage: flowers zig-zag across the screen)
 
 **State: on `alpha`. Client only: no sim, server, replay or SIM_VERSION change.** Checks pass (counts in the commit).

@@ -94,6 +94,7 @@ import {
   BB_BOX_H,
   BB_BOX_LEN,
   BB_BOX_SLOTS,
+  BB_BOX_T,
   bbNectarBoxRect,
   bbNectarBoxSlot,
 } from '../../src/games/biobuzz/nectarBox';
@@ -7294,8 +7295,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         postSrc.includes('gtao?.recoverFromThrow();') && postSrc.includes('scene.overrideMaterial = null;') && postSrc.includes('renderer.autoClear = autoClear;'),
       );
       check(
-        'the governor is created with the fixed-tier decide flag, so a replay export never rewrites the device preset',
-        sceneSrc.includes('createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier, {'),
+        'the governor decides only for a scene that tunes the tier: never a fixed tier (a replay export) nor the menu stage',
+        sceneSrc.includes('createQualityGovernor(() => performance.now(), this.onQualityEvent, this.tunesTier, {') &&
+          sceneSrc.includes('this.tunesTier = !this.fixedTier && opts.tunesTier !== false;'),
       );
       check(
         'a failed post chunk, or a pass that throws mid-frame, drops back to the plain picture instead of throwing onward',
@@ -11336,8 +11338,55 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     // checks are against THAT module's exported geometry, not against a literal in either
     // renderer, because a literal is what let the two views disagree in the first place.
     check('the unlabelled CAD `stations` tray is hidden on the GLB path', fieldSrc.includes('fg.stations.visible = false'));
-    check('the NECTAR box reads its count off the world own `stock` balls', /b\.state\.kind === 'stock' && b\.state\.alliance === a/.test(fieldSrc));
-    check('and it is refreshed every frame from `updateBiobuzzField`', fieldSrc.includes('updateNectarBoxes(handles.boxes, world)'));
+    {
+      // THE BOX'S NECTAR ARE THE FIELD'S (owner, 2026-11-04: "the nectar in the box should match the
+      // graphics of the nectar in the field"). The box used to fill itself with plain spheres of its
+      // own, smooth and glossy beside the perforated field NECTAR on High; each `stock` NECTAR is now
+      // drawn in its slot by `updateBiobuzzElements`, through the field's own instanced mesh.
+      const els = buildBiobuzzElements('sphere');
+      const w = createBiobuzzWorld('match', 1, [], undefined, '3d');
+      const drawn = (): { x: number; y: number; z: number }[] => {
+        const out: { x: number; y: number; z: number }[] = [];
+        const m = new THREE.Matrix4();
+        const p = new THREE.Vector3();
+        const q = new THREE.Quaternion();
+        const sc = new THREE.Vector3();
+        for (let i = 0; i < els.nectar.count; i++) {
+          els.nectar.getMatrixAt(i, m);
+          m.decompose(p, q, sc);
+          if (sc.x > 0) out.push({ x: p.x, y: p.y, z: p.z });
+        }
+        return out;
+      };
+      // instance matrices are float32: ~1e-5 in at the box's distance from the origin
+      const inSlots = (pts: { x: number; y: number; z: number }[], a: Alliance, n: number): boolean =>
+        Array.from({ length: n }, (_, i) => bbNectarBoxSlot(a, i)).every((s) =>
+          pts.some((p) => Math.hypot(p.x - s.x, p.y - s.y) < 1e-3 && Math.abs(p.z - (BB_BOX_T + BB_NECTAR_R)) < 1e-3),
+        );
+      updateBiobuzzElements(els, w);
+      const staged = drawn();
+      const stock = (a: Alliance): number => w.balls.filter((b) => b.state.kind === 'stock' && b.state.alliance === a).length;
+      check(
+        "the box's NECTAR are drawn by the field's NECTAR mesh, one per `stock` ball, resting on the box floor",
+        stock('red') === 5 && stock('blue') === 5 && inSlots(staged, 'red', 5) && inSlots(staged, 'blue', 5),
+        `${staged.length} drawn`,
+      );
+      check(
+        "renderField.ts builds no NECTAR of its own any more",
+        !/beads|SphereGeometry\(BB_NECTAR_R/.test(fieldSrc) && !fieldSrc.includes('updateNectarBoxes'),
+      );
+      // a human player's entry flips one to `ground`: the box shows one fewer, and it is on the field
+      const entered = w.balls.find((b) => b.state.kind === 'stock' && b.state.alliance === 'red')!;
+      entered.state = { kind: 'ground' };
+      entered.pos = { x: -40, y: 50 };
+      w.tick += 1;
+      updateBiobuzzElements(els, w);
+      const after = drawn();
+      check(
+        'an entered NECTAR leaves the box: four in its slots, and it is drawn where it entered',
+        inSlots(after, 'red', 4) && !inSlots(after, 'red', 5) && after.some((p) => Math.hypot(p.x + 40, p.y - 50) < 1e-3),
+      );
+    }
     {
       // the CAD part's own footprint, off `docs/biobuzz/field-cad-audit.md`'s bbox for
       // `am-5706 Artifact Tray` (71.650, -7.875, -0.589 -> 81.900, 7.875, 2.411). Checked on the
@@ -11352,7 +11401,6 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // ON THE GROUND. The shelf sat at z = 30 on legs; the box's floor slab is half its own
       // thickness off the tiles and the beads rest on that slab, so nothing floats.
       check('the holding box floor slab sits ON the tiles', fieldSrc.includes('floorSlab.position.set(cx, cy, BB_BOX_T / 2)'));
-      check('and the nectar rest on the box floor, not at table height', fieldSrc.includes('BB_BOX_T + BB_NECTAR_R'));
       // NO COPLANAR BLACK-ON-RED (owner, 2026-09-21: "the black part and the red part is
       // meshing"): the dark slab is inset one wall thickness, so it never shares an outer face
       // with an alliance wall.
@@ -11385,8 +11433,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         body.length > 0 && !/canvas|Texture|PlaneGeometry|lookAt/i.test(body),
       );
       check(
-        'and `BbNectarBox` is the group and the beads, with nothing left to leak',
-        /export interface BbNectarBox \{[^}]*beads: THREE\.Mesh\[\];\s*\}/.test(fieldSrc) && !/sign/.test(fieldSrc.slice(fieldSrc.indexOf('export interface BbNectarBox'), fieldSrc.indexOf('export interface BbNectarBox') + 400)),
+        'and `BbNectarBox` is the group alone, with nothing left to leak',
+        /export interface BbNectarBox \{\s*group: THREE\.Group;\s*\}/.test(fieldSrc) && !/sign/.test(fieldSrc.slice(fieldSrc.indexOf('export interface BbNectarBox'), fieldSrc.indexOf('export interface BbNectarBox') + 400)),
       );
     }
 
@@ -11469,6 +11517,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     );
     check('the 2D box draws its beads at the shared slot centres', drawSrc.includes('bbNectarBoxSlot(a, i)'));
     check('the 2D box counts the same `stock` balls', /b\.state\.kind === 'stock' && b\.state\.alliance === a/.test(drawSrc));
+    check(
+      "the 2D box's NECTAR take a loose NECTAR's fill and rim, not the tape colour (owner, 2026-11-04)",
+      /ctx\.fillStyle = ELEMENT_FILL\[a\];\s*ctx\.strokeStyle = ELEMENT_LINE;/.test(drawSrc),
+    );
     check('and it prints no number on the field (nothing here is a letter or a digit)', !drawSrc.includes('NECTAR LEFT'));
 
     // ITEM 11 -- THE GARDEN'S CORNER. The CAD band stops 0.573in clear of the wall at the

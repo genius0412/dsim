@@ -19014,9 +19014,18 @@ const recordDrive: CommandSource = (tick) => {
   check('home: the stats render from the first frame, a dash per number until the fetch lands',
     homeMenu.includes('{multiplayer && (\n        <div className="ds-homestats"') && !homeMenu.includes('{stats && ('));
   const stageSrc = readFileSync('src/ui/MenuStage.tsx', 'utf8');
-  check('stage: the 3D menu stage draws its own fixed tier and procedural room, not the match settings',
-    /factory\(host, \{ interactive: false, quality: menuTier\(\), environment: STAGE_ROOM \}\)/.test(stageSrc) &&
-      /const STAGE_ROOM = 'arena';/.test(stageSrc));
+  // reversed 2026-11-04 (owner: "the home/play menu's render should match the graphics selected by
+  // the user"): the player's own settings, room and pixel ratio, and menu frames never step their tier
+  const sceneSrc = readFileSync('src/games/biobuzz/scene/renderScene.ts', 'utf8');
+  check("stage: the 3D menu stage draws at the player's graphics, and its frames never step their tier",
+    /factory\(host, \{ interactive: false, tunesTier: false \}\)/.test(stageSrc) &&
+      !/quality:|environment:|STAGE_ROOM|STAGE_MAX_DPR|menuTier/.test(stageSrc) &&
+      stageSrc.includes('dpr: window.devicePixelRatio || 1,') &&
+      sceneSrc.includes('this.tunesTier = !this.fixedTier && opts.tunesTier !== false;') &&
+      sceneSrc.includes('createQualityGovernor(() => performance.now(), this.onQualityEvent, this.tunesTier, {'));
+  check('stage: a scene nobody drives shows no frame-time overlay',
+    sceneSrc.includes("createStats(host, this.interactive ? this.settings.perfOverlay : 'off')") &&
+      sceneSrc.includes("this.stats.setMode(this.interactive ? s.perfOverlay : 'off')"));
   const stageCss = readFileSync('src/ui/shell.css', 'utf8');
   check('stage: the 2D field is flat (no CSS tilt), and the fly animates no width or height',
     !/\.ds-stage-2d[^{]*\{[^}]*rotate/.test(stageCss) && !/\.ds-stage-2d img \{[^}]*width var\(--ds-dur-fly\)/.test(stageCss));

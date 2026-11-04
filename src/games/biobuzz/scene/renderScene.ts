@@ -31,7 +31,6 @@ import {
   subscribeGraphics,
   wantsPost,
   wantsSurfaces,
-  type EnvironmentId,
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
@@ -71,7 +70,7 @@ import {
 } from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { BB_ENVIRONMENT_IDS, environmentDefFor, type EnvironmentDef } from '../graphics/environments';
+import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import { loadOptionalChunk } from '../../../optionalChunks';
 /**
@@ -252,6 +251,9 @@ class BiobuzzScene implements GameScene {
   /** a FIXED tier (exports run at High regardless of the device) — when set, the settings store
    * is not read and not subscribed to at all. */
   private readonly fixedTier: GraphicsTier | null;
+  /** may this scene's frame times step the player's stored tier? Not for a fixed tier, and not for
+   * the menu stage (`SceneOptions.tunesTier`). */
+  private readonly tunesTier: boolean;
   /** false for a scene nobody is driving (an export, a still, a thumbnail) — see
    *  `resolvedCamera` and `graphics/store.ts`'s `resolveSceneCamera`. */
   private readonly interactive: boolean;
@@ -360,11 +362,7 @@ class BiobuzzScene implements GameScene {
     const gfx = getGraphics();
     this.tier = this.fixedTier ?? gfx.tier;
     this.settings = this.fixedTier ? { ...GFX_PRESETS[this.fixedTier] } : gfx.settings;
-    // a fixed-tier scene may name its own room (the menu stage, `SceneOptions.environment`)
-    const room = opts.environment;
-    if (this.fixedTier && room && (BB_ENVIRONMENT_IDS as readonly string[]).includes(room)) {
-      this.settings.environment = room as EnvironmentId;
-    }
+    this.tunesTier = !this.fixedTier && opts.tunesTier !== false;
 
     /**
      * ⚠️ `antialias: false`, ALWAYS, AND THAT IS WHAT MAKES THE AA SETTING LIVE.
@@ -493,14 +491,17 @@ class BiobuzzScene implements GameScene {
     this.pipCamera.up.set(0, 0, 1);
 
     this.cameras = createCameras();
-    this.stats = createStats(host, this.settings.perfOverlay);
+    // the frame-time overlay is a driver's readout: a scene nobody drives (the menu stage) shows none
+    this.stats = createStats(host, this.interactive ? this.settings.perfOverlay : 'off');
     // the clock this scene's own frame loop already reads — `graphics/auto.ts` takes it as a
     // parameter rather than reading one itself (see its note on the determinism guard). A
     // FIXED-TIER scene (the replay export, the gallery) measures without deciding: a warm-up
-    // timed on an export drawn at High must not step the player's own stored tier. `effects` is
+    // timed on an export drawn at High must not step the player's own stored tier. Nor does the
+    // menu stage (`tunesTier: false`): it draws at the player's settings but only on demand, so its
+    // frame times say nothing about a match. `effects` is
     // what the Extreme trial waits for before it measures anything (`effectsState`), `hides` tells
     // a hidden tab from a slow frame, and `pixels` is the size a trial's verdict is stored for.
-    this.governor = createQualityGovernor(() => performance.now(), this.onQualityEvent, !this.fixedTier, {
+    this.governor = createQualityGovernor(() => performance.now(), this.onQualityEvent, this.tunesTier, {
       gpu: this.gpuName,
       effects: () => this.effectsState(),
       hides: () => this.pageHides,
@@ -662,7 +663,7 @@ class BiobuzzScene implements GameScene {
     this.syncSurfaces();
     this.tuneMaterials();
     setCameraTuning(s.hfov, s.cameraMotion);
-    this.stats.setMode(s.perfOverlay);
+    this.stats.setMode(this.interactive ? s.perfOverlay : 'off');
     this.syncPost();
     this.syncTarget();
     this.syncSize();

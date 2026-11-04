@@ -41,6 +41,7 @@ import {
 } from './flower';
 import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
 import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nectarBox';
+import { ELEMENT_FILL, ELEMENT_LINE } from './elementInk';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -1354,12 +1355,17 @@ export function drawBiobuzzField(
     );
     let stock = 0;
     for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) stock++;
-    ctx.fillStyle = allianceColor(a);
+    // in a loose NECTAR's own fill and rim (`draw.ts`), not the tape's colour: the box's NECTAR
+    // should look like the field's (owner, 2026-11-04)
+    ctx.fillStyle = ELEMENT_FILL[a];
+    ctx.strokeStyle = ELEMENT_LINE;
+    ctx.lineWidth = 0.35;
     for (let i = 0; i < Math.min(stock, BB_BOX_SLOTS); i++) {
       const slot = bbNectarBoxSlot(a, i);
       ctx.beginPath();
       ctx.arc(slot.x, slot.y, BB_NECTAR_R, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
     }
     ctx.restore();
   }

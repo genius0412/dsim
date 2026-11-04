@@ -424,18 +424,16 @@ rulings below are theirs, not defaults.
   BIOBUZZ moves its hive NECTAR and flower POLLEN to where a match's physics leaves them, baked from a
   real settle of the stage's `STAGE_SEED` world (`docs/area/biobuzz.md`, THE MENU STAGE'S HIVES AND
   FLOWERS). A new `STAGE_SEED` needs that table regenerated; the STAGE smoke lane fails until it is.
-- ⚠️ **THE 3D STAGE HAS ITS OWN ROOM AND TIER, NOT THE PLAYER'S MATCH SETTINGS** (2026-11-01, owner:
-  Home "still distorted and EXTREMELY laggy on some devices"). `MenuStage` passes
-  `SceneOptions.quality` (Medium, or Low where the device's own tier is Low) and
-  `SceneOptions.environment` = `STAGE_ROOM` (`arena`, the procedural competition hall). It used to draw
-  at the player's settings: on a machine Auto had put on High or up that was the photographed events
-  hall (4k backdrop and layers, ~45 MB of textures), MSAA 4x, soft or max shadows and reflections, and
-  on Extreme a 150 % supersampled target with SSAO, for a menu. A photographed venue is exact only near
-  its lens, and Home's eye is 150 in up at the corner, so the floor round the field drew blurred and
-  the window light smeared across it; the procedural rooms are geometry and right from every eye. A
-  fixed tier also measures without deciding, so menu frames no longer step the player's stored tier.
-  The pixel ratio is capped at 1.5 (`STAGE_MAX_DPR`), and the scene boots in `requestIdleCallback`
-  (1.2 s timeout) so Home's keycaps answer before the chunk, the meshes and the shaders load.
+- ⚠️ **THE 3D STAGE DRAWS AT THE PLAYER'S GRAPHICS** (owner, 2026-11-04: "the home/play menu's render
+  should match the graphics selected by the user"): their tier, room, shadows, AA, element detail,
+  render scale and the device's full pixel ratio, following a change to them. It REVERSES the
+  2026-11-01 ruling (Home "still distorted and EXTREMELY laggy on some devices"), under which the stage
+  drew Medium in the procedural `arena` at 1.5 dpr whatever the player chose; both causes come back
+  with a player's High-or-up pick: a photographed venue is exact only near its lens, so Home's corner
+  shot (150 in up) can blur the floor round the field, and the first load and every fly frame pay the
+  match's cost. What stayed: the scene draws on demand and boots on idle, shows no perf overlay
+  (non-interactive), and `SceneOptions.tunesTier: false` lets Auto measure menu frames without
+  stepping the stored tier. A first visit runs Auto's GPU guess on Home, as the first match used to.
 - **Home** (`HomeMenu.tsx`): no app-bar fill or mark (the bar keeps only its right-hand cluster:
   profile, Admin, online chip), ONE LEFT COLUMN on a left-to-right scrim — wordmark, sponsor, game
   switcher, the keycaps, the labelled
@@ -703,8 +701,9 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   turntable to borrow the batch made a scene of its own at the PLAYER's tier. On Ultra that scene built
   a room environment map and drew with shadows: 640 ms of shader-compile waits (`getProgramInfoLog`),
   a 559 ms task and a 191 ms frame gap in the camera fly, on a fast desktop. Fixed at the cause: a card
-  on Play (`onStage`) is drawn at `menuTier()`, the tier the robot on the stage beside it is drawn at,
-  never through the turntable; the cache keys on the tier, so the builder still draws its own at the
+  on Play (`onStage`) is drawn at `menuTier()` (Medium, Low on a Low device), never through the
+  turntable; since 2026-11-04 the stage beside it draws at the player's own tier, so on High or up a
+  card is plainer than the robot behind it; the cache keys on the tier, so the builder still draws its own at the
   device's. And the cards are drawn ahead, while Home is idle after the boot screen
   (`GameModule.warmCards`), so the click does none of it and no card swaps a schematic for a render
   under the cursor. After, same session: no task over 100 ms after the click even at 4x CPU, worst fly
