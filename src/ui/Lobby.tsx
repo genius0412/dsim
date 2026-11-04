@@ -28,7 +28,7 @@ import { ServerSession } from '../net/serverSession';
 import { coerceRoomSettings, roomCapacity, ROOM_CAPACITY, type RoomSettings, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
-import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
+import { generateRoomCode } from '../net/roomCode';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
@@ -54,6 +54,9 @@ interface Props {
   settings: GameSettings;
   onSettingsChange: (s: GameSettings) => void;
   onStart: (session: NetSession) => void;
+  /** the host started a room this screen was only WATCHING (`spectating`): a spectator session
+   *  takes the socket. Absent ⇒ it goes to `onStart`, which is right where nothing is rejoinable. */
+  onWatchStart?: (session: NetSession) => void;
   onCancel: () => void;
   /** what this room runs. Default: a versus custom room (2v2). Pass a record/duo
    * config to run this same lobby as a 2v0 co-op record run (opponent-free). */
@@ -198,6 +201,7 @@ export function Lobby({
   onSettingsChange,
   onStart,
   shell,
+  onWatchStart,
   onCancel,
   config = { kind: 'versus' },
   signedIn = false,
@@ -217,15 +221,13 @@ export function Lobby({
 }: Props) {
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
-  // entry sub-mode: pick whether you're creating a fresh room or joining a code
-  const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
   /**
    * THIS SCREEN WAS NEVER AN ENTRY FORM FOR THIS VISIT.
    *
    * An auto-join — a Discord activity launch, a friend's invite, a rejoin of a recycled
-   * room — has no code to type and no room to create, but it rendered the "Custom room"
-   * form anyway: a "Your name" field, a New room / Have a code toggle, and a disabled CTA
-   * reading **CREATING…** while it was in fact joining the group's shared lobby. The
+   * room, a join from Browse rooms or its code box — has no code to type and no room to
+   * create, but it rendered the "Custom room" form anyway: a "Your name" field, a disabled
+   * CTA reading **CREATING…** while it was in fact joining the group's shared lobby. The
    * damage was worst in the ERROR state, where every control came back live and the
    * obvious button — CREATE ROOM — mints a fresh random room AWAY from the group.
    *
@@ -361,6 +363,22 @@ export function Lobby({
    *  property of the room being set up, not of the account. */
   const [botTier, setBotTier] = useState<string>(() => moduleFor(roomGame).bot?.defaultTier ?? '');
   const [myId, setMyId] = useState('');
+  /**
+   * THIS SCREEN IS WATCHING THE ROOM, NOT SEATED IN IT.
+   *
+   * A spectator is a different SOCKET (`LobbyClient.spectate`), not a roster flag: the server
+   * already attaches one to a lobby, sends it every `roster`, and starts its match with
+   * `yourRobotId: -1`. So "Spectate" in Your alliance drops the seat and re-attaches, and
+   * RED / BLUE take one again. Nothing here changes the wire, which is what keeps an older
+   * client and an older server working.
+   */
+  const [spectating, setSpectating] = useState(false);
+  /** `spectating` for the handlers `wire` registers once */
+  const spectatingRef = useRef(false);
+  /** the host's region as the last `join` knew it, for a switch that has to dial the room again */
+  const hostRegionRef = useRef('');
+  /** a seat was asked for from the spectator view and the room has not answered yet */
+  const seatTryRef = useRef(false);
   // block starting a custom match while a server restart is scheduled
   const notice = useServerNotice();
   const restartPending =
@@ -385,6 +403,8 @@ export function Lobby({
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  const watchStartRef = useRef(onWatchStart);
+  watchStartRef.current = onWatchStart;
   /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
   const refusedRef = useRef(false);
   /** `phase` for the handlers `wire` registers once, which would otherwise read the render that connected */
@@ -468,6 +488,15 @@ export function Lobby({
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
   const canStart = allReady && enoughPlayers && !restartPending;
+  /**
+   * MAY THIS PLAYER WATCH INSTEAD OF DRIVE? Not the host (the room would be left with nobody to
+   * start it), not a record run (its seats are the point) and not a LAN room (a tab-hosted room has
+   * no spectator socket). A spectator is never the host either, so this holds for them too.
+   */
+  const canSpectate = !isRecord && !isHost && !lanActive();
+  /** is there a free seat on `a`, for a spectator to take? (A legacy room has no per-side count.) */
+  const sideOpen = (a: Alliance): boolean =>
+    roomSet ? players.filter((p) => p.alliance === a).length < roomSet.perAlliance[a] : players.length < capacity;
 
   /**
    * ⚠️ THE ROOM CODE IS AN ARGUMENT, NEVER THE `code` STATE.
@@ -484,6 +513,12 @@ export function Lobby({
     const lobby = lobbyRef.current;
     if (!lobby) return;
     startedRef.current = true;
+    if (spectatingRef.current) {
+      // a watcher has no seat to reclaim: the session is read-only and the room is not rejoinable
+      const watch = new ServerSession(lobby.transport, false, m, lobby.clientId, roomCode, true);
+      (watchStartRef.current ?? onStart)(watch);
+      return;
+    }
     // pass the identity + room so the session can reclaim its slot on a reconnect
     onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, roomCode, false, lobby.seatToken));
   }
@@ -492,17 +527,6 @@ export function Lobby({
   function createRoom(): void {
     creatingRef.current = serverRooms2 && !isRecord;
     join(generateRoomCode());
-  }
-
-  /** join an existing room by its shared code */
-  function joinWithCode(): void {
-    const c = normalizeRoomCode(code);
-    if (!isValidRoomCode(c)) {
-      setError(`Enter a valid ${ROOM_CODE_LENGTH}-character room code.`);
-      setPhase('error');
-      return;
-    }
-    join(c);
   }
 
   /**
@@ -520,7 +544,18 @@ export function Lobby({
    * code. Undefined/empty ⇒ we genuinely do not know (an invite from before the region was
    * recorded), and falling back to our own pick is the old behaviour.
    */
-  function join(roomCode: string, hostRegion?: string | null): void {
+  function join(
+    roomCode: string,
+    hostRegion?: string | null,
+    how: {
+      /** the side to ask for (a seat taken from the spectator view), else the player's own pick */
+      alliance?: Alliance;
+      /** attach as a spectator instead of asking for a seat */
+      spectate?: boolean;
+      /** already inside this room's screen: switching role must not flash the entry form */
+      inRoom?: boolean;
+    } = {},
+  ): void {
     if (!roomCode) return;
     setCode(roomCode);
     refusedRef.current = false;
@@ -543,7 +578,7 @@ export function Lobby({
       setPhase('error');
       return;
     }
-    setPhase('connecting');
+    if (!how.inRoom) setPhase('connecting');
     // route both players to the same region so a shared code lands on one machine.
     // In a Discord Activity, PIN to one fixed region regardless of who is nearest:
     // the `/gs` proxy is anycast, so without this two participants of the same
@@ -553,6 +588,7 @@ export function Lobby({
     if (hostRegion) {
       setRegion(hostRegion);
       setRegionLocked(true);
+      hostRegionRef.current = hostRegion;
     }
     // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
     // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
@@ -577,19 +613,44 @@ export function Lobby({
     // tag the room with the Discord Activity group (if any) so it shows in this
     // activity's lobby browser. The server only applies it when CREATING the room;
     // an existing room keeps its creator's group.
-    wire(transport, roomCode).join(roomCode, myPlayer(), roomConfig(), group || undefined);
+    const lobby = wire(transport, roomCode);
+    if (how.spectate) lobby.spectate(roomCode);
+    else lobby.join(roomCode, myPlayer(how.alliance), roomConfig(), group || undefined);
+  }
+
+  /**
+   * WATCH THE ROOM INSTEAD OF SITTING IN IT: no seat is asked for, so there is no roster entry, no
+   * ready, no robot. Dropping the old socket frees the seat (a lobby departure deletes the client
+   * outright), and the new one is a spectator the room already knows how to carry.
+   */
+  function watchRoom(roomCode: string, inRoom: boolean): void {
+    lobbyRef.current?.dispose();
+    spectatingRef.current = true;
+    seatTryRef.current = false;
+    setSpectating(true);
+    setMyId(''); // the old seat's id is no roster entry any more
+    join(roomCode, hostRegionRef.current, { spectate: true, inRoom });
+  }
+
+  /** leave the spectator view for a seat on `alliance`; a seat that fills first lands back here */
+  function takeSeat(alliance: Alliance): void {
+    lobbyRef.current?.dispose();
+    spectatingRef.current = false;
+    seatTryRef.current = true;
+    setSpectating(false);
+    join(code, hostRegionRef.current, { alliance, inRoom: true });
   }
 
   /** the player fields this client advertises — the same on a fresh join and on a resume.
    *  An untyped name becomes the literal HERE, not in the box the player is looking at. */
-  function myPlayer(): Omit<LobbyPlayer, 'clientId'> {
+  function myPlayer(alliance?: Alliance): Omit<LobbyPlayer, 'clientId'> {
     const spec = wireSpec(settings);
     return {
       name: name.trim() || DEFAULT_DRIVER_NAME,
       teamName: spec.teamName,
       teamNumber: spec.teamNumber,
       // record runs are opponent-free (one alliance) — force blue, matching the server
-      alliance: isRecord ? 'blue' : settings.alliance,
+      alliance: isRecord ? 'blue' : (alliance ?? settings.alliance),
       startIndex: settings.startIndex,
       startPose: settings.startPose ?? null,
       ready: false,
@@ -661,6 +722,8 @@ export function Lobby({
     transport.onDown(() => setSlowConnect(true));
 
     lobby.on('roster', (list, host, set) => {
+      if (lobbyRef.current !== lobby) return;
+      seatTryRef.current = false; // whatever was asked for has been answered
       setRoomSet(set);
       setPlayers(list);
       setHostId(host);
@@ -682,6 +745,29 @@ export function Lobby({
       if (!isRanked) setStarting({ deadline, mode: m });
     });
     lobby.on('error', (msg, code) => {
+      if (lobbyRef.current !== lobby) return; // the last word of a socket this screen already left
+      /**
+       * ⚠️ NO FREE SEAT, OR A MATCH ALREADY RUNNING, IS NOT A DEAD END HERE: THE ROOM CAN BE WATCHED.
+       *
+       * Browse rooms used to have a Watch button for exactly this, and joining by a row or a code
+       * is now the one door, so a refusal that only means "no seat for you" attaches as a spectator
+       * and the player lands in the room. NOT in a Discord activity, whose `in_progress` is a wait
+       * (the retry effect), nor on a LAN room, which has no spectator socket, nor for a room this
+       * screen just created, nor a record run, whose seats are the whole point. A seat that fills
+       * while a spectator is asking for it comes back to watching rather than to a dead socket.
+       */
+      if (
+        (code === 'room_full' || code === 'in_progress') &&
+        (phaseRef.current !== 'room' || seatTryRef.current) &&
+        !spectatingRef.current &&
+        !group &&
+        !lanActive() &&
+        !creatingRef.current &&
+        !isRecord
+      ) {
+        watchRoom(roomCode, phaseRef.current === 'room');
+        return;
+      }
       // ⚠️ ONLY A REFUSAL AT THE DOOR marks the socket refused. In the room it is a message
       // (a START refused on readiness, a restart pending) and the socket stays seated, so a
       // drop later in the room is still a lost connection and must be said as one.
@@ -708,6 +794,7 @@ export function Lobby({
       if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
+      if (lobbyRef.current !== lobby) return;
       /* A REFUSAL IS NOT A LOST CONNECTION. A tab-hosted LAN room sends its `error` frame
          ("Room is full…", "That code is for a different game mode.") and then closes the
          link a beat later — there is nothing else to keep it open for — and this handler
@@ -1121,12 +1208,20 @@ export function Lobby({
                       room is playing.
                     </p>
                   )}
+                  {/* a code typed into Browse rooms names no season, so this is the way a player
+                      finds out theirs is the other one */}
+                  {errorCode === 'game_mismatch' && !joiningGroup && (
+                    <p className="ds-hint warn">
+                      Change the season on the home page, then join this code again.
+                    </p>
+                  )}
                   <div className="ds-actions">
                     <button
                       className="ds-cta"
                       onClick={() => {
                         lobbyRef.current?.dispose();
-                        join(code, autoJoinRegion);
+                        // a watch that failed is retried as a watch: a driver join of a code nobody holds opens a new room
+                        join(code, autoJoinRegion, { spectate: spectatingRef.current });
                       }}
                     >
                       TRY AGAIN
@@ -1153,7 +1248,11 @@ export function Lobby({
     return (
       shell(
         <div className="ds-console-in narrow">
-          <ConsoleHead title={isRecord ? 'Duo record' : 'Room'} />
+          {/* THE TITLE SAYS WHICH ROOM THIS WILL BE: the visibility was chosen one screen ago (the
+              Private / Public buttons on Browse rooms and in the New room dialog), and it is not
+              asked again here, so this is where it is read back. A Public room needs an account
+              (`createRoom` lists only for a signed-in host), so signed out it is a Private one. */}
+          <ConsoleHead title={isRecord ? 'Duo record' : listed && signedIn ? 'Public room' : 'Private room'} />
           <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
@@ -1194,33 +1293,16 @@ export function Lobby({
                 </select>
               </label>
             )}
-            <div className="ds-opts two">
-              <button
-                className={`ds-opt ${entryMode === 'create' ? 'on' : ''}`}
-                aria-pressed={entryMode === 'create'}
-                onClick={() => setEntryMode('create')}
-              >
-                <span className="ot">New room</span>
-              </button>
-              <button
-                className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
-                aria-pressed={entryMode === 'join'}
-                onClick={() => setEntryMode('join')}
-              >
-                <span className="ot">Have a code</span>
-              </button>
-            </div>
             {/* WHAT IS LEFT OF THE PICKER: a statement, not a control. Every room runs the 3D
                 physics, so the thing worth saying is the consequence for a machine that
-                struggles with it — practice is where the 2D solve still lives. Shown on the
-                create side only; a joiner is not choosing anything. */}
-            {entryMode === 'create' && physicsOffered && (
+                struggles with it — practice is where the 2D solve still lives. */}
+            {physicsOffered && (
               <p className="ds-hint">
                 Online rooms run on the 3D physics, so everyone in the room loads it. Practice
                 can still run on the 2D physics.
               </p>
             )}
-            {entryMode === 'create' && serverRooms2 && !isRecord && (
+            {serverRooms2 && !isRecord && (
               <div className="ds-opts three" role="group" aria-label="Setup">
                 {(
                   [
@@ -1239,20 +1321,6 @@ export function Lobby({
                   </button>
                 ))}
               </div>
-            )}
-            {entryMode === 'join' && (
-              <label className="ds-field">
-                <span className="cap">Room code</span>
-                <input
-                  className="ds-input"
-                  value={code}
-                  onChange={(e) => setCode(normalizeRoomCode(e.target.value))}
-                  onKeyDown={(e) => e.key === 'Enter' && joinWithCode()}
-                  placeholder={`${ROOM_CODE_LENGTH} characters`}
-                  maxLength={ROOM_CODE_LENGTH}
-                  autoFocus
-                />
-              </label>
             )}
             {phase === 'error' && (
               <>
@@ -1290,19 +1358,9 @@ export function Lobby({
               </p>
             )}
             <div className="ds-actions">
-              {entryMode === 'create' ? (
-                <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
-                  {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM'}
-                </button>
-              ) : (
-                <button
-                  className="ds-cta"
-                  disabled={phase === 'connecting' || code.length !== ROOM_CODE_LENGTH}
-                  onClick={joinWithCode}
-                >
-                  {phase === 'connecting' ? 'JOINING…' : 'JOIN ROOM'}
-                </button>
-              )}
+              <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
+                {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM'}
+              </button>
             </div>
             {multiServer() && !regionLocked && (
               <p className="ds-hint">
@@ -1368,8 +1426,8 @@ export function Lobby({
             landed about a quarter of the way across and lined up with nothing. */}
         <p className="ds-sub ds-sub-row">
           <span>
-            {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
-            {capacity} drivers
+            {spectating ? 'You are spectating' : isHost ? 'You are the host' : 'Waiting for the host to start'} ·{' '}
+            {players.length}/{capacity} drivers
           </span>
           <button
             className="ds-chip"
@@ -1425,7 +1483,9 @@ export function Lobby({
                     <span className="ds-chip on">HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  {isHost && roomSet && !isRecord && (
+                  {/* "Drivers pick a side" means the HOST DOES NOT MOVE THEM (the server refuses it too):
+                      only a bot, which cannot pick, is placed by hand in that mode */}
+                  {isHost && roomSet && !isRecord && (p.bot || !roomSet.teamSwitch) && (
                     <button
                       className="ds-btn small ghost"
                       disabled={
@@ -1572,24 +1632,37 @@ export function Lobby({
           </section>
         )}
 
-        {!isRecord && (!roomSet || roomSet.teamSwitch) && (
+        {!isRecord && (!roomSet || roomSet.teamSwitch || canSpectate) && (
           <section className="ds-sec">
             <h2>Your alliance</h2>
-            <div className="ds-opts two">
-              <button
-                className={`ds-opt red ${me?.alliance === 'red' ? 'on' : ''}`}
-                aria-pressed={me?.alliance === 'red'}
-                onClick={() => setAlliance('red')}
-              >
-                <span className="ot">RED</span>
-              </button>
-              <button
-                className={`ds-opt blue ${me?.alliance === 'blue' ? 'on' : ''}`}
-                aria-pressed={me?.alliance === 'blue'}
-                onClick={() => setAlliance('blue')}
-              >
-                <span className="ot">BLUE</span>
-              </button>
+            <div className={`ds-opts ${canSpectate ? 'three' : 'two'}`}>
+              {(['red', 'blue'] as const).map((a) => {
+                const mine = !spectating && me?.alliance === a;
+                return (
+                  <button
+                    key={a}
+                    className={`ds-opt ${a} ${mine ? 'on' : ''}`}
+                    aria-pressed={mine}
+                    // a spectator asks for a seat, so only a side with room is offered; a driver
+                    // changes side unless the host took that away ("Host places drivers")
+                    disabled={spectating ? !sideOpen(a) : !!roomSet && !roomSet.teamSwitch}
+                    onClick={() => (spectating ? takeSeat(a) : setAlliance(a))}
+                  >
+                    <span className="ot">{a.toUpperCase()}</span>
+                  </button>
+                );
+              })}
+              {canSpectate && (
+                <button
+                  className={`ds-opt ${spectating ? 'on' : ''}`}
+                  aria-pressed={spectating}
+                  onClick={() => {
+                    if (!spectating) watchRoom(code, true);
+                  }}
+                >
+                  <span className="ot">Spectate</span>
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -1735,20 +1808,30 @@ export function Lobby({
           </section>
         )}
 
-        <div className="ds-actions">
-          <button
-            className={`ds-cta ${me?.ready ? 'secondary' : ''}`}
-            disabled={!startLegal && !me?.ready}
-            onClick={toggleReady}
-          >
-            {me?.ready ? '✓ READY' : 'READY UP'}
-          </button>
-          {isHost && (
-            <button className="ds-cta" disabled={!canStart} onClick={() => lobbyRef.current?.start()}>
-              {isRecord ? 'START RUN' : 'START MATCH'}
+        {spectating ? (
+          // a watcher holds no seat, so there is nothing to ready and nothing to start; the match
+          // opens here by itself when the host starts it
+          <p className="ds-hint">
+            {sideOpen('red') || sideOpen('blue')
+              ? 'Pick RED or BLUE to take a seat. The match opens here when the host starts it.'
+              : 'Every seat is taken. The match opens here when the host starts it.'}
+          </p>
+        ) : me ? (
+          <div className="ds-actions">
+            <button
+              className={`ds-cta ${me?.ready ? 'secondary' : ''}`}
+              disabled={!startLegal && !me?.ready}
+              onClick={toggleReady}
+            >
+              {me?.ready ? '✓ READY' : 'READY UP'}
             </button>
-          )}
-        </div>
+            {isHost && (
+              <button className="ds-cta" disabled={!canStart} onClick={() => lobbyRef.current?.start()}>
+                {isRecord ? 'START RUN' : 'START MATCH'}
+              </button>
+            )}
+          </div>
+        ) : null}
         {/* a refusal while seated (see the 'error' handler): said here, where the host who
             pressed START is looking, and cleared by the next roster */}
         {error && <p className="ds-form-err">⚠ {error}</p>}

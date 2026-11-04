@@ -2191,11 +2191,12 @@ button.ds-key:where(:not(:disabled)):active,
   gap: var(--ds-s-2);
   flex-wrap: wrap;
 }
-/* the chip row inside a strategy card. `.ds-strat-meta` is a flex column at gap 2;
-   an inline `marginTop: 4` made this one child a third value. */
+/* the chip row of a strategy card: the card's last row, across both its columns; the chips sit
+   `--ds-s-2` apart so a row of five reads as five and not one smear */
 .ds-strat-chips {
+  grid-column: 1 / -1;
   display: flex;
-  gap: var(--ds-s-1);
+  gap: var(--ds-s-2);
   flex-wrap: wrap;
 }
 .ds-sub {
@@ -2721,6 +2722,12 @@ button.ds-key:where(:not(:disabled)):active,
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--ds-line);
+  flex-wrap: wrap;
+}
+/* the actions at the right of a panel head, when there is more than one */
+.ds-panel-acts {
+  display: flex;
+  gap: var(--ds-s-2);
   flex-wrap: wrap;
 }
 .ds-panel-title {
@@ -7123,38 +7130,61 @@ a.ds-cta {
   background: var(--ds-tile);
 }
 /* pre-match strategy: alliance build cards (RobotPreview + spec readout) */
+/* A card is a PICTURE beside a column of three groups (who, the build, the status chips), each
+   `--ds-s-3` from the next. It was a 132px picture and rows 4px apart inside 8/12 of padding, and
+   every line read as one block. A column of cards is 400px wide at the least, so the picture and
+   its column always fit side by side; a phone stacks them (below). */
 .ds-strat-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--ds-s-3);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+  gap: var(--ds-s-4);
 }
 .ds-strat-card {
-  display: flex;
-  gap: 12px;
-  align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--ds-s-4);
+  align-items: start;
   background: var(--ds-panel);
   /* no side stripe, as `.ds-player`: the alliance chip in the card carries it */
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
-  padding: var(--ds-s-2) var(--ds-s-3);
+  padding: var(--ds-s-4);
 }
 .ds-strat-prev {
-  flex: none;
   display: grid;
   place-items: center;
 }
 .ds-strat-meta {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--ds-s-3);
   min-width: 0;
 }
+.ds-strat-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
 .ds-strat-meta .pnm {
+  font-size: var(--ds-t-lg);
   font-weight: 700;
 }
 .ds-strat-meta .ptm {
   color: var(--ds-mut);
-  font-size: 13px;
+  font-size: var(--ds-t-md);
+}
+/* the build rows: a real row apart, body-size values, the label column as wide as its longest label */
+.ds-strat-meta .ds-specs {
+  row-gap: var(--ds-s-2);
+  column-gap: var(--ds-s-3);
+}
+.ds-strat-meta .ds-specs .v {
+  font-size: var(--ds-t-control);
+}
+@media (max-width: 560px) {
+  .ds-strat-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .ds-actions {
   display: flex;
@@ -9312,6 +9342,24 @@ body:has(.ds-queuebar:not(.over)) .fr-toasts:not(.in-match) {
   color: var(--ds-on-field);
   box-shadow: 0 0 0 1px var(--ds-panel);
   font-size: 0.62em;
+}
+/* A TEAM BADGE BESIDE A NAME is a chip: the keycap tile and its words ("Beta tester"), the way
+   `.ds-chip` reads, so the icon is never the only thing saying what it is. The pair is the
+   chip's own (`--ds-ink` on `--ds-panel`, edge `--ds-line`). */
+.badge-mark.labelled {
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-0) var(--ds-s-2) var(--ds-s-0) var(--ds-s-1);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-panel);
+}
+.badge-label {
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-xs);
+  font-weight: 600;
+  line-height: var(--ds-lh-tight);
+  color: var(--ds-ink);
+  white-space: nowrap;
 }
 .badge-mark.badge-md .badge-glyph {
   width: 1.5em;

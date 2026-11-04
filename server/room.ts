@@ -993,6 +993,9 @@ export class Room {
     const bot = typeof memberId === 'string' ? this.bots.find((b) => b.id === memberId) : undefined;
     const was = human?.player.alliance ?? bot?.alliance;
     if (!was || was === alliance) return null;
+    // "Drivers pick a side" means exactly that: the host cannot put a human on the other alliance.
+    // A bot has no hands to pick with, so the host still places those.
+    if (human && this.settings.teamSwitch) return 'Drivers pick their own side in this room.';
     if (this.sideCount(alliance) >= this.settings.perAlliance[alliance]) return `The ${alliance} alliance is full.`;
     if (human) {
       human.player.alliance = alliance;

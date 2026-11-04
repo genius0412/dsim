@@ -2504,6 +2504,16 @@ export function App() {
                 setRoomChoice({ asking: false, listed: false });
                 beginSession(s, 'custom');
               }}
+              /* a room entered as a spectator: the host started, and the session watches. No run of
+                 our own and no seat to come back to, so none of `beginSession`'s bookkeeping */
+              onWatchStart={(s) => {
+                setResumedRoom(null);
+                setPendingLanName(null);
+                setRoomChoice({ asking: false, listed: false });
+                setSession(s);
+                setSessionKind(null);
+                navigate('game');
+              }}
               onCancel={closePopup}
               config={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.config : undefined}
               signedIn={signedIn}
@@ -2600,18 +2610,22 @@ export function App() {
           {screen === 'rooms' &&
             popupShell(
               <RoomBrowser
-                onHost={() => {
-                  // New room is its own dialog: close this one first, so two scrims never stack
-                  navigate('modes');
-                  setRoomChoice({ asking: true, listed: false });
-                }}
+                signedIn={signedIn}
+                // the page's two buttons ARE the Public/Private choice, so the dialog that asks it is skipped
+                onHost={(listed) =>
+                  guardStart(() => {
+                    setRoomChoice({ asking: false, listed });
+                    navigate('lobby');
+                  })
+                }
                 onWatchLive={spectateRoom}
-                onWatch={(room, game, region) => {
-                  // the room's own season, as an accepted invite does: a watcher steps that room's world
-                  selectGame(game);
-                  setWatchedRoom({ room, game, region });
-                  navigate('watchlobby');
-                }}
+                onJoinCode={(room, region) =>
+                  guardStart(() => {
+                    // a typed code names no season, so the room is joined in the one the player is on
+                    setPendingAutoJoin({ room, config: { kind: 'versus', game: settings.game }, region });
+                    navigate('lobby');
+                  })
+                }
                 onJoin={(room, game, region) =>
                   guardStart(() => {
                     // the same hand-off an accepted invite makes: the INVITE names the game, and joining

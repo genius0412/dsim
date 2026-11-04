@@ -1,4 +1,5 @@
-import { BADGE_LABELS, BADGE_TIER, coerceEquippedBadges, isBadgeId, type BadgeId } from '../badges';
+import { BADGE_EARN, BADGE_LABELS, BADGE_TIER, TEAM_BADGES, coerceEquippedBadges, isBadgeId, type BadgeId } from '../badges';
+import { ACCESS_GROUP_LABEL } from '../net/protocol';
 
 /**
  * A BADGE — what the rewards ledger puts beside a name (`src/badges.ts`), drawn.
@@ -68,14 +69,43 @@ const TEAM_GLYPH: Record<'developer' | 'beta-tester' | 'contributor', string> = 
 
 export type BadgeSize = 'sm' | 'md' | 'lg' | 'xl';
 
-export function BadgeArt({ id, n = 1, size = 'sm' }: { id: BadgeId; n?: number; size?: BadgeSize }) {
+/** the words on a team badge beside a name: the ACCESS GROUP's own label ("Beta tester"), which is
+ *  what the admin console and the closed screen call it, so the three never drift */
+const TEAM_LABEL = Object.fromEntries(
+  (Object.entries(TEAM_BADGES) as [keyof typeof TEAM_BADGES, BadgeId][]).map(([group, id]) => [id, ACCESS_GROUP_LABEL[group]]),
+) as Partial<Record<BadgeId, string>>;
+
+/**
+ * `labelled`: a TEAM badge beside a NAME says what it is, in words — an icon alone was a coloured
+ * square nobody could read as "Beta tester". Only `BadgeMarks` asks, because every other place a
+ * badge is drawn (the achievements list, the picker, the reward dialog, a section head) already has
+ * its name written beside it, and a second label there would say it twice. The podium and record
+ * marks are not team badges and keep their art alone.
+ */
+export function BadgeArt({
+  id,
+  n = 1,
+  size = 'sm',
+  labelled = false,
+}: {
+  id: BadgeId;
+  n?: number;
+  size?: BadgeSize;
+  labelled?: boolean;
+}) {
   const tier = BADGE_TIER[id];
-  const label = BADGE_LABELS[id];
+  const words = labelled && tier === 'team' ? TEAM_LABEL[id] : undefined;
+  const label = words ?? BADGE_LABELS[id];
   const said = n > 1 ? `${label} badge, earned ${n} times` : `${label} badge`;
   const podium = tier === 'gold' || tier === 'silver' || tier === 'bronze';
   const team = tier === 'team' ? ` team-${id}` : '';
   return (
-    <span className={`badge-mark badge-${size} tier-${tier}${team}`} role="img" aria-label={said} title={said}>
+    <span
+      className={`badge-mark badge-${size} tier-${tier}${team}${words ? ' labelled' : ''}`}
+      role="img"
+      aria-label={said}
+      title={words ? `${words}: ${BADGE_EARN[id]}` : said}
+    >
       <span className="badge-glyph" aria-hidden="true">
         {tier === 'team' && id in TEAM_GLYPH ? (
           <svg viewBox="0 0 24 24">
@@ -104,6 +134,11 @@ export function BadgeArt({ id, n = 1, size = 'sm' }: { id: BadgeId; n?: number; 
       {/* beside a name the count TRAILS the glyph (`×2`) — a pip on a 16px crest covers it;
           at the large sizes it is the corner pip */}
       {n > 1 && <span className="badge-count" aria-hidden="true">×{n}</span>}
+      {words && (
+        <span className="badge-label" aria-hidden="true">
+          {words}
+        </span>
+      )}
     </span>
   );
 }
@@ -118,7 +153,7 @@ export function BadgeMarks({ badges }: { badges?: unknown }) {
   if (list.length === 0) return null;
   return (
     <>
-      {list.map((b) => (isBadgeId(b.id) ? <BadgeArt key={b.id} id={b.id} n={b.n} /> : null))}
+      {list.map((b) => (isBadgeId(b.id) ? <BadgeArt key={b.id} id={b.id} n={b.n} labelled /> : null))}
     </>
   );
 }

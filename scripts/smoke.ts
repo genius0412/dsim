@@ -18671,6 +18671,20 @@ const recordDrive: CommandSource = (tick) => {
   room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });
   check('settings: ...a shrink below the room total is refused too', room.settings?.perAlliance.red === 2);
 
+  // "Drivers pick a side": the host cannot put a driver on the other alliance
+  room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: true } });
+  await new Promise((r) => setTimeout(r, 350));
+  const pickedSide = a.player.alliance;
+  const errsBefore = errs(seen.h).length;
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: pickedSide === 'red' ? 'blue' : 'red' });
+  const refusals = errs(seen.h);
+  check('settings: drivers pick a side ⇒ the host cannot move a driver',
+    a.player.alliance === pickedSide && refusals.length === errsBefore + 1 && /pick their own side/.test(refusals[refusals.length - 1]!), JSON.stringify(refusals));
+  room.onMessage('h', { t: 'roomSettings', patch: { teamSwitch: false } });
+  await new Promise((r) => setTimeout(r, 350));
+  room.onMessage('h', { t: 'moveMember', id: 'a', alliance: pickedSide === 'red' ? 'blue' : 'red' });
+  check('settings: ...and host places drivers moves them again', a.player.alliance !== pickedSide);
+
   // a duo-record room: seats are blue (the run alliance), locked, and Unlock opens it once
   {
     const sink: ServerMsg[] = [];

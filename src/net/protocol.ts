@@ -1160,6 +1160,12 @@ export type ErrorCode =
    */
   | 'in_progress'
   /**
+   * Every driver seat is taken. The room is fine and a spectator may still attach to it, so a
+   * client that can watch (`Lobby`) does that instead of showing the refusal. An older server
+   * sends the sentence alone, which that client reads as an ordinary error.
+   */
+  | 'room_full'
+  /**
    * The room is playing a different SEASON than this client is set to. Actionable —
    * switch season and rejoin — and the only refusal whose sentence a player could read
    * twice and still not know which season to pick, so the message now names both and the

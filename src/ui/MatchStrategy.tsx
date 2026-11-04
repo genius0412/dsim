@@ -28,6 +28,8 @@ import { standardRobotChoices } from '../settings';
 /** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
  * deadline, rising in pitch as it nears (like a match countdown). */
 const STRAT_TICK_FROM = 5;
+/** the robot picture on an alliance card, in px: the card's one big element, so it leads the eye */
+const STRAT_PREVIEW = 144;
 
 interface Props {
   lobby: LobbyClient;
@@ -306,41 +308,45 @@ export function MatchStrategy({
                 <div key={pl.clientId} className={`ds-strat-card ${pl.alliance}`}>
                   <div className="ds-strat-prev">
                     {Preview ? (
-                      <Preview spec={spec} size={132} />
+                      <Preview spec={spec} size={STRAT_PREVIEW} />
                     ) : settings.game === 'chain' ? (
-                      <ChainRobotPreview spec={spec} size={132} />
+                      <ChainRobotPreview spec={spec} size={STRAT_PREVIEW} />
                     ) : (
-                      <RobotPreview spec={spec} size={132} />
+                      <RobotPreview spec={spec} size={STRAT_PREVIEW} />
                     )}
                   </div>
                   <div className="ds-strat-meta">
-                    <span className="pnm">
-                      {pl.name}
-                      {isMe ? ' (you)' : ''}
-                      <SupporterBadge supporter={pl.supporter} role={pl.role} />
-                      <BadgeMarks badges={pl.badges} />
-                    </span>
-                    <span className="ptm">
-                      {spec.name} · Team {pl.teamNumber || '-'}
-                    </span>
-                    {buildRow(spec)}
-                    <div className="ds-strat-chips">
-                      <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
-                      {pl.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
-                      <span className="ds-chip">
-                        {pl.startPose
-                          ? 'CUSTOM'
-                          : settings.game === 'chain'
-                            ? (CHAIN_START_POSES[pl.startIndex]?.name ?? '-')
-                            : (moduleFor(settings.game).startAnchorName?.(pl.startIndex, pl.alliance) ??
-                              START_POSES[pl.startIndex]?.label ??
-                              '-')}
+                    <div className="ds-strat-id">
+                      <span className="pnm">
+                        {pl.name}
+                        {isMe ? ' (you)' : ''}
+                        <SupporterBadge supporter={pl.supporter} role={pl.role} />
+                        <BadgeMarks badges={pl.badges} />
                       </span>
-                      {rated && <span className="ds-chip">{ratingChip(pl)}</span>}
-                      <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
-                        {pl.ready ? 'READY' : 'NOT READY'}
+                      <span className="ptm">
+                        {spec.name} · Team {pl.teamNumber || '-'}
                       </span>
                     </div>
+                    {buildRow(spec)}
+                  </div>
+                  {/* the status chips take the card's FULL width, under the picture and its column, so
+                      a row of four stays one row instead of stacking down the narrow column */}
+                  <div className="ds-strat-chips">
+                    <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
+                    {pl.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
+                    <span className="ds-chip">
+                      {pl.startPose
+                        ? 'CUSTOM'
+                        : settings.game === 'chain'
+                          ? (CHAIN_START_POSES[pl.startIndex]?.name ?? '-')
+                          : (moduleFor(settings.game).startAnchorName?.(pl.startIndex, pl.alliance) ??
+                            START_POSES[pl.startIndex]?.label ??
+                            '-')}
+                    </span>
+                    {rated && <span className="ds-chip">{ratingChip(pl)}</span>}
+                    <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
+                      {pl.ready ? 'READY' : 'NOT READY'}
+                    </span>
                   </div>
                 </div>
               );

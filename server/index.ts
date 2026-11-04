@@ -3921,7 +3921,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       const busy = state === 'match' || state === 'strategy';
       send({
         t: 'error',
-        ...(busy ? { code: 'in_progress' as const } : {}),
+        // FULL IS CODED TOO: a client that sees it watches the room instead (`Lobby`'s spectate
+        // fallback). An older client ignores the code and reads the sentence, as before.
+        code: busy ? ('in_progress' as const) : ('room_full' as const),
         message:
           busy ?
             'A match is already running in this room. You can join when it finishes.'
