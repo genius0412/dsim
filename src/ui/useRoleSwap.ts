@@ -17,6 +17,10 @@ import { allianceDuo, categoryDefaultIndex, derivedRole, otherCat as other } fro
  * opposite roles, so flipping both = a swap). A `enacted` ref stops a double-flip
  * during the patch→broadcast window.
  *
+ * A BOT PARTNER has no client to set its flag, so the room sets it (`Room.settleRoles`):
+ * the bot's `swapReq` mirrors mine and its role is always derived from mine, so my own
+ * flip below completes the swap. Nothing here knows the partner is a bot.
+ *
  * ⚠️ **EXACTLY TWO MEMBERS, AND IT IS ENFORCED NOW RATHER THAN ASSERTED.** This header
  * used to say "only meaningful with exactly two members" and nothing checked it: the
  * ROLE came from a clientId sort and the PARTNER from roster order, so on a three- or

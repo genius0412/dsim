@@ -80,7 +80,9 @@ pure patch-helpers in `src/ui/startPositions.ts`. In a 2v2 the robot's role LOCK
 settings patch (`selectStart`), never two `set()` calls (stale-closure overwrite drops one).
 **ROLE is SWAPPABLE by mutual consent** (`useRoleSwap.ts` + `RoleSwapBar.tsx`): a two-flag
 handshake (propose→accept; when both set, each client flips ITS OWN role, race-free). Decline
-is LOCAL-only.
+is LOCAL-only. A BOT partner accepts at once: it has no client, so the room mirrors its partner's
+flag onto the bot's row and keeps the bot's anchor on its derived role (`Room.settleRoles`, a
+server change; the role helpers are in `src/net/startRoles.ts` so the server can read them).
 
 ## Ball lifecycle (no teleporting — user is emphatic)
 

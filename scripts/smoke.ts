@@ -18603,6 +18603,83 @@ const recordDrive: CommandSource = (tick) => {
   check('bot seats: the newest seat can be removed (it is not shadowed by an older twin)', botIds().length === 1, botIds().join(','));
 }
 
+/* A BOT ACCEPTS ITS PARTNER'S ROLE SWAP (`Room.settleRoles`). A bot has no client to raise its
+   `swapReq`, so the room mirrors its partner's. The human's half is `useRoleSwap`'s effect,
+   replayed here off the roster the room sends, so this is the room and a real client converging:
+   one flip, roles still distinct, the bot's anchor following its new role. */
+{
+  const { categoryDefaultIndex, indexCategory, otherCat } = await import('../src/net/startRoles');
+  const seen: ServerMsg[] = [];
+  const human: Client = {
+    id: 'a-swap-human',
+    send: (m) => seen.push(m),
+    player: { clientId: 'a-swap-human', name: 'human', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  };
+  const room = new Room('smoke-botswap', () => {}, { kind: 'versus', game: 'biobuzz' });
+  room.add(human);
+  room.addBot(); // the emptier side: blue, on its own
+  room.addBot(); // red, beside the human
+  /** past the room's roster throttle (`UPDATE_ROSTER_MIN_MS`), so the trailing roster has gone */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 80));
+  const rows = (): LobbyPlayer[] => {
+    for (let i = seen.length - 1; i >= 0; i--) {
+      const m = seen[i];
+      if (m.t === 'roster') return m.players;
+    }
+    return [];
+  };
+  const me = (r: LobbyPlayer[]): LobbyPlayer => r.find((p) => p.clientId === human.id)!;
+  const partner = (r: LobbyPlayer[]): LobbyPlayer | undefined => allianceDuo(r, me(r))?.partner;
+  /** `useRoleSwap`'s effect: both flags up ⇒ flip my own role and clear my flag. True when it fired. */
+  const hookStep = (r: LobbyPlayer[]): boolean => {
+    const role = derivedRole(r, me(r));
+    if (!role || me(r).swapReq !== true || partner(r)?.swapReq !== true) return false;
+    const next = otherCat(role);
+    room.onMessage(human.id, { t: 'update', patch: { startRole: next, swapReq: false, startIndex: categoryDefaultIndex(next, 'biobuzz'), startPose: null } });
+    return true;
+  };
+  const roleOf = (r: LobbyPlayer[], p: LobbyPlayer | undefined): string | undefined => (p ? derivedRole(r, p) : undefined);
+  const anchorFits = (r: LobbyPlayer[], p: LobbyPlayer | undefined): boolean => !!p && indexCategory(p.startIndex, 'biobuzz') === roleOf(r, p);
+
+  let r = rows();
+  const before = roleOf(r, me(r));
+  check('bot swap: the human and the bot beside them hold different roles', !!partner(r)?.bot && before !== undefined && before !== roleOf(r, partner(r)), `${before} / ${roleOf(r, partner(r))}`);
+  check('bot swap: the bot starts on its own role\'s anchor', anchorFits(r, partner(r)), `anchor ${partner(r)?.startIndex}`);
+
+  room.onMessage(human.id, { t: 'update', patch: { swapReq: true } });
+  await settle();
+  r = rows();
+  check('⚠️ bot swap: a request is answered — the partner bot\'s flag goes up', partner(r)?.swapReq === true);
+  check('bot swap: a bot on the other alliance does not answer it', r.filter((p) => p.bot && p.alliance === 'blue').every((p) => !p.swapReq));
+  check('bot swap: the human\'s client enacts the flip', hookStep(r));
+  await settle();
+  r = rows();
+  const after = roleOf(r, me(r));
+  check('⚠️ bot swap: the roles swapped', after === otherCat(before!) && roleOf(r, partner(r)) === before, `${before} -> ${after}, bot ${roleOf(r, partner(r))}`);
+  check('bot swap: both flags are down again', !me(r).swapReq && !partner(r)?.swapReq);
+  check('bot swap: the client does not flip a second time', !hookStep(r));
+  check('⚠️ bot swap: the bot moved to its new role\'s anchor, off the human\'s', anchorFits(r, partner(r)) && partner(r)?.startIndex !== me(r).startIndex, `bot ${partner(r)?.startIndex}, human ${me(r).startIndex}`);
+
+  // a cancel takes the bot's answer back with it, and nothing flips
+  room.onMessage(human.id, { t: 'update', patch: { swapReq: true } });
+  await settle();
+  room.onMessage(human.id, { t: 'update', patch: { swapReq: false } });
+  await settle();
+  r = rows();
+  check('bot swap: a cancelled request takes the bot\'s flag down too', !partner(r)?.swapReq && roleOf(r, me(r)) === after);
+
+  // a request does not outlive its pair: the bot leaves before the flip, a new one is seated
+  room.onMessage(human.id, { t: 'update', patch: { swapReq: true } });
+  await settle();
+  room.removeBot(partner(rows())!.clientId);
+  check('bot swap: the partner leaving drops the request', human.player.swapReq !== true);
+  room.addBot();
+  r = rows();
+  check('bot swap: a bot seated afterwards does not accept the old request', !!partner(r)?.bot && !partner(r)?.swapReq && !hookStep(r) && roleOf(r, me(r)) === after);
+}
+
 // ---- room settings: the host-controlled shape (rooms plan M1) ------------------
 {
   const { coerceRoomSettings, mergeRoomSettings, roomCapacity } = await import('../src/net/protocol');

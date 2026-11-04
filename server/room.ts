@@ -61,6 +61,7 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
+import { allianceDuo, categoryDefaultIndex, derivedRole, indexCategory } from '../src/net/startRoles';
 import {
   IMPORT_START_REFUSED,
   hasImportCap,
@@ -834,8 +835,9 @@ export class Room {
   //     history) but credits NO playtime: `user_activity` is what `docs/area/accounts.md` says
   //     nothing competitive may read, and a match against three bots is not playtime.
 
-  /** one seated bot: a synthetic roster row plus the tier it plays at. */
-  private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number }[] = [];
+  /** one seated bot: a synthetic roster row plus the tier it plays at. `swapReq` is its answer to
+   *  its partner's role swap, set by `settleRoles` and never by anything else. */
+  private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number; swapReq?: boolean }[] = [];
   /** MONOTONIC, never `bots.length`. A bot id is a roster `clientId`, and the roster is keyed by
    *  it — so numbering from the array length mints a DUPLICATE the moment anybody removes a seat
    *  and adds another (remove bot-1, add ⇒ a second `bot-1-CODE`). Two rows with one id is a
@@ -1023,7 +1025,7 @@ export class Room {
   /** the roster row a bot seat is broadcast as — a `LobbyPlayer` like any other, with `bot`
    *  naming its tier. Rebuilt per broadcast rather than stored, so a spec/assist default
    *  changing under it is never stale. */
-  private botPlayer(b: { id: string; tier: string; alliance: Alliance; startIndex: number }): LobbyPlayer {
+  private botPlayer(b: { id: string; tier: string; alliance: Alliance; startIndex: number; swapReq?: boolean }): LobbyPlayer {
     return {
       clientId: b.id,
       // NAMED FOR WHAT IT IS, in the roster and in the match. `spec.name` is what the in-match
@@ -1038,7 +1040,45 @@ export class Room {
       spec: { ...DEFAULT_SPEC, name: `${b.tier} bot`, teamName: 'AI', teamNumber: 0 },
       assists: { ...DEFAULT_ASSISTS },
       bot: b.tier,
+      ...(b.swapReq ? { swapReq: true } : {}),
     };
+  }
+
+  /**
+   * A BOT ACCEPTS ITS PARTNER'S ROLE SWAP (owner, 2026-11-04: "bots should automatically agree to
+   * switch positions when a user requests it on multiplayer").
+   *
+   * The 2v2 role handshake (`useRoleSwap.ts`) is two SELF-patched roster flags: the proposer sets
+   * `swapReq`, the partner sets theirs, and once both are up each CLIENT flips its own role. A bot
+   * has no client, so its flag never went up and the request waited forever. The room owns the
+   * bot's row, so the room answers for it, as a MIRROR rather than an event:
+   *   · a bot's `swapReq` is its partner's, re-read for every roster. The partner's client sees both
+   *     flags up and enacts its own flip exactly as it would with a human partner (its `enacted` ref
+   *     is still the one guard against a double flip), and the patch that flips it also clears its
+   *     flag, which clears the bot's. A cancel clears both the same way. Nothing is latched here.
+   *   · a bot never holds a `startRole`, so its role is always DERIVED, the opposite of its
+   *     partner's (`derivedRole` rule 3), and the partner's flip flips it on every client at once.
+   *   · its `startIndex` follows that role: an anchor in the other category moves to the role's
+   *     default, so the roster and `startMatch` put the bot where the role says. Before this a bot
+   *     kept the anchor `addBot` gave it, which after a swap was the human's new one.
+   * Every client version runs this handshake, so an old client gets the answer too.
+   *
+   * A request also does not outlive the pair it was made to: a member whose alliance is no longer
+   * exactly two has its flag dropped, or a bot seated beside them later would accept it unasked.
+   * Called before every roster the lobby sends and before `startMatch` seats anyone.
+   */
+  private settleRoles(): void {
+    if (this.pendingMatch || this.ranked) return;
+    const humans = [...this.clients.values()].map((c) => c.player);
+    const rows = humans.concat(this.bots.map((b) => this.botPlayer(b)));
+    for (const p of humans) if (p.swapReq && !allianceDuo(rows, p)) p.swapReq = false;
+    this.bots.forEach((b, i) => {
+      const me = rows[humans.length + i];
+      const partner = allianceDuo(rows, me)?.partner;
+      b.swapReq = !!partner && !partner.bot && partner.swapReq === true;
+      const role = derivedRole(rows, me);
+      if (role && indexCategory(b.startIndex, this.game) !== role) b.startIndex = categoryDefaultIndex(role, this.game);
+    });
   }
 
   /**
@@ -2634,6 +2674,7 @@ export class Room {
      * the only thing that distinguishes it is that `botTiers` remembers the tier so `beginMatch`
      * can seat a driver on the robot id.
      */
+    this.settleRoles();
     const roster: { key: string; player: LobbyPlayer; tier: string | null }[] = [
       ...[...this.clients.values()].map((c) => ({ key: c.id, player: c.player, tier: null })),
       ...this.bots.map((b) => ({ key: b.id, player: this.botPlayer(b), tier: b.tier })),
@@ -4660,6 +4701,7 @@ export class Room {
     // everyone joined, and hiding them for the last two seconds before the match would be the
     // pre-match reveal running backwards.
     if (this.phase !== 'strategy' || !this.pendingMatch) {
+      this.settleRoles();
       // BOT SEATS RIDE THE SAME ROSTER, after the humans — the order the setups are built in
       // (`startMatch`), so a lobby row and a robot id line up. An old client renders them as
       // ordinary drivers, which is what they are; see `LobbyPlayer.bot`.
