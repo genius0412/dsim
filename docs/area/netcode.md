@@ -292,6 +292,23 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     Measured on a real 12-POLLEN tip: ball-to-tray gap 0.43 in → 0.002 in, frames the tray held
     still mid-swing 76 → 0 of 152. Full never had it (it steps the whole world, tray included).
     Client-only. Smoke: "tray draw:" (HIVE3D).
+  - ⚠️ **A TURRET IS DRAWN ON ITS CHASSIS'S CLOCK** (`src/net/turretDraw.ts`, 2026-11-04, owner:
+    "the turret is either jittery or it looks like it has motion blur"). `turretHeading` is a WORLD
+    angle the 3D scene draws at `turretHeading − heading` on the chassis, so the two must be the same
+    moment, and `displayWorld` mixed clocks three ways, for every game: a REMOTE robot's chassis was
+    lerped at the render clock and its turret read off the newest world (`INTERP_DELAY_TICKS` ahead,
+    stepping at 30 Hz); the LOCAL robot under Light/Balanced is predicted chassis-only
+    (`PredictedPose` carries no turret), so its turret was the last snapshot's; and a reconcile
+    eased the chassis (`localSmooth`) and popped the turret. Now `snapBuf.robots[].turret` carries
+    each snapshot's yaws and hood pitches and a remote turret is lerped with its chassis (a contact
+    blend turns it with the chassis); under Light/Balanced the local turret is drawn off the
+    snapshots at the render clock, the clock of everything else the server moves; where the turret
+    IS predicted (2D rooms, Full) it carries its own eased correction, `turretSmooth`, captured at
+    the reconcile like `localSmooth` and decayed at its rate. Its own, not the chassis's: a turret
+    holding a bearing hardly moves when the chassis is corrected. Solo's half (drawing between ticks
+    at all) is `docs/area/biobuzz.md`, "SOLO DRAWS THE FRAME'S MOMENT". Client-only, no wire change.
+    Smoke: "turret draw:" (RENDER; `game.ts` cannot be imported there, so its wiring is pinned by
+    source).
   - **A LIGHT PREDICTOR CARRIES NO ELEMENTS**, so `elements()` returns `null` (not an empty list)
     and it keeps the old drawing. That is the honest limit of this fix: Auto picks Full whenever
     the machine holds `PREDICT_FULL_BUDGET_MS`, and a machine that cannot afford Full cannot

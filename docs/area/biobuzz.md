@@ -1258,6 +1258,25 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       frames lose a field corner or a hive opening across every station, height, screen and lens; an
       inch nearer never holds the field; through the real camera every point lands in the HUD safe
       rect on 16:9, 16:10, 21:9, 4:3 and both phones, and every eye stands in `grb`'s clear box.
+  - ⚠️ **SOLO DRAWS THE FRAME'S MOMENT, NOT THE LAST TICK** (owner, 2026-11-04: "Driving in the chase
+    POV, I noticed that the turret is either jittery or it looks like it has motion blur";
+    `tickDraw.ts`). The sim steps at 60 Hz; the 3D view drew `this.world` as the last tick left it,
+    so on a 144 Hz screen every robot held for two or three frames and jumped while the chase camera
+    eased every frame. The turret showed it worst: it holds a WORLD bearing while the chassis turns
+    under it, so it glided with the camera while the chassis it sits on stepped. `frame.alpha` was
+    computed and read by nothing. Now `game.ts` captures the poses before each solo step
+    (`captureTick`, only while a 3D scene is live) and hands the scene `drawAtAlpha`: every robot
+    (pose, z, turret yaws and hood pitches), every loose element and both trays, `alpha` of the way
+    from the previous tick. All of them, or a pushed POLLEN is drawn a fraction of a tick off the
+    chassis (the netcode "same moment" rule). A carried element, a 24-in or 1-rad jump, a world it
+    did not capture and alpha 1 are drawn as they are. Cost: up to one tick of display latency.
+    ⚠️ **`world.time` is NOT lerped**: a stamp taken on the newest tick would then lie in the drawn
+    future, and `bbRampSwingProgress` reads a negative elapsed time as settled, flashing a ramp to
+    its far end for a frame on every toggle. So wheel and roller spin, the ramp swing, the dump arm
+    and the Box Tube's ease still advance per tick; they move only while they animate, on a chassis
+    that now glides. Measured through the real chase camera at 144 Hz (RENDER, "turret draw:"):
+    the muzzle-to-chassis jerk on screen p50 3.2 → 0.05 px/frame² at 1920 × 1080. The networked
+    half is `docs/area/netcode.md`, "A TURRET IS DRAWN ON ITS CHASSIS'S CLOCK".
   - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that

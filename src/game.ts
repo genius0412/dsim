@@ -63,6 +63,8 @@ import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } fro
 import { PREDICT_FULL_BUDGET_MS, PREDICT_WORLD_BUDGET_MS } from './games/biobuzz/config';
 import { biobuzzPhysics } from './games/biobuzz/state';
 import { interpTrays, traySnap, trayRiders, type TraySnap } from './games/biobuzz/trayDraw';
+import { captureTick, clearTickPoses, drawAtAlpha, newTickPoses } from './games/biobuzz/tickDraw';
+import { lerpTurret, turretPoseOf, withTurret, type TurretPose } from './net/turretDraw';
 import {
   getPredictionPref,
   markOffNoticeShown,
@@ -683,6 +685,15 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
+  /** `localSmooth` for the local robot's TURRET world yaws (`turretHeading`, a double turret's
+   *  `bbTurret2Heading`), captured at the same reconcile and decayed at the same rate, wherever the
+   *  turret is predicted with the chassis. A turret holding a bearing barely moves when the chassis
+   *  is corrected, so it needs its own offset, not the chassis's — `src/net/turretDraw.ts`. */
+  private turretSmooth = { yaw: 0, yaw2: 0 };
+  /** SOLO with a 3D view: the poses one tick before the newest, so the scene draws the frame's own
+   *  moment (`frame.alpha` of the way between them) instead of holding each tick for two or three
+   *  frames of a high-refresh screen — `src/games/biobuzz/tickDraw.ts`. */
+  private tickPoses = newTickPoses();
   /** each REMOTE robot's decaying correction offset, for when it is drawn from the prediction
    *  because it is next to ours — `src/net/contactDraw.ts`. 2D rooms only. */
   private remoteSmooth = new Map<number, Pose>();
@@ -750,7 +761,8 @@ export class GameController {
    */
   private snapBuf: {
     tick: number;
-    robots: { id: number; x: number; y: number; z: number; heading: number }[];
+    /** `turret` is drawn on the same clock as the chassis pose beside it (`src/net/turretDraw.ts`) */
+    robots: { id: number; x: number; y: number; z: number; heading: number; turret: TurretPose }[];
     /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
      *  a 2D room allocates nothing it did not allocate before) */
     balls: { id: number; x: number; y: number; z: number; kind: string; state: BallState }[];
@@ -2093,6 +2105,8 @@ export class GameController {
     this.localSmooth.x *= k;
     this.localSmooth.y *= k;
     this.localSmooth.heading *= k;
+    this.turretSmooth.yaw *= k;
+    this.turretSmooth.yaw2 *= k;
     if (this.worldPredicted()) {
       const kb = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
       for (const [id, o] of this.ballSmooth) {
@@ -2109,8 +2123,14 @@ export class GameController {
       o.heading *= kr;
     }
     // solo renders the predicted world directly; the networked path renders remote
-    // robots + balls INTERPOLATED (smooth) with the local robot predicted
-    const world = this.session ? this.displayWorld(dtMs) : this.world;
+    // robots + balls INTERPOLATED (smooth) with the local robot predicted. Under a 3D view, solo
+    // draws the frame's own moment between the last two ticks (`tickDraw.ts`); the 2D view, which
+    // draws no camera that moves every frame, keeps the tick.
+    const world = this.session
+      ? this.displayWorld(dtMs)
+      : this.scene
+        ? drawAtAlpha(this.tickPoses, this.world, clamp(this.acc / C.SIM_DT, 0, 1))
+        : this.world;
     // the DRAW half of the read-out's split (the sim half is timed in `frameLogic`) — the 3D
     // pass, if there is one, plus the 2D pass that always runs.
     const drawT0 = performance.now();
@@ -2123,10 +2143,9 @@ export class GameController {
         if (this.hudInsetsDirty) this.refreshHudInsets();
         const frame: SceneFrame = {
           // the fixed-timestep accumulator's leftover fraction — the same interpolation
-          // alpha a fixed-timestep renderer uses between authoritative steps. The 2D
-          // renderer does not need it (solo renders `this.world` as last stepped; the
-          // networked path already interpolates remotes its own way), so the 3D scene is
-          // its first reader.
+          // alpha a fixed-timestep renderer uses between authoritative steps. Solo has already
+          // drawn `world` at it (`drawAtAlpha` above); the networked path interpolates on its
+          // own render clock.
           alpha: clamp(this.acc / C.SIM_DT, 0, 1),
           viewAngle: this.renderer.camera.viewAngle,
           camera: this.sceneCameraFor(),
@@ -2321,6 +2340,7 @@ export class GameController {
     // practice does not start behind the 3D view's loading panel (`sceneLoading`)
     if (this.physicsPending || this.sceneLoading) {
       this.acc = 0;
+      clearTickPoses(this.tickPoses);
       return;
     }
     if (this.input.startPressed) this.startMatch();
@@ -2353,6 +2373,8 @@ export class GameController {
       // the auto drives the local robot in AUTO (and in an armed Free Drive trial); otherwise it
       // hands the driver's command straight back, so this is a no-op outside those
       if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));
+      // the tick BEFORE this step, which the 3D view draws from toward the one after it
+      if (this.scene) captureTick(this.tickPoses, this.world);
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
       this.paceRec?.push(this.world.match.phase, this.world.match.phaseTimeLeft, netScore(this.world, this.viewAlliance()));
@@ -2380,7 +2402,11 @@ export class GameController {
       }
     }
     this.stepCounts.push(steps);
-    if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+    if (steps === C.MAX_STEPS_PER_FRAME) {
+      // a frame too late to catch up drops its leftover, so it draws the newest tick as it is
+      this.acc = 0;
+      clearTickPoses(this.tickPoses);
+    }
   }
 
   /**
@@ -2665,6 +2691,7 @@ export class GameController {
         y: r.pos.y,
         z: r.z ?? 0,
         heading: r.heading,
+        turret: turretPoseOf(r),
       })),
       /**
        * ONLY for a 3D-physics world — see the field's own header.
@@ -3208,12 +3235,25 @@ export class GameController {
    * the two authoritative snapshots bracketing the render clock — Minecraft-style, so
    * they glide smoothly regardless of the 30 Hz snapshot rate or network jitter. */
   private displayWorld(dtMs: number): World {
-    const local = (r: RobotState): RobotState =>
-      ({
-        ...r,
-        pos: { x: r.pos.x + this.localSmooth.x, y: r.pos.y + this.localSmooth.y },
-        heading: r.heading + this.localSmooth.heading,
-      });
+    /**
+     * THE LOCAL ROBOT'S TURRET (`src/net/turretDraw.ts`). Where the turret is predicted with the
+     * chassis (a 2D room, Full in a 3D room) it carries its OWN eased correction (`turretSmooth`),
+     * as the chassis carries `localSmooth`. Light and Balanced predict the chassis alone
+     * (`PredictedPose` has no turret), so the turret on `this.world` is the newest snapshot's: it is
+     * drawn from the snapshots on the interpolation clock instead (`localTurret`, set below once the
+     * clock is known), the clock everything else the server moves is drawn on, rather than stepping
+     * at 30 Hz.
+     */
+    let localTurret: TurretPose | null = null;
+    const local = (r: RobotState): RobotState => {
+      const tp = turretPoseOf(r);
+      const drawn = localTurret
+        ? withTurret(r, localTurret)
+        : withTurret(r, { ...tp, yaw: tp.yaw + this.turretSmooth.yaw, yaw2: tp.yaw2 === undefined ? undefined : tp.yaw2 + this.turretSmooth.yaw2 });
+      drawn.pos = { x: r.pos.x + this.localSmooth.x, y: r.pos.y + this.localSmooth.y };
+      drawn.heading = r.heading + this.localSmooth.heading;
+      return drawn;
+    };
     // `z` is NOT smoothed: `localSmooth` is a 2D correction offset and a height error is not
     // a rubberbanding artifact — a robot pressed under a descending tray is where the server
     // says it is, and easing that would draw it inside the geometry.
@@ -3265,6 +3305,11 @@ export class GameController {
     const a = span > 0 ? Math.max(0, Math.min(1, (this.renderTick - s0.tick) / span)) : 0;
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
+    if (this.usesPredictor()) {
+      const p = r0.get(this.localRobotId);
+      const q = r1.get(this.localRobotId);
+      if (p && q) localTurret = lerpTurret(p.turret, q.turret, a);
+    }
     // A REMOTE ROBOT NEXT TO OURS IS DRAWN AT OUR MOMENT, not at the interpolation clock —
     // `src/net/contactDraw.ts`. A 2D room reads its predicted pose off `this.world`; a 3D room off
     // the FULL predictor, which steps it on its held command (LIGHT carries none: no blend).
@@ -3286,6 +3331,9 @@ export class GameController {
       const q = r1.get(r.id);
       if (!p || !q) return r; // just spawned/left the buffer — fall back to predicted
       const src = predictedRemotes ? predictedRemotes.get(r.id) : { x: r.pos.x, y: r.pos.y, heading: r.heading };
+      // THE TURRET ON THE CHASSIS'S CLOCK: its world yaws lerped between the same two snapshots as
+      // the chassis, never the newest world's (`src/net/turretDraw.ts`)
+      const turret = lerpTurret(p.turret, q.turret, a);
       if (me && src) {
         const o = this.remoteSmooth.get(r.id);
         const predicted = { x: src.x + (o?.x ?? 0), y: src.y + (o?.y ?? 0), heading: src.heading + (o?.heading ?? 0) };
@@ -3300,11 +3348,17 @@ export class GameController {
         const w = nearDrawWeight(d);
         if (w > 0) {
           const b = blendPose(interp, predicted, w);
-          return { ...r, pos: { x: b.x, y: b.y }, heading: b.heading, ...(this.interp3d() ? { z: lerp(p.z, q.z, a) } : null) };
+          // the blend turns the chassis off the interpolated heading; the turret turns with it
+          return {
+            ...withTurret(r, turret, b.heading - interp.heading),
+            pos: { x: b.x, y: b.y },
+            heading: b.heading,
+            ...(this.interp3d() ? { z: lerp(p.z, q.z, a) } : null),
+          };
         }
       }
       return {
-        ...r,
+        ...withTurret(r, turret),
         pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
         // `z` only where the world HAS one. Writing `z: 0` into a 2D world's robots would put
         // a key on every rendered robot that the 2D path never carried, which is a change to
@@ -3585,6 +3639,9 @@ export class GameController {
     const preX = pre ? pre.pos.x + this.localSmooth.x : 0;
     const preY = pre ? pre.pos.y + this.localSmooth.y : 0;
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
+    // ...and the turret's drawn world yaws, for its own offset (`turretSmooth`)
+    const preT = pre ? pre.turretHeading + this.turretSmooth.yaw : 0;
+    const preT2 = pre?.bbTurret2Heading !== undefined ? pre.bbTurret2Heading + this.turretSmooth.yaw2 : undefined;
     // ...and every REMOTE robot's predicted pose, the same way: in a 2D room one standing next
     // to ours is DRAWN from the prediction (`contactDraw.ts`), so its correction needs the same
     // glide. A 3D room predicts no remote robot at all, and `this.world` there does not move.
@@ -3664,11 +3721,27 @@ export class GameController {
       this.lastCorrection = Math.hypot(dx, dy);
       // a genuinely large correction (desync/teleport) should SNAP, not float far
       // behind for a beat — only smooth sub-robot-scale errors
-      if (Math.hypot(dx, dy) > SMOOTH_MAX_DIST) {
+      const snapped = Math.hypot(dx, dy) > SMOOTH_MAX_DIST;
+      if (snapped) {
         dx = 0;
         dy = 0;
         dh = 0;
       }
+      /**
+       * THE TURRET'S OWN CORRECTION, where it is predicted with the chassis (a 2D room, Full): the
+       * drawn world yaw before against the replayed one after, at the same predicted tick, exactly
+       * as the chassis's. Light and Balanced draw it off the snapshots (`displayWorld`), and Off
+       * draws the whole robot off them, so neither carries one.
+       */
+      const turretPredicted = !this.usesPredictor() && !(this.predicted3d() && this.predictionMode === 'off');
+      const wrapPi = (v: number): number => Math.atan2(Math.sin(v), Math.cos(v));
+      this.turretSmooth =
+        turretPredicted && !snapped
+          ? {
+              yaw: wrapPi(preT - post.turretHeading),
+              yaw2: preT2 !== undefined && post.bbTurret2Heading !== undefined ? wrapPi(preT2 - post.bbTurret2Heading) : 0,
+            }
+          : { yaw: 0, yaw2: 0 };
       /**
        * OFF SMOOTHS NOTHING, because there is nothing to smooth: the local robot is not
        * predicted, so `pre` and `post` are two consecutive AUTHORITATIVE positions and their
@@ -3710,6 +3783,8 @@ export class GameController {
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };
     this.remoteSmooth.clear();
+    this.turretSmooth = { yaw: 0, yaw2: 0 };
+    clearTickPoses(this.tickPoses);
     this.clearElementSmoothing();
     // A REMATCH IS A NEW MATCH, so it gets a new probe and a new slip window. The predictor is
     // dropped rather than reset: `reset` re-seats bodies against a world, and the world it was

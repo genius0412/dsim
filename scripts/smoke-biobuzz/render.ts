@@ -503,6 +503,11 @@ import { drawDecal, drawRobot as drawDecodeRobot, ROBOT_TRIM } from '../../src/r
 import { drawChainRobot } from '../../src/games/chain/drawRobot';
 import { createChainWorld } from '../../src/games/chain/spawn';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
+// -- THE TURRET AT ITS CHASSIS'S MOMENT (2026-11-04): the draw between ticks and the turret clock
+import { biobuzzStep as biobuzzStepForDraw } from '../../src/games/biobuzz/step';
+import { DEFAULT_ASSISTS as DEFAULT_ASSISTS_FOR_DRAW } from '../../src/sim/spawn';
+import { captureTick, drawAtAlpha, newTickPoses } from '../../src/games/biobuzz/tickDraw';
+import { lerpTurret, turretPoseOf, withTurret } from '../../src/net/turretDraw';
 import { drawBiobuzzRobot } from '../../src/games/biobuzz/drawRobot';
 import { createWorld as createDecodeWorld } from '../../src/sim/spawn';
 // -- THE PERFORATED CAD SCORING ELEMENTS (2026-09-21), in their own import block --------
@@ -1955,6 +1960,7 @@ export function renderChecks(check: Check): void {
   hoodPlateChecks(check);
   freeCamChecks(check);
   driverEyeChecks(check);
+  turretDrawChecks(check);
   importedRobotChecks(check);
   fixedShooterChecks(check);
   retiredVenueChecks(check);
@@ -5846,6 +5852,166 @@ function driverEyeChecks(check: Check): void {
     // clean up module-scope state so no other lane in this same process observes it.
     setCameraTuning(null, 'full');
     setDriverHeightIn(null);
+  }
+}
+
+/**
+ * THE TURRET IS DRAWN AT ITS CHASSIS'S MOMENT (owner, 2026-11-04: "Driving in the chase POV, I
+ * noticed that the turret is either jittery or it looks like it has motion blur").
+ *
+ * Solo: the 3D view drew the last tick at every frame of a high-refresh screen while the chase
+ * camera eased every frame, and the turret, which holds a world bearing while the chassis turns
+ * under it, slid with the camera while its chassis stepped (`tickDraw.ts`). Networked: the chassis
+ * and the turret came from different clocks (`net/turretDraw.ts`). The measurement runs the real
+ * chase camera over a real 3D world driving and turning with aim assist, at 144 Hz.
+ */
+function turretDrawChecks(check: Check): void {
+  const SIM_DT_ = 1 / 60;
+  const drive = (w: World, tick: number): void => {
+    const phase = Math.floor(tick / 60) % 4;
+    const c = {
+      driveX: 0,
+      driveY: phase === 1 || phase === 3 ? 0.35 : 0,
+      rotate: phase === 0 ? 0.5 : phase === 1 ? 0.3 : phase === 2 ? -0.5 : -0.3,
+      leftDrive: 0,
+      rightDrive: 0,
+      intake: false,
+      fire: false,
+    };
+    biobuzzStepForDraw(w, SIM_DT_, new Map([[0, c]]));
+  };
+  const mk = (): World =>
+    createBiobuzzWorld('free', 7, [{ id: 0, alliance: 'red', spec: { ...BB_DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS_FOR_DRAW, fieldCentric: false }, startIndex: 0 }], undefined, '3d');
+  const wrapA = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
+
+  // ---- the draw between two ticks: every field, the short way round, and nothing it should not touch
+  {
+    const w = mk();
+    for (let i = 0; i < 70; i++) drive(w, i);
+    const tp = newTickPoses();
+    captureTick(tp, w);
+    const r = w.robots[0];
+    const before = { x: r.pos.x, h: r.heading, t: r.turretHeading, p: r.bbTurretPitch ?? 0 };
+    drive(w, 70);
+    const d = drawAtAlpha(tp, w, 0.25).robots[0];
+    const lerpA = (a: number, b: number, k: number): number => a + wrapA(b - a) * k;
+    check(
+      'turret draw: between two ticks the chassis is drawn alpha of the way (pose and heading)',
+      Math.abs(d.pos.x - (before.x + (r.pos.x - before.x) * 0.25)) < 1e-9 && Math.abs(wrapA(d.heading - lerpA(before.h, r.heading, 0.25))) < 1e-9,
+      `${d.pos.x} ${d.heading}`,
+    );
+    check(
+      '⚠️ turret draw: ...and the TURRET from the same moment, so its angle on the chassis is the lerp of the two ticks’ (yaw and hood)',
+      Math.abs(wrapA(d.turretHeading - d.heading - lerpA(before.t - before.h, r.turretHeading - r.heading, 0.25))) < 1e-9 &&
+        Math.abs((d.bbTurretPitch ?? 0) - (before.p + ((r.bbTurretPitch ?? 0) - before.p) * 0.25)) < 1e-9,
+      `rel ${(d.turretHeading - d.heading).toFixed(5)}`,
+    );
+    check('turret draw: the chassis did turn between those ticks (else the two checks above are vacuous)', Math.abs(wrapA(r.heading - before.h)) > 1e-3);
+    check('turret draw: alpha 1 draws the newest tick itself', drawAtAlpha(tp, w, 1) === w);
+    check('turret draw: a world that was not captured is drawn as it is', drawAtAlpha(newTickPoses(), w, 0.5) === w);
+    // a robot PLACED (a reset, a tutorial step) is drawn where it is, never swept across the field
+    captureTick(tp, w);
+    drive(w, 71);
+    w.robots[0].pos = { x: w.robots[0].pos.x + 60, y: w.robots[0].pos.y };
+    check('turret draw: a robot that jumped 60 in in a tick is drawn where it is', drawAtAlpha(tp, w, 0.5).robots[0].pos.x === w.robots[0].pos.x);
+    // a CARRIED element is placed by its carrier: never lerped into or out of a hopper
+    captureTick(tp, w);
+    const ball = w.balls.find((b) => b.state.kind === 'ground');
+    drive(w, 72);
+    if (ball) {
+      ball.state = { kind: 'held', robot: 0 } as typeof ball.state;
+      ball.pos = { x: ball.pos.x + 3, y: ball.pos.y };
+    }
+    const drawnBall = ball ? drawAtAlpha(tp, w, 0.5).balls.find((b) => b.id === ball.id) : undefined;
+    check('turret draw: an element taken into a hopper between the ticks is drawn where it is, not lerped', !!ball && drawnBall?.pos.x === ball.pos.x);
+  }
+
+  // ---- the networked half's pieces (`game.ts` cannot be imported here; its wiring is pinned below)
+  {
+    const r = mk().robots[0];
+    r.heading = 1;
+    r.turretHeading = 2.5;
+    const turned = withTurret(r, turretPoseOf(r), 0.3);
+    check('turret draw: a chassis offset turns the turret with it (its angle on the chassis is kept)', Math.abs(turned.turretHeading - 2.8) < 1e-12);
+    const across = lerpTurret({ yaw: 3.1, pitch: 0.2 }, { yaw: -3.1, pitch: 0.4 }, 0.5);
+    check('turret draw: the yaw lerps the short way across ±π, the hood straight', Math.abs(Math.abs(across.yaw) - Math.PI) < 1e-9 && Math.abs((across.pitch ?? 0) - 0.3) < 1e-12, `${across.yaw} ${across.pitch}`);
+    const single = withTurret({ ...r, bbTurret2Heading: undefined }, { yaw: 1, yaw2: 2 });
+    check('turret draw: a build with one turret does not gain a second', single.bbTurret2Heading === undefined);
+  }
+  {
+    const g = readFileSync(join(root, 'src', 'game.ts'), 'utf8');
+    check(
+      'turret draw: solo under a 3D view draws the frame’s moment (drawAtAlpha on frame.alpha), capturing the tick before each step',
+      /this\.scene\s*\?\s*drawAtAlpha\(this\.tickPoses, this\.world, clamp\(this\.acc \/ C\.SIM_DT, 0, 1\)\)/.test(g) &&
+        /if \(this\.scene\) captureTick\(this\.tickPoses, this\.world\);\s*this\.mod\.step\(this\.world, C\.SIM_DT, commands\);/.test(g),
+    );
+    check(
+      '⚠️ turret draw: a REMOTE robot’s turret is lerped between the same two snapshots as its chassis, and turns with a contact blend',
+      /turret: turretPoseOf\(r\)/.test(g) && /const turret = lerpTurret\(p\.turret, q\.turret, a\);/.test(g) && /withTurret\(r, turret, b\.heading - interp\.heading\)/.test(g) && /\.\.\.withTurret\(r, turret\),/.test(g),
+    );
+    check(
+      '⚠️ turret draw: the LOCAL robot’s turret is on the interpolation clock under Light/Balanced, and carries its own eased correction otherwise',
+      /if \(this\.usesPredictor\(\)\) \{[\s\S]{0,200}localTurret = lerpTurret\(p\.turret, q\.turret, a\);/.test(g) &&
+        /this\.turretSmooth\.yaw \*= k;/.test(g) && /yaw: wrapPi\(preT - post\.turretHeading\)/.test(g),
+    );
+  }
+
+  // ---- MEASURED: the chase camera at 144 Hz, the turret muzzle against its chassis on screen ----
+  {
+    const realNow = performance.now.bind(performance);
+    let now = 1000;
+    (performance as { now: () => number }).now = () => now;
+    try {
+      const run = (mode: 'tick' | 'alpha'): number[] => {
+        const w = mk();
+        const cams = createCameras();
+        const tp = newTickPoses();
+        const tl = turretLocal(w.robots[0].spec);
+        let acc = 0;
+        let ticks = 0;
+        const rel: THREE.Vector2[] = [];
+        const v = new THREE.Vector3();
+        for (let f = 0; f < 144 * 6; f++) {
+          now += 1000 / 144;
+          acc += 1 / 144;
+          while (acc >= SIM_DT_) {
+            captureTick(tp, w);
+            drive(w, ticks++);
+            acc -= SIM_DT_;
+          }
+          const drawn = mode === 'alpha' ? drawAtAlpha(tp, w, acc / SIM_DT_) : w;
+          const r = drawn.robots[0];
+          const cam = cams.update({ alpha: acc / SIM_DT_, viewAngle: 0, camera: 'chase', localRobotId: 0, width: 1920, height: 1080, dpr: 1 }, drawn, 'chase') as THREE.PerspectiveCamera;
+          cam.updateMatrixWorld();
+          const at = (lx: number, ly: number, z: number, yaw: number | null): THREE.Vector2 => {
+            const c = Math.cos(r.heading);
+            const s = Math.sin(r.heading);
+            v.set(r.pos.x + lx * c - ly * s, r.pos.y + lx * s + ly * c, (r.z ?? 0) + z);
+            if (yaw !== null) v.add(new THREE.Vector3(Math.cos(yaw) * 8, Math.sin(yaw) * 8, 0));
+            v.project(cam);
+            return new THREE.Vector2(((v.x + 1) / 2) * 1920, ((1 - v.y) / 2) * 1080);
+          };
+          if (f > 144) rel.push(at(tl.x, tl.y, 14, r.turretHeading).sub(at(8, 8, 6, null)));
+        }
+        const d = rel.slice(1).map((p, i) => p.clone().sub(rel[i]));
+        return d.slice(1).map((x, i) => x.clone().sub(d[i]).length()).sort((a, b) => a - b);
+      };
+      const q = (xs: number[], f: number): number => xs[Math.min(xs.length - 1, Math.floor(xs.length * f))];
+      const tick = run('tick');
+      const alpha = run('alpha');
+      check(
+        '⚠️ turret draw: through the chase camera at 144 Hz the turret no longer jumps against its chassis (muzzle-to-chassis jerk p95 under 1 px/frame² at 1920×1080)',
+        q(alpha, 0.95) < 1,
+        `p50 ${q(alpha, 0.5).toFixed(2)} p95 ${q(alpha, 0.95).toFixed(2)} px/frame²`,
+      );
+      check(
+        'turret draw: ...where drawing the tick as it stands still does (the baseline this fixes stays far off)',
+        q(tick, 0.5) > 2,
+        `p50 ${q(tick, 0.5).toFixed(2)} p95 ${q(tick, 0.95).toFixed(2)} px/frame²`,
+      );
+    } finally {
+      (performance as { now: () => number }).now = realNow;
+    }
   }
 }
 
