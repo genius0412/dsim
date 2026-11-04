@@ -1,8 +1,15 @@
 /**
- * ENVIRONMENTS — the procedural surrounds, one fetched CC0 HDRI and (since 2026-10-10) five
- * PHOTOGRAPHED VENUES (`docs/biobuzz/plan-3d.md` §4.5; `PhotoVenue` below), as DATA. No three.js here: `scene/renderEnvironment.ts` is what loads one, and the
+ * ENVIRONMENTS — the procedural surrounds and one fetched CC0 HDRI (`docs/biobuzz/plan-3d.md`
+ * §4.5), as DATA. No three.js here: `scene/renderEnvironment.ts` is what loads one, and the
  * Graphics section and the Contributors page both read this list, neither of which may pull the
  * renderer chunk in.
+ *
+ * ⚠️ **NO PHOTOGRAPH IS EVER PROJECTED ONTO GEOMETRY (2026-11-04).** From 2026-10-10 five rows were
+ * Poly Haven panoramas projected onto an approximate room (a box, then MoGe relief). A projection is
+ * right only from the lens that took it, and every camera here stands somewhere else, so every one of
+ * them warped it; five rounds of tuning did not change that. The rows are gone and a stored pick of
+ * one reads as its painted stand-in (`RETIRED_ENVIRONMENTS`, `graphics/settings.ts`). A real place
+ * comes back as real geometry or not at all.
  *
  * ── WHY THE EIGHT ADDED ON 2026-09-21 ARE ALL PROCEDURAL ───────────────────────────────────
  * The owner asked for "more choices for the 3d field background". Every one of them is PAINTED
@@ -31,10 +38,7 @@
  *                                               pick inside four hours is a memory-cache hit
  *                                               and no request at all. Measured 2026-09-18.
  * "never in any chunk"                        — no `import`, no base64. The fetched HDRI is
- *                                               only ever in the browser's HTTP cache; the
- *                                               photographed venues' files are DERIVED copies
- *                                               under `public/venues/` (`PhotoVenue`), served
- *                                               like any other static file.
+ *                                               only ever in the browser's HTTP cache.
  * "attribution on the Contributors page"      — `src/contributors.ts` renders `THIRD_PARTY`,
  *                                               which is built from this list, so an entry
  *                                               added here is credited by construction rather
@@ -43,8 +47,7 @@
  * ── AND THE ONE CLIENT WHERE "FETCHED ON DEMAND" MEANS "NEVER" ─────────────────────────────
  * A Discord Activity is served behind a CSP that admits only dsim's two Activity URL Mappings,
  * so a Poly Haven `.hdr` cannot be fetched there AT ALL — and until 2026-10-10 `school-hall`, High's
- * and Ultra's default column, was one (it is a same-origin photographed venue now, which the embed
- * loads like the rest of the site). `canFetchHdri` / `environmentDefFor` (below) answer that up front and hand the
+ * and Ultra's default column, was one. `canFetchHdri` / `environmentDefFor` (below) answer that up front and hand the
  * entry's painted `fallback` to the renderer instead, rather than letting every scene build make
  * a request the browser refuses. Nothing is bundled and nothing is stored: see those two.
  *
@@ -201,153 +204,6 @@ export interface VenueSpec {
   gridded?: boolean;
 }
 
-/**
- * ── THE PHOTOGRAPHED VENUES (2026-10-10) ───────────────────────────────────────────────────
- *
- * Owner: "Please add actual good quality scenes for backgrounds." Every surround above is a
- * procedural box room; the two photographs this list had (`school-hall`, `monochrome-studio`) only
- * lit the field, because the venue geometry hid them. A `photo` entry SHOWS its photograph: a
- * Poly Haven CC0 panorama, re-encoded for display by `scripts/venues/derive.cjs` into
- * `public/venues/`, and projected by `scene/renderPhotoVenue.ts` onto a box the shape of the
- * room it was taken in — the floor at the capture height below the lens, the walls where the
- * real walls are — so the floor has the right scale and the right parallax from every camera.
- *
- * ⚠️ **SAME ORIGIN, UNLIKE `hdri`.** The files are this site's own, so they load inside a Discord
- * Activity (whose CSP refuses `dl.polyhaven.org`) and never need a painted stand-in for that
- * reason. `fallback` exists for a transient failure only (`ibl`'s fetch, offline). This reverses
- * the old "nothing under `public/`" rule for DERIVED files, and only for them: the photographs as
- * published (16k–24k, 25–850 MB) are never committed.
- */
-export interface PhotoRoom {
-  /** the walls, as signed distances from the capture point along x and y, inches (`x0`, `y0` < 0) */
-  x0: number;
-  x1: number;
-  y0: number;
-  y1: number;
-  /** the ceiling above the floor, inches — the HIGHEST, a gable's ridge: the box and the cameras'
-   * room are flat at it */
-  ceil: number;
-  /** a GABLE roof, the layered room's (`scripts/venues/layers.py`, `room_distance`): `eave` above
-   * the floor at the side walls (`y0`, `y1`), rising in two flat slopes to `ceil` along a ridge
-   * parallel to x at y = `ridgeY`. The room file carries the shape; the RENDER lane holds its eaves
-   * to `eave`. Absent: a flat ceiling. */
-  eave?: number;
-  ridgeY?: number;
-}
-
-export interface PhotoVenue {
-  /** the backdrop, 4096 × 2048 (High and up) and 2048 × 1024 (Low, Medium, small GPUs) — paths
-   * relative to the app's base URL, resolved by the renderer (the Electron build's base is `./`) */
-  backdrop: string;
-  backdropLow: string;
-  /** the light-gathering map: a small linear `.hdr` box-filtered from the same 4k source. The
-   * backdrop cannot do this job — it is 8-bit, and some of these rooms keep most of their light in
-   * a few very hot texels (`derive.cjs`, ENCODING). */
-  ibl: string;
-  /** bytes of each, for the picker's note and the docs */
-  bytes: { backdrop: number; backdropLow: number; ibl: number };
-  /** the `gain` the backdrop was encoded with (`scripts/venues/venues.cjs`); the shader divides it
-   * back out. Must match the files, and the RENDER lane reads both to check it. */
-  gain: number;
-  /** a linear multiplier on the decoded photograph — the dim that keeps the field the brightest
-   * thing on screen */
-  intensity: number;
-  /** how much of the photograph's own colour is kept, 0–1 (the same rule: the field is the most
-   * saturated thing on screen) */
-  saturation: number;
-  /** the lens above the floor, inches — the number that sets the floor's scale */
-  height: number;
-  /** the box the photograph is projected onto */
-  room: PhotoRoom;
-  /** how dark the field's shadow lands on the photographed floor, 0–1 */
-  shadow: number;
-  /**
-   * FURNITURE NEAR THE FIELD THAT THE FLOOR PLANE DRAWS FLAT, if any is left in the files — what it
-   * is and where. A box stands up the floor and the walls and nothing else, so anything standing
-   * between the lens and a wall is drawn where its ray meets the floor: a stretched, flat smear
-   * across it (the events hall's banquet chairs were painted out in the derive for this). A row
-   * that carries this is a pick, never a preset column's default — the default is what most
-   * players see, and High's is every replay export's (2026-10-11, the RENDER lane pins it).
-   */
-  furniture?: string;
-  /** the room as its own geometry (`PhotoLayers`), which draws nothing flat; the box above is the
-   * fallback when these files cannot load */
-  layers?: PhotoLayers;
-  /** the floor drawn from a sharp texture instead of the projection (`PhotoFloorTexture`) */
-  floorTexture?: PhotoFloorTexture;
-  /** the painted entry whose dome lights the field should `ibl` fail to load. Same rule as
-   * `hdri.fallback`: painted, and the same venue kind. */
-  fallback: EnvironmentId;
-  /** the Poly Haven asset the files are derived from, for the credit line */
-  slug: string;
-  page: string;
-  authors: readonly { name: string; role: string }[];
-  license: 'CC0 1.0';
-  licenseUrl: string;
-}
-
-/**
- * A PHOTOGRAPHED FLOOR AS A TEXTURE (2026-11-01; `renderPhotoVenue.ts`, THE FLOOR). Owner: "The scenes
- * are still severely distorted." The panorama sees its floor from 63 in up, so past a few lens
- * heights each texel is a long radial strip, and every in-match camera stood higher or nearer
- * than the lens drew it as streaks. The floor is drawn from this tile instead: cut from a
- * photograph's own floor beside the lens, where it is sharp, its light flattened and its edges made
- * to repeat (`scripts/venues/floor.py`), in the backdrop's stored encoding. The photograph keeps the
- * floor's broad light, blurred.
- */
-export interface PhotoFloorTexture {
-  /** the tile, 1024 × 1024, same encoding as the backdrop (`scripts/venues/floor.py`) */
-  tile: string;
-  /** how many inches of floor one tile covers, along x and y (a floor with joints is cut to a whole
-   * even number of them each way, so the two can differ) */
-  inches: readonly [number, number];
-  /** the tile's mean, and this room's floor (the median 100–260 in from the lens), both decoded
-   * (`e / (1 − e)`) in their own file's units, so a tile cut in another room (the events hall's,
-   * whose own floor is painted over) is recoloured to this one */
-  mean: readonly [number, number, number];
-  base: readonly [number, number, number];
-  /** how much of the photograph's own light, blurred, the floor keeps near the field (0–1) */
-  light: number;
-  bytes: number;
-}
-
-/** a rectangle of a photographed room's floor, field inches */
-export interface PhotoFloor {
-  x0: number;
-  x1: number;
-  y0: number;
-  y1: number;
-}
-
-/**
- * A PHOTOGRAPHED VENUE AS ITS OWN GEOMETRY (2026-10-24; `renderPhotoVenue.ts`, THE LAYERED ROOM).
- * Derived from the backdrop by `scripts/venues/` (MoGe-2 depth, OneFormer furniture, LaMa
- * inpainting; see that README): the room with its furniture painted out, the furniture alone, and
- * the meshes they are drawn on. High and up load `bg` and `fg`, Low and Medium `bgLow` and `fgLow`
- * (`bbPhotoDetail`); the box's `backdrop` is fetched only if one of these fails.
- */
-export interface PhotoLayers {
-  /** the backdrop with the furniture inpainted out, 4096 × 2048 and 2048 × 1024 */
-  bg: string;
-  bgLow: string;
-  /** the ORIGINAL backdrop, rows `fgRows` only, 4096 and 2048 wide */
-  fg: string;
-  fgLow: string;
-  /** the room and furniture meshes (`scripts/venues/pack.ts`) */
-  mesh: string;
-  /** the panorama's rows `fg` holds, as shares of its height, top first */
-  fgRows: readonly [number, number];
-  /** where the room's floor is the photographed floor plane, when that is not the whole room: the
-   * field's shadow stops at its edge (the school hall's stage edge is 80 in out at its nearest, with
-   * two thrusts further out, over an auditorium 44 in lower) */
-  floor?: PhotoFloor;
-  /** false: the furniture above the lens (`fg-hi`) is not drawn. The events hall's is its pendant
-   * lamps, relief seen from one point, which every other eye drew as white streaks under the roof;
-   * the painted-out ceiling shows instead (2026-11-01). */
-  upper?: false;
-  bytes: { bg: number; bgLow: number; fg: number; fgLow: number; mesh: number };
-}
-
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -365,11 +221,8 @@ export interface EnvironmentDef {
   venue: VenueSpec;
   /** the painted dome. Absent means the surround comes from somewhere else: three's own
    * `RoomEnvironment` for `room` (whose background is the THEMED letterbox colour), the fetched
-   * image for an `hdri` entry, or the photograph for a `photo` one. */
+   * image for an `hdri` entry. */
   look?: EnvironmentLook;
-  /** a PHOTOGRAPHED venue (see `PhotoVenue`). Its `venue` above is still built: it is what stands
-   * while the photograph loads, and what stays if it cannot. */
-  photo?: PhotoVenue;
   /** absent for a procedural entry: it is generated, it has no author and it costs nothing. */
   hdri?: {
     /** the 1k `.hdr` on Poly Haven's CDN. Verified 2026-09-18: 200, `Access-Control-Allow-Origin: *`. */
@@ -404,67 +257,6 @@ export interface EnvironmentDef {
 const PH_HDR = (slug: string): string => `https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/${slug}_1k.hdr`;
 const PH_PAGE = (slug: string): string => `https://polyhaven.com/a/${slug}`;
 const PH_LICENSE = 'https://polyhaven.com/license';
-
-/** a photographed venue's three files (`scripts/venues/derive.cjs` names them), with their sizes */
-const PHOTO_FILES = (
-  id: string,
-  backdrop: number,
-  backdropLow: number,
-  ibl: number,
-): Pick<PhotoVenue, 'backdrop' | 'backdropLow' | 'ibl' | 'bytes'> => ({
-  backdrop: `venues/${id}-4k.webp`,
-  backdropLow: `venues/${id}-2k.webp`,
-  ibl: `venues/${id}-ibl.hdr`,
-  bytes: { backdrop, backdropLow, ibl },
-});
-
-/** a photographed venue's layer files (`scripts/venues/meshes.py` and `pack.ts` name them), with
- * the furniture's rows and the sizes (`sync-env.mjs` writes both) */
-const PHOTO_LAYERS = (
-  id: string,
-  fgRows: readonly [number, number],
-  bytes: PhotoLayers['bytes'],
-  floor?: PhotoFloor,
-): PhotoLayers => ({
-  bg: `venues/${id}-bg-4k.webp`,
-  bgLow: `venues/${id}-bg-2k.webp`,
-  fg: `venues/${id}-fg-4k.webp`,
-  fgLow: `venues/${id}-fg-2k.webp`,
-  mesh: `venues/${id}-room.glb`,
-  fgRows,
-  ...(floor ? { floor } : {}),
-  bytes,
-});
-
-/** the credit block of a photographed venue */
-const PH_CREDIT = (
-  slug: string,
-  authors: readonly { name: string; role: string }[],
-): Pick<PhotoVenue, 'slug' | 'page' | 'authors' | 'license' | 'licenseUrl'> => ({
-  slug,
-  page: PH_PAGE(slug),
-  authors,
-  license: 'CC0 1.0',
-  licenseUrl: PH_LICENSE,
-});
-
-/**
- * THE LENS HEIGHT the photographs were taken at, inches — Poly Haven's tripod, MEASURED PER VENUE
- * (2026-10-24), because the rooms were read off the photographs in lens heights: a wrong lens sizes
- * the whole room wrong against the true-scale field and gives wrong parallax from every eye off it.
- * Each is read off gnomonic crops of its own backdrop: an object of known height h on the field's
- * floor, its base α_b and top α_t below the horizon, gives h / (1 − tan α_t / tan α_b).
- *
- * This 63 is for the venues the measurement leaves within 2 % of it: the events hall's tables (0.76 m,
- * two of them: 63.2 and 63.3 in), the quad's two steel doors (2.032 m leaves on a walkway 0.145 lens
- * heights up, measured off its curb: 62.9 and 63.8). The school hall's references disagree by more
- * than the change (the covered grand piano over its near leg 62.4–64.5, the wing door's leaf 65.5 at
- * an old 1981 mm, 67.1 at 2032 mm) and the hangar's are too far out and too irregular to read (a
- * bench, a table, a motorcycle wheel: 59–81), so both keep it. The COURT is measured to a few tenths
- * and carries its own (`height` on its row): it was this number's source, read as 1.64 and 1.54 m off
- * the netball lines, and averaged to 1.6.
- */
-const PHOTO_LENS_IN = 63;
 
 /**
  * THE RIG THE THREE ORIGINAL ENVIRONMENTS ARE LIT BY — the same numbers `renderCore.ts` declares
@@ -818,220 +610,6 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
   },
   {
     /**
-     * A SCHOOL HALL WITH A WOODEN FLOOR AND A STAGE — chosen over the two fitness-gym sets
-     * (`gym_01`, `crossfit_gym`) and the climbing gym because it is the room an FTC event is
-     * actually held in: a high ceiling, overhead fluorescents, and a floor bright enough to
-     * bounce light back under a chassis. A weights room lights a robot from one wall.
-     *
-     * PHOTOGRAPHED SINCE 2026-10-10: the field stands on the stage the panorama was taken from,
-     * with the auditorium behind it (turned 180° so the seats are on the far side from the
-     * audience camera, `+y`). The stage is small — 7.6 lens heights wide, its front edge under 2
-     * out — so the stage-level box takes the auditorium too (12.0 deep in all). The auditorium
-     * floor is a metre below the stage, and one floor plane draws it about 0.6 × as deep as it is. The key comes from the auditorium
-     * lights, which is where the photograph's own light comes from (`fieldlight`: az 75°, el 35°).
-     *
-     * ⚠️ NOT A DEFAULT SINCE 2026-10-11 (`furniture` below): the stage edge is 81 in out on +y,
-     * 9 in past the field's wall (measured off the photograph: 37.7° below the lens), the seats
-     * start just beyond it, and from both driver cameras a third of the frame is seats drawn flat
-     * across the floor. Painting ~300 of them out leaves nothing true to fill with, and a +y wall
-     * at the stage edge would leave the cameras 51 in of room on that side. High, Ultra and the
-     * replay export render in the events hall instead.
-     */
-    id: 'school-hall',
-    name: 'School hall',
-    note: 'On the stage, the auditorium behind, 1.5 MB',
-    rig: {
-      hemiSky: 0xfff6e8,
-      hemiGround: 0x5e5444,
-      hemiIbl: 1.3,
-      hemiNoIbl: 2.1,
-      sun: [22, 116, 120],
-      sunColor: 0xfff1dc,
-      sunIntensity: 1.9,
-      exposure: 1.2,
-    },
-    // what stands while the photograph loads, and if it cannot: the procedural hall
-    venue: { kind: 'hall', floor: 0x8a7352, wall: 0xaaa392, trim: 0x796f5e, lamp: 0xfff8ec, lampPower: 1.1, half: 700, ceil: 330, gridded: true },
-    photo: {
-      ...PHOTO_FILES('school-hall', 726_594, 221_352, 430_592),
-      gain: 1.3,
-      intensity: 0.9,
-      saturation: 0.85,
-      height: PHOTO_LENS_IN,
-      room: { x0: -233, x1: 246, y0: -208, y1: 551, ceil: 260 },
-      shadow: 0.4,
-      layers: PHOTO_LAYERS('school-hall', [0.162109375, 0.71484375], { bg: 564_494, bgLow: 173_284, fg: 386_642, fgLow: 129_016, mesh: 86_668 }, { x0: -233, x1: 246, y0: -208, y1: 80 }),
-      floorTexture: { tile: 'venues/school-hall-floor.webp', inches: [140.31, 140.31], mean: [0.3455, 0.2142, 0.0534], base: [0.2428, 0.159, 0.0523], light: 1, bytes: 37_812 },
-      furniture: 'the auditorium: ~300 seats from the stage edge (81 in out on +y) to the back wall',
-      // `gym` is the same ROOM painted: a hall venue, a wood floor, bleachers, overhead fittings
-      fallback: 'gym',
-      ...PH_CREDIT('school_hall', [
-        { name: 'Dimitrios Savva', role: 'Photography' },
-        { name: 'Jarod Guest', role: 'Processing' },
-      ]),
-    },
-  },
-  {
-    /**
-     * AN EVENTS HALL — brick walls, a steel roof on trusses, a concrete floor: the shape of a
-     * venue an FTC qualifier is held in. Turned −20° so its long axis runs along x, the drivers'
-     * line of sight; the end walls are 9.7 and 10.6 lens heights out, the sides 5.1 and 5.8.
-     * The tables and chairs on the +y side are the one thing a single floor plane cannot draw
-     * standing up.
-     */
-    id: 'events-hall',
-    name: 'Events hall',
-    note: 'Brick walls, steel roof, concrete floor, 1.6 MB',
-    rig: {
-      hemiSky: 0xf2f6ff,
-      hemiGround: 0x5f5c56,
-      hemiIbl: 1.3,
-      hemiNoIbl: 2.1,
-      sun: [27, -127, 109],
-      sunColor: 0xf4f8ff,
-      sunIntensity: 1.9,
-      exposure: 1.2,
-    },
-    venue: { kind: 'hall', floor: 0x77736c, wall: 0xb2aca2, trim: 0x6a645c, lamp: 0xf4f8ff, lampPower: 1.1, half: 700, ceil: 330 },
-    photo: {
-      ...PHOTO_FILES('events-hall', 785_528, 249_240, 427_861),
-      gain: 1,
-      intensity: 0.6,
-      saturation: 0.85,
-      height: PHOTO_LENS_IN,
-      room: { x0: -611, x1: 668, y0: -318, y1: 365, ceil: 250, eave: 145, ridgeY: 20 },
-      shadow: 0.4,
-      layers: { ...PHOTO_LAYERS('events-hall', [0.283203125, 0.568359375], { bg: 684_836, bgLow: 213_750, fg: 380_700, fgLow: 126_826, mesh: 43_676 }), upper: false },
-      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.3564, 0.3417, 0.3218], light: 0.5, bytes: 63_886 },
-      fallback: 'gym',
-      ...PH_CREDIT('events_hall_interior', [
-        { name: 'Dimitrios Savva', role: 'Photography' },
-        { name: 'Jarod Guest', role: 'Processing' },
-      ]),
-    },
-  },
-  {
-    /**
-     * A HANGAR — a big shed with a clear floor, a light aircraft at one end and the open door at
-     * the other. Turned 72° so that axis is x, the drivers' line of sight (90° left every long line
-     * of the shed at ~+18°). Daylight through the side windows (`fieldlight`: az 45°, el 20°),
-     * which the key follows at 40°.
-     */
-    id: 'hangar',
-    name: 'Hangar',
-    note: 'Daylight through high windows, 1.9 MB',
-    rig: {
-      hemiSky: 0xfff6ec,
-      hemiGround: 0x625a4e,
-      hemiIbl: 1.3,
-      hemiNoIbl: 2.1,
-      sun: [94, 90, 109],
-      sunColor: 0xfff2e0,
-      sunIntensity: 1.9,
-      exposure: 1.2,
-    },
-    venue: { kind: 'hall', floor: 0x7d7465, wall: 0xa59d8c, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.1, half: 760, ceil: 360 },
-    photo: {
-      ...PHOTO_FILES('hangar', 1_331_394, 343_558, 430_660),
-      gain: 1.5,
-      intensity: 0.65,
-      saturation: 0.85,
-      height: PHOTO_LENS_IN,
-      room: { x0: -709, x1: 857, y0: -435, y1: 435, ceil: 483, eave: 328, ridgeY: 0 },
-      shadow: 0.4,
-      layers: PHOTO_LAYERS('hangar', [0.44140625, 0.556640625], { bg: 1_151_120, bgLow: 306_910, fg: 204_964, fgLow: 59_102, mesh: 43_028 }),
-      floorTexture: { tile: 'venues/hangar-floor.webp', inches: [240, 240], mean: [0.3187, 0.2501, 0.1899], base: [0.412, 0.3336, 0.2653], light: 1, bytes: 63_886 },
-      fallback: 'workshop',
-      ...PH_CREDIT('small_hangar_01', [{ name: 'Sergej Majboroda', role: 'All' }]),
-    },
-  },
-  {
-    /**
-     * AN OUTDOOR COURT at the end of the day — a fenced netball court, so the field stands on a
-     * painted sports surface whose lines give the eye an exact scale. The box is the fence: 11.4 /
-     * 12.4 lens heights out along x, 6.1 / 5.8 along y.
-     *
-     * THE LENS IS 64.6 in, MEASURED OFF THE LINES (2026-10-24): two courts are painted on it, a
-     * tennis court (white) and a netball court (yellow), centred on the lens. Each pair of parallel
-     * lines either side of it, read where it crosses the axis, puts the lens at its span over the
-     * sum of the two lines' cotangents: the service lines (12.75 m centre to centre) 64.8, the
-     * baselines (23.72) 64.9, the singles sidelines (8.18) 64.4, the doubles (10.92) 64.6, the netball
-     * sidelines (15.20) 64.5 and its third lines (10.12) 64.3. The first reading's 1.54 m does not
-     * reproduce off any pair; the surface tilts 0.2–0.5 % (drainage), which moves the far lines a few
-     * tenths and no more. The room was rescaled from 63 about the lens (× 1.0254,
-     * `scripts/venues/rescale-lens.ts`).
-     *
-     * The sun is low in the photograph (12°) and the key is raised to 40° for the RENDER lane's 25°
-     * rule (`sunset`'s measurement).
-     */
-    id: 'court',
-    name: 'Outdoor court',
-    note: 'Evening sky over a sports court, 1.1 MB',
-    rig: {
-      hemiSky: 0xe4edff,
-      hemiGround: 0x3f4a46,
-      hemiIbl: 1.3,
-      hemiNoIbl: 2.1,
-      sun: [-16, -129, 109],
-      sunColor: 0xffecd2,
-      sunIntensity: 1.9,
-      exposure: 1.2,
-    },
-    venue: { kind: 'outdoor', floor: 0x45574f, wall: 0x8c9890, trim: 0x4b5a50, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
-    photo: {
-      ...PHOTO_FILES('court', 438_074, 116_978, 375_051),
-      gain: 2.5,
-      intensity: 1,
-      saturation: 0.8,
-      height: 64.6,
-      room: { x0: -736, x1: 801, y0: -394, y1: 374, ceil: 2051 },
-      shadow: 0.45,
-      layers: PHOTO_LAYERS('court', [0.341796875, 0.560546875], { bg: 394_290, bgLow: 107_070, fg: 260_832, fgLow: 69_588, mesh: 37_320 }),
-      fallback: 'overcast',
-      ...PH_CREDIT('netball_court', [
-        { name: 'Dimitrios Savva', role: 'Photography' },
-        { name: 'Jarod Guest', role: 'Processing' },
-      ]),
-    },
-  },
-  {
-    /**
-     * A COVERED SCHOOL QUAD — paving under a steel canopy, open to the courtyard on one side. The
-     * pavers are a second exact scale on the ground, the canopy keeps the light soft.
-     */
-    id: 'quad',
-    name: 'School quad',
-    note: 'Paving under a canopy, 2.3 MB',
-    rig: {
-      hemiSky: 0xfff8ee,
-      hemiGround: 0x645a4a,
-      hemiIbl: 1.3,
-      hemiNoIbl: 2.1,
-      sun: [77, -92, 120],
-      sunColor: 0xfff4e2,
-      sunIntensity: 1.9,
-      exposure: 1.2,
-    },
-    venue: { kind: 'outdoor', floor: 0x8a7d66, wall: 0x9aa39a, trim: 0x5a6152, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
-    photo: {
-      ...PHOTO_FILES('quad', 1_436_898, 436_626, 449_016),
-      gain: 1.1,
-      intensity: 0.65,
-      saturation: 0.8,
-      height: PHOTO_LENS_IN,
-      room: { x0: -630, x1: 662, y0: -372, y1: 384, ceil: 190 },
-      shadow: 0.4,
-      layers: PHOTO_LAYERS('quad', [0.33984375, 0.5625], { bg: 1_271_930, bgLow: 380_350, fg: 342_984, fgLow: 115_444, mesh: 41_700 }),
-      floorTexture: { tile: 'venues/quad-floor.webp', inches: [140.25, 138.2], mean: [0.2721, 0.1966, 0.1107], base: [0.4034, 0.3176, 0.1917], light: 1, bytes: 145_628 },
-      fallback: 'overcast',
-      ...PH_CREDIT('school_quad', [
-        { name: 'Dimitrios Savva', role: 'Photography' },
-        { name: 'Jarod Guest', role: 'Processing' },
-      ]),
-    },
-  },
-  {
-    /**
      * A NEUTRAL STUDIO, and neutral is the requirement rather than a preference: the tiles and
      * the tape keep fixed on-field colours so the HUD's contrast pairs hold (§4.5), and a
      * warm- or blue-cast studio would push every one of them without any of the tokens
@@ -1062,38 +640,6 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
 
 export function environmentDef(id: EnvironmentId): EnvironmentDef {
   return BB_ENVIRONMENTS.find((e) => e.id === id) ?? BB_ENVIRONMENTS[0];
-}
-
-/**
- * THE VERSION A VENUE FILE'S URL CARRIES — its size in bytes, as its row states it, for every file
- * a photographed venue fetches (`venueAssetUrl` appends `?v=`). `vercel.json` serves `/venues`
- * immutable for a year, which is only safe because a rebuilt file comes with a new URL: the rows
- * that place a room live in the hashed JS bundle and update at once, and a backdrop cached under
- * the same name would be drawn against the new room's numbers. The RENDER lane checks every row's
- * byte count against the file on disk, so a rebuild cannot ship with the old version.
- */
-let venueBytes: Map<string, number> | null = null;
-export function venueFileBytes(path: string): number | undefined {
-  if (!venueBytes) {
-    venueBytes = new Map();
-    for (const e of BB_ENVIRONMENTS) {
-      const p = e.photo;
-      if (!p) continue;
-      venueBytes.set(p.backdrop, p.bytes.backdrop);
-      venueBytes.set(p.backdropLow, p.bytes.backdropLow);
-      venueBytes.set(p.ibl, p.bytes.ibl);
-      const l = p.layers;
-      if (l) {
-        venueBytes.set(l.bg, l.bytes.bg);
-        venueBytes.set(l.bgLow, l.bytes.bgLow);
-        venueBytes.set(l.fg, l.bytes.fg);
-        venueBytes.set(l.fgLow, l.bytes.fgLow);
-        venueBytes.set(l.mesh, l.bytes.mesh);
-      }
-      if (p.floorTexture) venueBytes.set(p.floorTexture.tile, p.floorTexture.bytes);
-    }
-  }
-  return venueBytes.get(path.replace(/^\/+/, ''));
 }
 
 /**
@@ -1147,8 +693,8 @@ export function canFetchHdri(): boolean {
  * One resolver, one answer, all three in step.
  *
  * It is deliberately NOT applied to the STORED setting. Nothing is rewritten, so a player who
- * picked `school-hall` still has `school-hall` stored and gets the photograph back the moment
- * they open the same build outside the embed. (Storage is per-ORIGIN anyway — the activity's
+ * picked `monochrome-studio` still has it stored and gets the HDRI back the moment they open the
+ * same build outside the embed. (Storage is per-ORIGIN anyway — the activity's
  * `discordsays.com` bucket is not `playdsim.com`'s — so the two can never collide.)
  */
 export function environmentDefFor(id: EnvironmentId): EnvironmentDef {
@@ -1172,13 +718,8 @@ export function hdriEnvironments(): EnvironmentDef[] {
   return BB_ENVIRONMENTS.filter((e) => e.hdri);
 }
 
-/** every PHOTOGRAPHED venue (same-origin files under `public/venues/`). */
-export function photoEnvironments(): EnvironmentDef[] {
-  return BB_ENVIRONMENTS.filter((e) => e.photo);
-}
-
-/** WHO TO CREDIT for an environment that is somebody's photograph — a fetched HDRI or a derived
- * venue — or null for a generated one. What the Contributors page renders, per entry. */
+/** WHO TO CREDIT for an environment that is somebody's work — a fetched HDRI — or null for a
+ * generated one. What the Contributors page renders, per entry. */
 export function environmentCredit(e: EnvironmentDef): {
   page: string;
   authors: readonly { name: string; role: string }[];
@@ -1186,10 +727,6 @@ export function environmentCredit(e: EnvironmentDef): {
   licenseUrl: string;
   use: string;
 } | null {
-  if (e.photo) {
-    const p = e.photo;
-    return { page: p.page, authors: p.authors, license: p.license, licenseUrl: p.licenseUrl, use: 'BIOBUZZ 3D venue backdrop and lighting' };
-  }
   if (e.hdri) {
     const h = e.hdri;
     return { page: h.page, authors: h.authors, license: h.license, licenseUrl: h.licenseUrl, use: 'BIOBUZZ 3D environment lighting' };

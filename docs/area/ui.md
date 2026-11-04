@@ -428,9 +428,9 @@ rulings below are theirs, not defaults.
   should match the graphics selected by the user"): their tier, room, shadows, AA, element detail,
   render scale and the device's full pixel ratio, following a change to them. It REVERSES the
   2026-11-01 ruling (Home "still distorted and EXTREMELY laggy on some devices"), under which the stage
-  drew Medium in the procedural `arena` at 1.5 dpr whatever the player chose; both causes come back
-  with a player's High-or-up pick: a photographed venue is exact only near its lens, so Home's corner
-  shot (150 in up) can blur the floor round the field, and the first load and every fly frame pay the
+  drew Medium in the procedural `arena` at 1.5 dpr whatever the player chose. The distortion was the
+  photographed venues, retired the same day (`docs/area/biobuzz.md`, NO PHOTOGRAPH IS PROJECTED ONTO
+  GEOMETRY); the cost comes back with a High-or-up pick: the first load and every fly frame pay the
   match's cost. What stayed: the scene draws on demand and boots on idle, shows no perf overlay
   (non-interactive), and `SceneOptions.tunesTier: false` lets Auto measure menu frames without
   stepping the stored tier. A first visit runs Auto's GPU guess on Home, as the first match used to.
@@ -528,12 +528,10 @@ rulings below are theirs, not defaults.
   column's right edge (Home) off the DOM and hands them to the scene as `insets`. Poses are the
   hand-tuned `POSES`/`SHOW` constants in `menuStagePoses.ts` (DOM-free, so the BIOBUZZ RENDER lane
   reads them); the showcase spot is on open floor, clear of the hive's legs.
-- **HOME'S HIGH SHOT AND THE PHOTOGRAPHED VENUES** (2026-10-24; superseded on the stage 2026-11-01).
-  Drawn on its box, a photographed venue lays everything that is not floor or wall flat across the
-  floor when seen from above the lens, so every one is drawn as its layered room
-  (`renderPhotoVenue.ts`). Even layered, Home's eye 150 in up still showed a blurred floor and smeared
-  window light, and the stage now draws the procedural arena instead (above). The RENDER lane still
-  checks both stage eyes inside every photographed room, which is what a match from those poses needs.
+- **HOME'S HIGH SHOT** (150 in up) smeared every photographed venue, even drawn as relief; that is
+  one of the reasons they were retired (2026-11-04). The RENDER lane sweeps both stage eyes with the
+  match's (`sweepMatchEyes`), so a venue that blocks or smears from there fails like one that does
+  in a match.
 - ⚠️ **A PHONE'S HOME IS NOT ON THE STAGE, AND IT FITS AN iPHONE SE IN SAFARI WITH NO SCROLL**
   (owner, 2026-10-18: "restore that page … to the original one", alpha's; then "fit without needing
   to scroll for any phone"). Below 720px `App.tsx` mounts no `MenuStage` for Home and passes no
@@ -804,12 +802,9 @@ where the settings are stored, which nobody picks a section by, and went as clut
 - **THE IDLE WARM COVERS MORE THAN THE CHUNK (BIOBUZZ 3D, 2026-10-24).** `preloadRoomView` also
   starts the 3D physics solve (solo practice has no lobby to do it) and calls the game's
   `warmScene` (`warmBiobuzz3d`, same `./scene/renderScene` specifier as `scene`): the post /
-  surfaces / bay chunks its settings want, plus low-priority fetches of the SELECTED venue's files
-  at its detail tier and the field glb (`/venues`, `/models` carry a day's `max-age` in
-  `vercel.json`, so these fill the cache). The two things that used to hitch on a first draw now
-  run BEFORE it: `createBiobuzzScene` awaits `compileAsync` (capped 1 s) before resolving, and a
-  photo venue is `initTexture`d and `compileAsync`d before `swapVenue`, re-checking `venueKey` after
-  the await. Field glb / HDR module caches were NOT added (unmeasured).
+  surfaces / bay chunks its settings want, plus a low-priority fetch of the field glb (`/models`
+  carries a day's `max-age` in `vercel.json`, so it fills the cache). The first draw's hitch now
+  runs BEFORE it: `createBiobuzzScene` awaits `compileAsync` (capped 1 s) before resolving. Field glb / HDR module caches were NOT added (unmeasured).
 
 **Configure copy.** No decorative glyph (the `🎯` on preset cards, the `＋` on the add cards and
 the `✎` on Edit build are gone), no sentence whose content is where another screen is, and no

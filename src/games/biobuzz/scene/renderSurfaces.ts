@@ -64,8 +64,8 @@ export interface BbSurfaces {
    * `{ probe: false }` instance, or when the scene has no cube-UV environment yet. Call it when the
    * room CHANGED — the environment resolved (a late HDRI included), the venue was rebuilt, the
    * mode was switched on — never per frame, and outside `raise`/`lower` and the bloom window.
-   * `room` overrides the box the probe is projected against — a live PHOTOGRAPHED venue's own
-   * (`renderPhotoVenue.ts`'s `photoRoomBox`), which is not the procedural `def.venue`'s.
+   * `room` overrides the box the probe is projected against, for a venue whose room is not the
+   * procedural `def.venue`'s.
    */
   recapture(
     renderer: THREE.WebGLRenderer,

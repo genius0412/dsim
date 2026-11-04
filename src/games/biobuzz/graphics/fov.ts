@@ -25,6 +25,18 @@ export function vFovFromH(hDeg: number, aspect: number): number {
   return (2 * datan(dtan((hDeg * RAD) / 2) / a)) / RAD;
 }
 
+/**
+ * THE VERTICAL FOV A CAMERA TAKES FROM THE SLIDER on a screen of `aspect`: the slider's angle spans
+ * the screen's LONGER side. On every landscape screen that is `vFovFromH`, unchanged. On a portrait
+ * one, holding it across the short side made the vertical view explode (2026-11-04, measured
+ * through the real cameras at 390 × 844: the chase camera 138° tall, the orbit 123°, the frame a
+ * fish-eye of floor and ceiling with the field a speck in the middle); now it is the slider across
+ * the height (100°), whose corner stretch matches a 16:9 screen's at the same setting.
+ */
+export function vFovForScreen(hDeg: number, aspect: number): number {
+  return vFovFromH(hDeg, Math.max(1, aspect));
+}
+
 /** the HORIZONTAL FOV (degrees) a vertical `vDeg` shows across a screen of `aspect` */
 export function hFovFromV(vDeg: number, aspect: number): number {
   const a = Math.max(1e-3, aspect);

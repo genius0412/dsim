@@ -373,9 +373,8 @@ function buildFittings(spec: VenueSpec, d: (typeof LOD)['low']): THREE.Instanced
  *
  * ⚠️ **NOT LAYER 1 OR 2: THOSE ARE THE HEADSET'S EYES.** three's WebXR draws each eye with the
  * camera's mask plus layer 1 for the left eye and layer 2 for the right, and takes the other eye's
- * layer OFF (`WebXRManager.updateCamera`). On layer 1, as this was until 2026-11-02, the rig and a
- * photographed room's upper half (`fg-hi`, `bg-hi`) drew in the LEFT eye only in VR
- * (`renderXR.ts`). Any layer from 3 up is seen by both eyes of a camera that enables it.
+ * layer OFF (`WebXRManager.updateCamera`). On layer 1, as this was until 2026-11-02, the rig drew
+ * in the LEFT eye only in VR (`renderXR.ts`). Any layer from 3 up is seen by both eyes of a camera that enables it.
  */
 export const VENUE_OVERHEAD_LAYER = 3;
 
@@ -399,8 +398,7 @@ export const RIG_CLEAR_IN = 12;
  * `BackSide` and so already a clean cutaway from up there; the rig was the one thing in the way.
  *
  * So per frame, for the camera being drawn: an eye higher than `RIG_CLEAR_IN` under the lowest part
- * of the rig (`userData.rigBottomZ`, set by `buildBiobuzzVenue`; absent on a photographed venue,
- * whose own overhead layer is the room's upper half and stays) does not draw the layer. Below it,
+ * of the rig (`userData.rigBottomZ`, set by `buildBiobuzzVenue`) does not draw the layer. Below it,
  * every part of the rig is above the eye and so above every sight line to the field.
  */
 export function syncVenueRigLayer(cam: THREE.Camera, venue: THREE.Object3D | null): void {
@@ -414,8 +412,8 @@ export function syncVenueRigLayer(cam: THREE.Camera, venue: THREE.Object3D | nul
 export const STANDS_MARGIN_IN = 30;
 
 /**
- * ⚠️ **THE ORBIT AND FREE CAMERAS STOP IN FRONT OF THE STANDS (2026-11-01)**, the way they stop
- * inside a photographed room (`renderPhotoVenue.ts`'s `photoCameraRoom`). `VENUE_MIN_HALF` keeps
+ * ⚠️ **THE ORBIT AND FREE CAMERAS STOP IN FRONT OF THE STANDS (2026-11-01)** (`CameraRoom`,
+ * `renderCameras.ts`). `VENUE_MIN_HALF` keeps
  * the walls past the cameras' reach, but the seating banks stand INSIDE the walls: the gym's front
  * riser is 464 in out and the arena's 544, against a 620-in orbit. Wheeled out at a low elevation
  * along y, the orbit stood among the crowd and two spectators filled the bottom of the frame.

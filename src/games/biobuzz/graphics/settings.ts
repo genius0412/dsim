@@ -237,8 +237,8 @@ export type ElementDetail = 'sphere' | 'cad';
  *   physical  — measured finishes (bare aluminium is a metal, powder coat and plastics are
  *               dielectrics, rubber is rubber), procedural surface detail (foam stipple, powder-
  *               coat orange peel, extrusion lines, roller pips), and a ROOM PROBE: metals and the
- *               polycarbonate reflect the venue that is actually drawn, not the HDRI photograph
- *               the venue geometry hides
+ *               polycarbonate reflect the venue that is actually drawn, not the painted dome or
+ *               HDRI the venue geometry hides
  *
  * Owner, 2026-09-27, on the first Extreme: "Adding accurate texture, material, and reflection
  * matters more [than glow]." A row of its own, asked of the SETTINGS like `wantsPost`, so a Custom
@@ -280,13 +280,11 @@ export type PerfOverlay = 'off' | 'fps' | 'full';
  * imports this, so the dependency only ever points one way.
  *
  * Nine are PROCEDURAL (2026-09-21): they are painted, they cost no download, and they are
- * therefore live on every tier including the two where image-based lighting is off. The other six
- * cost bytes: `monochrome-studio` is a fetched HDRI, and `school-hall`, `events-hall`, `hangar`,
- * `court` and `quad` are PHOTOGRAPHED VENUES (2026-10-10, same-origin files under `public/venues/`).
- * `events-hall` is also what the fixed-High replay export renders in, so it is a CONTRACT, not
- * merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it). It was `school-hall` until
- * 2026-10-11: photographed, that hall's ~300 auditorium seats draw flat across the floor beside the
- * field (`PhotoVenue.furniture`).
+ * therefore live on every tier including the two where image-based lighting is off. The tenth,
+ * `monochrome-studio`, is a fetched HDRI. High's column (`gym`) is also what the fixed-High replay
+ * export renders in, so it is a CONTRACT, not merely a default (`GFX_PRESETS.high`, and the RENDER
+ * lane pins it). The five PHOTOGRAPHED venues (2026-10-10 to 2026-11-04) are retired: see
+ * `RETIRED_ENVIRONMENTS`.
  */
 export type EnvironmentId =
   | 'room'
@@ -298,16 +296,11 @@ export type EnvironmentId =
   | 'night'
   | 'cyc-light'
   | 'cyc-dark'
-  | 'school-hall'
-  | 'events-hall'
-  | 'hangar'
-  | 'court'
-  | 'quad'
   | 'monochrome-studio';
 
-/** the allowlist `coerceGraphicsSettings` checks a stored `environment` against. A removed or
- * misspelled id falls back to the TIER's own column, which is the same field-by-field rule every
- * other row follows — never a reset of the whole object. */
+/** the allowlist `coerceGraphicsSettings` checks a stored `environment` against. A misspelled id
+ * falls back to the TIER's own column, which is the same field-by-field rule every other row
+ * follows — never a reset of the whole object; a RETIRED one to its stand-in (below). */
 export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'room',
   'arena',
@@ -318,13 +311,24 @@ export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
   'night',
   'cyc-light',
   'cyc-dark',
-  'school-hall',
-  'events-hall',
-  'hangar',
-  'court',
-  'quad',
   'monochrome-studio',
 ];
+
+/**
+ * THE PHOTOGRAPHED VENUES, RETIRED (2026-11-04), each to the painted entry it already named as its
+ * stand-in. They were Poly Haven panoramas projected onto an approximate room, correct only from the
+ * photograph's own lens, so every camera warped them (`graphics/environments.ts`'s header). A stored
+ * pick of one is a pick of that kind of place, so it keeps the kind: a hall reads as the gym, the
+ * hangar as the workshop, the two open-air rows as the overcast day. High's column (was
+ * `events-hall`) is `gym` too, so an untouched High still reads as High, not Custom.
+ */
+export const RETIRED_ENVIRONMENTS: Readonly<Record<string, EnvironmentId>> = {
+  'school-hall': 'gym',
+  'events-hall': 'gym',
+  hangar: 'workshop',
+  court: 'overcast',
+  quad: 'overcast',
+};
 
 /** THE NINETEEN (§4.4's eighteen rows, Bloom and Materials among them since Extreme, plus `elementDetail`, this build's own). In §4.4's own table order, so the two can be diffed by eye. */
 export interface GraphicsSettings {
@@ -496,8 +500,9 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    // the PHOTOGRAPHED events hall, which is also every replay export's (see `EnvironmentId`)
-    environment: 'events-hall',
+    // the school gym, which is also every replay export's (see `EnvironmentId`): bleachers at this
+    // detail, and the room an FTC event is held in
+    environment: 'gym',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -518,7 +523,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'standard',
-    environment: 'events-hall',
+    environment: 'gym',
     envLighting: true,
     reflections: true,
     bloom: false,
@@ -542,10 +547,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     meshDetail: 'high',
     elementDetail: 'cad',
     materials: 'physical',
-    // the PHOTOGRAPHED events hall (2026-10-10, owner: "actual good quality scenes for
-    // backgrounds"): the closest of the photographs to an FTC venue, and High's and Ultra's too
-    // since 2026-10-11 (the school hall's seats draw flat across the floor, `PhotoVenue.furniture`)
-    environment: 'events-hall',
+    environment: 'gym',
     envLighting: true,
     reflections: true,
     // OFF, not on (owner, 2026-09-27): the Extreme budget goes to what surfaces ARE, not to glow.
@@ -707,7 +709,11 @@ export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): Gr
     meshDetail: oneOf<MeshDetail>(['low', 'high'], o.meshDetail, base.meshDetail),
     elementDetail: oneOf<ElementDetail>(['sphere', 'cad'], o.elementDetail, base.elementDetail),
     materials: oneOf<MaterialModel>(['standard', 'physical'], o.materials, base.materials),
-    environment: oneOf<EnvironmentId>(ENVIRONMENT_IDS, o.environment, base.environment),
+    environment: oneOf<EnvironmentId>(
+      ENVIRONMENT_IDS,
+      typeof o.environment === 'string' && Object.hasOwn(RETIRED_ENVIRONMENTS, o.environment) ? RETIRED_ENVIRONMENTS[o.environment] : o.environment,
+      base.environment,
+    ),
     envLighting: typeof o.envLighting === 'boolean' ? o.envLighting : base.envLighting,
     reflections: typeof o.reflections === 'boolean' ? o.reflections : base.reflections,
     bloom: typeof o.bloom === 'boolean' ? o.bloom : base.bloom,
@@ -745,17 +751,14 @@ export const GFX_STATE_REV = 2;
 /**
  * ⚠ COLUMN DEFAULTS THAT MOVED, MIGRATED ONCE ON LOAD (2026-10-11).
  *
- * High, Ultra and Extreme used to default to `school-hall`. Its photograph now draws ~300
- * auditorium chairs flat across the floor beside the field (`PhotoVenue.furniture`), so the
- * columns moved to `events-hall`. A blob stored before the move carries `school-hall` as the
- * column's own value, not as a pick: nothing can tell the two apart, and leaving it would show
- * every existing High/Ultra player the smeared hall AND relabel a hand-picked High as Custom (its
- * settings no longer match the column). Found driving the real app on a profile an older build
- * had written. A player who wants the school hall picks it again; the revision stamp keeps it.
+ * A blob stored before a column's default moved carries the old default as the column's own
+ * value, not as a pick: nothing can tell the two apart, and leaving it would relabel a hand-picked
+ * preset as Custom (its settings no longer match the column). An entry here moves it once; the
+ * revision stamp keeps whatever the player picks afterwards. Empty since 2026-11-04: its one entry
+ * (`school-hall` → the events hall on High and up) is covered by `RETIRED_ENVIRONMENTS`, which
+ * coerces every stored photographed venue before this runs.
  */
-export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [
-  { key: 'environment', from: 'school-hall', tiers: ['high', 'ultra', 'extreme'] },
-];
+export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [];
 
 function migrateMovedDefaults(settings: GraphicsSettings, tier: GraphicsTier, rev: unknown): GraphicsSettings {
   if (typeof rev === 'number' && rev >= GFX_STATE_REV) return settings;

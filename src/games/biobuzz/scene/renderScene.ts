@@ -52,22 +52,6 @@ import { bbWantsBay, bbLoadBay, bbWheelDetail, buildBiobuzzRobots, updateBiobuzz
 import { importedMeshesSettled } from './renderImported';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, venueCameraRoom } from './renderVenue';
-import {
-  bbPhotoDetail,
-  buildPhotoVenue,
-  disposePhotoSource,
-  loadPhotoBackdrop,
-  loadPhotoFloor,
-  loadPhotoLayers,
-  photoBlocked,
-  photoCameraRoom,
-  photoRoomBox,
-  photoTexturesOf,
-  setPhotoVenueLighting,
-  venueAssetUrl,
-  type BbPhotoDetail,
-  type PhotoLayerAssets,
-} from './renderPhotoVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDefFor, type EnvironmentDef } from '../graphics/environments';
@@ -320,14 +304,8 @@ class BiobuzzScene implements GameScene {
    * the drag. */
   private venue: THREE.Group | null = null;
   private venueKey = '';
-  /** the PHOTOGRAPHED venue's textures (`renderPhotoVenue.ts`) while one is live: the box's one
-   * backdrop, or the layered room's two — uniforms, so `disposeObject3D` cannot see them: freed
-   * here, with the venue they belong to (one venue's set at a time, never two). */
-  private photoTex: THREE.Texture[] = [];
-  /** the backdrop fetch in flight (settled either way), and the environment's — what
-   * `assetsSettled` waits on, so an export does not start on the generated room and cut to the
-   * photograph a second in */
-  private photoLoading: Promise<void> = Promise.resolve();
+  /** the environment's light-gathering map in flight (settled either way) — what `assetsSettled`
+   * waits on, so an export does not start on the room's ambient and cut to the HDRI a second in */
   private envLoading: Promise<void> = Promise.resolve();
 
   private cssW = 1;
@@ -641,23 +619,13 @@ class BiobuzzScene implements GameScene {
     // It is added BEFORE `tuneMaterials` so the ground's own texture gets the anisotropy row,
     // which is the most grazing-angle surface in the scene once a driver camera is on it.
     const detail = bbVenueDetail(s, this.tier);
-    // a PHOTOGRAPHED venue (`renderPhotoVenue.ts`) is keyed by its backdrop size too: Low/Medium
-    // draw the 2k file, High and up the 4k
-    const photo = def.photo ? bbPhotoDetail(s, this.tier, this.renderer.capabilities.maxTextureSize) : null;
-    const key = `${def.id}:${detail}:${photo ?? ''}`;
+    const key = `${def.id}:${detail}`;
     if (key !== this.venueKey) {
-      // the PROCEDURAL venue first, always: a photographed one stands in it while its backdrop
-      // loads, and keeps it if the backdrop cannot load
       this.swapVenue(buildBiobuzzVenue(def.venue, detail), def);
       this.venueKey = key;
-      if (def.photo && photo) this.loadPhoto(def, photo, key);
     }
-    // a photographed room is as big as it was, so the orbit and free cameras stay inside it from
-    // the moment it is picked (not when it lands, which would jump a zoomed-out camera in), and
-    // its brightness follows the environment-lighting row (`PHOTO_NO_IBL_DIM`). A procedural one
-    // holds them in front of its seating banks, where it has any (`venueCameraRoom`).
-    this.cameras.setRoom(def.photo ? photoCameraRoom(def.photo) : venueCameraRoom(def.venue, detail));
-    setPhotoVenueLighting(this.venue, def, s.envLighting);
+    // the orbit and free cameras stop in front of the seating banks, where a venue has any
+    this.cameras.setRoom(venueCameraRoom(def.venue, detail));
 
     // before `tuneMaterials`, so twins swapped in here get the anisotropy row like any material
     this.syncSurfaces();
@@ -674,11 +642,8 @@ class BiobuzzScene implements GameScene {
     return this.renderer.compileAsync(this.scene, this.cameras.active).catch(() => undefined);
   }
 
-  /**
-   * PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed (and its photograph
-   * with it), `next`'s twins applied, the probe re-armed. One path for a procedural venue and a
-   * photographed one, and for the swap from the first to the second when a backdrop lands.
-   */
+  /** PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed, `next`'s twins
+   * applied, the probe re-armed. */
   private swapVenue(next: THREE.Group, def: EnvironmentDef): void {
     if (this.venue) {
       // the BASES back on their meshes first, so the walk below frees them and not the twins
@@ -687,9 +652,6 @@ class BiobuzzScene implements GameScene {
       this.scene.remove(old);
       disposeObject3D(old);
     }
-    const texs = photoTexturesOf(next);
-    for (const t of this.photoTex) if (!texs.includes(t)) t.dispose();
-    this.photoTex = texs;
     this.venue = next;
     this.withSurfaces('could not be applied', (sf) => sf.applyVenue(next, def));
     this.probeDirty = true;
@@ -701,67 +663,6 @@ class BiobuzzScene implements GameScene {
        camera stands at a driver station, side-on like the driver camera. */
     applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free, ...(this.xrRig ? [this.xrRig.camera] : [])]);
     this.scene.add(next);
-  }
-
-  /**
-   * FETCH a photographed venue and swap it in when it lands — if the scene still wants that same
-   * venue (`key`). The layered room first (`loadPhotoLayers`); if its files fail, the backdrop on
-   * the box. Fire-and-forget like `env.apply`; a failure of both keeps the procedural venue
-   * standing, says so once, and is remembered (`photoBlocked`) so a scene build does not ask again.
-   */
-  private loadPhoto(def: EnvironmentDef, detail: BbPhotoDetail, key: string): void {
-    const p = def.photo!;
-    const path = detail === 'hi' ? p.backdrop : p.backdropLow;
-    const aniso = Math.min(this.settings.anisotropy, this.renderer.capabilities.getMaxAnisotropy());
-    const layered = !!p.layers && !photoBlocked(venueAssetUrl(p.layers.mesh));
-    if (!layered && photoBlocked(venueAssetUrl(path))) return;
-    const box = (): Promise<THREE.Texture> => {
-      if (photoBlocked(venueAssetUrl(path))) return Promise.reject(new Error(`${path}: blocked after repeated failures`));
-      return loadPhotoBackdrop(path, aniso);
-    };
-    const wanted: Promise<THREE.Texture | PhotoLayerAssets> = layered
-      ? loadPhotoLayers(p, detail, aniso).catch((err: unknown) => {
-          console.warn(`BIOBUZZ 3D: the ${def.name} room layers failed to load; drawing its photograph on the box.`, err);
-          return box();
-        })
-      : box();
-    // the floor tile beside it: a failure only leaves the projected floor (`loadPhotoFloor`)
-    const floorLoad = loadPhotoFloor(p, aniso);
-    this.photoLoading = Promise.all([wanted, floorLoad])
-      .then(async ([src, floor]) => {
-        if (this.disposed || this.venueKey !== key) {
-          disposePhotoSource(src);
-          floor?.dispose();
-          return;
-        }
-        // UPLOAD AND COMPILE BEFORE THE SWAP, NOT ON THE FIRST FRAME THAT DRAWS IT. A 4k texture's
-        // upload + mip chain and the projection shader's link were a visible hitch on the frame the
-        // room appeared. `initTexture` does the upload now; `compileAsync` links off the main thread.
-        // The procedural venue keeps drawing meanwhile. Either may fail: the swap still happens.
-        const room = buildPhotoVenue(def, src, this.sun, this.settings.envLighting, floor);
-        try {
-          for (const t of photoTexturesOf(room)) this.renderer.initTexture(t);
-          await this.renderer.compileAsync(room, this.cameras.active, this.scene);
-        } catch {
-          /* the first draw pays instead */
-        }
-        // the await is a window in which the player can have picked another venue or left
-        if (this.disposed || this.venueKey !== key) {
-          disposeObject3D(room);
-          disposePhotoSource(src);
-          floor?.dispose();
-          return;
-        }
-        this.swapVenue(room, def);
-        this.tuneMaterials();
-        this.renderer.shadowMap.needsUpdate = true;
-      })
-      .catch((err: unknown) => {
-        void floorLoad.then((floor) => floor?.dispose());
-        if (this.disposed || this.venueKey !== key) return;
-        console.warn(`BIOBUZZ 3D: the ${def.name} backdrop failed to load; keeping the generated room.`, err);
-        this.onQualityEvent?.(`Couldn’t load the ${def.name} photograph. Showing a generated room instead.`);
-      });
   }
 
   /**
@@ -1326,10 +1227,8 @@ class BiobuzzScene implements GameScene {
       this.probeDirty = false;
       const hidden = this.probeHidden();
       const def = environmentDefFor(this.settings.environment);
-      // a live PHOTOGRAPHED venue is projected against its own room box, not the procedural one
-      const room = this.photoTex.length > 0 && def.photo ? photoRoomBox(def.photo) : undefined;
       this.withSurfaces('failed while capturing reflections', (sf) => {
-        sf.recapture(this.renderer, this.scene, hidden, def, room);
+        sf.recapture(this.renderer, this.scene, hidden, def);
       });
     }
 
@@ -1479,10 +1378,9 @@ class BiobuzzScene implements GameScene {
   }
 
   /** `GameScene.assetsSettled`: every imported robot's mesh in `world`, parsed or known absent —
-   * and the photographed venue's backdrop and the environment's light-gathering map, loaded or
-   * failed (2026-10-10: the replay export renders in a photographed venue, the events hall) */
+   * and the environment's light-gathering map, loaded or failed */
   assetsSettled(world: World): Promise<void> {
-    return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.photoLoading, this.envLoading]).then(() => undefined);
+    return Promise.all([importedMeshesSettled(world.robots.map((r) => r.spec)), this.envLoading]).then(() => undefined);
   }
 
   /**
@@ -1547,8 +1445,6 @@ class BiobuzzScene implements GameScene {
         /* teardown carries on: a leak beats a scene that cannot be disposed */
       }
     }
-    for (const t of this.photoTex) t.dispose();
-    this.photoTex = [];
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();
@@ -1687,12 +1583,10 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
 /**
  * WARM EVERYTHING A 3D BIOBUZZ SCENE WILL ASK FOR, while the player is on some other screen
  * (`preloadRoomView` → `GameModule.warmScene`; same chunk, same specifier as `scene`). The effects
- * chunks its settings want, the bay chunk if its robots would be High, and the SELECTED venue's and
- * the field's files, fetched at low priority so they only fill the cache (the real load then reads
- * it; `vercel.json` serves `/venues` immutable, each URL versioned by `venueAssetUrl`, and `/models`
+ * chunks its settings want, the bay chunk if its robots would be High, and the field's file,
+ * fetched at low priority so it only fills the cache (the real load then reads it; `/models`
  * revalidates). A generated venue fetches nothing. Idempotent per URL, every failure ignored: the
  * scene's own load is the error path. Only where a match is a click away (`preloadRoomView`).
- * ⚠️ The texture size assumes a 4096 GPU; a smaller one fetches a file the scene does not use.
  */
 const warmed = new Set<string>();
 export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().settings): void {
@@ -1706,15 +1600,4 @@ export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().setting
     void fetch(url, { priority: 'low' } as RequestInit).catch(() => {});
   };
   get(resolveGlbUrl('models/biobuzz', settings.meshDetail));
-  const p = environmentDefFor(settings.environment).photo;
-  if (!p) return;
-  const hi = bbPhotoDetail(settings, tier, 4096) === 'hi';
-  const l = p.layers;
-  if (l) {
-    get(venueAssetUrl(hi ? l.bg : l.bgLow));
-    get(venueAssetUrl(hi ? l.fg : l.fgLow));
-    get(venueAssetUrl(l.mesh));
-  } else get(venueAssetUrl(hi ? p.backdrop : p.backdropLow));
-  if (p.floorTexture) get(venueAssetUrl(p.floorTexture.tile));
-  if (settings.envLighting) get(venueAssetUrl(p.ibl));
 }

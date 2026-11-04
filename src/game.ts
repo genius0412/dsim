@@ -1628,7 +1628,7 @@ export class GameController {
       const factory = await sceneFn();
       // ...and no scene at all for a controller that went away while the chunk loaded: a scene
       // starts fetching its venue the moment it is built, and the factory then waits on the first
-      // frame's shader link, so a doomed one fetched a photographed room alongside the live one
+      // frame's shader link, so a doomed one fetched its assets alongside the live one
       if (this.disposed || epoch !== this.sceneEpoch) return;
       /**
        * Auto's preset line, the slip line and an HDRI failure go to the event log, like

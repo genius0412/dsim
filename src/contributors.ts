@@ -250,8 +250,8 @@ const FIELD_CAD_CREDIT: ThirdPartyAsset = {
 /**
  * ── WHY THE HDRI PART IS DERIVED AND NOT TYPED OUT ─────────────────────────────────────────
  * These entries are built from `BB_ENVIRONMENTS` (`src/games/biobuzz/graphics/environments.ts`),
- * which is the list the Graphics section's environment picker renders from. So adding an HDRI or a
- * photographed venue credits it by CONSTRUCTION: there is no second list to remember to update, and the
+ * which is the list the Graphics section's environment picker renders from. So adding an HDRI
+ * credits it by CONSTRUCTION: there is no second list to remember to update, and the
  * failure this prevents — a shipped asset with no credit on the credits page — is the kind
  * nobody notices until somebody outside the project does.
  *
@@ -259,7 +259,7 @@ const FIELD_CAD_CREDIT: ThirdPartyAsset = {
  * the author roles the API reports, because "we did not have to" is not a reason not to.
  */
 const HDRI_CREDITS: ThirdPartyAsset[] = creditedEnvironments().map((e) => {
-  // a fetched HDRI or a photographed venue derived from one (`environmentCredit`)
+  // a fetched HDRI (`environmentCredit`)
   const c = environmentCredit(e)!;
   return { name: e.name, credits: c.authors, license: c.license, licenseUrl: c.licenseUrl, page: c.page, use: c.use, source: 'Poly Haven' };
 });

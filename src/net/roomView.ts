@@ -10,8 +10,8 @@
  * download.
  *
  * With `assets` (the default) it also starts the 3D physics solve (`preloadRoomPhysics`) and, once
- * the scene chunk lands, the game's `warmScene` (effects chunks, the selected venue's files). That
- * is ~2.5 MB for BIOBUZZ (the 3D solve ~1.1 MB gzipped, a photographed venue 1.1–2.3 MB), so it is
+ * the scene chunk lands, the game's `warmScene` (effects chunks, the field's file). That is over
+ * 1 MB for BIOBUZZ (the 3D solve ~1.1 MB gzipped), so it is
  * for where a match is a click away; App's idle warm on Home asks for the chunk alone. A no-op for a
  * game with no scene and for a player on the 2D view. Unawaited; a failure here is answered by the
  * controller's own load, which falls back to the 2D view.

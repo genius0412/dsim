@@ -27,8 +27,7 @@ import { SURFACE_UNIFORMS, lowerSurfaceUniforms } from './renderSurfaceKit';
  * reflecting nothing; their occlusion is left to GTAO.
  *
  * ── THE THREE NUMBERS THAT HAVE TO AGREE ────────────────────────────────────────────────────
- *   • THE CUBE SIZE equals the DOME's (128 for a painted dome and a photographed venue's 512-wide
- *     `.hdr`, 256 for the 1k HDRI and the room), read
+ *   • THE CUBE SIZE equals the DOME's (128 for a painted dome, 256 for the 1k HDRI and the room), read
  *     off `scene.environment` at capture. The `CUBEUV_*` defines a twin's program is compiled with
  *     come from `scene.environment`'s size, and the probe is sampled through the SAME
  *     `textureCubeUV`, so a mismatched probe would be read with the wrong mip layout. `raise`
@@ -435,8 +434,7 @@ export function createRoomProbe(): RoomProbe {
 
       measure(renderer, scene, target.texture, size);
 
-      // a photographed venue's own room when one is live (`renderPhotoVenue.ts`): the photograph
-      // is projected onto THAT box, so the reflection of it must be too
+      // the venue's own room when the caller names one: the reflection is projected onto THAT box
       const box = room ?? probeBoxFor(venue);
       min.set(...box.min);
       max.set(...box.max);

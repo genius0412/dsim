@@ -19,7 +19,7 @@ import {
   type FreeCamState,
 } from '../graphics/freeCam';
 import { driverEyeFollow, fieldViewPoints, fitDriverEyeFrame, type DriverEyeFrame, type DriverRole } from '../graphics/driverEye';
-import { vFovFromH } from '../graphics/fov';
+import { vFovForScreen } from '../graphics/fov';
 import { GFX_FOV_DEFAULT, GFX_FOV_MAX, GFX_FOV_MIN } from '../graphics/settings';
 
 /**
@@ -127,19 +127,20 @@ let tunedHfovDeg: number | null = null;
  * the field. */
 function fovCapRad(aspect: number): number {
   if (tunedHfovDeg == null) return FOV_MAX_RAD;
-  return Math.min(FOV_MAX_RAD, (vFovFromH(tunedHfovDeg, aspect) * Math.PI) / 180);
+  return Math.min(FOV_MAX_RAD, (vFovForScreen(tunedHfovDeg, aspect) * Math.PI) / 180);
 }
-/** the chase camera's vertical FOV, degrees — the slider exactly, for this screen */
+/** the chase camera's vertical FOV, degrees — the slider exactly, for this screen (across its
+ * longer side: `vFovForScreen`) */
 function chaseFovDeg(aspect: number): number {
-  return tunedHfovDeg == null ? 68 : vFovFromH(tunedHfovDeg, aspect);
+  return tunedHfovDeg == null ? 68 : vFovForScreen(tunedHfovDeg, aspect);
 }
 /** orbit and free cam: a framing shot, so the tighter of the two, as before */
 function orbitFovDeg(aspect: number): number {
-  return tunedHfovDeg == null ? 55 : Math.max(DRIVER_FOV_MIN - 15, vFovFromH(tunedHfovDeg, aspect) - 15);
+  return tunedHfovDeg == null ? 55 : Math.max(DRIVER_FOV_MIN - 15, vFovForScreen(tunedHfovDeg, aspect) - 15);
 }
 /** the height-accurate driver eye's vertical FOV, degrees — the slider exactly, for this screen */
 function driverEyeFovDeg(aspect: number): number {
-  return Math.min(DRIVER_FOV_MAX, vFovFromH(tunedHfovDeg ?? GFX_FOV_DEFAULT, aspect));
+  return Math.min(DRIVER_FOV_MAX, vFovForScreen(tunedHfovDeg ?? GFX_FOV_DEFAULT, aspect));
 }
 /** the player's own "reduced" pick, OR-ed with `prefers-reduced-motion` (which always wins). */
 let tunedReducedMotion = false;
@@ -508,13 +509,11 @@ const reducedMotionMq: MediaQueryList | null =
   typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 
 /**
- * A ROOM THE ORBIT AND FREE CAMERAS MAY NOT LEAVE (2026-10-11) — a photographed venue's real walls
- * and ceiling, less a margin (`photoCameraRoom`, `renderPhotoVenue.ts`). A procedural venue is
- * built wider than the cameras reach (`VENUE_MIN_HALF`); a photograph is the size the room was, as
- * close as 208 in from the field's centre, and a camera past a wall saw that wall's base stretched
- * across the floor for a third to a half of the frame. So the boom from the look-at point to the
- * eye is shortened to stay inside, the way a follow camera stops at a wall: the direction is kept,
- * only the distance gives. Null (every procedural venue) changes nothing.
+ * A ROOM THE ORBIT AND FREE CAMERAS MAY NOT LEAVE (2026-10-11) — the space in front of a venue's
+ * seating banks (`venueCameraRoom`, `renderVenue.ts`). A procedural venue's walls are built wider
+ * than the cameras reach (`VENUE_MIN_HALF`), but its stands are not. The boom from the look-at point
+ * to the eye is shortened to stay inside, the way a follow camera stops at a wall: the direction is
+ * kept, only the distance gives. Null (a venue without stands) changes nothing.
  */
 export interface CameraRoom {
   min: readonly [number, number, number];
@@ -885,7 +884,7 @@ export function createCameras(): BbCameras {
     orbit.fov = orbitFovDeg(orbit.aspect);
     if (orbitAuto && !reducedMotion()) orbitYaw += ORBIT_AUTO_RATE * dt;
     const dir = orbitDir();
-    // inside the photographed room (`CameraRoom`): the boom gives, the direction holds
+    // inside the venue's camera room (`CameraRoom`): the boom gives, the direction holds
     const r = Math.min(orbitRadius, orbitReach());
     applyViewOffset(orbit);
     orbit.position.set(dir[0] * r, dir[1] * r, ORBIT_CENTER_Z + dir[2] * r);

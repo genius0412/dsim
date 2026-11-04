@@ -395,7 +395,7 @@ export const FINISHES = {
   // The venue applier (`scene/renderSurfaceVenue.ts`) PAINTS each floor's albedo around the
   // environment's own `floor` colour, every channel normalised to a mean of exactly that colour, so
   // none of these carries a `color`: the venue's "a tint, not a colour" rule is the RENDER lane's.
-  /** gym and school-hall: finished maple strip flooring under a gloss polyurethane. The base is the
+  /** gym: finished maple strip flooring under a gloss polyurethane. The base is the
    * sealed wood; the COAT is what reflects, and it reflects the room probe's lamp grid — the whole
    * reason a gym floor reads as one. The coat's DIRECT sun term is dropped in an enclosed venue
    * (the applier says why). */
@@ -518,13 +518,6 @@ export const VENUE_FLOOR_FINISH: Record<EnvironmentId, FinishId> = {
   night: 'outdoorAggregate',
   'cyc-light': 'studioPaint',
   'cyc-dark': 'studioPaint',
-  'school-hall': 'mapleFloor',
-  // the photographed venues: these are the PROCEDURAL stand-in's floors (shown while the
-  // photograph loads, or if it cannot); the photograph itself is never twinned
-  'events-hall': 'sealedConcrete',
-  hangar: 'sealedConcrete',
-  court: 'outdoorAggregate',
-  quad: 'outdoorAggregate',
   'monochrome-studio': 'studioPaint',
 };
 

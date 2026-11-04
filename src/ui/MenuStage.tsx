@@ -51,10 +51,9 @@ type StageMode = '2d' | '3d';
  * match the graphics selected by the user"): their tier, room, shadows, AA, element detail, render
  * scale and the device's full pixel ratio, and it follows a change to them. From 2026-11-01 to
  * 2026-11-04 it drew at its own Medium tier in the procedural arena, capped at 1.5 dpr, after Home was
- * "still distorted and EXTREMELY laggy on some devices"; that ruling is reversed, and its two causes
- * come back with the player's choice: a photographed venue is exact only near its lens, so Home's
- * high corner shot can blur the floor round the field, and the first load and every fly frame pay
- * the player's match cost. What stays: the scene draws on demand, boots on idle, shows no perf
+ * "still distorted and EXTREMELY laggy on some devices"; that ruling is reversed. The distortion was
+ * the photographed venues, retired on 2026-11-04; the cost comes back with the player's choice: the
+ * first load and every fly frame pay the player's match cost. What stays: the scene draws on demand, boots on idle, shows no perf
  * overlay, and `tunesTier: false` keeps menu frames from stepping the player's stored tier.
  */
 

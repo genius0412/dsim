@@ -456,7 +456,7 @@ async function main(): Promise<void> {
   (window as unknown as { __bbRenderer: THREE.WebGLRenderer }).__bbRenderer = (
     scene as unknown as { renderer: THREE.WebGLRenderer }
   ).renderer;
-  // `__bbSetGraphics('environment', 'hangar')` changes a graphics row on the LIVE scene the way the
+  // `__bbSetGraphics('environment', 'gym')` changes a graphics row on the LIVE scene the way the
   // Graphics section does: how a capture script switches venues mid-run (2026-10-10)
   (window as unknown as { __bbSetGraphics: typeof setGraphicsSetting }).__bbSetGraphics = setGraphicsSetting;
 
