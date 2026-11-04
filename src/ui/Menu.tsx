@@ -25,6 +25,8 @@ import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, teamLine } from './robotLabels';
+import { ZERO_POWER_CHOICES, ZERO_POWER_LABEL } from './labelData';
+import { zeroPowerOf } from '../sim/zeroPower';
 import { BuildLine } from './BuildLine';
 import { RobotCard } from './RobotCard';
 import { Marquee } from './Marquee';
@@ -57,6 +59,7 @@ function specMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.drivetrain === b.drivetrain &&
     a.driveRpm === b.driveRpm &&
     (a.tankRpm ?? 0) === (b.tankRpm ?? 0) &&
+    zeroPowerOf(a) === zeroPowerOf(b) &&
     a.flywheelInertia === b.flywheelInertia &&
     a.canSort === b.canSort &&
     // the launcher: turret or fixed, its hood and its flywheel (all absent on a turret build)
@@ -105,6 +108,7 @@ function chainSpecMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.drivetrain === b.drivetrain &&
     a.driveRpm === b.driveRpm &&
     (a.tankRpm ?? 0) === (b.tankRpm ?? 0) &&
+    zeroPowerOf(a) === zeroPowerOf(b) &&
     (a.scoreMode ?? 'turret') === (b.scoreMode ?? 'turret') &&
     (a.chainIntake ?? 'sweeper') === (b.chainIntake ?? 'sweeper') &&
     intakeMountOf(a) === intakeMountOf(b) &&
@@ -946,6 +950,14 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                   </label>
                 )}
               </div>
+              <OptRow<'brake' | 'coast'>
+                label={ZERO_POWER_LABEL}
+                value={zeroPowerOf(spec)}
+                cols="two"
+                options={ZERO_POWER_CHOICES}
+                // brake is stored as no field at all (`coerceSpec`), so a brake spec stays the bytes it was
+                onPick={(z) => setSpec({ zeroPower: z === 'coast' ? 'coast' : undefined })}
+              />
 
               {/* THE CHROME ABOVE IS EVERY GAME'S, SO IT SITS OUTSIDE THIS TERNARY. A filled
                   `GameModule.Builder` slot replaces only the per-game mechanism blocks below;

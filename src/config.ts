@@ -1344,6 +1344,43 @@ export const MOTOR_BRAKE_MULT = 1.4;
  */
 export const MOTOR_SHOVE_BRAKE = 0.6;
 
+// --- ZERO-POWER BEHAVIOUR: BRAKE OR COAST (`RobotSpec.zeroPower`, `src/sim/zeroPower.ts`) ---
+/**
+ * FTC's `DcMotor.ZeroPowerBehavior` acts only on a motor commanded EXACTLY zero. BRAKE shorts
+ * its leads and back-EMF drags the wheel to a stop, which is what every number above already
+ * models (`MOTOR_BRAKE_MULT` for a robot stopping itself, `MOTOR_SHOVE_BRAKE` for one being
+ * pushed). COAST (FLOAT) leaves the leads open: no electrical torque at all, and the wheel rolls
+ * against the drivetrain's friction alone. A wheel with any power drives the same way in both.
+ *
+ * The hub's power command is a 16-bit integer, so a wheel under one count of it is at zero.
+ */
+export const ZERO_POWER_EPS = 1 / 32767;
+/** The modeled drive motor (the block comment above): free speed, stall torque, stall and
+ * no-load current, from goBILDA's 5203 Yellow Jacket datasheet. One motor per wheel. */
+export const MOTOR_FREE_RPM = 5800;
+export const MOTOR_STALL_TORQUE_OZIN = 20.45;
+export const MOTOR_STALL_AMPS = 9.2;
+export const MOTOR_NO_LOAD_AMPS = 0.25;
+export const DRIVE_MOTORS = 4;
+/**
+ * ROLLING RESISTANCE of a freewheeling drive wheel on the foam field tiles, as a fraction of
+ * weight. No FTC measurement exists that we could find, so these are estimates in the range
+ * wheelchair studies give for rubber on carpet (0.01-0.03, with soft carpet and mats two to three
+ * times a hard floor), the small rollers of a mecanum or omni wheel higher than a solid tyre
+ * because small wheels roll harder and each roller turns on its own bushing.
+ *
+ * Cross-check against the model's own numbers: at the reference build (26 lb, 435 rpm, traction
+ * wheels) motor friction (`MOTOR_NO_LOAD_AMPS` through the gearbox, 13.4 in/s²) plus 0.03 g
+ * rolling (11.6) is 25.0 in/s² of coast deceleration, and `DRIVE_EFFICIENCY` 0.95 says the same
+ * thing from the other side: 5% of stall force holds a powered robot under its geometric free
+ * speed, 24.7 in/s².
+ */
+export const COAST_ROLL_TRACTION = 0.03;
+export const COAST_ROLL_ROLLER = 0.05;
+/** in/s of hub speed under which a coasting wheel's friction fades out linearly, so a robot
+ * rolling to rest settles instead of reversing on the friction's sign. */
+export const COAST_STICTION_SPEED = 2;
+
 // --- PUSHING POWER ----------------------------------------------------------
 /**
  * GEARING'S EFFECT ON SHOVE, and the band it is allowed to act over.

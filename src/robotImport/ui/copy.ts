@@ -8,6 +8,7 @@
  * they come; this file is what the UI adds around them.
  */
 import type { LengthUnit, MotionPart, MotionRole, UpAxis } from '../types';
+import { ZERO_POWER_LABEL } from '../../ui/labelData';
 
 const ROLE_NAME: Record<MotionRole, string> = {
   wheel: 'Wheel',
@@ -227,6 +228,7 @@ export const COPY = {
   extRatio: 'External ratio',
   extRatioHint: 'motor turns per wheel turn',
   tankRatio: 'Traction ratio',
+  zeroPower: ZERO_POWER_LABEL,
   wheel: 'Wheel',
   custom: 'Custom',
   diameter: 'Diameter',

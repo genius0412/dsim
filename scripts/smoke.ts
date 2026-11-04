@@ -478,6 +478,7 @@ import { coerceFlywheel, flyExitSpeedAt } from '../src/sim/flywheelSpec';
 import { flyReady, flySetpoint } from '../src/sim/flywheel';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
+import { coastDecel, zeroPowerOf } from '../src/sim/zeroPower';
 import { LeadController, LEAD_GAP_MS, LEAD_MAX_FAST, LEAD_MAX_SLOW, LEAD_TARGET_MAX } from '../src/net/leadControl';
 import { restoreWireClocks } from '../src/net/wireClocks';
 import { CONTACT_DRAW_FAR_IN, CONTACT_DRAW_FULL_IN, blendPose, followDrawn, nearDrawWeight } from '../src/net/contactDraw';
@@ -7958,6 +7959,218 @@ function ramOffCentreSamples(
     if (v >= dp.maxSpeed * 0.95) { t95 = (i + 1) * SIM_DT; break; }
   }
   check('reaches 95% top speed in a realistic ~0.5–1.2 s', t95 > 0.5 && t95 < 1.2, `${t95.toFixed(2)} s`);
+}
+
+{
+  // =============================================================================
+  // ZERO-POWER BEHAVIOUR: BRAKE OR COAST (`RobotSpec.zeroPower`, `src/sim/zeroPower.ts`)
+  // =============================================================================
+  await initPhysics3d();
+  const ZERO = cmd({ leftDrive: 0, rightDrive: 0 });
+  const FULL = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+  const COAST: Partial<RobotSpec> = { zeroPower: 'coast' };
+  const zpWorld = (g: GameId | 'bb3d', specs: Partial<RobotSpec>[]) => {
+    const mod = simModuleFor(g === 'bb3d' ? 'biobuzz' : g);
+    const w = mod.createWorld(
+      'free',
+      7,
+      specs.map((s, i) => ({
+        id: i,
+        alliance: i % 2 === 0 ? 'blue' : 'red',
+        spec: { ...DEFAULT_SPEC, ...s },
+        assists: { fieldCentric: false, aimAssist: true, autoIntake: false, autoFire: false },
+        startIndex: i,
+      })),
+      undefined,
+      g === 'biobuzz' ? '2d' : g === 'bb3d' ? '3d' : undefined,
+    ) as World;
+    w.balls.length = 0;
+    return { w, st: (c: Map<number, RobotCommand>) => mod.step(w, SIM_DT, c) };
+  };
+  /** launched at its top speed along the long diagonal from a corner, then let go */
+  const zpStop = (g: GameId | 'bb3d', spec: Partial<RobotSpec>, ticks = 600) => {
+    const { w, st } = zpWorld(g, [spec]);
+    const r = w.robots[0];
+    const h = Math.PI / 4;
+    r.pos = { x: -58, y: -58 }; r.heading = h; r.angVel = 0; r.fieldCentric = false;
+    const top = driveParams(r.spec).maxSpeed;
+    r.vel = { x: top * Math.cos(h), y: top * Math.sin(h) };
+    st(new Map([[0, FULL]]));
+    const p0 = { ...r.pos };
+    const v0 = Math.hypot(r.vel.x, r.vel.y);
+    let t = 0;
+    for (; t < ticks; t++) {
+      st(new Map([[0, ZERO]]));
+      if (Math.hypot(r.vel.x, r.vel.y) < 0.5) break;
+    }
+    return { v0, d: Math.hypot(r.pos.x - p0.x, r.pos.y - p0.y), t: (t + 1) * SIM_DT, hash: worldHash(w), r, w };
+  };
+  /** robot 0 (a default tank) drives into an idle robot 1 for 1.5 s; returns 1's displacement */
+  const zpPush = (g: GameId | 'bb3d', victim: Partial<RobotSpec>, side: boolean, pusher: Partial<RobotSpec> = { drivetrain: 'tank' }, touching = false) => {
+    const { w, st } = zpWorld(g, [pusher, victim]);
+    const [a, b] = w.robots;
+    const ly = g === 'biobuzz' || g === 'bb3d' ? -50 : 0;
+    a.pos = { x: -55, y: ly }; a.heading = 0; a.vel = { x: 0, y: 0 }; a.angVel = 0; a.fieldCentric = false;
+    b.pos = { x: -25, y: ly }; b.heading = side ? Math.PI / 2 : 0; b.vel = { x: 0, y: 0 }; b.angVel = 0; b.fieldCentric = false;
+    if (touching) a.pos = { x: -25 - (a.spec.length / 2 + (side ? b.spec.width : b.spec.length) / 2 + 0.3), y: ly };
+    const b0 = { ...b.pos };
+    const c = new Map([[0, FULL], [1, ZERO]]);
+    for (let i = 0; i < 90; i++) st(c);
+    return { d: Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y), hash: worldHash(w), b };
+  };
+  const DTS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+
+  // ---- BRAKE IS TODAY'S MODEL, BIT FOR BIT ------------------------------------
+  // Recorded on alpha 27b9f514, BEFORE `zeroPower` existed: a spec without the field is brake,
+  // and these scenes (the stop from top speed, and a tank shoving an idle robot head-on and
+  // side-on) land on exactly the hash and distance they had. The four-game standard-robot pins
+  // (`IMP_STANDARD_PINS`) hold the same thing for the chase scenes.
+  const BRAKE_PINS: Record<string, string> = {
+    'stop mecanum': '2529714645 12.17', 'stop tank': '4183663842 12.55', 'stop swerve': '47113628 10.32',
+    'stop xdrive': '356902229 15.13', 'stop butterfly': '2538575459 12.63',
+    'push-fwd mecanum': '1478392048 70.01', 'push-fwd tank': '3793689136 43.81', 'push-fwd swerve': '1687532168 56.34',
+    'push-fwd xdrive': '187981649 80.30', 'push-fwd butterfly': '2485508281 68.11',
+    'push-side mecanum': '2831089631 8.48', 'push-side tank': '2754807622 3.34', 'push-side swerve': '674164345 3.54',
+    'push-side xdrive': '2019590497 11.08', 'push-side butterfly': '2341718357 7.05',
+  };
+  const brakeGot: string[] = [];
+  for (const dt of DTS) {
+    const s = zpStop('decode', { drivetrain: dt });
+    const f = zpPush('decode', { drivetrain: dt }, false);
+    const sd = zpPush('decode', { drivetrain: dt }, true);
+    for (const [k, v] of [[`stop ${dt}`, s], [`push-fwd ${dt}`, f], [`push-side ${dt}`, sd]] as const) {
+      const got = `${v.hash} ${v.d.toFixed(2)}`;
+      if (got !== BRAKE_PINS[k]) brakeGot.push(`${k}: ${got} (pinned ${BRAKE_PINS[k]})`);
+    }
+  }
+  check('zero power: BRAKE (no field) stops and is shoved exactly as before the setting existed, every drivetrain (hash + distance)', brakeGot.length === 0, brakeGot.join('; ') || '15 scenes');
+  const bb3dBrake = zpStop('bb3d', { drivetrain: 'mecanum' });
+  check('zero power: ...and in BIOBUZZ 3D', `${bb3dBrake.hash} ${bb3dBrake.d.toFixed(2)}` === '2708904990 11.79', `${bb3dBrake.hash} ${bb3dBrake.d.toFixed(2)}`);
+
+  // ---- the spec field: absent is brake, on client and server ------------------
+  const noField = coerceSpec({ ...DEFAULT_SPEC });
+  const coastSpec = coerceSpec({ ...DEFAULT_SPEC, zeroPower: 'coast' });
+  check('zero power: coerceSpec keeps coast and writes nothing for brake (a brake spec is byte-identical)', coastSpec.zeroPower === 'coast' && !('zeroPower' in noField) && zeroPowerOf(noField) === 'brake' && zeroPowerOf(coastSpec) === 'coast', JSON.stringify([noField.zeroPower, coastSpec.zeroPower]));
+  const junk = ['brake', 'COAST', 'float', 1, true, null, {}].map((v) => coerceSpec({ ...DEFAULT_SPEC, zeroPower: v }));
+  check('zero power: anything but "coast" reads as brake (spoofed or stale values)', junk.every((s) => !('zeroPower' in s)), '');
+  check('zero power: from the RAW input only — a spec sent without it is brake even over a coast base (switching back to brake)', !('zeroPower' in coerceSpec({ ...DEFAULT_SPEC }, coastSpec)), '');
+  check('zero power: coerceSpec is idempotent on it', JSON.stringify(coerceSpec(coastSpec)) === JSON.stringify(coastSpec) && JSON.stringify(coerceSpec(noField)) === JSON.stringify(noField), '');
+  const srvOld = sanitizePlayer({ name: 'x', spec: { ...DEFAULT_SPEC } });
+  const srvNew = sanitizePlayer({ name: 'x', spec: { ...DEFAULT_SPEC, zeroPower: 'coast' } });
+  const patched = sanitizePlayerPatch({ spec: { ...DEFAULT_SPEC } }, { ...srvNew, clientId: 'c' } as LobbyPlayer);
+  check('zero power: the server takes coast from a join and an update, and an older client (no field) is brake', srvNew.spec.zeroPower === 'coast' && !('zeroPower' in srvOld.spec) && !!patched.spec && !('zeroPower' in patched.spec), '');
+  const set0 = defaultSettings();
+  const setRt = coerceSettings(JSON.parse(JSON.stringify({ ...set0, spec: coastSpec, savedRobots: [coastSpec, noField] })));
+  const setOld = coerceSettings(JSON.parse(JSON.stringify(set0)));
+  check('zero power: settings keep it on the robot and the saved robots, and old settings load as brake', setRt.spec.zeroPower === 'coast' && setRt.savedRobots[0]?.zeroPower === 'coast' && !('zeroPower' in (setRt.savedRobots[1] ?? {})) && !('zeroPower' in setOld.spec), '');
+  const spawned = createWorld('free', 3, [setup(0, 'blue', {})]).robots[0];
+  check('zero power: a world built from a spec without the field spawns a brake robot', zeroPowerOf(spawned.spec) === 'brake' && !('zeroPower' in spawned.spec), '');
+
+  // ---- the friction numbers -------------------------------------------------
+  const refTraction = coastDecel({ ...DEFAULT_SPEC, drivetrain: 'tank', driveRpm: 435, massLb: 26 });
+  const refRoller = coastDecel({ ...DEFAULT_SPEC, drivetrain: 'mecanum', driveRpm: 435, massLb: 26 });
+  const fromEff = ((1 - IMPC.DRIVE_EFFICIENCY) * (IMPC.MOTOR_STALL_TORQUE_OZIN / 16) * (IMPC.MOTOR_FREE_RPM / 435) * IMPC.DRIVE_MOTORS / (IMPC.WHEEL_DIAMETER_MM / 25.4 / 2) * IMPC.GRAVITY) / 26;
+  check('zero power: coast friction at the reference build is 25 in/s² on traction wheels, 33 on rollers', Math.abs(refTraction - 25.0) < 0.2 && Math.abs(refRoller - 32.7) < 0.2, `traction ${refTraction.toFixed(2)} rollers ${refRoller.toFixed(2)}`);
+  check('zero power: ...and agrees with what DRIVE_EFFICIENCY says holds a powered robot under free speed', Math.abs(refTraction - fromEff) / fromEff < 0.05, `${refTraction.toFixed(1)} vs ${fromEff.toFixed(1)}`);
+  const torquey = coastDecel({ ...DEFAULT_SPEC, drivetrain: 'tank', driveRpm: 250, massLb: 26 });
+  const heavy = coastDecel({ ...DEFAULT_SPEC, drivetrain: 'tank', driveRpm: 435, massLb: 40 });
+  check('zero power: a torquier gearing back-drives harder, a heavier robot carries further', torquey > refTraction && heavy < refTraction, `250rpm ${torquey.toFixed(1)} 40lb ${heavy.toFixed(1)}`);
+
+  // ---- COAST FREEWHEELS AT ZERO POWER, and rolls out further than brake stops ---------
+  // Lower top speeds than the default build, so every roll-out fits on the field diagonal.
+  const roll: string[] = [];
+  let rollOk = true;
+  for (const dt of DTS) {
+    const spec = { drivetrain: dt, driveRpm: 300, massLb: 30 } as Partial<RobotSpec>;
+    const b = zpStop('decode', spec);
+    const c = zpStop('decode', { ...spec, ...COAST });
+    const decel = coastDecel(coerceSpec({ ...DEFAULT_SPEC, ...spec }));
+    const ideal = (c.v0 * c.v0) / (2 * decel);
+    roll.push(`${dt} ${b.d.toFixed(1)}→${c.d.toFixed(1)}in (v²/2a ${ideal.toFixed(1)})`);
+    rollOk &&= c.d > 4 * b.d && Math.abs(c.d - ideal) < 0.05 * ideal + 1;
+  }
+  check('zero power: a coasting robot let go at top speed rolls on against its friction alone, 4x+ further than brake stops it (every drivetrain)', rollOk, roll.join(', '));
+
+  // with every wheel powered the two modes drive the same: FTC's setting acts only at zero power
+  const same = (dt: RobotSpec['drivetrain'], c: RobotCommand) => {
+    const run = (s: Partial<RobotSpec>) => {
+      const { w, st } = zpWorld('decode', [{ drivetrain: dt, ...s }]);
+      const r = w.robots[0];
+      r.pos = { x: -40, y: -40 }; r.heading = 0.3; r.vel = { x: 0, y: 0 }; r.angVel = 0; r.fieldCentric = false;
+      for (let i = 0; i < 60; i++) st(new Map([[0, c]]));
+      return JSON.stringify([r.pos, r.vel, r.heading, r.angVel]);
+    };
+    return run({}) === run(COAST);
+  };
+  check('zero power: with power on every wheel coast drives exactly as brake (forward, arcing, strafing)', same('mecanum', cmd({ driveY: 1, rotate: 0.3, driveX: 0.2 })) && same('tank', cmd({ leftDrive: 1, rightDrive: 0.6 })) && same('swerve', cmd({ driveY: 0.7, driveX: 0.4 })), '');
+
+  // ---- PER WHEEL --------------------------------------------------------------
+  // a tank at speed lets go of ONE side: brake holds that side and pivots, coast rolls it on
+  const half = (s: Partial<RobotSpec>) => {
+    const { w, st } = zpWorld('decode', [{ drivetrain: 'tank', ...s }]);
+    const r = w.robots[0];
+    r.pos = { x: -60, y: -40 }; r.heading = 0; r.vel = { x: 0, y: 0 }; r.angVel = 0; r.fieldCentric = false;
+    for (let i = 0; i < 30; i++) st(new Map([[0, FULL]]));
+    const h0 = r.heading;
+    for (let i = 0; i < 30; i++) st(new Map([[0, cmd({ leftDrive: 0, rightDrive: 1 })]]));
+    return ((r.heading - h0) * 180) / Math.PI;
+  };
+  const halfB = half({});
+  const halfC = half(COAST);
+  check('zero power: per wheel — a tank releasing one side at speed: brake pivots on it, coast curves gently on the free side', halfB > 90 && halfC > 3 && halfC < halfB / 4, `turned ${halfB.toFixed(1)}° brake, ${halfC.toFixed(1)}° coast in 0.5 s`);
+  // a mecanum driving a pure diagonal has two wheels at zero power that the motion never turns:
+  // coast accelerates it exactly as brake does
+  const diag = (s: Partial<RobotSpec>) => {
+    const { w, st } = zpWorld('decode', [{ drivetrain: 'mecanum', ...s }]);
+    const r = w.robots[0];
+    r.pos = { x: -40, y: -40 }; r.heading = 0; r.vel = { x: 0, y: 0 }; r.angVel = 0; r.fieldCentric = false;
+    for (let i = 0; i < 45; i++) st(new Map([[0, cmd({ driveY: 0.5, driveX: -0.5 })]]));
+    return r;
+  };
+  const dB = diag({});
+  const dC = diag(COAST);
+  check('zero power: per wheel — a mecanum on a pure diagonal (FL and BR at zero) drives it the same in both modes', Math.hypot(dB.pos.x - dC.pos.x, dB.pos.y - dC.pos.y) < 1e-4 && Math.abs(dB.heading - dC.heading) < 1e-6, `Δ ${Math.hypot(dB.pos.x - dC.pos.x, dB.pos.y - dC.pos.y).toExponential(1)} in`);
+  // ...but shoved ACROSS that diagonal, only the two zero-power wheels can resist, and coasting they do not
+  const diagShove = (s: Partial<RobotSpec>) => {
+    const { w, st } = zpWorld('decode', [{ drivetrain: 'tank' }, { drivetrain: 'mecanum', ...s }]);
+    const [a, b] = w.robots;
+    b.pos = { x: -20, y: 0 }; b.heading = Math.PI / 4; b.vel = { x: 0, y: 0 }; b.angVel = 0; b.fieldCentric = false;
+    a.pos = { x: -20 - 17, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 }; a.angVel = 0; a.fieldCentric = false;
+    // robot-centric: stick up-left drives b along its own +x+y diagonal, pushed from behind-right
+    const c = new Map([[0, FULL], [1, cmd({ driveY: 0.3, driveX: -0.3 })]]);
+    const b0 = { ...b.pos };
+    for (let i = 0; i < 60; i++) st(c);
+    return Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  };
+  const dsB = diagShove({});
+  const dsC = diagShove(COAST);
+  check('zero power: per wheel — ...shoved while it drives that diagonal, a coaster gives way further', dsC > dsB * 1.15, `${dsB.toFixed(1)} → ${dsC.toFixed(1)} in`);
+
+  // ---- PUSHED MORE EASILY ------------------------------------------------------
+  const twin: string[] = [];
+  let twinOk = true;
+  for (const dt of DTS) {
+    const b = zpPush('decode', { drivetrain: dt }, false, { drivetrain: dt }, true);
+    const c = zpPush('decode', { drivetrain: dt, ...COAST }, false, { drivetrain: dt }, true);
+    twin.push(`${dt} ${b.d.toFixed(1)}→${c.d.toFixed(1)}`);
+    twinOk &&= c.d > b.d * 1.25;
+  }
+  check('zero power: an idle robot shoved head-on by its identical twin goes further coasting (every drivetrain)', twinOk, twin.join(', '));
+  const sideT = [zpPush('decode', { drivetrain: 'tank' }, true, undefined, true).d, zpPush('decode', { drivetrain: 'tank', ...COAST }, true, undefined, true).d];
+  const sideM = [zpPush('decode', { drivetrain: 'mecanum' }, true, undefined, true).d, zpPush('decode', { drivetrain: 'mecanum', ...COAST }, true, undefined, true).d];
+  check('zero power: shoved side-on, a tank is held by its treads in both modes; a coasting mecanum\'s free hubs let its rollers go', Math.abs(sideT[1] - sideT[0]) < 0.05 && sideM[1] > sideM[0] * 3, `tank ${sideT.map((d) => d.toFixed(2)).join('→')} mecanum ${sideM.map((d) => d.toFixed(1)).join('→')}`);
+
+  // ---- every game ----------------------------------------------------------------
+  const games: string[] = [];
+  let gamesOk = true;
+  for (const g of ['chain', 'biobuzz', 'bb3d'] as const) {
+    const spec = { drivetrain: 'mecanum', driveRpm: 300, massLb: 30 } as Partial<RobotSpec>;
+    const b = zpStop(g, spec, 30);
+    const c = zpStop(g, { ...spec, ...COAST }, 30);
+    games.push(`${g} ${b.d.toFixed(1)}→${c.d.toFixed(1)}`);
+    gamesOk &&= c.d > b.d * 2;
+  }
+  check('zero power: coast reaches the drive in Chain Reaction, BIOBUZZ and BIOBUZZ 3D', gamesOk, `${games.join(', ')} in (first half second)`);
 }
 
 // ---- swerve = 4 independent steered modules (kinematics + pod flip + wobble) --

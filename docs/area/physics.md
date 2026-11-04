@@ -455,3 +455,52 @@ modeled motor is the **MATRIX / goBILDA 5000-series 12VDC** brushed motor (5800 
 - **Per-drivetrain CLAMPS** live in `DRIVETRAIN_LIMITS`; the mass FLOOR is raised by flywheel
   inertia (`INERTIA_MASS_FLOOR` 14) via `massLimits(dt, inertia)`.
 
+### Zero power: brake or coast (`RobotSpec.zeroPower`, `src/sim/zeroPower.ts`, 2026-11-04)
+
+FTC's `DcMotor.ZeroPowerBehavior`, chosen per robot in the builder and the importer's drivetrain
+step, all three games, allowed in ranked.
+
+- **BRAKE IS THE MODEL AS IT ALWAYS WAS, AND THE FIELD IS ABSENT FOR IT.** `coerceSpec` stores
+  only `'coast'` and reads it from the RAW input only (like `imported`: a client switching back
+  sends no field). `updateRobot` never reaches the coast code without it, so saved robots, DB
+  rows, replays and older clients step bit for bit as before. Smoke pins 15 brake scenes (stop
+  from top speed, head-on and side-on shoves, every drivetrain) at the hashes and distances they
+  had before the setting existed, plus `IMP_STANDARD_PINS`. No `SIM_VERSION`/`SIM_PATCH`: nothing
+  an old replay contains can reach the new branch. It is spec, not per-tick state, so no snapshot
+  bytes. A server without the field drops it in `coerceSpec`, so on an old deploy a coast robot
+  drives as brake online (its client predicts from the roster spec, which is the server's).
+- **ZERO POWER IS PER WHEEL AND EXACT**: a wheel is off when its command is under one count of the
+  hub's 16-bit power (`ZERO_POWER_EPS`). A wheel with any power drives the same in both modes, as
+  on the hub, and the existing model already agrees: `MOTOR_BRAKE_MULT` is chosen by "the command
+  opposes the motion", which is the motor driven against itself, not the zero-power state. The
+  hub's PWM decay at partial power is not modeled; both modes treat partial power alike.
+- **THE WHEELS ARE RECOVERED FROM THE CHASSIS MODEL.** The drive is chassis-level, so `coastStep`
+  splits the brake answer across wheel rows in normalised chassis coordinates (each axis over its
+  own free speed, where a wheel's power is a row of signs times the command). It keeps the powered
+  wheels' roll parts, drops the unpowered wheels' roll parts (no electrical torque), and adds each
+  unpowered wheel's friction as a force along its roll. TRACTION wheels (tank, swerve, butterfly's
+  traction set) have a TYRE row too, kept only where it stops that tyre sliding, never where it
+  would drive motion: a coasting tank or swerve is held sideways exactly as a braked one, and a
+  coasting tank stops spinning on its tread scrub (`scrub`, capped at brake's answer). ROLLER
+  wheels (mecanum, omni, butterfly's mecanum set) roll every way once the hub is free, so a
+  coasting roller wheel also gives up its sideways grip (traction loop and cornering force).
+  ⚠️ The tyre row's rank test failed first: with swerve pods almost parallel, sideways counted as
+  "rollable" and a coasting swerve kept a 2 in/s sideways creep. Explicit tyre rows fixed it.
+- **THE FRICTION (`coastDecel`)**: motor friction from goBILDA's 5203 datasheet (0.25 A no-load
+  of 9.2 A stall, i.e. `kt · I0`) back-driven through the reduction `MOTOR_FREE_RPM / rpm`, four
+  motors, over the robot's weight; plus rolling resistance `COAST_ROLL_TRACTION` 0.03 /
+  `COAST_ROLL_ROLLER` 0.05 of weight (estimates: no FTC measurement exists that we found; wheelchair
+  data puts rubber on carpet at 0.01-0.03, mats two to three times a hard floor). At 26 lb and
+  435 rpm that is 25.0 in/s² on traction wheels and 32.7 on rollers, and `DRIVE_EFFICIENCY` 0.95
+  independently implies 24.7 (5% of stall holds a powered robot under free speed). Constant
+  (Coulomb) above `COAST_STICTION_SPEED` 2 in/s, fading to zero below it.
+- **MEASURED** (open floor, the `updateRobot` wrench integrated as the free-space solve does; brake
+  then coast, from loaded top speed): default 500 rpm builds — mecanum 11 in / 130 in (3.0 s),
+  tank 11 / 228 (4.5 s), swerve 8 / 134, x-drive 14 / 84, butterfly 12 / 120; at 435 rpm and
+  26 lb — mecanum 8 / 101, tank 8 / 176, swerve 6 / 104, x-drive 11 / 65. Roll-outs match
+  v²/2a to the inch. PUSH, an idle robot shoved head-on by its identical twin for 1.5 s from
+  touching: mecanum 33 → 69 in, tank 40 → 80, swerve 32 → 69, x-drive 22 → 38, butterfly 30 →
+  61. Side-on by a tank: a tank 3.9 → 3.9 (treads), a mecanum 10 → 80 (free rollers). A tank at
+  speed releasing one side for 0.5 s turns 135° braked, 17° coasting. A mecanum on a pure
+  diagonal (FL and BR at zero) drives it identically in both modes.
+

@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
 import type { DrivetrainType } from '../../types';
 import { OptRow } from '../../ui/OptRow';
-import { DRIVETRAIN_LABELS } from '../../ui/labelData';
+import { DRIVETRAIN_LABELS, ZERO_POWER_CHOICES } from '../../ui/labelData';
 import { GOBILDA_RATIOS, WHEELS, wheelDiameterMm } from '../drive';
 import type { DriveSetup, MotorChoice, WheelChoice } from '../types';
 import { COPY } from './copy';
@@ -190,6 +190,14 @@ export function DrivetrainStep({
           />
         </div>
       ) : null}
+
+      <OptRow<'brake' | 'coast'>
+        label={COPY.zeroPower}
+        value={drive.zeroPower === 'coast' ? 'coast' : 'brake'}
+        cols="two"
+        options={ZERO_POWER_CHOICES}
+        onPick={(z) => onDrive({ zeroPower: z === 'coast' ? 'coast' : undefined })}
+      />
 
       {numbers ? (
         <>

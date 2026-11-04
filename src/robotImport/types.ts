@@ -82,6 +82,8 @@ export interface DriveSetup {
    *  mecanum set's. */
   tankWheel?: WheelChoice;
   tankExternalRatio?: number;
+  /** the drive motors at zero power (`RobotSpec.zeroPower`); absent is brake */
+  zeroPower?: 'coast';
 }
 
 // ---- the setup the editor re-opens with ----------------------------------------------------

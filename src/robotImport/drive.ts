@@ -283,11 +283,11 @@ export function importedDriveFields(
   d: DriveSetup,
   hullBox: { length: number; width: number },
   extraMassFloor = 0,
-): Pick<RobotSpec, 'drivetrain' | 'driveRpm' | 'massLb' | 'length' | 'width' | 'tankRpm'> {
+): Pick<RobotSpec, 'drivetrain' | 'driveRpm' | 'massLb' | 'length' | 'width' | 'tankRpm' | 'zeroPower'> {
   const { rpm, tankRpm } = driveRpmFor(d);
   const probe: RobotSpec = { ...base, drivetrain: d.drivetrain };
   const ro = driveReadout(probe, { driveRpm: rpm, tankRpm, massLb: d.massLb }, extraMassFloor);
-  const fields: Pick<RobotSpec, 'drivetrain' | 'driveRpm' | 'massLb' | 'length' | 'width' | 'tankRpm'> = {
+  const fields: Pick<RobotSpec, 'drivetrain' | 'driveRpm' | 'massLb' | 'length' | 'width' | 'tankRpm' | 'zeroPower'> = {
     drivetrain: d.drivetrain,
     driveRpm: ro.driveRpm,
     massLb: ro.massLb,
@@ -295,5 +295,7 @@ export function importedDriveFields(
     width: Math.min(C.ROBOT_MAX_SIZE, Math.max(1, hullBox.width)),
   };
   if (ro.tankRpm !== undefined) fields.tankRpm = ro.tankRpm;
+  // the drive step decides it, whatever the spec the import started from said
+  fields.zeroPower = d.zeroPower === 'coast' ? 'coast' : undefined;
   return fields;
 }

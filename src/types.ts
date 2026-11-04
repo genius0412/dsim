@@ -168,6 +168,10 @@ export interface RobotSpec {
    * mecanum one. Optional so every non-butterfly spec omits it (defaulted in
    * `coerceSpec`, which also clamps it). */
   tankRpm?: number;
+  /** what the drive motors do at ZERO power (FTC `ZeroPowerBehavior`): `'coast'` lets the wheels
+   * freewheel; absent is BRAKE, everywhere (old saves, replays, older clients). Only `'coast'` is
+   * ever stored, so a brake spec is byte-for-byte what it was. `src/sim/zeroPower.ts`. */
+  zeroPower?: 'coast';
   /** 0–1: high inertia keeps rapid fire fast on long (high-speed) shots;
    * low inertia is quick up close but recovers slowly after far shots */
   flywheelInertia: number;

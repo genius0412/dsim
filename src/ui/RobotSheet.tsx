@@ -3,6 +3,7 @@ import type { AssistConfig, RobotSpec } from '../types';
 import type { GameId } from '../games/types';
 import { moduleFor } from '../games';
 import { coerceSpec } from '../sim/spawn';
+import { zeroPowerOf } from '../sim/zeroPower';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { FootprintSvg } from './FootprintSvg';
 import { RobotPreview } from './RobotPreview';
@@ -26,7 +27,7 @@ import { DRIVETRAIN_LABELS, drivingWords, specSheet, teamLine } from './robotLab
  * second line and leads with the drivetrain, which the card has no strip for. */
 export function SpecList({ spec, game, compact = false }: { spec: RobotSpec; game: GameId; compact?: boolean }) {
   const rows = specSheet(spec, game);
-  if (compact) rows.unshift({ label: 'Drive', value: `${DRIVETRAIN_LABELS[spec.drivetrain]}, ${spec.driveRpm} rpm` });
+  if (compact) rows.unshift({ label: 'Drive', value: `${DRIVETRAIN_LABELS[spec.drivetrain]}, ${spec.driveRpm} rpm, ${zeroPowerOf(spec)}` });
   return (
     <dl className={`ds-specs${compact ? ' compact' : ''}`}>
       {rows.map((r) => (

@@ -3,6 +3,7 @@ import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
+import { coastDecel, coastStep, rollerDrive, wheelOff, wheelRows } from './zeroPower';
 import { robotIntersectsConvex } from './physics';
 import { importedInertia, importedWheels } from './imported';
 import { decodeImportLaunchZ, decodeImportMouth, decodeImportTurret } from './importedMech';
@@ -213,6 +214,9 @@ export function updateRobot(
   let targetFwd = 0;
   let targetStrafe = 0;
   let targetOmega = 0;
+  // each wheel's commanded power (FL, FR, BL, BR), kept for a COAST robot only — see zeroPower.ts
+  const coast = r.spec.zeroPower === 'coast';
+  let wheelPower: number[] | null = null;
 
   if (dp.saturation === 'tank') {
     // Tank drive is always commanded as independent side-drive (leftDrive/rightDrive).
@@ -224,6 +228,7 @@ export function updateRobot(
     targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
     targetOmega = (rd - ld) * (dp.maxTurn / 2);
     targetStrafe = 0;
+    if (coast) wheelPower = [ld, rd, ld, rd];
   } else {
     const demand =
       dp.saturation === 'vec'
@@ -233,6 +238,13 @@ export function updateRobot(
     targetFwd = (robotVec.x / div) * dp.maxSpeed;
     targetStrafe = (robotVec.y / div) * dp.maxSpeed * dp.strafeMult;
     targetOmega = (cmd.rotate / div) * dp.maxTurn;
+    if (coast && dp.saturation === 'sum') {
+      // the mecanum mix every FTC teleop writes, in the sim's own normalised command
+      const f = robotVec.x / div;
+      const s = robotVec.y / div;
+      const t = cmd.rotate / div;
+      wheelPower = [f - s - t, f + s + t, f + s - t, f - s + t];
+    }
   }
 
   // SWERVE: modeled as FOUR independent steered modules at the wheel corners.
@@ -260,6 +272,8 @@ export function updateRobot(
     let sumX = 0;
     let sumY = 0;
     let sumT = 0;
+    // a pod's drive motor is powered exactly when its module has a command (`driveSpd`)
+    if (coast) wheelPower = [0, 0, 0, 0];
     for (let i = 0; i < 4; i++) {
       // inverse kinematics: this module's desired velocity vector
       const dvx = cvx - cw * pos[i].y;
@@ -280,6 +294,7 @@ export function updateRobot(
       // slewing to the direction you set even after you let go of the stick, so a
       // brief tap still finishes the turn (they don't freeze partway or snap forward).
       const target = r.moduleTargets[i];
+      if (wheelPower) wheelPower[i] = driveSpd;
       // the steering loop runs EVERY tick (control loops are always applied): it
       // chases a DISTURBED setpoint (target + an independent, speed-scaled error it
       // can't null). One imperfect loop, two visible symptoms: FAST hunt (the buzz you
@@ -421,6 +436,47 @@ export function updateRobot(
   let tau = (inertia * (wNext - r.angVel)) / dt;
 
   /**
+   * ...AND A COASTING WHEEL AT ZERO POWER IS NOT HELD (`src/sim/zeroPower.ts`). Everything above
+   * is BRAKE, the model as it always was; a coast robot with a wheel at zero power has the brake
+   * step re-split across its wheels, the unpowered ones' parts replaced by their friction. Brake,
+   * a spec without the field, never gets here.
+   */
+  let powered: boolean[] | null = null;
+  if (wheelPower && wheelPower.some(wheelOff)) {
+    powered = wheelPower.map((p) => !wheelOff(p));
+    const pos = wheelLocals(r.spec);
+    const pods = dp.saturation === 'vec' ? r.moduleAngles : undefined;
+    let levers = 0;
+    for (let i = 0; i < pos.length; i++) {
+      const a = pods?.[i] ?? 0;
+      levers += Math.abs(pos[i].x * dcos(a) + pos[i].y * dsin(a));
+    }
+    const next = coastStep({
+      ...wheelRows(dp.saturation, pos, pods, dp.maxSpeed, dp.maxSpeed * dp.strafeMult, dp.maxTurn),
+      powered,
+      vx: velRobot.x,
+      vy: velRobot.y,
+      w: r.angVel,
+      nx: stepped.x,
+      ny: stepped.y,
+      nw: wNext,
+      vf: dp.maxSpeed,
+      vs: dp.maxSpeed * dp.strafeMult,
+      wf: dp.maxTurn,
+      decel: coastDecel(r.spec, r.butterflyTank),
+      mOverI: m / inertia,
+      scrub: rollerDrive(dp.saturation)
+        ? 0
+        : ((C.LATERAL_GRIP[r.spec.drivetrain] ?? 0.5) * tractionAccel * (m / inertia) * levers) / pos.length,
+      dt,
+    });
+    const want = rot({ x: next.x - velRobot.x, y: next.y - velRobot.y }, r.heading);
+    fx = (m * want.x) / dt;
+    fy = (m * want.y) / dt;
+    tau = (inertia * (next.w - r.angVel)) / dt;
+  }
+
+  /**
    * ...AND THE TYRES ARE FOUR WHEELS, EACH WITH ITS OWN GRIP — slice B.
    *
    * A wheel makes force in two ways and they are not the same thing. Along its roll axis the
@@ -480,8 +536,12 @@ export function updateRobot(
    * treads.
    */
   const speed = hyp(r.vel.x, r.vel.y);
+  // a coasting roller wheel's hub is free, so it carries nothing sideways: only the held ones turn
+  // the velocity (a coasting tank's or swerve's tyres grip the same in either mode)
+  const rollersFree = powered !== null && rollerDrive(dp.saturation);
+  const turnGrip = rollersFree ? (grip * powered!.filter(Boolean).length) / powered!.length : grip;
   if (speed > 0.01 && r.angVel !== 0) {
-    const a = Math.min(speed * Math.abs(r.angVel), grip * tractionAccel);
+    const a = Math.min(speed * Math.abs(r.angVel), turnGrip * tractionAccel);
     const sgn = Math.sign(r.angVel);
     fx += (m * a * -r.vel.y * sgn) / speed;
     fy += (m * a * r.vel.x * sgn) / speed;
@@ -498,6 +558,7 @@ export function updateRobot(
     // so every drivetrain without pods steps bit-identically across the SIM_VERSION 5 fix. `i`
     // is still the `WHEEL_CORNERS` index, so wheel i reads pod i.
     for (const i of C.WHEEL_PERIMETER) {
+      if (rollersFree && !powered![i]) continue;
       const wl = wheels[i];
       // how fast THIS wheel is being dragged across itself, rotation included
       const sx = sl.x - slipW * wl.y;

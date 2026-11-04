@@ -241,6 +241,11 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   } else {
     delete out.tankRpm;
   }
+  // ZERO-POWER BEHAVIOUR (`src/sim/zeroPower.ts`): FROM THE RAW INPUT ONLY, like `imported`.
+  // Brake is stored as no field at all, so a client switching back to brake sends none, and
+  // falling back to `base` would keep the coast on every `update` that meant to remove it.
+  if (sp.zeroPower === 'coast') out.zeroPower = 'coast';
+  else delete out.zeroPower;
 
   // 3) INERTIA in 0..1
   out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);

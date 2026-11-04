@@ -188,6 +188,7 @@ const DRIVE_LABEL: Record<string, string> = {
   motor: COPY.motor,
   externalRatio: COPY.extRatio,
   tankExternalRatio: COPY.tankRatio,
+  zeroPower: COPY.zeroPower,
   massLb: COPY.weight,
   wheel: COPY.wheel,
 };

@@ -29,6 +29,14 @@ export const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
   butterfly: 'Butterfly',
 };
 
+/** The drive motors' ZERO-POWER behaviour (`RobotSpec.zeroPower`): the builder's and the
+ * importer's row, each choice with what the driver feels. */
+export const ZERO_POWER_LABEL = 'Zero power';
+export const ZERO_POWER_CHOICES: readonly { v: 'brake' | 'coast'; t: string; d: string }[] = [
+  { v: 'brake', t: 'Brake', d: 'Stops within inches when you let go' },
+  { v: 'coast', t: 'Coast', d: 'Rolls on for feet when you let go; easier to push' },
+];
+
 export const INTAKE_SHORT: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
   vector: 'Vector',
