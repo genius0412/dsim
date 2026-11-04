@@ -1,6 +1,6 @@
 # HANDOFF — 2026-11-04b (Owner's bug list; venues off photos; brake/coast; MSAA in display light)
 
-**State: on `alpha` (ee58f9f6..5ce63523). SERVER CHANGE, DEPLOYED: `dsim-alpha` 7812416b179638 (ord, shared-cpu-2x/1024) on image `deployment-01M6K19KFN65Y3E3066WQC401H` (5ce63523), /health ok.**** No `SIM_VERSION`, `SIM_PATCH` or `BALANCE_VERSION` change. On 568a48ee: `npm test` (shared 4829, BIOBUZZ 6109), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234) pass. 89a30b61 and 5ce63523 came after a review and ran their own `npm test`/`build`.
+**State: on `alpha` (ee58f9f6..5ce63523). SERVER CHANGE, DEPLOYED: `dsim-alpha` 7812416b179638 (ord, shared-cpu-2x/1024) on image `deployment-01M6K19KFN65Y3E3066WQC401H` (5ce63523), /health ok.** No `SIM_VERSION`, `SIM_PATCH` or `BALANCE_VERSION` change. On 568a48ee: `npm test` (shared 4829, BIOBUZZ 6109), `build`, `server:check`, `uiaudit`, `docaudit`, `test:mm` (234) pass. 89a30b61 and 5ce63523 came after a review and ran their own `npm test`/`build`.
 
 - **Owner's playtest list, all landed:**
   - Rooms (812d4136, 789db234, 8cc0d366):
