@@ -359,6 +359,8 @@ import { hFovFromV, vFovForScreen, vFovFromH, HUMAN_BINOCULAR_HFOV_DEG } from '.
 // wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
 import { GFX_PRESETS } from '../../src/games/biobuzz/graphics/settings';
 import { GFX_MOVED_DEFAULTS, GFX_STATE_REV, RETIRED_ENVIRONMENTS } from '../../src/games/biobuzz/graphics/settings';
+import { ACES_IN, ACES_OUT, acesFilmic, acesFilmicInverse, DECODE_FRAG, LATE_LAYER } from '../../src/games/biobuzz/scene/renderSplitPass';
+import { aaFingerprint } from '../aa-probe/fingerprint';
 import * as C from '../../src/config';
 import { bbRoleLabel } from '../../src/games/biobuzz/config';
 import { createCameras, setCameraTuning, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
@@ -1944,6 +1946,7 @@ export function renderChecks(check: Check): void {
   modelVenueChecks(check);
   venueSightChecks(check);
   hidpiBudgetChecks(check);
+  displayResolveChecks(check);
 }
 
 /**
@@ -7236,7 +7239,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       }
       check(
         'the bloom emissive raise and the panel cap are restored in a finally (shared materials must never stay raised)',
-        /try \{\s*this\.renderer\.render\(this\.scene, camera\);\s*\} finally \{[\s\S]{0,400}?this\.setGlow\(1\);\s*setClearPanelCap\(null\);/.test(sceneSrc),
+        /try \{\s*if \(this\.target && this\.target\.samples > 0\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,400}?this\.setGlow\(1\);\s*setClearPanelCap\(null\);/.test(sceneSrc),
       );
       check(
         'a context loss asks contextLossTier (the settings), not the Extreme label',
@@ -14044,7 +14047,7 @@ function environmentAndReadoutChecks(check: Check): void {
 
       check(
         'surf?.lower() runs in the SAME scene-pass finally as the bloom/panel-cap restore',
-        /try \{\s*this\.renderer\.render\(this\.scene, camera\);\s*\} finally \{[\s\S]{0,600}?surf\?\.lower\(\);/.test(sceneSrc5),
+        /try \{\s*if \(this\.target && this\.target\.samples > 0\) \{[\s\S]{0,500}?this\.renderer\.render\(this\.scene, camera\);[\s\S]{0,400}?\} finally \{[\s\S]{0,600}?surf\?\.lower\(\);/.test(sceneSrc5),
       );
 
       const probeDirtySets = sceneSrc5.match(/this\.probeDirty = true;/g) ?? [];
@@ -15030,4 +15033,150 @@ function hidpiBudgetChecks(check: Check): void {
   check('hidpi loss: High past its old 2.2 MP steps down to Medium', contextLossTier(g('high'), 3.6e6) === 'medium', String(contextLossTier(g('high'), 3.6e6)));
   check('hidpi loss: Extreme still drops to Ultra whatever it drew', contextLossTier(g('extreme'), 1e6) === 'ultra', String(contextLossTier(g('extreme'), 1e6)));
   check('hidpi loss: Low never steps below Low', contextLossTier(g('low'), 9e6) === null, String(contextLossTier(g('low'), 9e6)));
+}
+
+/**
+ * EDGES ARE RESOLVED IN DISPLAY LIGHT, AND THE MEASUREMENT THAT SAYS SO IS CURRENT (2026-11-04,
+ * owner: "too many zigzag weird anti-aliasing lines ... fix this with depth"). `scripts/aa-probe`
+ * renders the key views on a GPU against a 6×6-supersampled reference tone-mapped per sample; its
+ * recording (`baseline.json`) is keyed by the AA pipeline's fingerprint, and `ceilings.json` holds
+ * the level the fix reached. Node has no WebGL2, so the lane checks that the recording is for THIS
+ * pipeline and under those ceilings, and checks the math and the three behaviours the split rests on.
+ */
+function displayResolveChecks(check: Check): void {
+  // ── every column multisamples, and Low's move is migrated once ──
+  check(
+    'display resolve: every preset column multisamples (Low was off until 2026-11-04)',
+    GFX_TIERS.every((t) => msaaSamples(GFX_PRESETS[t].aa) >= 2),
+    GFX_TIERS.map((t) => `${t} ${GFX_PRESETS[t].aa}`).join(', '),
+  );
+  const oldLow = coerceGraphicsState({ preset: 'low', tier: 'low', settings: { ...GFX_PRESETS.low, aa: 'off' }, rev: 2 });
+  check('display resolve: a Low stored before the move reads as Low with MSAA 2x', oldLow.preset === 'low' && oldLow.settings.aa === 'msaa2', `${oldLow.preset} ${oldLow.settings.aa}`);
+  const pickedOff = coerceGraphicsState({ preset: 'custom', tier: 'low', settings: { ...GFX_PRESETS.low, aa: 'off' }, rev: GFX_STATE_REV });
+  check('display resolve: AA off picked after the move stays off', pickedOff.settings.aa === 'off', pickedOff.settings.aa);
+
+  // ── the JS twin of the tone curve is three's, and the decode inverts it ──
+  const threeModule = readFileSync(join(root, 'node_modules', 'three', 'build', 'three.module.js'), 'utf8');
+  const chunk = (/var tonemapping_pars_fragment = "([^"]*)"/.exec(threeModule)?.[1] ?? '').replace(/\\n|\\t/g, ' ');
+  const nums = (src: string): number[] => (src.match(/-?\s*\d+\.\d+/g) ?? []).map((n) => Number(n.replace(/\s+/g, '')));
+  const aces = /vec3 ACESFilmicToneMapping\( vec3 color \) \{([\s\S]*?)color \*=/.exec(chunk)?.[1] ?? '';
+  check("display resolve: ACES_IN and ACES_OUT are three's own matrices", JSON.stringify(nums(aces)) === JSON.stringify([...ACES_IN, ...ACES_OUT]), JSON.stringify(nums(aces)));
+  const rrt = /vec3 RRTAndODTFit\( vec3 v \) \{([^}]*)\}/.exec(chunk)?.[1] ?? '';
+  const fit = nums(rrt);
+  check(
+    "display resolve: the decode inverts three's RRTAndODTFit (the same five constants)",
+    fit.length === 5 && fit.map(Math.abs).every((c) => DECODE_FRAG.includes(String(c))),
+    rrt,
+  );
+  check('display resolve: three still multiplies by exposure / 0.6 before the fit', /color \*= toneMappingExposure \/ 0\.6;/.test(chunk));
+  const invIn = new THREE.Matrix3().fromArray(ACES_IN).invert().toArray();
+  const invOut = new THREE.Matrix3().fromArray(ACES_OUT).invert().toArray();
+  const srgb = (c: number): number => (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055) * 255;
+  let worst = 0;
+  for (const e of BB_ENVIRONMENTS) {
+    for (let i = 0; i <= 12; i++) {
+      for (const tint of [[1, 1, 1], [1, 0.2, 0.1], [0.1, 0.3, 1], [0.9, 0.8, 0.2]]) {
+        const hdr = tint.map((k) => k * 0.002 * Math.pow(2, i));
+        const y = acesFilmic(hdr, e.rig.exposure);
+        const back = acesFilmic(acesFilmicInverse(y, e.rig.exposure, invIn, invOut), e.rig.exposure);
+        worst = Math.max(worst, ...y.map((v, k) => Math.abs(srgb(v) - srgb(back[k]))));
+      }
+    }
+  }
+  check("display resolve: decode then tone map gives back every display colour, at every venue's exposure (< 0.01 levels)", worst < 0.01, worst.toFixed(5));
+
+  // ── why: the resolve the split replaces, on the edge the owner pointed at — a dark rail (0.02)
+  // half over a lit white panel (1.5), at the default exposure ──
+  const ex = BB_ENVIRONMENTS[0].rig.exposure;
+  const dark = acesFilmic([0.02, 0.02, 0.02], ex)[1];
+  const lit = acesFilmic([1.5, 1.5, 1.5], ex)[1];
+  const hdrResolve = acesFilmic([0.76, 0.76, 0.76], ex)[1];
+  const displayResolve = (dark + lit) / 2;
+  const stepTaken = (x: number): number => (srgb(lit) - srgb(x)) / (srgb(lit) - srgb(dark));
+  // (half the light of each is 0.29 of the step in sRGB levels, not 0.5: the eye's own curve)
+  check(
+    'display resolve: an HDR resolve leaves a half-covered rail pixel within a tenth of the panel; the display resolve moves it 3× as far',
+    stepTaken(hdrResolve) < 0.1 && stepTaken(displayResolve) > 3 * stepTaken(hdrResolve),
+    `HDR ${stepTaken(hdrResolve).toFixed(2)} of the step, display ${stepTaken(displayResolve).toFixed(2)}`,
+  );
+
+  // ── the three behaviours the split pass rests on ──
+  check(
+    'display resolve: three tone-maps in the material when the target is flagged XR (program parameters and setProgram)',
+    /if \( currentRenderTarget === null \|\| currentRenderTarget\.isXRRenderTarget === true \) \{/.test(threeModule) &&
+      /if \( _currentRenderTarget === null \|\| _currentRenderTarget\.isXRRenderTarget === true \) \{/.test(threeModule),
+  );
+  check(
+    "display resolve: three keeps a multisampled target's samples after a resolve (it invalidates only on Oculus Browser, where the decode rewrites them)",
+    /const supportsInvalidateFramebuffer = typeof navigator === 'undefined' \? false : \/OculusBrowser\/g\.test\( navigator\.userAgent \);/.test(threeModule),
+  );
+  const coreSrc = readFileSync(join(root, 'node_modules', 'three', 'build', 'three.core.js'), 'utf8');
+  check('display resolve: a render target keeps its multisampled depth by default (the late half tests against it)', /storeMultisampledDepthBuffer: true,/.test(coreSrc));
+
+  // ── the scene draws every multisampled target through it ──
+  const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+  check(
+    'display resolve: the scene pass draws a multisampled target through the split pass, and only a 0-sample one plainly',
+    /if \(this\.target && this\.target\.samples > 0\) \{\s*\(\{ calls, triangles: tris \} = this\.split\.render\(this\.renderer, this\.scene, camera, this\.target\)\);\s*\} else \{\s*this\.renderer\.render\(this\.scene, camera\);/.test(sceneSrc),
+  );
+  check(
+    'display resolve: the transparent set is re-collected wherever materials are tuned',
+    /this\.robotKids = \[\.\.\.this\.robots\.group\.children\];\s*\/\/[^\n]*\n\s*this\.split\.collect\(this\.scene, \[this\.sun, this\.hemi\]\);/.test(sceneSrc),
+  );
+  check(
+    'display resolve: the warm-up compiles the variants a split frame draws (the flagged target, then the late objects)',
+    /flag\.isXRRenderTarget = true;\s*const opaque = this\.renderer\.compileAsync\(this\.scene, camera\);/.test(sceneSrc) && /this\.split\.lateObjects\(\)/.test(sceneSrc),
+  );
+  check('display resolve: the late layer is one no camera enables', LATE_LAYER > 3 && LATE_LAYER < 32);
+  const previewSrc = readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8');
+  check(
+    "display resolve: a robot card draws at no fewer pixels than its own (Low's 75 % render scale drew 192 px at 144 and stretched it)",
+    /syncSize\(1\);\s*draw\(0\);/.test(previewSrc) && /Math\.max\(minRatio, effectivePixelRatio\(/.test(previewSrc),
+  );
+  check('display resolve: Medium multisamples 4x (2x moved its stair error 0 % at DPR 2)', GFX_PRESETS.medium.aa === 'msaa4');
+  const oldMedium = coerceGraphicsState({ preset: 'medium', tier: 'medium', settings: { ...GFX_PRESETS.medium, aa: 'msaa2' }, rev: 2 });
+  check('display resolve: a Medium stored before the move reads as Medium with MSAA 4x', oldMedium.preset === 'medium' && oldMedium.settings.aa === 'msaa4', `${oldMedium.preset} ${oldMedium.settings.aa}`);
+
+  // ── the GPU measurement is for THIS pipeline, and under the level the fix reached ──
+  const probeDir = join(root, 'scripts', 'aa-probe');
+  const baselinePath = join(probeDir, 'baseline.json');
+  const ceilingsPath = join(probeDir, 'ceilings.json');
+  if (!existsSync(baselinePath) || !existsSync(ceilingsPath)) {
+    check('display resolve: scripts/aa-probe has a recording and its ceilings', false, 'run `npm run aaprobe -- --record`');
+    return;
+  }
+  const baseline = JSON.parse(readFileSync(baselinePath, 'utf8')) as { fingerprint: string; results: Record<string, Record<string, { A: number; J: number }>> };
+  const ceilings = JSON.parse(readFileSync(ceilingsPath, 'utf8')) as {
+    views: string[];
+    ceiling: Record<string, Record<string, number>>;
+    before: Record<string, Record<string, number>>;
+  };
+  const fp = aaFingerprint();
+  check(
+    'display resolve: the edge-error recording was taken on the current AA pipeline (else `npm run aaprobe -- --record`)',
+    baseline.fingerprint === fp,
+    `recorded ${baseline.fingerprint}, now ${fp}`,
+  );
+  const over: string[] = [];
+  const missing: string[] = [];
+  const notBetter: string[] = [];
+  const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  for (const key of Object.keys(ceilings.ceiling)) {
+    for (const v of ceilings.views) {
+      const got = baseline.results[key]?.[v];
+      const cap = ceilings.ceiling[key][v];
+      if (!got) missing.push(`${key} ${v}`);
+      else if (got.A > cap) over.push(`${key} ${v} ${got.A} > ${cap}`);
+    }
+    const now = mean(ceilings.views.map((v) => baseline.results[key]?.[v]?.A ?? Infinity));
+    const was = mean(ceilings.views.map((v) => ceilings.before[key]?.[v] ?? -Infinity));
+    if (!(now < was)) notBetter.push(`${key} ${now.toFixed(2)} vs ${was.toFixed(2)}`);
+  }
+  check(
+    'display resolve: every tier at DPR 1 and 2 has a recorded edge error for every key view',
+    missing.length === 0 && Object.keys(ceilings.ceiling).length === 8,
+    missing.join(', '),
+  );
+  check('display resolve: every recorded edge error is under its ceiling', over.length === 0, over.join(', '));
+  check('display resolve: every tier at both DPRs measures less edge error than before the fix (mean of its key views)', notBetter.length === 0, notBetter.join(', '));
 }

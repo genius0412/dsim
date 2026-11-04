@@ -50,6 +50,7 @@
     "uiindex": "node scripts/uiindex.mjs",
     "docaudit": "node scripts/docaudit.mjs",
     "costprobe": "tsx scripts/costprobe.ts",
+    "aaprobe": "node scripts/aa-probe/record.mjs",
     "bundleaudit": "node scripts/bundleaudit.mjs",
     "bundleaudit:importer": "node scripts/robot-import/bundle.mjs",
     "robot-import:fixtures": "tsx scripts/robot-import/fixtures.ts",

@@ -50,6 +50,7 @@ import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuz
 import { loadElementGeometries } from './renderElementsGlb';
 import { bbWantsBay, bbLoadBay, bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { importedMeshesSettled } from './renderImported';
+import { createSplitPass, type BbSplitPass } from './renderSplitPass';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue, syncVenueRigLayer, venueCameraRoom } from './renderVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
@@ -250,6 +251,9 @@ class BiobuzzScene implements GameScene {
    * needs one, or null when neither does (which renders straight to the canvas and costs no
    * blit at all). */
   private target: THREE.WebGLRenderTarget | null = null;
+  /** HOW A MULTISAMPLED TARGET IS DRAWN: opaque tone-mapped per sample, then the clear panels in HDR
+   * (`renderSplitPass.ts`), so the resolve averages display light. Built once; it owns nothing big. */
+  private readonly split: BbSplitPass = createSplitPass();
   /**
    * THE POST CHAIN (`renderPost.ts`, AO + bloom), or null until its chunk has arrived and while
    * no setting wants it. `postLoad` is the fetch in flight, so a burst of settings changes starts
@@ -654,7 +658,27 @@ class BiobuzzScene implements GameScene {
 
   /** link the first frame's programs off the main thread (`createBiobuzzScene` awaits it, capped) */
   warmShaders(): Promise<unknown> {
-    return this.renderer.compileAsync(this.scene, this.cameras.active).catch(() => undefined);
+    const camera = this.cameras.active;
+    const target = this.target;
+    // ⚠️ THE PROGRAMS A FRAME USES DEPEND ON WHAT IS BOUND (three keys them on tone mapping and the
+    // output colour space). Compiled against the canvas, a multisampled column linked variants it
+    // never draws with and compiled its real ones on the first frame anyway. So: the opaque half
+    // as the split draws it (tone-mapped into the target), then its late half (the clear panels in
+    // linear HDR, and the decode).
+    if (!target || target.samples === 0) {
+      this.renderer.setRenderTarget(target);
+      return this.renderer.compileAsync(this.scene, camera).catch(() => undefined);
+    }
+    const flag = target as unknown as { isXRRenderTarget: boolean };
+    this.renderer.setRenderTarget(target);
+    flag.isXRRenderTarget = true;
+    const opaque = this.renderer.compileAsync(this.scene, camera);
+    flag.isXRRenderTarget = false;
+    // three compiles every material under the object it is handed, whatever the layers, so the
+    // late half is handed its own objects (lit and environment-mapped by the scene)
+    const late = this.split.lateObjects().map((o) => this.renderer.compileAsync(o, camera, this.scene));
+    this.renderer.setRenderTarget(null);
+    return Promise.all([opaque, ...late]).catch(() => undefined);
   }
 
   /** PUT `next` IN AS THE VENUE: the old one's twins reverted, the old one freed, `next`'s twins
@@ -974,6 +998,8 @@ class BiobuzzScene implements GameScene {
     });
     this.glowMats = [...glow];
     this.robotKids = [...this.robots.group.children];
+    // the same walk's moment: every material the split pass mutes or draws late is in place now
+    this.split.collect(this.scene, [this.sun, this.hemi]);
   }
 
   /** has any robot group appeared, gone or been REBUILT since `tuneMaterials` last ran? */
@@ -1016,6 +1042,10 @@ class BiobuzzScene implements GameScene {
       type: THREE.HalfFloatType,
       depthBuffer: true,
       stencilBuffer: false,
+      // nothing reads the resolved depth (AO draws its own, bloom copies colour), and the split pass
+      // resolves twice a frame: a depth resolve each time was 0.18 ms at 3840 × 2160 on an RTX 4070
+      // Ti SUPER. The multisampled depth itself is kept, which the split's late half tests against.
+      resolveDepthBuffer: false,
     });
     // the working colour space: three skips the output conversion when the destination is a
     // render target, so what lands here is linear and the blit converts it
@@ -1315,9 +1345,11 @@ class BiobuzzScene implements GameScene {
       });
     }
 
-    // ONE scene pass, into the MSAA target when anti-aliasing is on and straight to the canvas
+    // THE SCENE PASS, into the MSAA target when anti-aliasing is on and straight to the canvas
     // when it is off (which costs no blit at all — that is the whole reason `off` is a real
     // setting here rather than a 1-sample target). With AO or bloom on there is always a target.
+    // A MULTISAMPLED target is drawn in two halves (`renderSplitPass.ts`): its resolve must
+    // average tone-mapped samples, or every dark-on-bright edge keeps a hard step.
     this.renderer.setRenderTarget(this.target);
     // the sun's map, once for this frame (see `shadowMap.autoUpdate` in the constructor)
     this.renderer.shadowMap.needsUpdate = true;
@@ -1333,8 +1365,19 @@ class BiobuzzScene implements GameScene {
     // minimap and AO passes below read them at rest. Lowered in the same `finally` as the glow.
     const surf = this.surfaces;
     if (surf) this.withSurfaces('failed while drawing', (sf) => sf.raise(this.scene));
+    let calls = 0;
+    let tris = 0;
     try {
-      this.renderer.render(this.scene, camera);
+      if (this.target && this.target.samples > 0) {
+        ({ calls, triangles: tris } = this.split.render(this.renderer, this.scene, camera, this.target));
+      } else {
+        this.renderer.render(this.scene, camera);
+        // THE SCENE'S OWN COUNTS, READ HERE — `info.render` is reset at the START of every
+        // `render()` call, and more follow (the post passes, the blit, the minimap), so a read taken
+        // after them reports the blit's two triangles.
+        calls = this.renderer.info.render.calls;
+        tris = this.renderer.info.render.triangles;
+      }
     } finally {
       // ALWAYS put them back: the panel cap is shared with every other scene, and a throw here
       // tears this one down (game.ts) with it and the lamps still raised
@@ -1344,11 +1387,6 @@ class BiobuzzScene implements GameScene {
       }
       surf?.lower();
     }
-    // THE SCENE'S OWN COUNTS, READ HERE — `info.render` is reset at the START of every
-    // `render()` call, and more follow (the post passes, the blit, the minimap), so a read taken
-    // after them reports the blit's two triangles.
-    const calls = this.renderer.info.render.calls;
-    const tris = this.renderer.info.render.triangles;
     if (this.target) {
       let image: THREE.WebGLRenderTarget = this.target;
       if (post) {
@@ -1552,6 +1590,7 @@ class BiobuzzScene implements GameScene {
      */
     this.scene.remove(this.robots.group);
     this.robots.dispose();
+    this.split.dispose();
     disposeObject3D(this.scene);
     releaseRenderer(this.renderer);
     this.element.parentElement?.removeChild(this.element);

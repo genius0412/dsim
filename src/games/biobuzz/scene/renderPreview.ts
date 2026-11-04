@@ -419,8 +419,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     });
   }
 
-  function syncSize(): void {
-    const pr = effectivePixelRatio(settings, tier, cssW, cssH, hostDpr);
+  /** `minRatio`: a thumbnail draws at no fewer pixels than its own (`capture`) */
+  function syncSize(minRatio = 0): void {
+    const pr = Math.max(minRatio, effectivePixelRatio(settings, tier, cssW, cssH, hostDpr));
     renderer.setPixelRatio(pr);
     renderer.setSize(cssW, cssH, false);
     camera.aspect = Math.max(1e-3, cssW / cssH);
@@ -802,7 +803,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       yaw = TURN_YAW_START;
       elev = TURN_ELEV_DEFAULT;
       zoom = 1;
-      syncSize();
+      // AT LEAST ITS OWN PIXELS (2026-11-04): Low's 75 % render scale drew a 192-px card at 144 and
+      // stretched it, which on a card is 37,000 pixels saved and a soft, stepped picture
+      syncSize(1);
       draw(0);
       shot ??= document.createElement('canvas');
       shot.width = cssW;

@@ -415,7 +415,7 @@ One preset picker and every setting under it; changing a setting switches the pr
 |---|---|---|---|---|---|---|
 | Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 3.7 / 8.3 / 12.4 MP since 2026-10-11; was 2.2 / 4.0 / 8.3 for High and up) | 75 | 100 | 100 | 100 | 150 |
 | Max frame rate | 30 / 60 / 120 / display | 60 | display | display | display | display |
-| Anti-aliasing | off / MSAA 2x / MSAA 4x | off | MSAA 2x | MSAA 4x | MSAA 4x | MSAA 4x |
+| Anti-aliasing | off / MSAA 2x / MSAA 4x (resolved in display light, 2026-11-04) | MSAA 2x (off until 2026-11-04) | MSAA 4x (2x until 2026-11-04) | MSAA 4x | MSAA 4x | MSAA 4x |
 | Shadows | off / low 1024 / high 2048 / soft / max 4096 | off | low | high | soft | max |
 | Element shadows | none / blob / real | none | blob | real | real | real |
 | Ambient occlusion | off / on (GTAO) | off | off | off | off | on |

@@ -1,0 +1,109 @@
+{
+ "_": "Edge error per key view (8-bit luma on edge pixels; the stair part on a canvas drawn below the panel), measured on an RTX 4070 Ti SUPER, 2026-11-04. before: the pipeline before the display resolve and Low's MSAA. ceiling: the level the fix reached, x1.04 + 0.1. `npm run aaprobe -- --record` refuses to record a view over its ceiling.",
+ "views": [
+  "driver",
+  "hive",
+  "robot",
+  "dolly"
+ ],
+ "ceiling": {
+  "low@1": {
+   "driver": 9.93,
+   "hive": 9.06,
+   "robot": 8.28,
+   "dolly": 8.76
+  },
+  "medium@1": {
+   "driver": 6.53,
+   "hive": 6.86,
+   "robot": 6.11,
+   "dolly": 6.64
+  },
+  "high@1": {
+   "driver": 3.96,
+   "hive": 4.91,
+   "robot": 3.29,
+   "dolly": 3.86
+  },
+  "ultra@1": {
+   "driver": 4.03,
+   "hive": 4.92,
+   "robot": 3.3,
+   "dolly": 3.86
+  },
+  "low@2": {
+   "driver": 11.91,
+   "hive": 10.99,
+   "robot": 10.46,
+   "dolly": 10.83
+  },
+  "medium@2": {
+   "driver": 9.56,
+   "hive": 9.86,
+   "robot": 9.55,
+   "dolly": 9.66
+  },
+  "high@2": {
+   "driver": 6.96,
+   "hive": 8.6,
+   "robot": 6.46,
+   "dolly": 7.45
+  },
+  "ultra@2": {
+   "driver": 4.06,
+   "hive": 4.65,
+   "robot": 3.32,
+   "dolly": 4.02
+  }
+ },
+ "before": {
+  "low@1": {
+   "driver": 15.69,
+   "hive": 14.08,
+   "robot": 13.61,
+   "dolly": 13.76
+  },
+  "medium@1": {
+   "driver": 7.2,
+   "hive": 7.1,
+   "robot": 6.65,
+   "dolly": 6.96
+  },
+  "high@1": {
+   "driver": 4.08,
+   "hive": 4.99,
+   "robot": 3.64,
+   "dolly": 3.955
+  },
+  "ultra@1": {
+   "driver": 4.15,
+   "hive": 4.99,
+   "robot": 3.64,
+   "dolly": 3.955
+  },
+  "low@2": {
+   "driver": 17.9,
+   "hive": 15.36,
+   "robot": 15.09,
+   "dolly": 15.36
+  },
+  "medium@2": {
+   "driver": 10.13,
+   "hive": 9.59,
+   "robot": 9.25,
+   "dolly": 9.58
+  },
+  "high@2": {
+   "driver": 6.96,
+   "hive": 8.6,
+   "robot": 7.06,
+   "dolly": 7.5
+  },
+  "ultra@2": {
+   "driver": 4.14,
+   "hive": 4.73,
+   "robot": 3.65,
+   "dolly": 4.033
+  }
+ }
+}

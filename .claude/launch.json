@@ -82,6 +82,19 @@
       ],
       "port": 5186,
       "autoPort": false
+    },
+    {
+      "name": "aa-probe",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "scripts/aa-probe",
+        "--port",
+        "5203",
+        "--strictPort"
+      ],
+      "port": 5203,
+      "autoPort": false
     }
   ]
 }

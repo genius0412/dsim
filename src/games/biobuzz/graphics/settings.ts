@@ -172,8 +172,9 @@ export function coerceMaxFps(v: unknown, fallback: MaxFps): MaxFps {
 /**
  * §4.4 row 3. `smaa` IS NOT OFFERED ON THIS BUILD and the type does not carry it — see
  * `GFX_NOT_OFFERED` below for the measurement that decided it. MSAA is real multisampling at
- * the sample count named, done in an offscreen render target rather than through the canvas's
- * own `antialias` context attribute: WebGL gives no way to ASK the default framebuffer for a
+ * the sample count named, resolved in display light (`scene/renderSplitPass.ts`), done in an
+ * offscreen render target rather than through the canvas's own `antialias` context attribute:
+ * WebGL gives no way to ASK the default framebuffer for a
  * particular sample count, and the attribute is fixed for the life of the context, so an
  * `antialias`-based implementation could offer neither "2x" nor a live change.
  */
@@ -366,14 +367,22 @@ export interface GraphicsSettings {
   hfov: number;
   cameraMotion: CameraMotion;
   /** the picture-in-picture overhead map in a corner. */
-  /**
-   * The PiP top-down aid. ⚠️ **OFF ON EVERY PRESET (owner, 2026-09-21).** Low and Medium
-   * used to default it ON, on the reasoning that the machines with the hardest-to-read 3D
-   * shot are the ones that want a top-down aid. It is still a SECOND FULL PASS over the
-   * scene, which is the cost those machines can least afford, and it covers a corner of
-   * the field it is meant to help with. It stays a one-click setting for anyone who wants
-   * it; it is simply not a thing a new player is given without asking.
-   */
+  /**
+
+   * The PiP top-down aid. ⚠️ **OFF ON EVERY PRESET (owner, 2026-09-21).** Low and Medium
+
+   * used to default it ON, on the reasoning that the machines with the hardest-to-read 3D
+
+   * shot are the ones that want a top-down aid. It is still a SECOND FULL PASS over the
+
+   * scene, which is the cost those machines can least afford, and it covers a corner of
+
+   * the field it is meant to help with. It stays a one-click setting for anyone who wants
+
+   * it; it is simply not a thing a new player is given without asking.
+
+   */
+
   minimap: boolean;
   perfOverlay: PerfOverlay;
 }
@@ -450,7 +459,10 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
   low: {
     renderScale: 75,
     maxFps: 60,
-    aa: 'off',
+    // MSAA 2x, not off (2026-11-04): Low draws about half the panel's pixels per axis and the
+    // browser stretches them, so every unsmoothed step became a 2–4 pixel stair. 2x cut the stair
+    // error by 40 % on the probe (`scripts/aa-probe`) for an 18 MB target at Low's 0.6 MP.
+    aa: 'msaa2',
     shadows: 'off',
     elementShadows: 'none',
     ao: 'off',
@@ -471,7 +483,9 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
   medium: {
     renderScale: 100,
     maxFps: 0,
-    aa: 'msaa2',
+    // MSAA 4x since 2026-11-04 (was 2x): with the display-space resolve, 2x moved Medium's stair
+    // error 3 % at DPR 1 and not at all at DPR 2, 4x 11 % and 5 %, for 29 MB more at 1.2 MP
+    aa: 'msaa4',
     shadows: 'low',
     elementShadows: 'blob',
     ao: 'off',
@@ -746,7 +760,7 @@ export const GFX_PRESETS_ALL: readonly GraphicsPreset[] = ['auto', ...GFX_TIERS,
  * one) was written before a column default moved, so `GFX_MOVED_DEFAULTS` below applies to it ONCE;
  * every write after that carries this number, so a value the player picks again afterwards sticks.
  */
-export const GFX_STATE_REV = 2;
+export const GFX_STATE_REV = 3;
 
 /**
  * ⚠ COLUMN DEFAULTS THAT MOVED, MIGRATED ONCE ON LOAD (2026-10-11).
@@ -754,11 +768,15 @@ export const GFX_STATE_REV = 2;
  * A blob stored before a column's default moved carries the old default as the column's own
  * value, not as a pick: nothing can tell the two apart, and leaving it would relabel a hand-picked
  * preset as Custom (its settings no longer match the column). An entry here moves it once; the
- * revision stamp keeps whatever the player picks afterwards. Empty since 2026-11-04: its one entry
- * (`school-hall` → the events hall on High and up) is covered by `RETIRED_ENVIRONMENTS`, which
- * coerces every stored photographed venue before this runs.
+ * revision stamp keeps whatever the player picks afterwards. Its first entry (`school-hall` → the
+ * events hall on High and up) went on 2026-11-04: `RETIRED_ENVIRONMENTS` coerces every stored
+ * photographed venue before this runs. Anti-aliasing moved the same day (revision 3): Low from off
+ * to MSAA 2x, Medium from 2x to 4x.
  */
-export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [];
+export const GFX_MOVED_DEFAULTS: readonly { key: keyof GraphicsSettings; from: string; tiers: readonly GraphicsTier[] }[] = [
+  { key: 'aa', from: 'off', tiers: ['low'] },
+  { key: 'aa', from: 'msaa2', tiers: ['medium'] },
+];
 
 function migrateMovedDefaults(settings: GraphicsSettings, tier: GraphicsTier, rev: unknown): GraphicsSettings {
   if (typeof rev === 'number' && rev >= GFX_STATE_REV) return settings;

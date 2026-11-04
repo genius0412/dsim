@@ -960,22 +960,94 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       `window.devicePixelRatio` is 1 whatever `force-device-scale-factor` says, so every capture
       drew at ratio 1 and looked fine. `webContents.enableDeviceEmulation({ deviceScaleFactor: 2,
       ... })` is what makes the PAGE see 2.
-    - ⚠️ **THE OTHER CAUSE IS KNOWN AND DELIBERATELY NOT SHIPPED: THE MSAA RESOLVE HAPPENS IN HDR.**
-      The scene target is linear half-float and tone mapping happens in the blit, so the hardware
-      resolve averages HDR samples; a dark rail half-covering a lit white panel (1.2–1.7 raw ×
-      exposure) tone-maps to nearly the panel's value and the edge keeps a hard step. Measured on
-      an RTX 4070 Ti SUPER with a canvas readback (share of high-contrast edge pixels holding an
-      in-between value): AA off 0.08, MSAA 4x 0.37, MSAA 4x with tone mapping moved into the
-      materials 0.47 — but that turned the clear panels grey (their blend depends on the HDR value
-      under them). Branch `gfx/edge-aa` (not merged) built a correct version: opaque samples
-      stored compressed c/(1+2·exposure·c) through three's CustomToneMapping slot (applied only
-      while the target is flagged `isXRRenderTarget`), decoded back, and glass re-solved per
-      fragment in the compressed space — four render calls, +16 bytes a pixel, edge score
-      0.31 → 0.36 on the events hall. It also left faint white dots along hive tray rims and
-      skins where one transparent layer crosses another (`scratch/r2/cap/events-hive-cmp.png` in
-      that worktree): a new jagged artifact, which is the thing the owner reported. Not merged;
-      the budgets fix the owner's own screen. Revisit only with a design that leaves glass edges
-      clean.
+    - The other cause, the MSAA resolve averaging HDR, was left open here and is fixed by the
+      next block.
+  - ⚠️ **EDGES RESOLVE IN DISPLAY LIGHT, AND EVERY COLUMN MULTISAMPLES (owner, 2026-11-04: "too
+    many zigzag weird anti-aliasing lines. I asked you to fix this before but nothing changed").**
+    Measured before anything changed, by `scripts/aa-probe` (`npm run aaprobe`): eight fixed views
+    through the real scene (driver, chase, a long lens grazing the tape, a hive against the hall,
+    a robot close up, Home, Play's setup, and a sideways dolly for motion), each compared with the
+    same frame drawn 6×6 per device pixel, tone-mapped PER SAMPLE and averaged in display light.
+    The score is the mean 8-bit luma error on edge pixels. On a canvas drawn below the panel's
+    pixels it splits into the stair-steps (against that reference resolved at the render
+    resolution and stretched the way the browser stretches it) and the softness of the pixel
+    count, which no antialiasing gives back. A class map attributes each edge to the surface in
+    front. Causes, as measured on an RTX 4070 Ti SUPER (driver view; DPR 1 / DPR 2):
+    - **REAL — THE MSAA RESOLVE AVERAGED HDR.** Tone mapping was in the blit, so a dark rail half
+      over a lit white panel resolved to nearly the panel and kept a hard step (the RENDER lane
+      pins the arithmetic: 0.08 of the step taken, against 0.29 in display light). Fixed by
+      `scene/renderSplitPass.ts`, every multisampled target: (1) the opaque scene with tone mapping
+      in the materials (the target flagged the way three flags an XR target, the one switch three
+      reads), so the resolve averages display light, the transparent materials muted but still
+      casting; (2) a full-screen quad writes ACES⁻¹ of that resolve back into every sample (no
+      depth write, so step 1's per-sample depth stays); (3) the clear panels, blobs and reticle,
+      multisampled, blended in linear HDR over it and depth-tested per sample; one more resolve.
+      Glass composes per sample by the fixed-function blender, so stacked panels are exact and
+      keep MSAA on their own outlines. High, DPR 1: 4.08 → 3.71; robot silhouettes visibly stepped
+      (> 24 levels) 6.0 % → 1.8 %, floor edges 3.5 % → 1.2 %, glass edges unchanged (4.6), and no
+      white dots on hive rims or skins (checked in crops). It relies on three keeping a
+      multisampled target's samples and depth after a resolve (it invalidates only on Oculus
+      Browser, where step 2 rewrites every sample anyway); the lane pins both behaviours.
+    - **REAL — LOW HAD NO ANTIALIASING AT ALL**, on the column that draws about half the panel's
+      pixels per axis, which the browser then stretches 1.9× (DPR 1) or 3.7× (DPR 2): every
+      unsmoothed step became a 2–4 pixel stair. Low is MSAA 2x now (`GFX_MOVED_DEFAULTS` moves a
+      stored Low once, revision 3): stair error 15.7 → 9.5 at DPR 1; 4x reached only 8.6. Its
+      score against the crisp reference rises (16.9 → 19.6 over the eight views): a smooth edge
+      stretched 1.9× is wider than a hard one, and the stairs are what was reported. Low's clear
+      panels now blend in HDR like every other column's (it drew straight to the canvas before).
+    - **REAL — MEDIUM'S 2 SAMPLES.** Two samples give three coverage levels, and with the display
+      resolve Medium moved 3 % at DPR 1 and not at all at DPR 2. Medium is MSAA 4x now (moved
+      once like Low): −11 % and −5 %, for 29 MB more at its 1.2 MP.
+    - **REAL — THE ROBOT CARDS AT LOW.** `capture()` sized a card through the tier's render scale,
+      so Low drew a 192-px card at 144 and stretched it. A card now draws at no fewer pixels than
+      its own (`syncSize(1)`). Cards were already resolved in display light: the preview canvas
+      has the context's own MSAA and tone-maps per fragment.
+    - **REAL, BUT NOT ALIASING — FEWER PIXELS THAN THE PANEL.** Low, Medium, and High on a 2× panel
+      are soft (10–24 levels of softness, the larger half of their score). That is the pixel budget
+      those columns trade for frame rate; left as it is.
+    - **NOT CAUSES.** Shadow maps: the frame against one with 4× the texels (same blur in inches)
+      differs by 0.03–1.2 levels on the floor's shadow edges, because the VSM blur covers the
+      texels. Texture minification: floor interior edges 0.7 at High. Z-fighting and specular
+      sparkle: in motion, off the edges, 0.21 levels of frame-to-frame change the reference lacks,
+      0.16 % of those pixels past 16 levels.
+    - **REJECTED, MEASURED.** FXAA after the tone curve: it thins the field's 2-pixel rails and
+      tape (High 4.08 → 7.4, structure edges stepped 4.4 % → 15.4 %; Low 18.6 → 21.5 even as its
+      stairs fell). Tone mapping in the materials alone: right for opaque edges, but the clear
+      panels then blend in display space and change look (glass edges 4.6 → 18.2). Clear panels
+      drawn single-sample after the resolve: aliased outlines on every hive skin. `gfx/edge-aa`
+      (2026-10-11): white dots where clear layers cross. TAA: not tried; fast robots ghost, and
+      nothing here writes motion vectors. Raising Low and Medium's budgets: that is the trade
+      those columns exist to make.
+    - **RESULT, the eight views' mean (stair error; old → new):** Low 13.8 → 8.5 (DPR 1) and
+      15.3 → 10.5 (DPR 2); Medium 6.8 → 6.1 and 9.5 → 9.1; High 4.18 → 3.76 and 7.4 → 6.8;
+      Ultra 4.19 → 3.78 and 4.08 → 3.69. Share of edge pixels off by a visible step: Low 16 % →
+      6 %, Ultra 3.0 % → 2.3 %.
+    - **COST, same GPU, GPU time per frame (old → new):** DPR 2: Medium 0.25 → 0.30 ms, High
+      0.83 → 0.92, Ultra 1.48 → 1.71, Extreme 5.16 → 5.59; DPR 1: High and Ultra 0.57 → 0.61,
+      Extreme 2.53 → 2.66; Low, now multisampled, 0.04 → 0.09. At Ultra's 4K the decode is 0.19 ms
+      and the second resolve most of the rest. Resolving DEPTH on every resolve was 0.18 ms that
+      nothing read (`resolveDepthBuffer: false` on the scene target now). A transparent mesh that
+      neither casts nor receives is left out of the opaque half rather than muted (a splat venue
+      is millions of splats); muting the rest costs 0.02 ms. CPU: one more `render` call, +0.1 to
+      0.3 ms, with the world matrices not walked twice. Memory: nothing new on High and up; Low's
+      first target is 18 MB (32 bytes a pixel at 0.6 MP), Medium's 4x is 29 MB more.
+    - ⚠️ **AT DPR 2, AN OFFSCREEN CAPTURE RESAMPLES EVEN A NATIVE CANVAS.** Under device emulation
+      `capturePage` scored a 3840 × 2160 Ultra frame 14 where the same pixels at DPR 1 scored 3.3.
+      The probe reads the canvas back and stretches a below-native one with the compositor's own
+      bilinear filter (it matches the real capture at DPR 1 to 0.06 levels).
+    - ⚠️ **THE WARM-UP COMPILES WHAT THE FRAME DRAWS.** Programs are keyed on tone mapping and the
+      output colour space, which depend on what is bound. `warmShaders` compiled against the canvas,
+      so a multisampled column linked variants it never drew and compiled its real ones on the
+      first frame. It now compiles with the target flagged (the opaque half), then the late objects
+      alone (three's `compile` ignores layers, so handing it the scene would link every opaque
+      material twice).
+    - **LOCKED IN.** `npm run aaprobe -- --record` (about 25 minutes, offscreen, muted) writes
+      `scripts/aa-probe/baseline.json` with the AA pipeline's fingerprint (`fingerprint.ts`: each
+      column's samples, render scale and budget, the decode shader, the tone-curve constants), and
+      only if every key view is under `ceilings.json` (the level this fix reached × 1.04 + 0.1).
+      The RENDER lane fails when the fingerprint no longer matches, when a recorded view is over its
+      ceiling, or when a tier's mean is not below its pre-fix mean, and it checks the decode against
+      three's own curve at every venue's exposure.
   - **PHYSICAL MATERIALS (2026-09-27) is a lazy chunk, reached from exactly two places.**
     `scene/renderSurfaces.ts` (+ its `renderSurface*.ts` helpers) is imported only as
     `import('./renderSurfaces')`, from `renderScene.ts` and `renderPreview.ts`. Standard mode is
@@ -1113,7 +1185,9 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that
     is the only way "2x" and a live change are both possible. The target is half-float, and the
-    BLIT is where tone mapping and the sRGB conversion happen.
+    BLIT is where tone mapping and the sRGB conversion happen — but a multisampled target's
+    opaque half is tone-mapped per sample first and decoded back (EDGES RESOLVE IN DISPLAY LIGHT,
+    above), so what the blit reads is still linear HDR.
   - ⚠️ `WebGLRenderer.setViewport`/`setScissor` take CSS pixels and multiply by the pixel ratio
     THEMSELVES. The PiP minimap passed drawing-buffer pixels once and squared the ratio — at 75 %
     render scale the whole scene drew into 56 % of the canvas, which reads as a camera bug.
