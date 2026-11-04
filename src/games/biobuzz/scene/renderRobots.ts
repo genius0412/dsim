@@ -904,22 +904,25 @@ const WHEEL_LOD: Record<BbWheelDetail, {
  *
  * What it may change is what `WHEEL_LOD.low` already drops from a wheel — detail the outline does
  * not depend on: edge breaks (`chamferBox`, `plateExtrude`, `chamferRing`) on the chassis and the
- * mechanisms, where the side plates' lightening cuts go (`bbSidePlateCut`, `bbInnerPlateLands`),
- * the cap screws (`bbCapFasteners`), how many steps round a round part takes (`roundSeg`), and the
- * hardware in the bay under the deck, seen only through an open end (`buildBay`). The machine's
- * outline, its footprint and every part's bounding box are the same on both levels (to a break, or
- * to the radius a coarser polygon fell short of), and so is every colour.
+ * mechanisms, the inner plates' solid lands where a drive motor bolts on (`bbInnerPlateLands`),
+ * the polygon the outer plate's round cuts are drawn with (`SIDE_PLATE_SEGS` — never where they
+ * are or what shape: every tier cuts the same round holes, `bbSidePlateCut`), the cap screws
+ * (`bbCapFasteners`), how many steps round a round part takes (`roundSeg`), and the hardware in
+ * the bay under the deck, seen only through an open end (`buildBay`). The machine's outline, its
+ * footprint and every part's bounding box are the same on both levels (to a break, or to the
+ * radius a coarser polygon fell short of), and so is every colour.
  *
- * ⚠️ **`low` CALLS TODAY'S CODE, AND THE RENDER LANE PINS THAT IT IS NOT HEAVIER.** Every Low path
- * below is the pre-2026-10-10 builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the
- * plain `BoxGeometry`/`ExtrudeGeometry` call it always made. The Low changes are the inner side
- * plates stopping under the deck (`buildFrame`), and the top caps and end bars giving way to the
- * intake arms' diagonal (`intakeArmKeepOuts`, 2026-10-11), both at the same triangle count on every
- * pinned build. Low and Medium pay nothing for this.
+ * ⚠️ **`low` IS THE CHEAP BUILD, AND THE RENDER LANE PINS ITS COST.** Every Low path below is the
+ * plain builder with `c = 0`, which `chamferBox`/`plateExtrude` turn into the plain
+ * `BoxGeometry`/`ExtrudeGeometry` call. The Low changes since 2026-10-10 are the inner side plates
+ * stopping under the deck (`buildFrame`), the top caps and end bars giving way to the intake arms'
+ * diagonal (`intakeArmKeepOuts`, 2026-10-11), and the outer plate's round cuts (2026-11-04: the
+ * owner ruled one pocketing for every tier), drawn with fewer points than High's. The pinned table
+ * in the RENDER lane holds Low's exact triangle count, so any further change to it is measured.
  */
-const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; cut: boolean; fasteners: boolean; bay: boolean }> = {
-  low: { chamfer: false, cut: false, fasteners: false, bay: false },
-  high: { chamfer: true, cut: true, fasteners: true, bay: true },
+const ROBOT_LOD: Record<BbWheelDetail, { chamfer: boolean; fasteners: boolean; bay: boolean }> = {
+  low: { chamfer: false, fasteners: false, bay: false },
+  high: { chamfer: true, fasteners: true, bay: true },
 };
 /** an edge break of `c` on High, none on Low */
 function edgeFor(detail: BbWheelDetail, c: number): number {
@@ -1636,24 +1639,16 @@ export function bbTopCapBand(spec: Pick<RobotSpec, 'width'>, sy: 1 | -1): [numbe
 export const BB_TOP_CAP_Z: readonly [number, number] = [BB_PLATE_H, BB_PLATE_H + BB_TOP_CAP_T];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THE OUTER SIDE PLATE AS A CUT PLATE (High) — 2026-10-10
+// THE OUTER SIDE PLATE — ROUND CUTS ONLY, ON EVERY TIER (2026-10-10, circles-only 2026-11-04)
 // ─────────────────────────────────────────────────────────────────────────────
-/** a round window in a side plate, in PLATE coordinates: `u` along the chassis x, `v` up from the
+/** a round cut in a side plate, in PLATE coordinates: `u` along the chassis x, `v` up from the
  *  floor (in) */
 export interface BbPlateWindow {
   u: number;
   v: number;
   r: number;
 }
-/** a rounded-rectangle lightening pocket in a side plate, plate coordinates as above */
-export interface BbPlatePocket {
-  u0: number;
-  u1: number;
-  v0: number;
-  v1: number;
-  r: number;
-}
-/** the plate's own height on High: it stops under the deck (`buildFrame`) */
+/** the plate's own height: it stops under the deck (`buildFrame`) */
 export const BB_SIDE_PLATE_CUT_H = BB_PLATE_H - BB_DECK_T;
 /** the least web between a cut and another cut or a plate edge, and the solid bands kept along the
  *  plate's bottom and top edges and at its ends (in) */
@@ -1661,15 +1656,14 @@ export const BB_PLATE_WEB = 0.4;
 export const BB_PLATE_BAND = 0.5;
 /** ⚠️ NO CUT UNDER 0.45 in ACROSS — at the chase camera's ~13 px/in a goBILDA 4 mm hole is 2 px
  *  and its 8 mm grid a moiré (owner, 2026-09-28: "there should be nothing in graphics that mesh
- *  and create weird visual effects"). Windows are at least 0.9 across, pockets 0.8. */
+ *  and create weird visual effects"). Windows are at least 0.9 across, lightening holes 0.8. */
 export const BB_PLATE_MIN_CUT = 0.45;
 const WINDOW_MAX_R = 1.0;
-const POCKET_MIN = 0.8;
-const POCKET_R = 0.2;
-const POCKET_MAX_W = 3.0;
-/** stack two pockets rather than cut one slot taller than this */
-const POCKET_STACK_H = 2.4;
-const POCKETS_PER_HALF = 4;
+/** a lightening hole: at least 0.8 across (the old pockets' floor), at most 1.6 — smaller than a
+ *  bearing window, so the windows still read as the bearings */
+export const BB_PLATE_HOLE_MIN_D = 0.8;
+export const BB_PLATE_HOLE_MAX_R = 0.8;
+const HOLES_PER_HALF = 4;
 
 /**
  * THE WHEELS AND PODS BEHIND AN OUTER SIDE PLATE, as `buildWheels` places them: the axle's x and the
@@ -1693,23 +1687,32 @@ export function bbSidePlateWheels(spec: RobotSpec): { x: number; r: number }[] {
 }
 
 /**
- * ⚠️ **WHERE THE OUTER SIDE PLATE IS CUT, AND WHY THE OLD HOLES WERE WRONG** (2026-10-10). The plate
- * used to carry `round(length / 4.5)` holes spaced evenly along it, which missed the axles: on a
- * 15-in chassis they sat at x = −5, 0, 5 against axles at ±4.75, and the middle one was behind the
- * sign. A real drive plate is cut round its bearings, so on High:
+ * ⚠️ **WHERE THE OUTER SIDE PLATE IS CUT, AND WHY IT IS ROUND HOLES AND NOTHING ELSE.**
+ *
+ * The plate used to carry `round(length / 4.5)` holes spaced evenly along it, which missed the
+ * axles: on a 15-in chassis they sat at x = −5, 0, 5 against axles at ±4.75, and the middle one was
+ * behind the sign. On 2026-10-10 High got a plate cut round its bearings, with ROUNDED-RECTANGLE
+ * POCKETS in what was left, stacked two high wherever the plate was taller than 2.4 in, while Low
+ * kept the even holes. So the same robot was pocketed two different ways depending on a graphics
+ * setting, and High's stacked slots read as a grid of windows (owner, 2026-11-04: "Just default to
+ * the circular pocketing only. The grid one is unrealistic and looks weird."). The pockets are gone,
+ * and EVERY tier cuts the same plate:
  *  · a round WINDOW centred on each wheel or pod's axle, at its own centre height — radius ≤ 1.0,
  *    kept `0.35` off the floor edge, `BB_PLATE_WEB` off the plate end, and clear of the sign land;
  *    left out under `BB_PLATE_MIN_CUT`;
- *  · LIGHTENING POCKETS (rounded rectangles) in what is left: between the sign land and a window,
- *    outboard of a window, and above one where the plate is tall enough. Webs ≥ `BB_PLATE_WEB`,
- *    solid bands `BB_PLATE_BAND` along the bottom, the top and the ends, at most
- *    `POCKETS_PER_HALF` each side of the sign;
+ *  · round LIGHTENING HOLES in what is left along the plate — between the sign land and a window,
+ *    and outboard of one — ONE ROW of them, on the windows' centre line (the plate's mid band
+ *    when there is no window), each `BB_PLATE_HOLE_MIN_D`…`2 × BB_PLATE_HOLE_MAX_R` across, webs
+ *    ≥ `BB_PLATE_WEB`, solid bands `BB_PLATE_BAND` along the bottom, the top and the ends, at most
+ *    `HOLES_PER_HALF` each side of the sign. Never a second row: two rows of equal holes is the
+ *    grid this replaced;
  *  · the SIGN LAND solid, full height.
- * Mirror-symmetric in u, because every drivetrain's wheels are. Pure numbers, cached per build;
- * the RENDER lane sweeps it over every drivetrain and size.
+ * What a tier may still change is the polygon each circle is drawn with (`SIDE_PLATE_SEGS`), never
+ * where a hole is or how big. Mirror-symmetric in u, because every drivetrain's wheels are. Pure
+ * numbers, cached per build; the RENDER lane sweeps it over every drivetrain and size.
  */
-const PLATE_CUT_CACHE = new Map<string, { h: number; windows: BbPlateWindow[]; pockets: BbPlatePocket[] }>();
-export function bbSidePlateCut(spec: RobotSpec): { h: number; windows: BbPlateWindow[]; pockets: BbPlatePocket[] } {
+const PLATE_CUT_CACHE = new Map<string, { h: number; windows: BbPlateWindow[]; holes: BbPlateWindow[] }>();
+export function bbSidePlateCut(spec: RobotSpec): { h: number; windows: BbPlateWindow[]; holes: BbPlateWindow[] } {
   const key = `${spec.length}|${spec.drivetrain}`;
   const hit = PLATE_CUT_CACHE.get(key);
   if (hit) return hit;
@@ -1726,46 +1729,36 @@ export function bbSidePlateCut(spec: RobotSpec): { h: number; windows: BbPlateWi
     if (windows.some((o) => Math.hypot(o.u - w.x, o.v - w.r) < o.r + r + BB_PLATE_WEB)) continue;
     windows.push({ u: w.x, v: w.r, r });
   }
-  const pockets: BbPlatePocket[] = [];
   const v0 = BB_PLATE_BAND;
   const v1 = H - BB_PLATE_BAND;
-  const column = (u0: number, u1: number, lo: number, hi: number): void => {
-    // one pocket, or two stacked with a web between, so no slot runs the plate's full height
-    if (hi - lo > POCKET_STACK_H) {
-      const mid = (lo + hi) / 2;
-      pockets.push({ u0, u1, v0: lo, v1: mid - BB_PLATE_WEB / 2, r: POCKET_R });
-      pockets.push({ u0, u1, v0: mid + BB_PLATE_WEB / 2, v1: hi, r: POCKET_R });
-    } else pockets.push({ u0, u1, v0: lo, v1: hi, r: POCKET_R });
-  };
-  // what is blocked along u at full height: the land, each window (plus its web), the plate end
+  // THE ROW: on the bearings' centre line, so the holes line up with the windows they sit between
+  const row = windows.length ? windows.reduce((s, w) => s + w.v, 0) / windows.length : (v0 + v1) / 2;
+  const reach = Math.min(row - v0, v1 - row);
+  const holes: BbPlateWindow[] = [];
+  // what is blocked along u at the row: the land, each window (plus its web), the plate end
   const blocked = windows.map((w) => [w.u - w.r - BB_PLATE_WEB, w.u + w.r + BB_PLATE_WEB] as const);
   const stops = [...blocked.map((b) => b[0]), hl - BB_PLATE_BAND].sort((p, q) => p - q);
   let at = land;
   for (const stop of stops) {
     const end = Math.min(stop, hl - BB_PLATE_BAND);
     const width = end - at;
-    if (width >= POCKET_MIN) {
-      // a wide gap is split into equal pockets with a web between, none wider than POCKET_MAX_W
-      const n = Math.ceil((width + BB_PLATE_WEB) / (POCKET_MAX_W + BB_PLATE_WEB));
-      const pw = (width - (n - 1) * BB_PLATE_WEB) / n;
-      for (let i = 0; i < n; i++) column(at + i * (pw + BB_PLATE_WEB), at + i * (pw + BB_PLATE_WEB) + pw, v0, v1);
+    const d = Math.min(2 * BB_PLATE_HOLE_MAX_R, width, 2 * reach);
+    if (d >= BB_PLATE_HOLE_MIN_D) {
+      // as many as fit with a web between, spread evenly across the gap
+      const n = Math.max(1, Math.floor((width + BB_PLATE_WEB) / (d + BB_PLATE_WEB)));
+      for (let i = 0; i < n; i++) holes.push({ u: n === 1 ? (at + end) / 2 : at + d / 2 + (i * (width - d)) / (n - 1), v: row, r: d / 2 });
     }
     const b = blocked.find((q) => Math.abs(q[0] - stop) < 1e-9);
     at = Math.max(at, b ? b[1] : end);
   }
-  // above a window, where the plate is tall enough (a small pod wheel leaves room)
-  for (const w of windows) {
-    const lo = w.v + w.r + BB_PLATE_WEB;
-    if (v1 - lo >= POCKET_MIN) pockets.push({ u0: w.u - w.r, u1: w.u + w.r, v0: lo, v1, r: POCKET_R });
-  }
   // the biggest few, if there are more than a half takes
-  pockets.sort((p, q) => (q.u1 - q.u0) * (q.v1 - q.v0) - (p.u1 - p.u0) * (p.v1 - p.v0));
-  pockets.length = Math.min(pockets.length, POCKETS_PER_HALF);
-  pockets.sort((p, q) => p.u0 - q.u0 || p.v0 - q.v0);
+  holes.sort((p, q) => q.r - p.r || p.u - q.u);
+  holes.length = Math.min(holes.length, HOLES_PER_HALF);
+  holes.sort((p, q) => p.u - q.u);
   const out = {
     h: H,
     windows: [...windows, ...windows.map((w) => ({ ...w, u: -w.u }))],
-    pockets: [...pockets, ...pockets.map((p) => ({ ...p, u0: -p.u1, u1: -p.u0 }))],
+    holes: [...holes, ...holes.map((p) => ({ ...p, u: -p.u }))],
   };
   if (PLATE_CUT_CACHE.size > 64) PLATE_CUT_CACHE.clear();
   PLATE_CUT_CACHE.set(key, out);
@@ -1796,33 +1789,44 @@ function roundedRectPts(u0: number, u1: number, v0: number, v1: number, r: numbe
   arc(u0 + r, v0 + r, r, Math.PI);
   return pts;
 }
-/** the outer side plate's cut slab on High: `length × BB_SIDE_PLATE_CUT_H`, `t` thick, centred on
- *  y = 0 with z up from the floor, the same frame `platePlane`'s output is placed in */
+/** points round one cut, per detail level: [window, lightening hole]. A multiple of four, so a
+ *  circle's extents along u and v are its true radius. Low's are the cheaper polygon of the SAME
+ *  circle; a tier never changes where a hole is or what shape it is. */
+const SIDE_PLATE_SEGS: Record<BbWheelDetail, readonly [number, number]> = { low: [16, 12], high: [24, 16] };
+/**
+ * THE OUTER PLATE'S CUTS AS THE POLYGONS ITS SHAPE GETS — windows then holes, CW, plate
+ * coordinates. Exported so the RENDER lane can hold every tier to round holes and nothing else.
+ */
+export function bbSidePlateHoleLoops(spec: RobotSpec, detail: BbWheelDetail): [number, number][][] {
+  const cut = bbSidePlateCut(spec);
+  const [winSeg, holeSeg] = SIDE_PLATE_SEGS[detail];
+  const circle = (c: BbPlateWindow, n: number): [number, number][] => {
+    const pts: [number, number][] = [];
+    for (let i = 0; i < n; i++) pts.push([c.u + c.r * Math.cos((i / n) * Math.PI * 2), c.v + c.r * Math.sin((i / n) * Math.PI * 2)]);
+    return pts;
+  };
+  return [...cut.windows.map((w) => circle(w, winSeg)), ...cut.holes.map((h) => circle(h, holeSeg))];
+}
+/** the outer side plate's cut slab: `length × BB_SIDE_PLATE_CUT_H`, `t` thick, centred on y = 0
+ *  with z up from the floor, the same frame `platePlane`'s output is placed in */
 const CUT_PLATE_CACHE = new Map<string, THREE.BufferGeometry>();
-function cutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeometry {
+function cutSidePlate(spec: RobotSpec, t: number, c: number, detail: BbWheelDetail): THREE.BufferGeometry {
   // a source geometry per (length, drivetrain): the triangulation of a plate with its holes is the
   // costly step, and a frame merge (keyed on everything else that moves the chassis) takes a clone
-  const key = `${spec.length}|${spec.drivetrain}|${t}|${c}`;
+  const key = `${spec.length}|${spec.drivetrain}|${t}|${c}|${detail}`;
   let src = CUT_PLATE_CACHE.get(key);
   if (!src) {
-    src = buildCutSidePlate(spec, t, c);
+    src = buildCutSidePlate(spec, t, c, detail);
     if (CUT_PLATE_CACHE.size > 64) CUT_PLATE_CACHE.clear();
     CUT_PLATE_CACHE.set(key, src);
   }
   return src.clone();
 }
-function buildCutSidePlate(spec: RobotSpec, t: number, c: number): THREE.BufferGeometry {
+function buildCutSidePlate(spec: RobotSpec, t: number, c: number, detail: BbWheelDetail): THREE.BufferGeometry {
   const hl = spec.length / 2;
-  const cut = bbSidePlateCut(spec);
-  // the bottom corners keep the Low plate's 0.6 round; the top ones, under the deck, a 0.15 round
-  const shape = polyPath(new THREE.Shape(), roundedRectPts(-hl, hl, 0, cut.h, Math.min(0.6, BB_PLATE_H * 0.18), 4, 0.15), false);
-  for (const w of cut.windows) {
-    const n = 24;
-    const pts: [number, number][] = [];
-    for (let i = 0; i < n; i++) pts.push([w.u + w.r * Math.cos((i / n) * Math.PI * 2), w.v + w.r * Math.sin((i / n) * Math.PI * 2)]);
-    shape.holes.push(polyPath(new THREE.Path(), pts, true));
-  }
-  for (const p of cut.pockets) shape.holes.push(polyPath(new THREE.Path(), roundedRectPts(p.u0, p.u1, p.v0, p.v1, p.r, 3), true));
+  // the bottom corners keep the old plate's 0.6 round; the top ones, under the deck, a 0.15 round
+  const shape = polyPath(new THREE.Shape(), roundedRectPts(-hl, hl, 0, BB_SIDE_PLATE_CUT_H, Math.min(0.6, BB_PLATE_H * 0.18), 4, 0.15), false);
+  for (const loop of bbSidePlateHoleLoops(spec, detail)) shape.holes.push(polyPath(new THREE.Path(), loop, true));
   const geo = plateExtrude(shape, t, c, 4);
   geo.rotateX(Math.PI / 2);
   geo.translate(0, t / 2, 0);
@@ -1945,27 +1949,26 @@ export function buildFrame(spec: RobotSpec, detail: BbWheelDetail = 'high'): THR
   const plateYs = dropInner ? [outerY] : [outerY, innerY];
 
   // ⚠️ THE SIDE PLATES STOP UNDER THE DECK (`BB_DECK_Z − BB_DECK_T`), as the end plates always have
-  // — on High all of them, on Low the inner ones. A plate run up through the deck shares the deck's
-  // top face: harmless for the OUTER plate on Low, which is the deck's own fill, and a z-fight for
-  // an aluminium INNER plate (TWO TONES below), which drew a silver line along both deck edges on
-  // the first Low capture. On High the deck's edges are broken too, and a square plate corner
-  // standing through a chamfered deck edge would poke out of it.
+  // — all of them, on every tier since the outer plate's round cuts went to Low too (2026-11-04). A
+  // plate run up through the deck shares the deck's top face: a z-fight for an aluminium INNER
+  // plate (TWO TONES below), which drew a silver line along both deck edges on the first Low
+  // capture. On High the deck's edges are broken too, and a square plate corner standing through a
+  // chamfered deck edge would poke out of it.
   const sidePlate = (sy: 1 | -1, y: number): THREE.BufferGeometry => {
     // the INNER plate stops a plate's thickness short of each end: run to ±hl, its end face was in
     // the plane of a full END PLATE's outer face (`buildEndPlate`), which z-fights once the two
     // carry different surface detail (the physical-materials tier)
     const inner = y !== outerY;
-    const plateH = lod.chamfer || inner ? BB_SIDE_PLATE_CUT_H : BB_PLATE_H;
-    const keep =
-      inner && lands.length
-        ? (u: number, v: number, r: number): boolean =>
-            lands.every((l) => Math.hypot(Math.max(0, l.x0 - u, u - l.x1), Math.max(0, l.z0 - (v + plateH / 2), v + plateH / 2 - l.z1)) >= r + BB_PLATE_WEB)
-        : undefined;
-    const p =
-      lod.cut && !inner
-        ? cutSidePlate(spec, BB_PLATE_T, edgeFor(detail, 0.03))
-        : platePlane(inner ? spec.length - 2 * (BB_PLATE_T + BB_PROUD) : spec.length, plateH, BB_PLATE_T, holes, edgeFor(detail, 0.03), keep);
-    p.translate(0, sy * y, lod.cut && !inner ? 0 : plateH / 2);
+    // the OUTER plate is the round-cut plate on every tier (`bbSidePlateCut`); the inner one keeps
+    // its even row of round holes, solid where a drive motor bolts on (High, `bbInnerPlateLands`)
+    if (!inner) return cutSidePlate(spec, BB_PLATE_T, edgeFor(detail, 0.03), detail).translate(0, sy * y, 0);
+    const plateH = BB_SIDE_PLATE_CUT_H;
+    const keep = lands.length
+      ? (u: number, v: number, r: number): boolean =>
+          lands.every((l) => Math.hypot(Math.max(0, l.x0 - u, u - l.x1), Math.max(0, l.z0 - (v + plateH / 2), v + plateH / 2 - l.z1)) >= r + BB_PLATE_WEB)
+      : undefined;
+    const p = platePlane(spec.length - 2 * (BB_PLATE_T + BB_PROUD), plateH, BB_PLATE_T, holes, edgeFor(detail, 0.03), keep);
+    p.translate(0, sy * y, plateH / 2);
     return p;
   };
 

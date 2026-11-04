@@ -256,6 +256,8 @@ import {
 import {
   BB_CAP_SCREW_H,
   BB_PLATE_BAND,
+  BB_PLATE_HOLE_MAX_R,
+  BB_PLATE_HOLE_MIN_D,
   BB_PLATE_MIN_CUT,
   BB_PLATE_WEB,
   BB_SIDE_PLATE_CUT_H,
@@ -263,6 +265,7 @@ import {
   bbCapFasteners,
   bbFrameCacheStats,
   bbSidePlateCut,
+  bbSidePlateHoleLoops,
 } from '../../src/games/biobuzz/scene/renderRobots';
 // ── the bay under the deck (gfx/robot-detail Stage 2, 2026-10-11), a block of its own. Its chunk
 // registers itself with `renderRobots.ts` as it loads (`bbRegisterBay`), so importing it here is
@@ -3230,23 +3233,27 @@ function robotDetailChecks(check: Check): void {
       return { tris: Math.round(tris), meshes, casters, bay };
     };
     // ── (1) + (2): the counts measured at be3dc944, before any of this existed — [low, high], each
-    // [triangles, meshes, casters]
+    // [triangles, meshes, casters]. LOW RE-PINNED 2026-11-04, when the outer side plate's round cuts
+    // went to every tier (the owner ruled one pocketing for all of them): 9 builds got CHEAPER
+    // (−56 to −264 triangles: the cut plate stops under the deck, and its circles replace the even
+    // row) and the two 18-in ones +16. Meshes and casters did not move. The High column stays the
+    // be3dc944 measure the budget below is counted from.
     type Row = [string, RobotSpec, [number, number, number], [number, number, number]];
     const AT: Record<string, [[number, number, number], [number, number, number]]> = {
-      Pollinator: [[10728, 39, 37], [22416, 39, 37]],
-      Forager: [[5312, 39, 37], [20216, 39, 37]],
-      Skimmer: [[17536, 53, 51], [28080, 53, 51]],
-      Sniper: [[10852, 63, 61], [17284, 63, 61]],
-      StarterBot: [[8816, 43, 41], [18464, 43, 41]],
+      Pollinator: [[10672, 39, 37], [22416, 39, 37]],
+      Forager: [[5256, 39, 37], [20216, 39, 37]],
+      Skimmer: [[17480, 53, 51], [28080, 53, 51]],
+      Sniper: [[10588, 63, 61], [17284, 63, 61]],
+      StarterBot: [[8552, 43, 41], [18464, 43, 41]],
     };
     const PINNED: Row[] = [
       ...[...BB_PRESETS, ...BB_STARTER_BOTS].map((s): Row => [s.name, coerceBiobuzzSpec(s as RobotSpec), ...(AT[s.name] ?? [[0, 0, 0], [0, 0, 0]])]),
-      ['tank+fixed+siderollers', mk({ drivetrain: 'tank', bbMech: { launcher: { kind: 'fixed', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } }), [9528, 55, 53], [19176, 55, 53]],
-      ['mec+turret+tube', mk({ bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } }), [11548, 51, 49], [23236, 51, 49]],
-      ['ramp+dumper+tube', mk({ bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'ramp' } } }), [5496, 44, 42], [17184, 44, 42]],
-      ['13.5x14.5 tank', mk({ length: 13.5, width: 14.5, drivetrain: 'tank' }), [9152, 43, 41], [18800, 43, 41]],
-      ['18x18 xdrive', mk({ length: 18, width: 18, drivetrain: 'xdrive' }), [11384, 39, 37], [21928, 39, 37]],
-      ['18x18 butterfly', mk({ length: 18, width: 18, drivetrain: 'butterfly' }), [11672, 47, 45], [29792, 47, 45]],
+      ['tank+fixed+siderollers', mk({ drivetrain: 'tank', bbMech: { launcher: { kind: 'fixed', mount: 'back', hoodDeg: 45 }, lift: null, intake: { kind: 'siderollers' } } }), [9264, 55, 53], [19176, 55, 53]],
+      ['mec+turret+tube', mk({ bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } } }), [11492, 51, 49], [23236, 51, 49]],
+      ['ramp+dumper+tube', mk({ bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: 45 }, lift: { kind: 'vslide', mount: 'left' }, intake: { kind: 'ramp' } } }), [5440, 44, 42], [17184, 44, 42]],
+      ['13.5x14.5 tank', mk({ length: 13.5, width: 14.5, drivetrain: 'tank' }), [9096, 43, 41], [18800, 43, 41]],
+      ['18x18 xdrive', mk({ length: 18, width: 18, drivetrain: 'xdrive' }), [11400, 39, 37], [21928, 39, 37]],
+      ['18x18 butterfly', mk({ length: 18, width: 18, drivetrain: 'butterfly' }), [11688, 47, 45], [29792, 47, 45]],
     ];
     check('robot/lod: the pinned table covers every preset and starter bot (else a new one went unmeasured)', PINNED.every((p) => p[2][0] > 0), PINNED.filter((p) => !p[2][0]).map((p) => p[0]).join(', '));
     // the chassis meshes, by name: what the High chassis changes
@@ -3335,7 +3342,7 @@ function robotDetailChecks(check: Check): void {
       disposeRobotGroup(gl);
       disposeRobotGroup(gh);
     }
-    check(`robot/lod: Low is today's robot — triangles, meshes and casters are the 2026-10-09 counts on all ${PINNED.length} builds`, lowBad.length === 0, lowBad.join('; '));
+    check(`robot/lod: Low's cost is pinned — triangles, meshes and casters are the measured counts (re-pinned 2026-11-04) on all ${PINNED.length} builds`, lowBad.length === 0, lowBad.join('; '));
     check('robot/lod: ...and no Low chassis part has a broken edge (no facet leaning on all three axes)', lowCorners === 0, `${lowCorners} on Low, ${highCorners} on High`);
     check('robot/lod: ...while the High chassis does (else the checks around this one test nothing)', highCorners > 100, String(highCorners));
     check(`robot/budget: High stays within +7,000 triangles, +2 meshes, +1 caster per robot outside the bay (worst +${worst})`, highBad.length === 0, highBad.join('; ') || lines.join(', '));
@@ -3348,17 +3355,16 @@ function robotDetailChecks(check: Check): void {
     check('robot/footprint: every chassis part has the same bounding box on both levels (the structure inside it), and Low has no screws — a break only removes material', outline.length === 0, outline.slice(0, 6).join('; '));
     check('robot/footprint: ...inside the frame and under the low body (the end bars to their own ruled height)', outside.length === 0, outside.slice(0, 6).join('; '));
 
-    // ── (4) THE SIDE PLATE ──────────────────────────────────────────────────────────────────
+    // ── (4) THE SIDE PLATE — round cuts only, the same on every tier (2026-11-04) ─────────────
     {
       const bad: string[] = [];
       let windows = 0;
-      let pockets = 0;
+      let holes = 0;
       let builds = 0;
       let defaultWindows = 0;
       const EPS = 1e-6;
-      type Rect = { u0: number; u1: number; v0: number; v1: number };
-      const boxGap = (a: Rect, b: Rect): number => Math.hypot(Math.max(0, a.u0 - b.u1, b.u0 - a.u1), Math.max(0, a.v0 - b.v1, b.v0 - a.v1));
-      const circBox = (w: { u: number; v: number; r: number }, b: Rect): number => Math.hypot(Math.max(0, b.u0 - w.u, w.u - b.u1), Math.max(0, b.v0 - w.v, w.v - b.v1)) - w.r;
+      type Circ = { u: number; v: number; r: number };
+      const gap = (a: Circ, b: Circ): number => Math.hypot(a.u - b.u, a.v - b.v) - a.r - b.r;
       for (const dt of ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const) {
         for (const L of [13.5, 15, 16.5, 18]) {
           for (const W of [14.5, 16, 18]) {
@@ -3369,7 +3375,7 @@ function robotDetailChecks(check: Check): void {
             const cut = bbSidePlateCut(spec);
             if (dt === 'mecanum' && spec.length === 15) defaultWindows = cut.windows.length;
             windows += cut.windows.length;
-            pockets += cut.pockets.length;
+            holes += cut.holes.length;
             if (Math.abs(cut.h - BB_SIDE_PLATE_CUT_H) > EPS) bad.push(`${tag}: plate height ${cut.h}`);
             // centred on a real wheel: the built drivetrain's own nodes, at its own radius
             const wh = buildWheels(spec);
@@ -3381,42 +3387,110 @@ function robotDetailChecks(check: Check): void {
               if (Math.abs(w.u) - w.r < BB_SIGN_LAND_HALF - EPS) bad.push(`${tag}: a window cuts the sign land`);
               if (Math.abs(w.u) + w.r > hl - BB_PLATE_WEB + EPS || w.v - w.r < 0.35 - EPS || w.v + w.r > cut.h - BB_PLATE_BAND + EPS) bad.push(`${tag}: a window past an edge band`);
             }
-            for (const p of cut.pockets) {
-              if (p.u1 - p.u0 < 0.8 - EPS || p.v1 - p.v0 < 0.8 - EPS) bad.push(`${tag}: pocket ${(p.u1 - p.u0).toFixed(2)} x ${(p.v1 - p.v0).toFixed(2)}`);
-              if (Math.min(Math.abs(p.u0), Math.abs(p.u1)) < BB_SIGN_LAND_HALF - EPS || Math.sign(p.u0) !== Math.sign(p.u1)) bad.push(`${tag}: a pocket cuts the sign land`);
-              if (p.u0 < -hl + BB_PLATE_BAND - EPS || p.u1 > hl - BB_PLATE_BAND + EPS || p.v0 < BB_PLATE_BAND - EPS || p.v1 > cut.h - BB_PLATE_BAND + EPS) bad.push(`${tag}: a pocket in a solid band`);
+            for (const p of cut.holes) {
+              if (2 * p.r < BB_PLATE_HOLE_MIN_D - EPS || p.r > BB_PLATE_HOLE_MAX_R + EPS) bad.push(`${tag}: hole ${(2 * p.r).toFixed(2)} across`);
+              if (Math.abs(p.u) - p.r < BB_SIGN_LAND_HALF - EPS) bad.push(`${tag}: a hole cuts the sign land`);
+              if (Math.abs(p.u) + p.r > hl - BB_PLATE_BAND + EPS || p.v - p.r < BB_PLATE_BAND - EPS || p.v + p.r > cut.h - BB_PLATE_BAND + EPS) bad.push(`${tag}: a hole in a solid band`);
             }
-            cut.windows.forEach((a, i) =>
-              cut.windows.slice(i + 1).forEach((b) => {
-                if (Math.hypot(a.u - b.u, a.v - b.v) - a.r - b.r < BB_PLATE_WEB - EPS) bad.push(`${tag}: two windows closer than a web`);
+            const all: Circ[] = [...cut.windows, ...cut.holes];
+            all.forEach((a, i) =>
+              all.slice(i + 1).forEach((b) => {
+                if (gap(a, b) < BB_PLATE_WEB - EPS) bad.push(`${tag}: two cuts closer than a web`);
               }),
             );
-            for (const w of cut.windows) for (const p of cut.pockets) if (circBox(w, p) < BB_PLATE_WEB - EPS) bad.push(`${tag}: a window and a pocket closer than a web`);
-            cut.pockets.forEach((a, i) =>
-              cut.pockets.slice(i + 1).forEach((b) => {
-                if (boxGap(a, b) < BB_PLATE_WEB - EPS) bad.push(`${tag}: two pockets closer than a web`);
-              }),
-            );
-            if (cut.pockets.filter((p) => p.u0 > 0).length > 4) bad.push(`${tag}: ${cut.pockets.length} pockets`);
+            if (cut.holes.filter((p) => p.u > 0).length > 4) bad.push(`${tag}: ${cut.holes.length} holes`);
+            // ONE ROW: every lightening hole on one centre line, so no layout can stack into a grid
+            if (new Set(cut.holes.map((p) => p.v.toFixed(6))).size > 1) bad.push(`${tag}: lightening holes on more than one row`);
             // mirror-symmetric, like every drivetrain's wheels
             const key = (q: number[]): string => q.map((v) => v.toFixed(6)).join(',');
-            const pk = new Set(cut.pockets.map((p) => key([p.u0, p.u1, p.v0, p.v1])));
-            if (!cut.pockets.every((p) => pk.has(key([-p.u1, -p.u0, p.v0, p.v1])))) bad.push(`${tag}: the pockets are not mirrored`);
+            const hk = new Set(cut.holes.map((p) => key([p.u, p.v, p.r])));
+            if (!cut.holes.every((p) => hk.has(key([-p.u, p.v, p.r])))) bad.push(`${tag}: the holes are not mirrored`);
           }
         }
       }
       check(
-        `robot/sideplate: every window on a wheel, the sign land solid, webs ≥ ${BB_PLATE_WEB}, no cut under ${BB_PLATE_MIN_CUT} (${builds} builds, ${windows} windows, ${pockets} pockets)`,
+        `robot/sideplate: every window on a wheel, the sign land solid, webs ≥ ${BB_PLATE_WEB}, no cut under ${BB_PLATE_MIN_CUT} (${builds} builds, ${windows} windows, ${holes} holes)`,
         bad.length === 0,
         [...new Set(bad)].slice(0, 6).join('; '),
       );
-      check('robot/sideplate: ...and the default 15-in mecanum has its two bearing windows', defaultWindows === 2 && windows > 60 && pockets > 60, `${defaultWindows} on the default; ${windows} windows, ${pockets} pockets`);
-      // the High plate stops at the deck's underside, so no square plate corner stands through a
-      // broken deck edge (the Low one runs up through the deck, as it always did)
+      check('robot/sideplate: ...and the default 15-in mecanum has its two bearing windows', defaultWindows === 2 && windows > 60 && holes > 60, `${defaultWindows} on the default; ${windows} windows, ${holes} holes`);
+      // every plate stops at the deck's underside, so no square plate corner stands through a
+      // broken deck edge
       check(
-        "robot/sideplate: the High plate's top is the deck's underside",
+        "robot/sideplate: the plate's top is the deck's underside",
         Math.abs(BB_SIDE_PLATE_CUT_H - (BB_DECK_Z - 0.26)) < 1e-9 && bbSidePlateCut(mk({})).h === BB_SIDE_PLATE_CUT_H,
         String(BB_SIDE_PLATE_CUT_H),
+      );
+
+      /**
+       * ⚠️ NO TIER BUILDS A GRID (owner, 2026-11-04: "The drivetrain plate pocketing is different for
+       * different graphics settings. Just default to the circular pocketing only. The grid one is
+       * unrealistic and looks weird."). High used to cut ROUNDED-RECTANGLE pockets stacked two high
+       * while Low cut an even row of holes. Held two ways, at every graphics tier through the
+       * detail level it resolves to: (a) every cut the shape is given is a circle, and the SAME
+       * circles on every tier; (b) the BUILT outer face — every vertex of the skin on the plate's
+       * outer plane, away from the outline, lies on one of those circles (a pocket's corners
+       * would not).
+       */
+      const tierBad: string[] = [];
+      let faceVerts = 0;
+      const refFits = new Map<string, string>();
+      const fit = (loop: [number, number][]): Circ => {
+        const cu = loop.reduce((s, q) => s + q[0], 0) / loop.length;
+        const cv = loop.reduce((s, q) => s + q[1], 0) / loop.length;
+        return { u: cu, v: cv, r: loop.reduce((s, q) => s + Math.hypot(q[0] - cu, q[1] - cv), 0) / loop.length };
+      };
+      const specs = [mk({}), mk({ length: 18, width: 18 }), mk({ drivetrain: 'swerve', length: 16.5 }), mk({ drivetrain: 'butterfly', length: 18 }), mk({ drivetrain: 'xdrive', length: 13.5 })];
+      for (const tier of GFX_TIERS) {
+        const detail = bbWheelDetail(GFX_PRESETS[tier], tier);
+        for (const spec of specs) {
+          const tag = `${tier} ${spec.drivetrain} ${spec.length}`;
+          const loops = bbSidePlateHoleLoops(spec, detail);
+          const circles = loops.map(fit);
+          loops.forEach((loop, i) => {
+            const c = circles[i];
+            if (loop.length < 8 || loop.some((q) => Math.abs(Math.hypot(q[0] - c.u, q[1] - c.v) - c.r) > 1e-6)) tierBad.push(`${tag}: cut ${i} is not a circle`);
+          });
+          const sig = circles.map((c) => [c.u, c.v, c.r].map((v) => v.toFixed(3)).join(':')).join(',');
+          const ref = refFits.get(`${spec.drivetrain}|${spec.length}`);
+          if (ref === undefined) refFits.set(`${spec.drivetrain}|${spec.length}`, sig);
+          else if (ref !== sig) tierBad.push(`${tag}: a different set of cuts from another tier`);
+          // (b) the built face
+          const g = buildRobotGroup(spec, 1, 'red', detail);
+          g.updateMatrixWorld(true);
+          const skin = g.getObjectByName('robot:frame:skin') as THREE.Mesh | undefined;
+          if (!skin) {
+            tierBad.push(`${tag}: no skin mesh`);
+            disposeRobotGroup(g);
+            continue;
+          }
+          const pos = skin.geometry.getAttribute('position') as THREE.BufferAttribute;
+          const hl = spec.length / 2;
+          const hw = spec.width / 2;
+          const h = BB_SIDE_PLATE_CUT_H;
+          const vtx = new THREE.Vector3();
+          for (let i = 0; i < pos.count; i++) {
+            vtx.fromBufferAttribute(pos, i).applyMatrix4(skin.matrixWorld);
+            if (Math.abs(Math.abs(vtx.y) - hw) > 1e-4) continue;
+            const u = vtx.x;
+            const v = vtx.z;
+            // the outline and its rounded corners, which every plate has
+            if (Math.abs(u) > hl - 0.05 || v < 0.05 || v > h - 0.05) continue;
+            if (Math.abs(u) > hl - 0.65 && (v < 0.65 || v > h - 0.2)) continue;
+            faceVerts++;
+            // on a cut's edge: the face loop sits a break (≤ 0.03) outside the cut on a broken edge
+            if (!circles.some((c) => Math.abs(Math.hypot(u - c.u, v - c.v) - c.r) < 0.06)) {
+              tierBad.push(`${tag}: a face vertex at u ${u.toFixed(2)} v ${v.toFixed(2)} on no round cut`);
+              break;
+            }
+          }
+          disposeRobotGroup(g);
+        }
+      }
+      check(
+        `robot/sideplate: NO TIER BUILDS A GRID — every cut is a circle, the same circles on all ${GFX_TIERS.length} tiers, and the built face has no corner off them (${faceVerts} face vertices)`,
+        tierBad.length === 0 && faceVerts > 200,
+        [...new Set(tierBad)].slice(0, 6).join('; '),
       );
     }
 
