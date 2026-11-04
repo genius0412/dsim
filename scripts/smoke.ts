@@ -29628,7 +29628,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
     /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,300}?setError\(''\);/.test(lobby),
+      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,500}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',
@@ -29637,7 +29637,7 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ lobby: TRY NOW and TRY AGAIN drop the refused socket before dialling, as the timer does',
-    (lobby.match(/lobbyRef\.current\?\.dispose\(\);[^\n]*\n\s*join\(code, autoJoinRegion\);/g) ?? []).length === 3 &&
+    (lobby.match(/lobbyRef\.current\?\.dispose\(\);[^\n]*\n\s*join\(code, autoJoinRegion(?:, \{ spectate: spectatingRef\.current \})?\);/g) ?? []).length === 3 &&
       !/onClick=\{\(\) => join\(code, autoJoinRegion\)\}/.test(lobby),
     'a leaked socket’s closed handler can later clobber a working room',
   );
@@ -30369,7 +30369,7 @@ const dumperSetup = (): RobotSetup => {
   check('mid-match: the canJoin refusal is still found (the checks below are anchored on it)', !!busy);
   check(
     '⚠️ mid-match: the refusal is CODED, so the activity can wait it out instead of reading an error',
-    !!busy && /code: 'in_progress'/.test(busy[1]),
+    !!busy && /\('in_progress' as const\)/.test(busy[1]) && /\('room_full' as const\)/.test(busy[1]),
     'without a code it is indistinguishable from a full room, which does NOT end on its own',
   );
   check(
@@ -30397,7 +30397,7 @@ const dumperSetup = (): RobotSetup => {
       /setRetryIn\(IN_PROGRESS_RETRY_S\)/.test(retryFx[1]) &&
       /setInterval\(\(\) => setRetryIn\(/.test(retryFx[1]),
   );
-  const joinFn = lobby.match(/function join\(roomCode: string, hostRegion\?: string \| null\): void \{([\s\S]*?)\n  \}/);
+  const joinFn = lobby.match(/function join\([\s\S]*?\): void \{([\s\S]*?)\n  \}/);
   check('mid-match: Lobby.join is still found (anchors the check below)', !!joinFn);
   check(
     '⚠️ mid-match: a new attempt clears the old code, so the retry loop cannot outlive its refusal',

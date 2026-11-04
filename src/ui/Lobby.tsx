@@ -1219,8 +1219,8 @@ export function Lobby({
                     <button
                       className="ds-cta"
                       onClick={() => {
-                        lobbyRef.current?.dispose();
                         // a watch that failed is retried as a watch: a driver join of a code nobody holds opens a new room
+                        lobbyRef.current?.dispose();
                         join(code, autoJoinRegion, { spectate: spectatingRef.current });
                       }}
                     >
