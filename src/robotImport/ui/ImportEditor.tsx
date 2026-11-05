@@ -80,6 +80,7 @@ import { MotionPanel, type PickTarget } from './MotionPanel';
 import { TunePanel } from './TunePanel';
 import { driveTuneFields, mechTuneFields } from './tuneFields';
 import { PreviewPane } from './PreviewPane';
+import { AIM, buildHandles, moveHandle, splitKey } from './mechMove';
 import { ReviewStep } from './ReviewStep';
 import { TopDownMap } from './TopDownMap';
 import './../../ui/importer.css';
@@ -630,6 +631,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const mechChecks = useMemo(() => (built ? validateMechFor(built.spec, game) : []), [built, game]);
   const numbers = useMemo(() => (built ? driveNumbers(built, game) : null), [built, game]);
 
+  // arriving on Mechanisms with nothing picked, the launcher (else the first placement) is picked, so
+  // the 3D view opens with a gizmo on something instead of an empty scene
+  const hasMech = !!doc?.mech;
+  useEffect(() => {
+    if (doc?.step !== 2 || !hasMech || selHandle || !defs.length) return;
+    const point = defs.find((d) => d.field === 'shooter') ?? defs.find((d) => d.field !== 'intake');
+    setSelHandle(point ? point.key : `${defs[0].key}:mid`);
+  }, [doc?.step, hasMech, selHandle, defs]);
+
   // placements default in once there is a footprint, and again when a mechanism appears
   // (never from a measurement of the orientation being replaced: the placements would land on it)
   useEffect(() => {
@@ -1141,7 +1151,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         wheels: step === 0 || step === 1 || step === REVIEW_STEP ? shownWheels : null,
         contacts: step === 0 ? m.wheels.contacts : null,
         origin: step === 0 ? m.origin : null,
-        mech: step === 2 || step === REVIEW_STEP ? doc.mech : null,
+        // the Mechanisms step draws its placements as handles to drag (`gizmo`), Review as plain marks
+        mech: step === REVIEW_STEP ? doc.mech : null,
+        gizmo:
+          step === 2 && doc.mech
+            ? {
+                handles: buildHandles(defs, doc.mech, m.hull, mechChecks).handles.flatMap((h) =>
+                  h.shape === 'wheel' ? [] : [{ ...h, z: h.z ?? 0, shape: h.shape }],
+                ),
+                selected: selHandle,
+              }
+            : null,
         size: m.size,
         showCube: true,
         motion: m.motion ?? null,
@@ -1150,6 +1170,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         picking: picking || deletePicking,
       }
     : null;
+  /** a placement handle dragged in the 3D view: one undo step per handle, the way the map's drag is */
+  const gizmo = {
+    select: setSelHandle,
+    move: (key: string, p: { x: number; y: number; z: number }): void => {
+      if (!m) return;
+      const aim = key.endsWith(AIM);
+      const base = aim ? key.slice(0, -AIM.length) : splitKey(key)[0];
+      const name = lowerFirst(defs.find((d) => d.key === base)?.label ?? '');
+      update(
+        (d) => {
+          const next = d.mech ? moveHandle(d.mech, defs, m.hull, key, p) : null;
+          return next ? { ...d, mech: next } : d;
+        },
+        aim ? { label: COPY.edits.aim(name), key: `mech:${base}:aim` } : { label: COPY.edits.move(name), key: `mech:${base}` },
+      );
+    },
+  };
   const legend = !m
     ? null
     : step === 0
@@ -1163,7 +1200,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       : step === 1
         ? COPY.legend.drive
         : step === 2
-          ? COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
+          ? defs.length && doc.mech
+            ? COPY.legend.mechEdit
+            : COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
           : step === MOVING_STEP
             ? motion?.length
               ? COPY.legend.moving
@@ -1303,6 +1342,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           state={previewState}
           legend={legend}
           onPickBody={onPickBody}
+          gizmo={gizmo}
           empty={<p className="ds-hint ds-import-preview-empty">{COPY.previewEmpty}</p>}
           fallback={
             m ? (
@@ -1319,6 +1359,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           }
         />
 
+        <div className="ds-import-dock">
         <section ref={bodyRef} className="ds-panel ds-import-body">
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
@@ -1475,6 +1516,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               ) : null}
             </>
           )}
+        </div>
         </div>
         </div>
       </div>
