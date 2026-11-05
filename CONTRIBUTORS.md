@@ -15,6 +15,7 @@ Format:
 - Shlok Khandelwal <shlokkhandelwal2013@gmail.com> — GitHub @shlok-k720 — signed CLA 2026-07-24
 - Aadvik Gupta <aadvikgupta007@gmail.com> — GitHub @aadvikgg — signed CLA 2026-09-16
 - Todd Yocum <17409648+toddyocum@users.noreply.github.com> — GitHub @toddyocum — signed CLA 2026-10-11
+- Ethan Zhang <lights.darke@gmail.com> — GitHub @aevalmere — signed CLA 2026-11-04
 
 <!--
   New contributors: add your line above this comment in the same PR as your first

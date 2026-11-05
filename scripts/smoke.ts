@@ -42133,6 +42133,22 @@ function fxImportFixed(): RobotSpec {
       /disabled=\{doc\.savedModel\}/.test(ms) &&
       /onPick=\{onDetail\}/.test(ms),
   );
+  const dz = readFileSync('src/robotImport/ui/DropZone.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'drop box: Detail is chosen before STEP reads, handed files wait for that choice, and only STEP CAD or a DSIM share candidate is accepted',
+    /export const ACCEPT = '\.step,\.stp,\.glb';/.test(dz) &&
+      /export const isImportFileSelection/.test(dz) &&
+      /if \(!isImportFileSelection\(files\)\)/.test(dz) &&
+      /label=\{COPY\.detail\}/.test(dz) &&
+      /onPick=\{onDetail\}/.test(dz) &&
+      /pendingFiles\?\.length/.test(dz) &&
+      /COPY\.startImport/.test(dz) &&
+      !/robotOnly|COPY\.scope/.test(dz) &&
+      /isImportFileSelection\(files\)/.test(ms) &&
+      /if \(!isImportFileSelection\(files\)\)/.test(ed) &&
+      /const stageHandedFiles = useCallback/.test(ed) &&
+      /if \(files\) stageHandedFiles\(files\)/.test(ed),
+  );
 }
 
 /**

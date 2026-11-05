@@ -819,6 +819,21 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
   the collision hull, and the 18 in start check does not count it. Marking it a `fold`/`slide` row
   is the next step.
 
+### The drop box, before a file is read
+
+The Model step asks **Detail** (Full or Light, the same `triBudget` it shows after reading) BEFORE a
+CAD file is read, so a big STEP is read once at the chosen detail. It also stages files dropped on
+the robot page's Import card until the player chooses Detail and starts the read. Detail lives
+beside the tile rather than inside it: the tile's content still swaps between empty, ready, reading
+and failed without moving the page.
+
+- **STEP is the only CAD import.** `DropZone.tsx`'s `ACCEPT` and `isImportFileSelection` gate the
+  picker, drops and Replace to STEP files, plus one possible `.glb` share file. `ImportEditor.tsx`
+  validates that GLB's contents and accepts it only through the DSIM share path (a newer share can
+  offer its mesh for a fresh setup). Other formats are refused with `COPY.notStep`, including files
+  handed from the robot page. The engine's other readers remain for stored meshes, share files and
+  the dev harness.
+
 ### Floating parts
 
 `findFloatingParts` (`floating.ts`) runs in `orientParts`, so in the measure worker, on the measured

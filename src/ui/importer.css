@@ -138,8 +138,11 @@
   }
 }
 
-/* ---- the drop box: a `.ds-opt-add` tile with a floor height, so empty, reading and failed
-   are the same size ---- */
+/* ---- Detail sits beside the drop tile, which keeps one floor height across its states ---- */
+.ds-import-before {
+  display: grid;
+  gap: var(--ds-s-4);
+}
 .ds-import .ds-opt.ds-opt-add.ds-import-drop {
   min-height: 200px;
   align-items: center;
