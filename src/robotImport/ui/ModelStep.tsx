@@ -22,6 +22,8 @@ const WHEEL_STEP = 1 / 16;
 export interface PartsControls {
   /** bodies deleted so far */
   deleted: number;
+  /** bodies left out of the footprint (`ImportSetup.apart`) */
+  apart: number;
   /** bodies selected while `deleting` */
   selected: number;
   deleting: boolean;
@@ -29,6 +31,8 @@ export interface PartsControls {
   floating: { count: number; near: number; far: number } | null;
   onDeleting: (on: boolean) => void;
   onDelete: () => void;
+  onLeaveOut: () => void;
+  onIncludeAll: () => void;
   onRestore: () => void;
   onDeleteFloating: () => void;
   onKeepFloating: () => void;
@@ -177,7 +181,9 @@ export function ModelStep({
       <div className="ds-field" id="ri-parts">
         <span className="cap">
           {COPY.parts}
-          {parts.selected || parts.deleted ? <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted)}</span> : null}
+          {parts.selected || parts.deleted || parts.apart ? (
+            <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted, parts.apart)}</span>
+          ) : null}
         </span>
         {parts.floating ? (
           <>
@@ -205,8 +211,18 @@ export function ModelStep({
             {parts.deleting ? COPY.deleteDone : COPY.deleteParts}
           </button>
           {parts.deleting ? (
-            <button type="button" className="ds-btn danger small" disabled={!parts.selected} onClick={parts.onDelete}>
-              {COPY.deleteSelected}
+            <>
+              <button type="button" className="ds-btn small" disabled={!parts.selected} onClick={parts.onLeaveOut}>
+                {COPY.leaveOut}
+              </button>
+              <button type="button" className="ds-btn danger small" disabled={!parts.selected} onClick={parts.onDelete}>
+                {COPY.deleteSelected}
+              </button>
+            </>
+          ) : null}
+          {parts.apart ? (
+            <button type="button" className="ds-btn ghost small" onClick={parts.onIncludeAll}>
+              {COPY.includeAll}
             </button>
           ) : null}
           {parts.deleted ? (

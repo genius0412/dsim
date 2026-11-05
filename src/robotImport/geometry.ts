@@ -1542,7 +1542,9 @@ export function orientKey(setup: ImportSetup): string {
   // out of everything measured, so they are part of it too.
   const f = foldKey(setup.motion);
   const r = setup.removed?.length ? `|x${setup.removed.join(',')}` : '';
-  return `${setup.units}|${setup.up}|${setup.yaw}|${setup.bands ? 1 : 0}${f ? `|${f}` : ''}${r}`;
+  // parts left out of the footprint change everything the heavy half measures but the mesh itself
+  const a = setup.apart?.length ? `|a${setup.apart.join(',')}` : '';
+  return `${setup.units}|${setup.up}|${setup.yaw}|${setup.bands ? 1 : 0}${f ? `|${f}` : ''}${r}${a}`;
 }
 
 /**
@@ -1739,9 +1741,11 @@ export function orientParts(
   // (`motion.ts`, `planFolds`)
   const folds = setup.motion && setup.motion.length ? planFolds(rotated, setup.motion) : [];
   applyFolds(rotated, folds);
+  // PARTS LEFT OUT OF THE FOOTPRINT (`ImportSetup.apart`) stay in `rotated` (drawn, stored, picked) but
+  // the box that centres and sizes the model is the drive base's alone
   const mn = [Infinity, Infinity, Infinity];
   const mx = [-Infinity, -Infinity, -Infinity];
-  for (const p of rotated) {
+  for (const p of withoutBodies(rotated, setup.apart)) {
     const a = p.positions;
     for (let i = 0; i < a.length; i += 3) {
       for (let j = 0; j < 3; j++) {
@@ -1767,9 +1771,13 @@ export function orientParts(
     ? { length: 0, width: 0, height: 0 }
     : { length: mx[0] - mn[0], width: mx[1] - mn[1], height: mx[2] - mn[2] };
 
+  // everything below measures the DRIVE BASE: the model frame's parts less the ones left out of the
+  // footprint (the same arrays, filtered after the shift; `modelParts` itself when none are)
+  const base = withoutBodies(modelParts, setup.apart);
+
   // footprint: hull of per-part hulls
   const hullPts: Vec2[] = [];
-  for (const p of modelParts) {
+  for (const p of base) {
     const a = p.positions;
     const xy = new Float64Array((a.length / 3) * 2);
     for (let i = 0, j = 0; i < a.length; i += 3, j += 2) {
@@ -1784,22 +1792,22 @@ export function orientParts(
   let wheels: WheelDetection = { wheels: null, contacts: [], note: 'Couldn’t find any wheels touching the floor. Drag the wheel markers onto the wheels.' };
   if (!empty) {
     for (const slab of WHEEL_SLABS_IN) {
-      const { xy, edges } = floorContacts(modelParts, slab);
+      const { xy, edges } = floorContacts(base, slab);
       const d = detectWheels(xy, edges);
       if (slab === WHEEL_SLABS_IN[0] || d.wheels) wheels = d;
       if (d.wheels) break;
     }
     if (!wheels.wheels || !isRectangle(wheels.wheels, WHEEL_SQUARE_TOL_IN)) {
-      const { xy, edges } = floorContacts(modelParts, WHEEL_THIN_SLAB_IN);
+      const { xy, edges } = floorContacts(base, WHEEL_THIN_SLAB_IN);
       const d = detectWheels(xy, edges);
       if (d.wheels && isRectangle(d.wheels, WHEEL_SQUARE_TOL_IN)) wheels = d;
     }
   }
-  const bandsModel = setup.bands && !empty ? computeBands(modelParts, size.height) : null;
-  const front: FrontDetection = empty ? { yaw: 0, confidence: 0, detected: false, cue: null } : detectFront(modelParts, wheels.wheels, size.height, yaw);
+  const bandsModel = setup.bands && !empty ? computeBands(base, size.height) : null;
+  const front: FrontDetection = empty ? { yaw: 0, confidence: 0, detected: false, cue: null } : detectFront(base, wheels.wheels, size.height, yaw);
   // here, not on the main thread: the bodies' boxes cost a pass over the measured copy (50–90 ms
   // on a 1.3–1.9 M copy, Node)
-  const floating = empty ? [] : findFloatingParts(modelParts);
+  const floating = empty ? [] : findFloatingParts(base);
   return {
     oriented: {
       units,

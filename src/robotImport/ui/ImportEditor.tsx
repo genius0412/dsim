@@ -40,7 +40,9 @@ import {
   deleteBodies,
   frameMoved,
   floatingOffer,
+  includeAllBodies,
   launchElementD,
+  leaveOutBodies,
   keepEditedMotion,
   restoreBodies,
   reviewItems,
@@ -292,6 +294,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           wheelLayout: undefined,
           motion: undefined,
           removed: undefined,
+          apart: undefined,
           keepFloating: undefined,
           ...opts.setup,
         };
@@ -792,7 +795,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
     // small parts out, so a body id names another solid at the other detail. The floating parts are
     // offered again once it is read.
-    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, keepFloating: undefined };
+    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
     const keepMech = doc.mech;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
     // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
@@ -966,17 +969,31 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   );
   const floatingBodies = useMemo(() => floating.flatMap((g) => g.bodies), [floating]);
   /** delete `bodies`; the frame question is asked of the measured copy in the model frame */
+  const apart = doc?.setup.apart;
   const deleteParts = (bodies: readonly number[]): void => {
     if (!normalised || !bodies.length) return;
-    const moves = removalMovesFrame(normalised.modelParts, [], bodies);
+    // the frame is the drive base's box, so a part already left out of the footprint moves nothing
+    const moves = removalMovesFrame(normalised.modelParts, apart ?? [], [...(apart ?? []), ...bodies]);
     setSelected([]);
     update((d) => deleteBodies(d, bodies, moves), { label: COPY.edits.deleteParts(bodies.length) });
   };
   const restoreParts = (): void => {
     const all = model ? (model as PreparedModel).parts : null;
     if (!removed?.length || !all) return;
-    const moves = removalMovesFrame(all, removed, []);
+    const moves = removalMovesFrame(all, [...removed, ...(apart ?? [])], apart ?? []);
     update((d) => restoreBodies(d, moves), { label: COPY.edits.restoreParts });
+  };
+  /** leave the selection out of the footprint: drawn and stored, but the drive base is measured without it */
+  const leaveOutParts = (bodies: readonly number[]): void => {
+    if (!normalised || !bodies.length) return;
+    const moves = removalMovesFrame(normalised.modelParts, apart ?? [], [...(apart ?? []), ...bodies]);
+    setSelected([]);
+    update((d) => leaveOutBodies(d, bodies, moves), { label: COPY.edits.leaveOut(bodies.length) });
+  };
+  const includeAllParts = (): void => {
+    if (!apart?.length || !normalised) return;
+    const moves = removalMovesFrame(normalised.modelParts, apart, []);
+    update((d) => includeAllBodies(d, moves), { label: COPY.edits.includeAll });
   };
   const keepFloating = (): void =>
     update(
@@ -1011,8 +1028,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const highlight = useMemo(() => {
     if (step === 0) {
       // the selection while deleting, else what floats apart from the robot while it is offered
+      // (orange: what is left out of the footprint, which stays in view on this step)
       const active = deleting ? selected : floatingBodies;
-      return active.length ? { active, others: [] } : null;
+      const others = apart ?? [];
+      return active.length || others.length ? { active, others } : null;
     }
     if (step !== MOVING_STEP || !motion) return null;
     // the selected row, or else the one under the pointer
@@ -1020,7 +1039,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const active = shown !== null ? (motion[shown]?.bodies ?? []) : [];
     const others = motion.flatMap((g, i) => (i === shown ? [] : g.bodies));
     return active.length || others.length ? { active, others } : null;
-  }, [step, motion, activeMotion, hoverMotion, deleting, selected, floatingBodies]);
+  }, [step, motion, activeMotion, hoverMotion, deleting, selected, floatingBodies, apart]);
 
   // ---- undo and redo (`editorHistory.ts`) -------------------------------------------------------
   // The step the player is on stays: moving between steps is not an edit, and an undo that also
@@ -1111,7 +1130,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         ? COPY.legend.deleting
         : floating.length
           ? COPY.legend.floating
-          : COPY.legend.model
+          : apart?.length
+            ? `${COPY.legend.model} ${COPY.legend.apart}`
+            : COPY.legend.model
       : step === 1
         ? COPY.legend.drive
         : step === 2
@@ -1319,6 +1340,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                 canReread={!!sourceFiles.current}
                 parts={{
                   deleted: removed?.length ?? 0,
+                  apart: apart?.length ?? 0,
                   selected: selected.length,
                   deleting,
                   floating: floating.length
@@ -1329,6 +1351,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                     setSelected([]);
                   },
                   onDelete: () => deleteParts(selected),
+                  onLeaveOut: () => leaveOutParts(selected),
+                  onIncludeAll: includeAllParts,
                   onRestore: restoreParts,
                   onDeleteFloating: () => deleteParts(floatingBodies),
                   onKeepFloating: keepFloating,
