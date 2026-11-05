@@ -1,3 +1,40 @@
+# HANDOFF — 2026-11-04e (Custom rooms redesign; text-field focus ring)
+
+**State: on `alpha` (be019570..4215cb42). SERVER CHANGE (the `seat` and `react` messages, named watchers, the room's own return), DEPLOYED: `dsim-alpha` on image `deployment-01M6MQJAQX8FT26PT99YH2SYTV` (4215cb42), /health ok.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 4215cb42: `npm test` (shared 5075, BIOBUZZ 6322, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` (451), `test:mm` (234), `test:workers` (188), `dbtest` pass.
+
+- **Custom rooms (814a7431 plan, 4215cb42 build; `docs/rooms-redesign.md`).** Modeled on the friendly-room and custom-game lobbies of popular team games: every seat on one screen, an observer list, host settings between the teams.
+  - **Before:**
+    - Ready and Start sat at y=1089 at 1366×768 and y=1802 on a phone.
+    - Creating a room took 4 clicks and 2 dialogs.
+    - Moving between a seat and watching reconnected (up to 350 ms).
+    - Spectators were unnamed, and their HUD said "YOU".
+    - Every join shifted the page 52 px.
+    - Only the host could leave the results.
+  - **Now:**
+    - **Layout:** one screen (`RoomScreen.tsx`, `room.css`) with RED seats, Room settings + Spectators, then BLUE seats. A pinned bar reads "n of m ready" with START MATCH left of READY UP, so READY never moves. Robot and start position are in a Setup drawer. On phones it stacks and the bar stays pinned. Open seats hold their space.
+    - **Creating:** Browse keeps Private room / Public room (one click, no dialog); Play's New room opens a private one. The title follows the host's Show in Browse switch.
+    - **Spectators:** capped at 8 in a custom room (`MAX_SPECTATORS_CUSTOM`, env-overridable) and named in the lobby. Names are moderated, and duplicate names get numbers ("Player 2"). `{t:'seat', to}` moves a socket between a seat and the watchers in the lobby only, about 50 ms with no reconnect. A full or running room makes a joiner a spectator.
+    - **After a match:** anyone can press "Back to room", and the room returns by itself 30 s after the result saves (`ROOM_RETURN_MS`, 0 disables). Seats, bots and robots stay; spectators come back as spectators.
+    - **Reactions:** six fixed reactions (`ROOM_REACTIONS`), one a second per socket, relayed only, nothing stored.
+    - **Rules:** auto-only can be chosen in the lobby only if every member has `autoOnly`.
+  - **Compatibility (`rooms3` cap both ways):**
+    - An old client in a new room keeps its old lobby; that room returns only on the host's press.
+    - A new client on an old server keeps the old controls (Watch and Take seat reconnect, host-only return).
+  - **Departures from the plan:** no copy-link button, and START sits left of READY.
+  - **Checks:**
+    - `DSIM_ROOM=only npm run shiftaudit`: 376 probes and 18 room events, 0 shifts, both themes, 1366×768 and 390×844.
+    - `test:workers` covers `seat` on both server shapes.
+  - **Captures:** the session scratchpad `rooms3/`. Not checked: a phone or a real two-machine room on dsim-alpha.
+- **Text-field focus ring (be019570).**
+  - **Cause:** the offset outline over a transparent border drew a gap, a larger radius, and the recess as a second top line (the room dialog's name field).
+  - **Fix:** the field's own border turns accent, with a 1px spread and the inset recess kept. A transparent outline remains for forced-colors.
+  - **Applies to:** `.ds-input`, `.ds-select`, `.ds-listbox-btn` and `.ds-username-input`; the red/blue room fields use their side's ink.
+- **Still open:**
+  - Supporter plate fonts all sit at one tier (the owner may split them).
+  - Watch dsim-alpha logs for the claim-less token line (see 11-04c).
+  - Run `sync:alpha` after the next promotion.
+  - The Records expanded row has no Auto/TeleOp split.
+
 # HANDOFF — 2026-11-04d (First load; driver POV; turret; plates and plate fonts; penalty card and sounds; results fix; GRB hives; three modeled rooms)
 
 **State: on `alpha` (81bf86e3..5634d0db). SERVER CHANGE (plate-font validation, 19d4ec51), DEPLOYED: `dsim-alpha` on image `deployment-01M6MBF8VE2YF29177SM8CWPFV` (05a8e10a), /health ok; 2e4a3e35 and 5634d0db after it are client-only.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 5634d0db: `npm test` (shared 5036, BIOBUZZ 6322, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `test:mm` (234), `dbtest` pass.
