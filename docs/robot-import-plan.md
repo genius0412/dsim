@@ -9,9 +9,11 @@ here first, then in code.
 
 ## 1. What the player gets
 
-- **Import from a file** in Configure ▸ Robot: GLB/glTF, STEP, STL, OBJ, 3MF, PLY. STEP is
-  parsed by a lazily fetched wasm (`occt-import-js`, LGPL-2.1, credited on the Contributors page)
-  that is downloaded only when a STEP file is dropped.
+- **Import from a file** in Configure ▸ Robot: CAD imports use STEP (`.step` or `.stp`), with Full
+  or Light detail chosen before the file is read. A DSIM robot share (`.glb`) restores its saved
+  robot through the share-file path; arbitrary GLB/glTF, STL, OBJ, 3MF, PLY and zip files are not
+  accepted as CAD imports. STEP is parsed by a lazily fetched wasm (`occt-import-js`, LGPL-2.1,
+  credited on the Contributors page) that is downloaded only when a STEP file is read.
 - **Automatic setup, reviewable.** Units, up axis, floor, centre and front are detected; the
   footprint (convex hull of the robot seen from above), height, wheel contact points and the
   wheelbase centre are measured. Each detection is shown and can be corrected with one control

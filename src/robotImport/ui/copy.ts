@@ -92,9 +92,15 @@ export const COPY = {
   // ---- Model ----
   dropTitle: 'Choose a file or drop it here',
   choose: 'Choose a file',
-  dropFormats: 'GLB, glTF, STEP, STL, OBJ, 3MF or PLY, or a zip of one',
-  sidecarHint: 'A glTF or OBJ comes with a .bin or .mtl file. Drop them together.',
+  dropFormats: 'STEP CAD (.step or .stp), or a DSIM robot share (.glb)',
+  notStep: (names: string) => `Couldn’t import ${names}. Choose a STEP CAD file (.step or .stp) or a DSIM robot share (.glb).`,
+  sidecarHint: 'Export the robot from your CAD program as a STEP file.',
   dropNow: 'Drop to import',
+  detailBefore: 'Before the file is read',
+  pendingTitle: 'File ready to import',
+  pendingFiles: (names: string) => `${names} · choose Detail, then start the import.`,
+  pendingShare: (name: string) => `${name} · start to restore this DSIM robot.`,
+  startImport: 'Start import',
   phase: {
     read: (file: string) => `Reading ${file}…`,
     unzip: (file: string) => `Unzipping ${file}…`,

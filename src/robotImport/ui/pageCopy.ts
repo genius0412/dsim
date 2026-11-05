@@ -8,7 +8,7 @@ export const PAGE_COPY = {
   // ---- Configure ▸ Robot ----
   rowCap: 'Imported robots',
   addTitle: 'Import a robot',
-  addFormats: 'GLB, STEP, STL, OBJ, 3MF or PLY',
+  addFormats: 'STEP CAD, or a DSIM robot share (.glb)',
   resumeTitle: 'Resume import',
   resumeSub: (file: string) => `${file} · not saved`,
   badge: 'Imported',
