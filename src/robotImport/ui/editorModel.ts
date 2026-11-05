@@ -490,6 +490,12 @@ export function deleteBodies(d: EditorDoc, bodies: readonly number[], movesFrame
   if (!bodies.length) return d;
   const gone = new Set([...(d.setup.removed ?? []), ...bodies]);
   const setup: ImportSetup = { ...d.setup, removed: [...gone].sort((a, b) => a - b) };
+  if (d.setup.apart) {
+    // a deleted body is no longer there to be left out
+    const left = d.setup.apart.filter((b) => !gone.has(b));
+    if (left.length) setup.apart = left;
+    else delete setup.apart;
+  }
   if (d.setup.motion) setup.motion = pruneMotion(d.setup.motion, new Set(bodies));
   if (movesFrame) setup.wheels = null;
   return { ...d, setup, ...(movesFrame ? frameMoved(d) : {}) };
@@ -511,6 +517,31 @@ export function restoreBodies(d: EditorDoc, movesFrame: boolean): EditorDoc {
   if (!d.setup.removed) return d;
   const setup: ImportSetup = { ...d.setup };
   delete setup.removed;
+  if (movesFrame) setup.wheels = null;
+  return { ...d, setup, ...(movesFrame ? frameMoved(d) : {}) };
+}
+
+/**
+ * The document with `bodies` LEFT OUT OF THE FOOTPRINT too (`ImportSetup.apart`): still drawn and
+ * stored, but the size, footprint, wheels, front and bands are measured without them, so the drive
+ * base is found again as if the file never had them (a ramp the file shows deployed). `movesFrame` is
+ * `removalMovesFrame` over the drive base alone: the model frame is centred on its box, so when that
+ * moves, wheels placed by hand and the mechanism placements are found again, as after a deletion.
+ */
+export function leaveOutBodies(d: EditorDoc, bodies: readonly number[], movesFrame: boolean): EditorDoc {
+  const gone = new Set(d.setup.removed ?? []);
+  const apart = [...new Set([...(d.setup.apart ?? []), ...bodies])].filter((b) => !gone.has(b)).sort((a, b) => a - b);
+  if (!apart.length || apart.length === (d.setup.apart?.length ?? 0)) return d;
+  const setup: ImportSetup = { ...d.setup, apart };
+  if (movesFrame) setup.wheels = null;
+  return { ...d, setup, ...(movesFrame ? frameMoved(d) : {}) };
+}
+
+/** the document with every body back in the footprint (the deleted ones stay deleted) */
+export function includeAllBodies(d: EditorDoc, movesFrame: boolean): EditorDoc {
+  if (!d.setup.apart) return d;
+  const setup: ImportSetup = { ...d.setup };
+  delete setup.apart;
   if (movesFrame) setup.wheels = null;
   return { ...d, setup, ...(movesFrame ? frameMoved(d) : {}) };
 }
