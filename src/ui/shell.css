@@ -2921,9 +2921,9 @@ button.ds-key:where(:not(:disabled)):active,
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
 }
 .ds-select:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 1px;
-  border-color: transparent;
+  outline: 2px solid transparent;
+  border-color: var(--ds-accent);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-accent);
 }
 /* the popup option list can't be fully themed cross-browser, but set sane colors.
    (`color-scheme: dark` on :root does most of the real work here.) */
@@ -2966,9 +2966,9 @@ button.ds-key:where(:not(:disabled)):active,
 }
 .ds-listbox-btn:focus-visible,
 .ds-listbox-btn[aria-expanded='true'] {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 1px;
-  border-color: transparent;
+  outline: 2px solid transparent;
+  border-color: var(--ds-accent);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-accent);
 }
 .ds-listbox-pop {
   position: absolute;
@@ -4237,10 +4237,12 @@ tr.lb-detail td {
   grid-column: 1 / -1;
 }
 .rr-field.red .ds-input:focus-visible {
-  outline-color: var(--ds-red-ink);
+  border-color: var(--ds-red-ink);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-red-ink);
 }
 .rr-field.blue .ds-input:focus-visible {
-  outline-color: var(--ds-blue-ink);
+  border-color: var(--ds-blue-ink);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-blue-ink);
 }
 .rr-outcome {
   margin: 0;
@@ -4565,10 +4567,16 @@ tr.lb-detail td {
   padding: 8px 12px;
   box-shadow: inset 0 2px 0 var(--ds-inset);
 }
+/* THE FOCUS RING SITS ON THE FIELD'S OWN EDGE: the border turns accent and a 1px spread
+   doubles it, so the ring follows the field's radius exactly. An offset outline over a
+   transparent border drew a gap, a larger corner radius and the recess as a second line under
+   the top edge (the room dialog's name field, 2026-11-04). The transparent outline is for
+   forced-colors mode, which drops box-shadow but paints outlines. Same for every recessed
+   control: `.ds-select`, `.ds-listbox-btn`, `.ds-username-input`. */
 .ds-input:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 1px;
-  border-color: transparent;
+  outline: 2px solid transparent;
+  border-color: var(--ds-accent);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-accent);
 }
 /* the same size and colour as `.ds-form-hint.err` (08-04), which is the one to reach for:
    it reserves its line, so the form does not grow when a message lands */
@@ -4605,9 +4613,9 @@ tr.lb-detail td {
   overflow: hidden;
 }
 .ds-username-input:focus-within {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 1px;
-  border-color: transparent;
+  outline: 2px solid transparent;
+  border-color: var(--ds-accent);
+  box-shadow: inset 0 2px 0 var(--ds-inset), 0 0 0 1px var(--ds-accent);
 }
 .ds-username-input .at {
   display: flex;
