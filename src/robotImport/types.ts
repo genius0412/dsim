@@ -141,6 +141,14 @@ export interface ImportSetup {
    * Never saved: the stored mesh is made without them, so a saved setup has none. Absent = none.
    */
   removed?: number[];
+  /**
+   * the bodies the player left OUT OF THE FOOTPRINT (a ramp the file shows deployed, an arm that will
+   * be a moving part): `MeshPart.body` ids, ascending. They stay in the mesh, the preview and the
+   * moving parts, but the size, footprint, floor contacts (wheels), front, height bands and the
+   * model frame's centre are measured without them (`orientParts`), so the drive base is found as if
+   * the file never had them. Saved with the robot: its stored mesh keeps its `_BODY` ids. Absent = none.
+   */
+  apart?: number[];
   /** the floating bodies (`findFloatingParts`) the player chose to keep, so they are not offered again */
   keepFloating?: number[];
 }

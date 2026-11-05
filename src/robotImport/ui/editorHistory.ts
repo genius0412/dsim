@@ -123,6 +123,8 @@ export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
   if (target.setup.triBudget !== current.setup.triBudget) {
     setup.removed = current.setup.removed;
     setup.keepFloating = current.setup.keepFloating;
+    setup.apart = current.setup.apart;
+    if (setup.apart === undefined) delete setup.apart;
     if (setup.removed === undefined) delete setup.removed;
     if (setup.keepFloating === undefined) delete setup.keepFloating;
   }
