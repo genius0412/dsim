@@ -45,6 +45,11 @@
   grid-area: foot;
   align-self: start;
 }
+/* the step body and the buttons under it travel together: transparent to layout on a narrow
+   window (the grid places the two as before), one floating column over the picture on a wide one */
+.ds-import-dock {
+  display: contents;
+}
 /* ---- the step rail: `.ds-tabs`, numbered, each with its check count ---- */
 .ds-import-steps {
   margin: 0;
@@ -78,7 +83,7 @@
 /* the picture's box sets the height; the canvas fills it. A picture's size, not spacing. */
 .ds-import-preview-stage {
   position: relative;
-  height: 300px;
+  height: min(420px, 56dvh);
   border-radius: var(--ds-round);
   border: 1px solid var(--ds-line-soft);
   background: var(--ds-bg);
@@ -112,24 +117,79 @@
 }
 
 @container ri (min-width: 860px) {
+  /* THE MENU IS A COLUMN BESIDE THE PICTURE (owner, 2026-11-05: "put the actual menu on the left side
+     outside of the 3d model window", reversing 2026-11-04's "put the UI ONTO the 3d model"). The step
+     body and its buttons are one column on the left, in the page's own panel; the 3D view is the cell
+     beside it and keeps the editor's old height. The step rail is its own row, centred over both,
+     so it sits across neither the menu nor the camera buttons. The
+     preview centres the model in its own box (PreviewPane insets it only by a dock that overlaps). */
   .ds-import-in {
-    grid-template-columns: minmax(0, 1fr) minmax(340px, 42%);
-    grid-template-areas: 'steps preview' 'body preview' 'foot preview';
-    /* the preview spans all three rows and is taller than the first two: the slack goes to the
-       LAST row, so the step body sits right under the rail instead of a gap opening between */
-    grid-template-rows: auto auto 1fr;
+    position: relative;
+    grid-template-columns: clamp(19rem, 25%, 24rem) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, clamp(560px, calc(100dvh - 190px), 960px));
+    grid-template-areas: 'steps steps' 'dock stage';
+    align-items: stretch;
+    gap: var(--ds-s-4);
   }
   .ds-import-in > .ds-import-preview {
-    position: sticky;
-    top: 84px; /* clears the sticky top bar, the same number `.ds-subnav` uses */
+    grid-area: stage;
+  }
+  .ds-import-in > .ds-import-dock {
+    grid-area: dock;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ds-s-3);
+    align-self: stretch;
+    min-height: 0;
+  }
+  .ds-import-in > .ds-import-preview {
+    position: relative;
+    z-index: 0;
+    padding: 0;
+    border-color: var(--ds-line-soft);
+    overflow: hidden;
   }
   .ds-import-preview-stage {
-    height: min(560px, calc(100dvh - 200px));
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+  .ds-import-in > .ds-import-steps {
+    align-self: start;
+    justify-self: center;
+  }
+  .ds-import-dock > .ds-import-body {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+  .ds-import-dock > .ds-import-foot {
+    flex: none;
+  }
+  .ds-import-preview-tools {
+    position: absolute;
+    top: var(--ds-s-3);
+    right: var(--ds-s-3);
+    z-index: 3;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  .ds-import-preview .ds-import-legend {
+    position: absolute;
+    right: var(--ds-s-3);
+    bottom: var(--ds-s-3);
+    z-index: 3;
+    max-width: 36ch;
+    padding: var(--ds-s-2) var(--ds-s-3);
+    border: 1px solid var(--ds-hud-line);
+    border-radius: var(--ds-round);
+    background: color-mix(in srgb, var(--ds-panel) 86%, transparent);
+    backdrop-filter: blur(6px);
   }
 }
 @container ri (max-width: 559px) {
   .ds-import-preview-stage {
-    height: 240px;
+    height: 300px;
   }
   /* five tabs do not fit a phone in a row: two a row (the `.ds-segs.even` rule) */
   .ds-import-steps {

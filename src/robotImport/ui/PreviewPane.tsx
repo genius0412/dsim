@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ImporterEngine } from '../engineLoader';
-import type { PreviewController, PreviewState, PreviewView } from '../engine/preview';
+import type { GizmoCallbacks, PreviewController, PreviewState, PreviewView } from '../engine/preview';
 import { COPY } from './copy';
 
 /**
@@ -20,6 +20,7 @@ export function PreviewPane({
   empty,
   legend,
   onPickBody,
+  gizmo,
 }: {
   eng: ImporterEngine | null;
   /** null before a model: the empty frame */
@@ -30,6 +31,8 @@ export function PreviewPane({
   legend?: string | null;
   /** a click on a part while `state.picking` (`shift`: that one body, not its axle) */
   onPickBody?: (body: number, shift: boolean) => void;
+  /** a placement handle picked or dragged in 3D while `state.gizmo` is set */
+  gizmo?: GizmoCallbacks;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
@@ -62,13 +65,21 @@ export function PreviewPane({
       setFailed(true);
     };
     el.addEventListener('webglcontextlost', onLost);
+    // A dock that overlaps the picture's left edge insets the model so it is centred in what the dock
+    // leaves free. On a wide window the dock is its own column beside the picture (inset 0, centred in
+    // the picture); on a narrow one it is `display: contents`, which has no box.
+    const dock = host.current.closest('.ds-import-in')?.querySelector<HTMLElement>('.ds-import-dock') ?? null;
     const fit = (): void => {
       const r = host.current?.getBoundingClientRect();
-      if (r && r.width > 0) c.resize(Math.round(r.width), Math.round(r.height));
+      if (!r || r.width <= 0) return;
+      c.resize(Math.round(r.width), Math.round(r.height));
+      const d = dock && getComputedStyle(dock).display !== 'contents' ? dock.getBoundingClientRect() : null;
+      c.setInset(d && d.width > 0 ? Math.max(0, d.right - r.left) : 0);
     };
     fit();
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(fit) : null;
     ro?.observe(host.current);
+    if (dock) ro?.observe(dock);
     return () => {
       ro?.disconnect();
       el.removeEventListener('webglcontextlost', onLost);
@@ -89,6 +100,11 @@ export function PreviewPane({
   pickRef.current = onPickBody;
   useEffect(() => {
     ctl.current?.onPickBody((b, shift) => pickRef.current?.(b, shift));
+  }, [ready, failed, eng]);
+  const gizmoRef = useRef(gizmo);
+  gizmoRef.current = gizmo;
+  useEffect(() => {
+    ctl.current?.onGizmo({ select: (k) => gizmoRef.current?.select(k), move: (k, p) => gizmoRef.current?.move(k, p) });
   }, [ready, failed, eng]);
 
   const pick = (v: PreviewView): void => {

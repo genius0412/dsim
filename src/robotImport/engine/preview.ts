@@ -7,12 +7,34 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { ImportedMech, Vec2 } from '../../types';
 import { bbox, triangleBody, type MeshPart } from '../geometry';
 import type { MotionPart } from '../types';
 import { splitMoving } from './bakeScene';
 import { buildMeshGroup, creaseParts, disposeTree } from './meshGroup';
+
+/** one placement the player can drag in the 3D view (MODEL frame, inches; `ui/mechMove.ts` writes it back) */
+export interface GizmoHandle {
+  /** `shooter`, `place`, `intake:front:from` ... (the editor's own key) */
+  key: string;
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  /** a point (a launcher, where it places), a span's end or middle, or a fixed launcher's FACING tip */
+  shape: 'point' | 'end' | 'mid' | 'aim';
+  /** a span's handles slide along one model axis only */
+  axis?: 'x' | 'y';
+  bad?: boolean;
+}
+
+/** what the view tells the editor when a handle is picked or moved */
+export interface GizmoCallbacks {
+  select(key: string | null): void;
+  move(key: string, p: { x: number; y: number; z: number }): void;
+}
 
 export interface PreviewState {
   /** the normalised model, MODEL frame (compared by identity): what a click picks, and what is drawn
@@ -42,6 +64,8 @@ export interface PreviewState {
   highlight: { active: number[]; others: number[] } | null;
   /** clicking a part reports its body (`onPickBody`); hovering tints it */
   picking: boolean;
+  /** the placements to edit in 3D, with the selected one under the move gizmo; null = none */
+  gizmo: { handles: GizmoHandle[]; selected: string | null } | null;
 }
 
 /** the editor's camera presets (lane 4) */
@@ -56,6 +80,10 @@ export interface PreviewController {
   setView(view: PreviewView): void;
   /** called with the body under a click while `picking` (`shift`: the one body, not its axle) */
   onPickBody(cb: ((body: number, shift: boolean) => void) | null): void;
+  /** called when a placement handle is picked or dragged while `gizmo` is set */
+  onGizmo(cb: GizmoCallbacks | null): void;
+  /** pixels of the canvas's left side that a panel floats over: the model is centred in the rest */
+  setInset(leftPx: number): void;
   dispose(): void;
 }
 
@@ -77,7 +105,12 @@ const COLORS = {
   pickActive: 0x36c5ff,
   pickOther: 0xffb347,
   pickHover: 0xffffff,
+  bad: 0xff5a5a,
+  selected: 0xffffff,
 };
+
+type Axis = 'x' | 'y' | 'z';
+const AXES: readonly Axis[] = ['x', 'y', 'z'];
 
 function line(points: THREE.Vector3[], color: number, loop = false): THREE.Line {
   const g = new THREE.BufferGeometry().setFromPoints(points);
@@ -156,6 +189,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     playing: false,
     highlight: null,
     picking: false,
+    gizmo: null,
   };
   /** the moving parts' nodes, posed by the play loop */
   let moving: { node: THREE.Object3D; part: MotionPart; turret: number; angle: number; rest: THREE.Vector3 }[] = [];
@@ -185,7 +219,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       camera.up.set(1, 0, 0);
     } else if (view === 'front') camera.position.set(62, 0, h / 2 + 4);
     else if (view === 'side') camera.position.set(0, 62, h / 2 + 4);
-    else camera.position.set(42, 34, 30 + h / 2);
+    else camera.position.set(36, 30, 26 + h / 2);
     camera.lookAt(controls.target);
     controls.update();
     camera.up.set(0, 0, 1);
@@ -339,9 +373,233 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     for (const m of [others, active, hov]) if (m) tints.add(m);
   };
 
-  // ---- picking: a click (not a drag) on a part reports its body ---------------------------------
+  // ---- placement handles: pickable in 3D, moved with a Blender-style gizmo -----------------------
+  // The handles are drawn over everything (depth test off): they sit INSIDE the robot, where a
+  // depth-tested marker would be hidden by the very body the player is placing them on.
+  const handleGroup = new THREE.Group();
+  scene.add(handleGroup);
+  const proxy = new THREE.Object3D();
+  scene.add(proxy);
+  const gizmo = new TransformControls(camera, canvas);
+  gizmo.setMode('translate');
+  gizmo.setSpace('world');
+  gizmo.size = 0.85;
+  const gizmoHelper = gizmo.getHelper();
+  gizmoHelper.visible = false;
+  scene.add(gizmoHelper);
+  let gizmoCb: GizmoCallbacks | null = null;
+  let lock: Axis | null = null;
+  let hovered = false;
+  let pointer = { x: 0, y: 0 };
+  /** a G-grab in progress: the handle follows the pointer until a click or Enter (Esc puts it back) */
+  let grab: { key: string; start: THREE.Vector3; t0: number; offset: THREE.Vector3; axis: THREE.Vector3 | null; plane: THREE.Plane } | null = null;
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
+
+  const selectedHandle = (): GizmoHandle | null => {
+    const g = state.gizmo;
+    return g?.selected ? (g.handles.find((h) => h.key === g.selected) ?? null) : null;
+  };
+  /** the axes a handle can move on: a span's one, a facing tip's two (the floor), a point's three */
+  const allowedAxes = (h: GizmoHandle): Record<Axis, boolean> => {
+    const a: Record<Axis, boolean> =
+      h.shape === 'end' || h.shape === 'mid' ? { x: h.axis === 'x', y: h.axis === 'y', z: false } : h.shape === 'aim' ? { x: true, y: true, z: false } : { x: true, y: true, z: true };
+    if (lock) for (const k of AXES) a[k] = a[k] && k === lock;
+    return a;
+  };
+  const syncGizmo = (): void => {
+    const h = selectedHandle();
+    if (!h || grab) {
+      gizmo.detach();
+      gizmoHelper.visible = false;
+      return;
+    }
+    // while it is dragged the gizmo follows the pointer; the handle (clamped) catches up on release
+    if (!gizmo.dragging) proxy.position.set(h.x, h.y, h.z);
+    gizmo.attach(proxy);
+    gizmoHelper.visible = true;
+    const a = allowedAxes(h);
+    gizmo.showX = a.x;
+    gizmo.showY = a.y;
+    gizmo.showZ = a.z;
+    gizmo.showXY = a.x && a.y && !lock;
+    gizmo.showXZ = a.x && a.z && !lock;
+    gizmo.showYZ = a.y && a.z && !lock;
+  };
+  const handleColor = (h: GizmoHandle): number =>
+    h.bad ? COLORS.bad : h.key.startsWith('intake') ? COLORS.intake : h.key.startsWith('place') ? COLORS.place : COLORS.shooter;
+  const rebuildHandles = (): void => {
+    disposeTree(handleGroup);
+    handleGroup.clear();
+    const g = state.gizmo;
+    if (!g) return;
+    const mat = (color: number, on: boolean): THREE.MeshBasicMaterial =>
+      new THREE.MeshBasicMaterial({ color: on ? new THREE.Color(color).lerp(new THREE.Color(COLORS.selected), 0.55) : color, depthTest: false, transparent: true, opacity: 0.95 });
+    const over = (o: THREE.Line): THREE.Line => {
+      (o.material as THREE.LineBasicMaterial).depthTest = false;
+      o.renderOrder = 10;
+      return o;
+    };
+    const add = (o: THREE.Object3D, key: string): void => {
+      o.userData.key = key;
+      o.renderOrder = 10;
+      handleGroup.add(o);
+    };
+    const ends = new Map<string, GizmoHandle[]>();
+    for (const h of g.handles) {
+      const on = h.key === g.selected;
+      const color = handleColor(h);
+      const k = on ? 1.3 : 1;
+      if (h.shape === 'end') {
+        const base = h.key.slice(0, h.key.lastIndexOf(':'));
+        ends.set(base, [...(ends.get(base) ?? []), h]);
+        const cube = new THREE.Mesh(new THREE.BoxGeometry(1.1 * k, 1.1 * k, 1.1 * k), mat(color, on));
+        cube.position.set(h.x, h.y, h.z);
+        add(cube, h.key);
+      } else if (h.shape === 'mid') {
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(1.0 * k), mat(color, on));
+        gem.position.set(h.x, h.y, h.z);
+        add(gem, h.key);
+      } else if (h.shape === 'aim') {
+        const tip = new THREE.Mesh(new THREE.SphereGeometry(0.75 * k, 16, 12), mat(color, on));
+        tip.position.set(h.x, h.y, h.z);
+        add(tip, h.key);
+        const from = g.handles.find((o) => o.key === h.key.slice(0, -':aim'.length));
+        if (from) handleGroup.add(over(line([new THREE.Vector3(from.x, from.y, from.z), new THREE.Vector3(h.x, h.y, h.z)], color)));
+      } else {
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(1.15 * k, 20, 14), mat(color, on));
+        ball.position.set(h.x, h.y, h.z);
+        add(ball, h.key);
+        handleGroup.add(over(line([new THREE.Vector3(h.x, h.y, 0.05), new THREE.Vector3(h.x, h.y, h.z)], color)));
+      }
+    }
+    // a span's bar between its two ends: grabbing the bar is grabbing the span (its middle)
+    for (const [base, pair] of ends) {
+      if (pair.length < 2) continue;
+      const [a, b] = pair;
+      const mid = g.handles.find((o) => o.key === `${base}:mid`);
+      const bar = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.max(0.6, Math.abs(a.x - b.x)), Math.max(0.6, Math.abs(a.y - b.y)), 0.6),
+        mat(mid ? handleColor(mid) : COLORS.intake, mid?.key === g.selected),
+      );
+      bar.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+      bar.userData.bar = true;
+      add(bar, `${base}:mid`);
+    }
+  };
+  const handleAt = (clientX: number, clientY: number): string | null => {
+    const r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const hits = ray.intersectObjects(handleGroup.children.filter((o) => o.userData.key), false);
+    // the small handles first: a bar covers its own ends, and the player means the end
+    hits.sort((p, q) => Number(!!p.object.userData.bar) - Number(!!q.object.userData.bar) || p.distance - q.distance);
+    return hits[0] ? String(hits[0].object.userData.key) : null;
+  };
+  const emitMove = (key: string, p: THREE.Vector3): void => gizmoCb?.move(key, { x: p.x, y: p.y, z: p.z });
+  gizmo.addEventListener('change', render);
+  gizmo.addEventListener('dragging-changed', (e) => {
+    controls.enabled = !e.value;
+    if (!e.value) syncGizmo();
+    render();
+  });
+  gizmo.addEventListener('objectChange', () => {
+    const key = state.gizmo?.selected;
+    if (key) emitMove(key, proxy.position);
+  });
+
+  // G: grab. The handle follows the pointer on the plane facing the camera, or along its one axis
+  // (a span's own, or the X/Y/Z pressed), until a click or Enter; Esc puts it back. Blender's G.
+  const rayOf = (): THREE.Ray => {
+    const r = canvas.getBoundingClientRect();
+    ndc.set(((pointer.x - r.left) / Math.max(1, r.width)) * 2 - 1, -((pointer.y - r.top) / Math.max(1, r.height)) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    return ray.ray;
+  };
+  /** where along the line `o + t*d` the pointer's ray passes closest */
+  const alongLine = (o: THREE.Vector3, d: THREE.Vector3): number => {
+    const u = rayOf();
+    const w = u.origin.clone().sub(o);
+    const b = u.direction.dot(d);
+    const den = 1 - b * b;
+    return den < 1e-6 ? 0 : (d.dot(w) - b * u.direction.dot(w)) / den;
+  };
+  const grabPoint = (): THREE.Vector3 | null => {
+    if (!grab) return null;
+    if (grab.axis) return grab.start.clone().addScaledVector(grab.axis, alongLine(grab.start, grab.axis) - grab.t0);
+    const hit = rayOf().intersectPlane(grab.plane, new THREE.Vector3());
+    return hit ? hit.sub(grab.offset) : null;
+  };
+  const startGrab = (): void => {
+    const h = selectedHandle();
+    if (!h || grab || gizmo.dragging) return;
+    const start = new THREE.Vector3(h.x, h.y, h.z);
+    const a = allowedAxes(h);
+    const open = AXES.filter((k) => a[k]);
+    const axis = open.length === 1 ? new THREE.Vector3(+(open[0] === 'x'), +(open[0] === 'y'), +(open[0] === 'z')) : null;
+    // two open axes move in their own plane (a facing tip on the floor); three move in the camera's
+    const normal = open.length === 2 ? new THREE.Vector3(+!a.x, +!a.y, +!a.z) : camera.getWorldDirection(new THREE.Vector3());
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
+    const first = rayOf().intersectPlane(plane, new THREE.Vector3());
+    grab = { key: h.key, start, t0: axis ? alongLine(start, axis) : 0, offset: first ? first.sub(start) : new THREE.Vector3(), axis, plane };
+    controls.enabled = false;
+    canvas.style.cursor = 'move';
+    syncGizmo();
+  };
+  const endGrab = (keep: boolean): void => {
+    const g = grab;
+    if (!g) return;
+    grab = null;
+    controls.enabled = true;
+    canvas.style.cursor = '';
+    if (!keep) emitMove(g.key, g.start);
+    syncGizmo();
+    render();
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (!state.gizmo || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (!hovered && !grab) return;
+    const k = e.key.toLowerCase();
+    if ((k === 'x' || k === 'y' || k === 'z') && selectedHandle()) {
+      lock = lock === k ? null : k;
+      // a grab starts again on the new axis from where the handle is now
+      if (grab) {
+        endGrab(true);
+        startGrab();
+      } else syncGizmo();
+      e.preventDefault();
+      render();
+    } else if (k === 'g' && selectedHandle()) {
+      startGrab();
+      e.preventDefault();
+    } else if (e.key === 'Enter' && grab) {
+      endGrab(true);
+      e.preventDefault();
+    } else if (e.key === 'Escape') {
+      if (grab) endGrab(false);
+      else if (lock) {
+        lock = null;
+        syncGizmo();
+      } else if (state.gizmo.selected) gizmoCb?.select(null);
+      else return;
+      e.preventDefault();
+      render();
+    }
+  };
+  window.addEventListener('keydown', onKey);
+  const onEnter = (): void => {
+    hovered = true;
+  };
+  const onLeaveCanvas = (): void => {
+    hovered = false;
+  };
+  canvas.addEventListener('pointerenter', onEnter);
+  canvas.addEventListener('pointerleave', onLeaveCanvas);
+
+  // ---- picking: a click (not a drag) on a part reports its body ---------------------------------
   const bodyAt = (clientX: number, clientY: number): number => {
     const target = pickModel ?? model;
     if (!target) return -1;
@@ -358,17 +616,38 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   let down: { x: number; y: number; t: number } | null = null;
   let hoverAt = 0;
   const onDown = (e: PointerEvent): void => {
+    pointer = { x: e.clientX, y: e.clientY };
+    if (grab) {
+      // a click confirms a G-grab; the orbit and the gizmo were off for it
+      endGrab(true);
+      return;
+    }
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
   };
   const onUp = (e: PointerEvent): void => {
     const d = down;
     down = null;
-    if (!d || !state.picking || !pickCb || e.button !== 0) return;
+    if (!d || e.button !== 0) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5 || performance.now() - d.t > 600) return;
+    if (state.gizmo && !gizmo.dragging) {
+      const k = handleAt(e.clientX, e.clientY);
+      if (k && k !== state.gizmo.selected) gizmoCb?.select(k);
+      return;
+    }
+    if (!state.picking || !pickCb) return;
     const b = bodyAt(e.clientX, e.clientY);
     if (b >= 0) pickCb(b, e.shiftKey);
   };
   const onMove = (e: PointerEvent): void => {
+    pointer = { x: e.clientX, y: e.clientY };
+    if (grab) {
+      const p = grabPoint();
+      if (p) emitMove(grab.key, p);
+      return;
+    }
+    if (state.gizmo && !down) {
+      canvas.style.cursor = handleAt(e.clientX, e.clientY) !== null ? 'pointer' : '';
+    }
     if (!state.picking || down) return;
     const now = performance.now();
     if (now - hoverAt < 70) return;
@@ -463,8 +742,17 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       (next.parts !== undefined && next.parts !== state.parts) ||
       (next.shown !== undefined && next.shown !== state.shown) ||
       (next.motion !== undefined && next.motion !== state.motion);
+    const gizmoChanged = next.gizmo !== undefined && next.gizmo !== state.gizmo;
     const tintChanged = modelChanged || (next.highlight !== undefined && next.highlight !== state.highlight) || (next.picking !== undefined && next.picking !== state.picking);
+    const was = state.gizmo?.selected ?? null;
     Object.assign(state, next);
+    if (gizmoChanged) {
+      // a different handle starts with every axis again, and a grab on a handle that is gone ends
+      if ((state.gizmo?.selected ?? null) !== was) lock = null;
+      if (grab && !state.gizmo?.handles.some((h) => h.key === grab!.key)) endGrab(true);
+      rebuildHandles();
+      syncGizmo();
+    }
     if (!state.picking && hover >= 0) {
       hover = -1;
       canvas.style.cursor = '';
@@ -476,10 +764,21 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     render();
   };
 
+  let size = { w: 0, h: 0 };
+  let inset = 0;
+  const fitCamera = (): void => {
+    const { w, h } = size;
+    camera.aspect = w / Math.max(1, h);
+    // a panel floats over the left of the canvas: the view window slides left, so the model lands
+    // in the middle of what the panel leaves free (setViewOffset's x is the window's, not the image's)
+    if (inset > 0 && w > inset * 2) camera.setViewOffset(w, h, -inset / 2, 0, w, h);
+    else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+  };
   const resize = (width: number, height: number): void => {
     renderer.setSize(width, height, false);
-    camera.aspect = width / Math.max(1, height);
-    camera.updateProjectionMatrix();
+    size = { w: width, h: height };
+    fitCamera();
     render();
   };
 
@@ -495,6 +794,16 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     onPickBody(cb): void {
       pickCb = cb;
     },
+    onGizmo(cb): void {
+      gizmoCb = cb;
+    },
+    setInset(leftPx): void {
+      const next = Math.max(0, Math.round(leftPx));
+      if (next === inset) return;
+      inset = next;
+      fitCamera();
+      render();
+    },
     dispose(): void {
       if (frame) cancelAnimationFrame(frame);
       if (playFrame) cancelAnimationFrame(playFrame);
@@ -503,6 +812,10 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
       controls.removeEventListener('change', render);
+      window.removeEventListener('keydown', onKey);
+      canvas.removeEventListener('pointerenter', onEnter);
+      canvas.removeEventListener('pointerleave', onLeaveCanvas);
+      gizmo.dispose();
       controls.dispose();
       disposeTree(scene);
       if (pickModel) disposeTree(pickModel);

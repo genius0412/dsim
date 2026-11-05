@@ -770,6 +770,14 @@
   display: flex;
   flex-direction: column;
 }
+/* THE ROBOT IMPORTER'S PAGE IS THE COLUMN PLUS THE MENU (owner, 2026-11-05: "make SURE the window of 3d
+   thing didn't go smaller"). The editor puts its menu in a column BESIDE the 3D view, so on the usual
+   1080px column the view lost that column's width (1036 → 636). The page grows by exactly the menu
+   (`.ds-import-in`'s 24rem column plus its gap), so the view keeps the old width wherever the window has
+   the room, and shrinks only by what the window lacks. */
+.ds-main:has(.ds-import) {
+  max-width: calc(1080px + 24rem + var(--ds-s-4));
+}
 /* SOLO SETUP: the two cards sit side by side on a wide window and stack on a narrow one. The way in
    (Start / Free drive) is a bar pinned to the bottom of the scroll container, so it is on screen
    whatever the page height, and it is the only thing that follows the player down the page. */

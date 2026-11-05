@@ -220,6 +220,7 @@ export const COPY = {
     drive: 'Arrow: the front. Green discs: the wheels.',
     mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
       ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
+    mechEdit: 'Click the green bar or the orange and purple marks to pick one. Drag an arrow to move it. G grabs, then X, Y or Z locks an axis. Esc puts it back.',
     moving: 'Blue: the selected part. Orange: the other moving parts.',
     deleting: 'Blue: the selected parts. Orange: the parts left out of the footprint.',
     apart: 'Orange: the parts left out of the footprint.',
