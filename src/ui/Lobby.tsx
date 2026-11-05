@@ -12,8 +12,6 @@ import { serverPhysics } from '../games/types';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
-import { SupporterBadge } from './SupporterBadge';
-import { BadgeMarks } from './BadgeMark';
 import { Menu } from './Menu';
 import { teamLine } from './robotLabels';
 import { BuildLine } from './BuildLine';
@@ -25,11 +23,12 @@ import type { ResumedRoom } from './roomReturn';
 import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { coerceRoomSettings, roomCapacity, ROOM_CAPACITY, type RoomSettings, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
+import { coerceRoomSettings, roomCapacity, CUSTOM_ROOM_WATCHERS, ROOMS3_CAP, type RoomSettings, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode, type RoomWatcher } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
-import { entryTitle, hostMoveOffered, retriesAsRecord, seatFree, shrinkState, watchesOnRefusal } from './lobbyRules';
+import { barStatus, canWatch, entryTitle, hostMoveOffered, retriesAsRecord, roomTitle, seatFree, watchesOnRefusal, type PendingSeat, type SeatTo } from './lobbyRules';
+import { RoomScreen, type RoomBots, type RoomHostPanel } from './RoomScreen';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
@@ -43,7 +42,6 @@ import { ZENITH_AVAILABLE } from '../auto/available';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
-import { botLabel } from './SoloSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
@@ -77,6 +75,13 @@ interface Props {
    *  lists no other), so it is ignored signed out. Read once, when the room is created. */
   listed?: boolean;
   /**
+   * CREATE THE ROOM ON MOUNT (Browse rooms' Private room / Public room, Play's New room). There is
+   * no form in between any more: the name is the account's (or the last one used), the region the
+   * player's own, and the shape a 2v2 the host reshapes in the room. An ordinary room only; a duo
+   * record keeps its entry screen, where the partner types the code.
+   */
+  create?: boolean;
+  /**
    * A LIVE SOCKET COMING BACK FROM A FINISHED MATCH, rather than a code to dial.
    *
    * The host recycled the room: the server cleared its world, kept everyone's seat, and
@@ -103,6 +108,8 @@ interface Props {
   onAutoJoinConsumed?: () => void;
   /** `autoJoin` is a code the player TYPED (Browse rooms), so nothing says what kind of room it is */
   autoJoinTyped?: boolean;
+  /** `autoJoin` is to WATCH (a friend's room, a code from Watch): attach as a watcher, take no seat */
+  autoJoinWatch?: boolean;
   /** the typed code turned out to be a duo-record room: the caller opens the record screen on it */
   onRecordCode?: (room: string, region?: string) => void;
   /** running as a Discord Activity — surfaces the in-room name / robot-name editor
@@ -153,6 +160,12 @@ const SLOW_CONNECT_MS = 5000;
 const IN_PROGRESS_RETRY_S = 10;
 /** debounce on writing the Discord identity back to `settings.spec` (see the effect) */
 const IDENTITY_SAVE_MS = 500;
+/** the one line every connecting screen says while the transport retries */
+const STILL_CONNECTING = 'Still connecting to the game server. It keeps trying for about a minute.';
+/** how long a reaction bubble stays on its sender's card */
+const REACTION_MS = 3000;
+/** how long a side change sent by `update` may take before the screen says it did not happen */
+const SIDE_ANSWER_MS = 1500;
 
 /** why this seat's own imported look is not reaching the room (the relay client's), for one line */
 const subscribeOwnLook = (cb: () => void): (() => void) => importVisuals.subscribeOwnLook(cb);
@@ -170,6 +183,7 @@ export function RoomFriendsLayout({
   onJoinInvite,
   onSpectate,
   room,
+  openSignal,
 }: {
   children: ReactNode;
   signedIn: boolean;
@@ -178,6 +192,8 @@ export function RoomFriendsLayout({
   onJoinInvite: (invite: RoomInvite) => void;
   onSpectate: (room: string, region?: string) => void;
   room?: RoomInviteTarget;
+  /** bumped by the room's Invite button: the panel opens */
+  openSignal?: number;
 }) {
   return (
     <div className="ds-room-layout">
@@ -190,6 +206,7 @@ export function RoomFriendsLayout({
         onSpectate={onSpectate}
         room={room}
         allowProfileNavigation={!room}
+        openSignal={openSignal}
       />
     </div>
   );
@@ -213,6 +230,7 @@ export function Lobby({
   config = { kind: 'versus' },
   signedIn = false,
   listed = false,
+  create = false,
   displayName,
   myUserId,
   onOpenProfile,
@@ -223,6 +241,7 @@ export function Lobby({
   autoJoinRegion,
   onAutoJoinConsumed,
   autoJoinTyped = false,
+  autoJoinWatch = false,
   onRecordCode,
   discordActivity = false,
   group = '',
@@ -250,7 +269,7 @@ export function Lobby({
    * Seeded from the prop rather than set by the auto-join effect, so the form is not
    * painted for one frame before the effect runs.
    */
-  const [autoEntry] = useState(!!autoJoin || !!resume);
+  const [autoEntry] = useState(!!autoJoin || !!resume || (create && config.kind === 'versus'));
   /** the connect is slow enough to need saying so: `SLOW_CONNECT_MS`, or the transport
    *  telling us it dropped and is retrying. */
   const [slowConnect, setSlowConnect] = useState(false);
@@ -302,10 +321,14 @@ export function Lobby({
   const isRecord = config.kind === 'record' && roomSet?.preset !== 'custom';
   const capacity = roomSet ? roomSet.perAlliance.red + roomSet.perAlliance.blue : roomCapacity(config);
   /** what the create form asks for; sent only by `createRoom`, and only to a server that has `'rooms2'` */
-  const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>('custom');
+  const [setup, setSetup] = useState<'custom' | 'casual-1v1' | 'casual-2v2'>(create ? 'casual-2v2' : 'custom');
   const [serverRooms2, setServerRooms2] = useState(false);
   /** the server honours `RoomSettings.runLength`; without it a room would run in FULL whatever was asked */
   const [serverAutoOnly, setServerAutoOnly] = useState(false);
+  /** the one-screen room's server half (`'rooms3'`): seat moves on the socket, reactions, named
+   *  watchers, any member's way back after a match. Null until the answer lands. */
+  const [serverRooms3, setServerRooms3] = useState<boolean | null>(null);
+  const serverRooms3Ref = useRef<boolean | null>(null);
   const creatingRef = useRef(false);
   useEffect(() => {
     let alive = true;
@@ -313,6 +336,10 @@ export function Lobby({
       if (alive) {
         setServerRooms2(c.includes('rooms2'));
         setServerAutoOnly(c.includes('autoOnly'));
+        // a LAN room is a tab or a LAN box, never this cloud server, so it never takes the messages
+        const r3 = c.includes(ROOMS3_CAP) && !lanActive();
+        serverRooms3Ref.current = r3;
+        setServerRooms3(r3);
       }
     });
     return () => {
@@ -391,6 +418,23 @@ export function Lobby({
   const [spectating, setSpectating] = useState(false);
   /** `spectating` for the handlers `wire` registers once */
   const spectatingRef = useRef(false);
+  /** the watchers the roster names (`'rooms3'`); null from a server that names none */
+  const [watchers, setWatchers] = useState<RoomWatcher[] | null>(null);
+  /** a seat move this screen has asked for, drawn as done until the next roster (`seatMap`) */
+  const [pending, setPending] = useState<PendingSeat | null>(null);
+  const pendingRef = useRef<PendingSeat | null>(null);
+  pendingRef.current = pending;
+  /** a move the room did not make, said on the side it was for, for a few seconds */
+  const [seatNote, setSeatNote] = useState<{ to: SeatTo; text: string } | null>(null);
+  /** an in-socket move (`'rooms3'` `seat`) is in flight: its refusal sends the opposite door again */
+  const movingRef = useRef<SeatTo | null>(null);
+  /** reaction bubbles showing now, by sender */
+  const [bubbles, setBubbles] = useState<Record<string, number>>({});
+  const [reactBusy, setReactBusy] = useState(false);
+  /** the room's one-line notice (it turned Private, the crown came to you) */
+  const [roomNotice, setNoticeLine] = useState<string | null>(null);
+  /** bumped by Invite: the friends panel opens */
+  const [inviteSignal, setInviteSignal] = useState(0);
   /** the host's region as the last `join` knew it, for a switch that has to dial the room again */
   const hostRegionRef = useRef('');
   /** a seat was asked for from the spectator view and the room has not answered yet */
@@ -446,6 +490,7 @@ export function Lobby({
       // mounted (no unmount, socket alive) keeps its value-keyed guard and is
       // correctly swallowed instead of orphaning the live socket.
       autoJoinedRef.current = null;
+      createdRef.current = false;
     };
   }, []);
 
@@ -485,6 +530,12 @@ export function Lobby({
   const [idFirst] = useState(
     () => discordActivity && !(initialName || displayName || settings.spec.teamName),
   );
+  /**
+   * THE SETUP DRAWER (robot, start position, name). It OPENS FIRST for somebody who has never named
+   * themselves (`idFirst`), which is where the "You" card above the roster used to be: four rows
+   * reading "Player" are unattributable, and an editor nobody opened is not read.
+   */
+  const [setupOpen, setSetupOpen] = useState(idFirst);
 
   // The profile request may resolve after this screen mounts. Adopt the saved
   // DSIM display name while the player is still choosing a room, but never erase
@@ -506,14 +557,6 @@ export function Lobby({
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
   const canStart = allReady && enoughPlayers && !restartPending;
-  /**
-   * MAY THIS PLAYER WATCH INSTEAD OF DRIVE? Not the host (the room would be left with nobody to
-   * start it), not a record run (its seats are the point) and not a LAN room (a tab-hosted room has
-   * no spectator socket). A spectator is never the host either, so this holds for them too.
-   */
-  const canSpectate = !isRecord && !isHost && !lanActive();
-  /** is there a free seat on `a`, for a spectator to take? (A legacy room has no per-side count.) */
-  const sideOpen = (a: Alliance): boolean => seatFree(players, roomSet, capacity, a);
 
   /**
    * ⚠️ THE ROOM CODE IS AN ARGUMENT, NEVER THE `code` STATE.
@@ -526,6 +569,40 @@ export function Lobby({
    * no `room`) and the way back to the room's own lobby both went missing for exactly the
    * player who made the room. Same discipline as `Lobby.join`'s region argument.
    */
+  /** the previous roster's host and visibility, to say when either changed under the player */
+  const rosterPrevRef = useRef<{ host: string; listed: boolean } | null>(null);
+  /** a side change sent with `update`: the room either makes it or drops it (a full side) */
+  const sideTimerRef = useRef(0);
+
+  /**
+   * ONE ROSTER, FROM THE ROOM OR HANDED OVER WITH A RECYCLE. A pending seat move is settled here: it
+   * landed when the roster shows it; an in-socket move that has not landed waits for its own answer
+   * (its refusal is an `error`), and a side change by `update` is given until `sideTimerRef` fires.
+   */
+  function applyRoster(list: LobbyPlayer[], host: string, set: RoomSettings | undefined, ws: RoomWatcher[] | undefined, myClientId: string): void {
+    setRoomSet(set);
+    setPlayers(list);
+    setHostId(host);
+    setMyId(myClientId);
+    setWatchers(ws ?? null);
+    const pend = pendingRef.current;
+    if (pend) {
+      const meNow = list.find((p) => p.clientId === pend.id);
+      const landed = pend.to === 'watch' ? !meNow : meNow?.alliance === pend.to;
+      if (landed) {
+        movingRef.current = null;
+        window.clearTimeout(sideTimerRef.current);
+        setPending(null);
+      }
+    }
+    const prev = rosterPrevRef.current;
+    if (prev && prev.host !== host) {
+      if (prev.listed && set && !set.listed) setNoticeLine('This room is Private now: its new host isn’t signed in.');
+      else if (host === myClientId) setNoticeLine('You are the host now.');
+    }
+    rosterPrevRef.current = { host, listed: !!set?.listed };
+  }
+
   function handleStart(m: MatchStart, roomCode: string): void {
     const lobby = lobbyRef.current;
     if (!lobby) return;
@@ -642,8 +719,10 @@ export function Lobby({
     // activity's lobby browser. The server only applies it when CREATING the room;
     // an existing room keeps its creator's group.
     const lobby = wire(transport, roomCode);
-    if (how.spectate) lobby.spectate(roomCode);
-    else lobby.join(roomCode, myPlayer(how.alliance), roomConfig(), group || undefined);
+    if (how.spectate) lobby.spectate(roomCode, name.trim() || undefined);
+    // a fresh join of an ordinary room lands where the open seats are (`'rooms3'`; an older server
+    // ignores the flag); a seat picked from the watchers keeps the side that was picked
+    else lobby.join(roomCode, myPlayer(how.alliance), roomConfig(), group || undefined, !how.alliance && !isRecord);
   }
 
   /**
@@ -652,6 +731,17 @@ export function Lobby({
    * outright), and the new one is a spectator the room already knows how to carry.
    */
   function watchRoom(roomCode: string, inRoom: boolean): void {
+    const lobby = lobbyRef.current;
+    // `'rooms3'`: the same socket moves to the watchers (`seat`); no reconnect, no new id
+    if (inRoom && lobby && serverRooms3Ref.current && !spectatingRef.current) {
+      movingRef.current = 'watch';
+      setSeatNote(null);
+      setPending({ id: lobby.clientId, to: 'watch' });
+      spectatingRef.current = true;
+      setSpectating(true);
+      lobby.seat('watch', roomCode, myPlayer(), roomConfig(), group || undefined);
+      return;
+    }
     lobbyRef.current?.dispose();
     spectatingRef.current = true;
     seatTryRef.current = false;
@@ -662,6 +752,16 @@ export function Lobby({
 
   /** leave the spectator view for a seat on `alliance`; a seat that fills first lands back here */
   function takeSeat(alliance: Alliance): void {
+    const lobby = lobbyRef.current;
+    if (lobby && serverRooms3Ref.current && spectatingRef.current) {
+      movingRef.current = alliance;
+      setSeatNote(null);
+      setPending({ id: lobby.clientId, to: alliance });
+      spectatingRef.current = false;
+      setSpectating(false);
+      lobby.seat(alliance, code, myPlayer(alliance), roomConfig(), group || undefined);
+      return;
+    }
     lobbyRef.current?.dispose();
     spectatingRef.current = false;
     seatTryRef.current = true;
@@ -749,16 +849,27 @@ export function Lobby({
      */
     transport.onDown(() => setSlowConnect(true));
 
-    lobby.on('roster', (list, host, set) => {
+    lobby.on('roster', (list, host, set, ws) => {
       if (lobbyRef.current !== lobby) return;
       seatTryRef.current = false; // whatever was asked for has been answered
-      setRoomSet(set);
-      setPlayers(list);
-      setHostId(host);
-      setMyId(lobby.clientId);
+      applyRoster(list, host, set, ws, lobby.clientId);
       setSlowConnect(false); // whatever it was, we are talking to the room again
       setError(''); // an in-room refusal (see 'error') is answered by the room moving on
       setPhase((p) => (p === 'connecting' ? 'room' : p));
+    });
+    lobby.on('react', (from, k) => {
+      if (lobbyRef.current !== lobby) return;
+      setBubbles((b) => ({ ...b, [from]: k }));
+      window.setTimeout(
+        () =>
+          setBubbles((b) => {
+            if (b[from] !== k) return b;
+            const next = { ...b };
+            delete next[from];
+            return next;
+          }),
+        REACTION_MS,
+      );
     });
     lobby.on('matchStart', (m) => handleStart(m, roomCode));
     /**
@@ -774,6 +885,29 @@ export function Lobby({
     });
     lobby.on('error', (msg, code) => {
       if (lobbyRef.current !== lobby) return; // the last word of a socket this screen already left
+      /*
+       * AN IN-SOCKET SEAT MOVE (`'rooms3'`) THE ROOM REFUSED. The server asks the refusing door's
+       * cap before giving up the old role, so usually nothing changed; when it had (somebody took
+       * the last seat in the same instant) the socket is roomless. Either way the opposite door is
+       * asked again on the same socket: a socket still in the room has it ignored (`if (room)`),
+       * and a roomless one goes back where it was.
+       */
+      const moving = movingRef.current;
+      if (moving) {
+        movingRef.current = null;
+        setPending(null);
+        setSeatNote({ to: moving, text: msg });
+        if (moving === 'watch') {
+          spectatingRef.current = false;
+          setSpectating(false);
+          lobby.join(roomCode, myPlayer(), roomConfig(), group || undefined);
+        } else {
+          spectatingRef.current = true;
+          setSpectating(true);
+          lobby.spectate(roomCode, name.trim() || undefined);
+        }
+        return;
+      }
       /**
        * ⚠️ NO FREE SEAT, OR A MATCH ALREADY RUNNING, IS NOT A DEAD END HERE: THE ROOM CAN BE WATCHED.
        *
@@ -795,7 +929,17 @@ export function Lobby({
           record: isRecord,
         })
       ) {
-        watchRoom(roomCode, phaseRef.current === 'room');
+        if (phaseRef.current !== 'room') {
+          // REFUSED AT THE DOOR: the socket holds no seat, so it watches on the same connection
+          // instead of dialling again (one socket, about half the wait)
+          spectatingRef.current = true;
+          seatTryRef.current = false;
+          setSpectating(true);
+          setMyId('');
+          lobby.spectate(roomCode, name.trim() || undefined);
+          return;
+        }
+        watchRoom(roomCode, true);
         return;
       }
       /**
@@ -895,9 +1039,32 @@ export function Lobby({
     }
     setPhase('room');
     setMyId(resume.clientId);
-    wire(resume.transport, resume.code).resume(resume.code, myPlayer(), resume.clientId, resume.seatToken, roomConfig(), group);
+    // the roster the room sent with the recycle landed on the match's session; draw it now
+    if (resume.roster) applyRoster(resume.roster.players, resume.roster.hostId, resume.roster.settings, resume.roster.watchers, resume.clientId);
+    const lobby = wire(resume.transport, resume.code);
+    if (resume.spectator) {
+      // A WATCHER COMES BACK AS A WATCHER. It used to be handed the driver's resume: no side
+      // picked, "Waiting for the host to start", RED and BLUE buttons that sent patches the room
+      // ignores, and a reconnect that sent `join` and took a seat.
+      spectatingRef.current = true;
+      setSpectating(true);
+      lobby.resumeWatching(resume.code, resume.clientId, name.trim() || undefined);
+    } else {
+      lobby.resume(resume.code, myPlayer(), resume.clientId, resume.seatToken, roomConfig(), group);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume]);
+
+  /** CREATE ON MOUNT (`create`), once the server's capabilities are known: a room asks for its
+   *  shape only from a server that holds one (`'rooms2'`), so asking before the answer would make a
+   *  legacy room. The read is cached, so this is the same frame on every visit but the first. */
+  const createdRef = useRef(false);
+  useEffect(() => {
+    if (!create || config.kind !== 'versus' || autoJoin || resume || createdRef.current || serverRooms3 === null) return;
+    createdRef.current = true;
+    createRoom();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [create, serverRooms3]);
 
   // Auto-join when a friend's invite / Discord Activity carried a room code — the same
   // `join()` a manual code entry calls, just triggered without a button click, and carrying
@@ -911,7 +1078,13 @@ export function Lobby({
   useEffect(() => {
     if (autoJoin && autoJoinedRef.current !== autoJoin) {
       autoJoinedRef.current = autoJoin;
-      join(autoJoin, autoJoinRegion);
+      // a SECOND room while this one is open: leave the first, or its socket stays seated in it
+      if (lobbyRef.current) lobbyRef.current.dispose();
+      if (autoJoinWatch) {
+        spectatingRef.current = true;
+        setSpectating(true);
+      }
+      join(autoJoin, autoJoinRegion, autoJoinWatch ? { spectate: true } : {});
       onAutoJoinConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -961,7 +1134,21 @@ export function Lobby({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [group, autoEntry, phase, errorCode, code]);
 
-  const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
+  /** change side (a seated driver): drawn at once, put back with a line if the room drops it */
+  const setAlliance = (alliance: Alliance): void => {
+    const lobby = lobbyRef.current;
+    if (!lobby) return;
+    const move: PendingSeat = { id: lobby.clientId, to: alliance };
+    setSeatNote(null);
+    setPending(move);
+    lobby.update({ alliance });
+    window.clearTimeout(sideTimerRef.current);
+    sideTimerRef.current = window.setTimeout(() => {
+      if (pendingRef.current !== move) return;
+      setPending(null);
+      setSeatNote({ to: alliance, text: 'That seat was taken.' });
+    }, SIDE_ANSWER_MS);
+  };
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
 
   // Discord-only in-room identity editing: the driver name + robot name are chosen
@@ -1115,7 +1302,7 @@ export function Lobby({
    * Held as a value because it renders in one of TWO places — above the roster while the
    * player is still nameless, below it once they are not. See `idFirst`.
    */
-  const youSection = discordActivity ? (
+  const youSection = discordActivity || !signedIn ? (
     <section className="ds-sec">
       <h2>You</h2>
       {/* not a restatement of the two labels: it says where the names GO, which is the
@@ -1207,6 +1394,57 @@ export function Lobby({
    * New room / Have a code toggle, a region picker) all act on a room that is not being
    * chosen here, and every one of them had to be individually disabled to be honest.
    */
+  /*
+   * THE ROOM'S OWN FRAME WHILE IT CONNECTS. Creating a room and joining one used to go through a
+   * popup ("Joining the room…") and then jump to the full-screen lobby; the room is drawn at once
+   * now, empty, with what is happening in its bar, so the screen fills in rather than changes.
+   * A refusal still gets the popup below: it has a button that is not the room's.
+   */
+  if (autoEntry && phase !== 'room' && phase !== 'error' && !group) {
+    const set = create ? coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' }) : undefined;
+    return (
+      <RoomScreen
+        title={create ? roomTitle(false, listed && signedIn) : 'Room'}
+        code={code ? code.toUpperCase() : '······'}
+        copied={false}
+        onCopy={() => {}}
+        onLeave={onCancel}
+        players={[]}
+        watchers={[]}
+        watchersKnown
+        watcherCap={CUSTOM_ROOM_WATCHERS}
+        hostId=""
+        myId=""
+        spectating={false}
+        pending={null}
+        seatNote={null}
+        settings={set}
+        capacity={set ? 4 : roomCapacity(config)}
+        isHost={false}
+        record={false}
+        canWatch={false}
+        canSeat={false}
+        onTake={() => {}}
+        onWatch={() => {}}
+        startLabel={() => ''}
+        onSetup={() => {}}
+        canMove={() => false}
+        onMove={() => {}}
+        bots={null}
+        host={null}
+        bubbles={{}}
+        reactBusy
+        bar={{
+          status: create ? 'Creating the room…' : 'Joining the room…',
+          warn: slowConnect ? STILL_CONNECTING : null,
+        }}
+        drawer={null}
+        drawerOpen={false}
+        onCloseDrawer={() => {}}
+      />
+    );
+  }
+
   if (autoEntry && phase !== 'room') {
     const joiningGroup = !!group;
     return (
@@ -1275,7 +1513,7 @@ export function Lobby({
                   <p className="ds-loading">{joiningGroup ? 'Joining the lobby…' : 'Joining the room…'}</p>
                   {slowConnect && (
                     <p className="ds-hint">
-                      Still connecting to the game server. It keeps trying for about a minute.
+                      {STILL_CONNECTING}
                     </p>
                   )}
                 </>
@@ -1428,7 +1666,7 @@ export function Lobby({
                 disabled CTA for the whole retry budget too. */}
             {phase === 'connecting' && slowConnect && (
               <p className="ds-hint">
-                Still connecting to the game server. It keeps trying for about a minute.
+                {STILL_CONNECTING}
               </p>
             )}
             <div className="ds-actions">
@@ -1488,6 +1726,88 @@ export function Lobby({
     );
   }
 
+  /** the start position a seat card names */
+  const startLabel = (p: LobbyPlayer): string =>
+    p.startPose
+      ? 'CUSTOM'
+      : settings.game === 'chain'
+        ? (CHAIN_START_POSES[p.startIndex]?.name ?? '—')
+        : (moduleFor(settings.game).startAnchorName?.(p.startIndex, p.alliance) ?? START_POSES[p.startIndex]?.label ?? '—');
+
+  /**
+   * WHO IS DRAWN IN THE SEATS. A seat asked for from the watchers has no roster row until the room
+   * answers, so this screen draws one (yours, with your build) in the seat you picked; the next
+   * roster replaces it with the room's.
+   */
+  const shownPlayers: LobbyPlayer[] =
+    pending && pending.to !== 'watch' && !players.some((p) => p.clientId === pending.id)
+      ? [...players, { ...myPlayer(pending.to), clientId: pending.id }]
+      : players;
+
+  /** this seat's Close/Far swap, on its own card: the request, or the answer to one */
+  const swapControl = rs.canSwap ? (
+    rs.swapping ? (
+      <span className="ds-roleswap-note">Swapping…</span>
+    ) : rs.incoming && !swapDismissed ? (
+      <>
+        <span className="ds-roleswap-note">{rs.partner?.name ?? 'Partner'} wants to swap</span>
+        <button type="button" className="ds-btn small" onClick={rs.acceptSwap}>
+          Accept
+        </button>
+        <button type="button" className="ds-btn small" onClick={dismissSwap}>
+          Decline
+        </button>
+      </>
+    ) : rs.requesting ? (
+      <button type="button" className="ds-btn small" onClick={rs.cancelSwap}>
+        Cancel swap
+      </button>
+    ) : (
+      <button type="button" className="ds-btn small" onClick={rs.requestSwap}>
+        Swap roles
+      </button>
+    )
+  ) : null;
+
+  const bots: RoomBots | null =
+    isHost && !isRecord && botTiers && botTiers.length > 0 && serverBots
+      ? {
+          tiers: botTiers,
+          tier: botTier,
+          onTier: setBotTier,
+          // a `'rooms3'` server seats it on the side it was pressed on; an older one on the emptier side
+          onAdd: (a, tier) => lobbyRef.current?.addBot(tier ?? botTier, serverRooms3 ? a : undefined),
+          onRemove: (id) => lobbyRef.current?.removeBot(id),
+        }
+      : null;
+
+  const hostPanel: RoomHostPanel | null = isHost
+    ? {
+        settings: isRecord ? undefined : roomSet,
+        onSettings: (patch) => lobbyRef.current?.roomSettings(patch),
+        runLength: !!serverRooms3 && serverAutoOnly,
+        visibility: !!serverRooms3 && !group && !lanActive(),
+        signedIn,
+        onUnlock: isRecord && roomSet ? () => lobbyRef.current?.unlockRoom() : undefined,
+      }
+    : null;
+
+  const regionLabel = multiServer() && !lanActive() ? gameServers().find((sv) => sv.region === region)?.label : undefined;
+  const anyOpen = seatFree(players, roomSet, capacity, 'red') || seatFree(players, roomSet, capacity, 'blue');
+  const startWarn = !startLegal
+    ? 'Your start position isn’t legal for this chassis. Open Setup to fix it.'
+    : isHost && restartPending
+      ? 'Server is restarting shortly. Starting is paused for a moment.'
+      : importedActive && !isRecord && importOk === false
+        ? IMPORT_FELL_BACK
+        : null;
+  const react = (k: number): void => {
+    if (reactBusy) return;
+    lobbyRef.current?.react(k);
+    setReactBusy(true);
+    window.setTimeout(() => setReactBusy(false), 1000);
+  };
+
   return (
     <RoomFriendsLayout
       signedIn={signedIn}
@@ -1496,267 +1816,70 @@ export function Lobby({
       onJoinInvite={onJoinInvite}
       onSpectate={onSpectate}
       room={roomInviteTarget}
+      openSignal={inviteSignal}
     >
-    <div className="ds-console">
-      <div className="ds-console-in">
-        <ConsoleHead onBack={onCancel} backLabel="← Leave" />
-        <div className="ds-title">
-          <h1>
-            {isRecord ? 'Duo' : 'Room'} {code}
-          </h1>
-        {/* NOT centred: `.ds-console` is left-aligned throughout — the title, every
-            `<h2>`, the roster and the action row all start at x=0 of the column — and
-            this line was centred inside its own 64ch cap rather than the column, so it
-            landed about a quarter of the way across and lined up with nothing. */}
-        <p className="ds-sub ds-sub-row">
-          <span>
-            {spectating ? 'You are spectating' : isHost ? 'You are the host' : 'Waiting for the host to start'} ·{' '}
-            {players.length}/{capacity} drivers
-          </span>
-          <button
-            className="ds-chip"
-            // through `copyText`, and the tick only on a copy that actually happened:
-            // this lobby is reachable over a plain-http LAN origin, where the Clipboard
-            // API does not exist and the optional chain used to make this a no-op that
-            // still said '✓ Copied'. Same story in a locked-down embed (the Discord
-            // Activity iframe) — a blocked copy shows no tick, and the code is still
-            // visible in the title.
-            onClick={() =>
-              copyText(code, (ok) => {
-                if (!ok) return;
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              })
-            }
-          >
-            {copied ? '✓ Copied' : 'Copy code'}
-          </button>
-        </p>
-        </div>
-
-        {idFirst && youSection}
-
-        <section className="ds-sec">
-          <h2>Drivers</h2>
-          <div className="ds-players">
-            {players.map((p) => {
-              const isMe = p.clientId === myId;
-              return (
-                <div key={p.clientId} className={`ds-player ${p.alliance}`}>
-                  <span className="pdot" />
-                  {/* the badge TRAILS the whole name, as it does in `.fr-nameline`,
-                      `.lb-name` and the career chip. Between the name and its "(you)"
-                      suffix it read as "Alice ♥ (you)". */}
-                  <span className="pnm">
-                    {p.name}
-                    {isMe ? ' (you)' : ''}
-                    <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <BadgeMarks badges={p.badges} />
-                  </span>
-                  <span className="ptm">
-                    {p.spec.name} · {p.teamNumber || '—'}
-                  </span>
-                  {/* A BOT SEAT IS NAMED AS ONE, beside the name and not inside it — the same
-                      rule the supporter badge follows. Without it a roster row reading
-                      "Medium bot · READY" is indistinguishable from a driver who picked that
-                      name, and the difference is whether the match rates. */}
-                  {p.bot && <span className="ds-chip">BOT</span>}
-                  {/* the Zenith auto this driver's robot plays in AUTO (custom rooms) */}
-                  {p.autoName && <span className="ds-chip">AUTO · {p.autoName}</span>}
-                  {p.clientId === hostId && (
-                    <span className="ds-chip on">HOST</span>
-                  )}
-                  <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  {/* "Drivers pick a side" means the HOST DOES NOT MOVE THEM (the server refuses it too):
-                      only a bot, which cannot pick, is placed by hand in that mode */}
-                  {roomSet && hostMoveOffered(p, roomSet, { isHost, record: isRecord }) && (
-                    <button
-                      className="ds-btn small ghost"
-                      disabled={
-                        players.filter((o) => o.alliance !== p.alliance).length >=
-                        roomSet.perAlliance[p.alliance === 'red' ? 'blue' : 'red']
-                      }
-                      onClick={() => lobbyRef.current?.moveMember(p.clientId, p.alliance === 'red' ? 'blue' : 'red')}
-                    >
-                      Move to {p.alliance === 'red' ? 'blue' : 'red'}
-                    </button>
-                  )}
-                  <span className="ds-chip">
-                    {p.startPose
-                      ? 'CUSTOM'
-                      : settings.game === 'chain'
-                        ? (CHAIN_START_POSES[p.startIndex]?.name ?? '—')
-                        : (moduleFor(settings.game).startAnchorName?.(p.startIndex, p.alliance) ??
-                          START_POSES[p.startIndex]?.label ??
-                          '—')}
-                  </span>
-                  <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
-                    {p.ready ? 'READY' : 'NOT READY'}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-          {/* ADD A BOT (plan §6) — host only, versus only, and only when both the game and the
-              deploy can do it. A record run is excluded on purpose: its replay is leaderboard
-              PROOF, and a bot partner in a duo record would be a submission nobody drove. */}
-          {isHost && !isRecord && botTiers && botTiers.length > 0 && serverBots && (
-            <>
-              <div className="ds-opts fill">
-                {botTiers.map((t) => (
-                  <button
-                    key={t}
-                    className={`ds-opt mini ${botTier === t ? 'on' : ''}`}
-                    aria-pressed={botTier === t}
-                    onClick={() => setBotTier(t)}
-                  >
-                    <span className="ot">{botLabel(t)}</span>
-                  </button>
-                ))}
-                <button
-                  className="ds-opt mini"
-                  disabled={players.length >= capacity}
-                  onClick={() => lobbyRef.current?.addBot(botTier)}
-                >
-                  <span className="ot">Add a bot</span>
-                </button>
-                {players.some((p) => p.bot) && (
-                  <button
-                    className="ds-opt mini"
-                    onClick={() => {
-                      // the LAST one, which is the one the button just added — removing from the
-                      // end is what makes pressing add and remove alternately a no-op
-                      const last = [...players].reverse().find((p) => p.bot);
-                      if (last) lobbyRef.current?.removeBot(last.clientId);
-                    }}
-                  >
-                    <span className="ot">Remove a bot</span>
-                  </button>
-                )}
-              </div>
-              <p className="ds-hint">
-                A room with a bot in it is unrated. It is still saved to Match history.
-              </p>
-            </>
-          )}
-        </section>
-
-        {!idFirst && youSection}
-
-        {roomSet && isRecord && isHost && (
-          <section className="ds-sec">
-            <h2>Room settings</h2>
-            <p className="ds-hint">
-              Seats and sides are fixed for a record run. Unlocking turns this into an ordinary room.
-              This room stops posting records.
-            </p>
-            <div className="ds-opts fill">
-              <button className="ds-opt mini" onClick={() => lobbyRef.current?.unlockRoom()}>
-                <span className="ot">Unlock settings</span>
-              </button>
-            </div>
-          </section>
-        )}
-
-        {roomSet && !isRecord && (
-          <section className="ds-sec">
-            <h2>Room settings</h2>
-            {isHost ? (
-              <>
-                {(['red', 'blue'] as const).map((a) => {
-                  // a full side cannot shrink (the server refuses it), and in "Drivers pick a side" the
-                  // host cannot move a driver off to make room: the button says so instead of failing
-                  const fewer = shrinkState(players, roomSet, a);
-                  return (
-                  <div key={a} className="ds-opts fill">
-                    <button
-                      className="ds-opt mini"
-                      aria-label={fewer.reason ? `Fewer ${a} seats. ${fewer.reason}` : `Fewer ${a} seats`}
-                      title={fewer.reason ?? undefined}
-                      disabled={fewer.disabled}
-                      onClick={() =>
-                        lobbyRef.current?.roomSettings({ perAlliance: { ...roomSet.perAlliance, [a]: roomSet.perAlliance[a] - 1 } })
-                      }
-                    >
-                      <span className="ot">−</span>
-                    </button>
-                    <span className={`ds-chip ${a}`} aria-live="polite">
-                      {a.toUpperCase()} · {roomSet.perAlliance[a]} {roomSet.perAlliance[a] === 1 ? 'seat' : 'seats'}
-                    </span>
-                    <button
-                      className="ds-opt mini"
-                      aria-label={`More ${a} seats`}
-                      disabled={capacity >= ROOM_CAPACITY}
-                      onClick={() =>
-                        lobbyRef.current?.roomSettings({ perAlliance: { ...roomSet.perAlliance, [a]: roomSet.perAlliance[a] + 1 } })
-                      }
-                    >
-                      <span className="ot">+</span>
-                    </button>
-                  </div>
-                  );
-                })}
-                <div className="ds-opts two">
-                  <button
-                    className={`ds-opt ${roomSet.teamSwitch ? 'on' : ''}`}
-                    aria-pressed={roomSet.teamSwitch}
-                    onClick={() => lobbyRef.current?.roomSettings({ teamSwitch: true })}
-                  >
-                    <span className="ot">Drivers pick a side</span>
-                  </button>
-                  <button
-                    className={`ds-opt ${!roomSet.teamSwitch ? 'on' : ''}`}
-                    aria-pressed={!roomSet.teamSwitch}
-                    onClick={() => lobbyRef.current?.roomSettings({ teamSwitch: false })}
-                  >
-                    <span className="ot">Host places drivers</span>
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="ds-hint">
-                {roomSet.perAlliance.red} red · {roomSet.perAlliance.blue} blue ·{' '}
-                {roomSet.teamSwitch ? 'drivers pick a side' : 'the host places drivers'}
-              </p>
-            )}
-          </section>
-        )}
-
-        {!isRecord && (!roomSet || roomSet.teamSwitch || canSpectate) && (
-          <section className="ds-sec">
-            <h2>Your alliance</h2>
-            <div className={`ds-opts ${canSpectate ? 'three' : 'two'}`}>
-              {(['red', 'blue'] as const).map((a) => {
-                const mine = !spectating && me?.alliance === a;
-                return (
-                  <button
-                    key={a}
-                    className={`ds-opt ${a} ${mine ? 'on' : ''}`}
-                    aria-pressed={mine}
-                    // a spectator asks for a seat, so only a side with room is offered; a driver
-                    // changes side unless the host took that away ("Host places drivers")
-                    disabled={spectating ? !sideOpen(a) : !!roomSet && !roomSet.teamSwitch}
-                    onClick={() => (spectating ? takeSeat(a) : setAlliance(a))}
-                  >
-                    <span className="ot">{a.toUpperCase()}</span>
-                  </button>
-                );
-              })}
-              {canSpectate && (
-                <button
-                  className={`ds-opt ${spectating ? 'on' : ''}`}
-                  aria-pressed={spectating}
-                  onClick={() => {
-                    if (!spectating) watchRoom(code, true);
-                  }}
-                >
-                  <span className="ot">Spectate</span>
-                </button>
-              )}
-            </div>
-          </section>
-        )}
-
+      <RoomScreen
+        title={roomTitle(isRecord, !!roomSet?.listed)}
+        code={code.toUpperCase()}
+        region={regionLabel}
+        copied={copied}
+        onCopy={() =>
+          // through `copyText`, and the tick only on a copy that actually happened: this lobby is
+          // reachable over a plain-http LAN origin, where the Clipboard API does not exist, and in a
+          // locked-down embed (the Discord activity) a blocked copy shows no tick either. The code
+          // is on screen beside the button either way.
+          copyText(code.toUpperCase(), (ok) => {
+            if (!ok) return;
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          })
+        }
+        onInvite={signedIn && !lanActive() ? () => setInviteSignal((n) => n + 1) : undefined}
+        onLeave={onCancel}
+        notice={roomNotice}
+        players={shownPlayers}
+        watchers={watchers ?? []}
+        watchersKnown={watchers !== null}
+        watcherCap={CUSTOM_ROOM_WATCHERS}
+        hostId={hostId}
+        myId={myId}
+        spectating={spectating}
+        pending={pending}
+        seatNote={seatNote}
+        settings={roomSet}
+        capacity={capacity}
+        isHost={isHost}
+        record={isRecord}
+        canWatch={canWatch({ isHost, record: isRecord, lan: lanActive(), activity: !!group })}
+        canSeat={!lanActive()}
+        onTake={(a) => (spectating ? takeSeat(a) : setAlliance(a))}
+        onWatch={() => watchRoom(code, true)}
+        startLabel={startLabel}
+        swap={swapControl}
+        onSetup={() => setSetupOpen(true)}
+        canMove={(p) => hostMoveOffered(p, roomSet, { isHost, record: isRecord })}
+        onMove={(id, a) => lobbyRef.current?.moveMember(id, a)}
+        bots={bots}
+        host={hostPanel}
+        bubbles={bubbles}
+        onReact={serverRooms3 ? react : undefined}
+        reactBusy={reactBusy}
+        bar={{
+          status: barStatus({ spectating, anyOpen, isHost, record: isRecord, players, capacity, meReady: !!me?.ready }),
+          warn: startWarn,
+          error: error || null,
+          ready:
+            me && !spectating
+              ? { on: me.ready, disabled: !startLegal && !me.ready, onClick: toggleReady }
+              : undefined,
+          start:
+            isHost && me && !spectating
+              ? { label: isRecord ? 'START RUN' : 'START MATCH', disabled: !canStart, onClick: () => lobbyRef.current?.start() }
+              : undefined,
+        }}
+        drawer={
+          <>
+            {youSection}
         {me && (
           <section className="ds-sec">
             <h2>Start position</h2>
@@ -1898,50 +2021,11 @@ export function Lobby({
           </section>
         )}
 
-        {spectating ? (
-          // a watcher holds no seat, so there is nothing to ready and nothing to start; the match
-          // opens here by itself when the host starts it
-          <p className="ds-hint">
-            {sideOpen('red') || sideOpen('blue')
-              ? 'Pick RED or BLUE to take a seat. The match opens here when the host starts it.'
-              : 'Every seat is taken. The match opens here when the host starts it.'}
-          </p>
-        ) : me ? (
-          <div className="ds-actions">
-            <button
-              className={`ds-cta ${me?.ready ? 'secondary' : ''}`}
-              disabled={!startLegal && !me?.ready}
-              onClick={toggleReady}
-            >
-              {me?.ready ? '✓ READY' : 'READY UP'}
-            </button>
-            {isHost && (
-              <button className="ds-cta" disabled={!canStart} onClick={() => lobbyRef.current?.start()}>
-                {isRecord ? 'START RUN' : 'START MATCH'}
-              </button>
-            )}
-          </div>
-        ) : null}
-        {/* a refusal while seated (see the 'error' handler): said here, where the host who
-            pressed START is looking, and cleared by the next roster */}
-        {error && <p className="ds-form-err">⚠ {error}</p>}
-        {!startLegal && (
-          <p className="ds-hint">
-            ⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to
-            ready up.
-          </p>
-        )}
-        {isHost && !enoughPlayers && (
-          <p className="ds-hint">Waiting for your partner to join with the code…</p>
-        )}
-        {isHost && enoughPlayers && !allReady && (
-          <p className="ds-hint">START unlocks when everyone is ready.</p>
-        )}
-        {isHost && restartPending && (
-          <p className="ds-hint">Server is restarting shortly. Starting is paused for a moment.</p>
-        )}
-      </div>
-    </div>
+          </>
+        }
+        drawerOpen={setupOpen && !!me && !spectating}
+        onCloseDrawer={() => setSetupOpen(false)}
+      />
     </RoomFriendsLayout>
   );
 }

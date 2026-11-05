@@ -393,6 +393,8 @@ export interface HudCard {
 export interface HudSnapshot {
   /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
+  /** a WATCHER's HUD: no robot of its own, so no YOU tag, no robot card and no "click to drive" */
+  spectator?: boolean;
   /**
    * WHICH SOLVE THIS WORLD IS RUNNING ON (`'2d'` | `'3d'`), read off the world rather than off
    * the session so a spectator and a mid-match joiner answer it too. The in-match connection
@@ -4033,6 +4035,7 @@ export class GameController {
     const mod = gameOf(w);
     return {
       game: w.game ?? 'decode',
+      spectator: this.spectator,
       physics: this.interp3d() ? '3d' : '2d',
       prediction: this.getPredictionStats(),
       gameHud: mod.hud?.(w, this.localRobotId),

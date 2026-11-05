@@ -39,7 +39,11 @@ import {
   roomCapacity,
   mergeRoomSettings,
   type RoomSettings,
+  type RoomWatcher,
   DEFAULT_ROOM_CONFIG,
+  ROOMS3_CAP,
+  ROOM_REACTIONS,
+  ROOM_RETURN_MS,
   RANKED_JOIN_GRACE_MS,
   READY3D_DEADLINE_MS,
   LOAD_HOLD_MAX_MS,
@@ -357,6 +361,8 @@ export interface Client {
   ready3d?: boolean;
   /** this player's Zenith auto for a CUSTOM room's next match (`{ t: 'zenithAuto' }`), bounded */
   zenithAuto?: ZenithAutoSetup;
+  /** `'rooms3'` join: land on the side with more open seats rather than the stored pick */
+  anySide?: boolean;
   /**
    * The match generation this client last reported `viewReady` for (`VIEWREADY_CAP`): its
    * physics and its view are up and it can play that match. Kept across a drop like `ready3d`.
@@ -426,6 +432,15 @@ export interface MatchParticipant {
 /** everything the persistence layer needs when a match reaches phase 'post' */
 /** the host may move the same member at most this often */
 const MOVE_COOLDOWN_MS = 300;
+/** one reaction a second per socket (`react`): a held key is not a stream */
+const REACT_EVERY_MS = 1000;
+/** how long a finished custom room shows its results before it returns to its lobby by itself
+ *  (`ROOM_RETURN_MS`; `ROOM_RETURN_MS=0` in the env turns the timer off) */
+const RETURN_AFTER_MS = ((): number => {
+  const raw = envVar('ROOM_RETURN_MS');
+  const n = raw === undefined || raw === '' ? ROOM_RETURN_MS : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : ROOM_RETURN_MS;
+})();
 
 export interface MatchOutcome {
   /** which game was played. Persistence SKIPS unscored games (CR shell) so they
@@ -629,6 +644,8 @@ export class Room {
    *  introduce are not known yet — see `maybeRematch` */
   private resultPending = false;
   private resultWait: ReturnType<typeof setTimeout> | null = null;
+  /** the finished room's own way back to its lobby (`armReturn`) */
+  private returnTimer: ReturnType<typeof setTimeout> | null = null;
   // set on the HOST machine when this room was staged by the designated matchmaker
   // (region-aware ranked). The roster is authoritative; the match starts once every
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
@@ -886,7 +903,7 @@ export class Room {
    * one partner and two opponents rather than stacking a side — which is what "fill the empty
    * seats of the chosen format" means in a room where the format is the capacity.
    */
-  addBot(tier?: string): string | null {
+  addBot(tier?: string, side?: unknown): string | null {
     const drv = this.botDriver;
     if (!drv) return 'This game has no AI drivers yet.';
     if (this.pendingMatch || this.ranked) return 'A ranked match cannot have bots in it.';
@@ -897,7 +914,9 @@ export class Room {
     const blue = this.sideCount('blue');
     // the EMPTIER side, among the sides that still have a seat when the host set a split
     const open = (a: Alliance): boolean => !this.settings || this.sideCount(a) < this.settings.perAlliance[a];
-    const alliance: Alliance = !open('red') ? 'blue' : !open('blue') ? 'red' : red <= blue ? 'red' : 'blue';
+    // a `'rooms3'` "+ Bot" names the open seat it was pressed on; anything else is the emptier side
+    const asked: Alliance | null = (side === 'red' || side === 'blue') && open(side) ? side : null;
+    const alliance: Alliance = asked ?? (!open('red') ? 'blue' : !open('blue') ? 'red' : red <= blue ? 'red' : 'blue');
     const anchors = simModuleFor(this.game).startPoseCount;
     // the first anchor nobody on that alliance has claimed; past the anchors it wraps, exactly
     // as `startMatch` de-conflicts a human roster (the solver pushes an overlap apart)
@@ -969,7 +988,17 @@ export class Room {
   changeSettings(raw: unknown): string | null {
     const refusal = this.hostControlRefusal();
     if (refusal || !this.settings) return refusal;
-    const next = mergeRoomSettings(this.settings, raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {});
+    const patch = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    /*
+     * AN AUTO-ONLY RUN, CHOSEN IN THE LOBBY (`'rooms3'`). The doors refuse a build without
+     * `'autoOnly'` from a room that already is one (`runLengthAllowed`); this is the same rule for a
+     * room turning into one, so nobody already inside is left predicting a full match.
+     */
+    if (patch.runLength === 'auto' && this.settings.runLength !== 'auto') {
+      const all = [...this.clients.values(), ...this.spectators.values()];
+      if (all.some((m) => !m.caps?.includes('autoOnly'))) return 'Someone here is on an older version of DSIM that can’t play auto-only runs.';
+    }
+    const next = mergeRoomSettings(this.settings, patch);
     for (const a of ['red', 'blue'] as const) {
       const over = this.sideCount(a) - next.perAlliance[a];
       if (over > 0) return `Move ${over} ${over === 1 ? 'player' : 'players'} off ${a} first.`;
@@ -1014,6 +1043,35 @@ export class Room {
     if (!s) return pick;
     const other: Alliance = pick === 'red' ? 'blue' : 'red';
     return this.sideCount(pick) < s.perAlliance[pick] || this.sideCount(other) >= s.perAlliance[other] ? pick : other;
+  }
+
+  /** the side with more open seats (ties keep `pick`) */
+  private emptierSide(pick: Alliance): Alliance {
+    const s = this.settings;
+    if (!s) return pick;
+    const other: Alliance = pick === 'red' ? 'blue' : 'red';
+    const free = (a: Alliance): number => s.perAlliance[a] - this.sideCount(a);
+    return free(other) > free(pick) ? other : pick;
+  }
+
+  /**
+   * ONE NAME PER PERSON IN THE ROOM. Three guests who never typed a name all arrived as "Player",
+   * and a roster of three identical rows cannot say who is who or who is ready. A name somebody
+   * else here already holds gets the next free number ("Player 2"); the first holder keeps theirs.
+   * Bots and watchers count, so a watcher and a driver are never confused either.
+   */
+  private uniqueName(name: string, selfId: string): string {
+    const taken = new Set<string>();
+    for (const c of this.clients.values()) if (c.id !== selfId) taken.add(c.player.name.toLowerCase());
+    for (const w of this.spectators.values()) if (w.id !== selfId) taken.add(w.player.name.toLowerCase());
+    for (const b of this.bots) taken.add(`${b.tier} bot`.toLowerCase());
+    if (!taken.has(name.toLowerCase())) return name;
+    const base = name.replace(/ \d+$/, '').slice(0, 20);
+    for (let n = 2; n < 100; n++) {
+      const next = `${base} ${n}`;
+      if (!taken.has(next.toLowerCase())) return next;
+    }
+    return name;
   }
 
   private sideCount(a: Alliance): number {
@@ -1459,7 +1517,13 @@ export class Room {
     this.lastActivityAt = Date.now();
     if (!client.seatToken) client.seatToken = randomUUID();
     client.seatSecured = !!client.caps?.includes('seat');
-    if (this.settings) client.player.alliance = this.allianceWithRoom(client.player.alliance);
+    if (this.settings) {
+      // a fresh `'rooms3'` join goes where the seats are, so two friends opening a 2v2 do not both
+      // land on the colour they last played; a seat picked from the watchers keeps its side
+      if (client.anySide) client.player.alliance = this.emptierSide(client.player.alliance);
+      client.player.alliance = this.allianceWithRoom(client.player.alliance);
+    }
+    client.player.name = this.uniqueName(client.player.name, client.id);
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
@@ -1560,8 +1624,10 @@ export class Room {
       client.send({ t: 'error', message: refusal });
       return;
     }
+    client.player.name = this.uniqueName(client.player.name, client.id);
     this.spectators.set(client.id, client);
     client.send({ t: 'welcome', clientId: client.id });
+    this.moderateWatcherName(client);
     if (this.world && this.phase === 'match') {
       client.send(this.matchStartMsg(-1));
       this.sendSnapshotTo(client);
@@ -1583,6 +1649,54 @@ export class Room {
     if (n === this.lastSpecCount) return;
     this.lastSpecCount = n;
     this.broadcast({ t: 'spectators', n });
+  }
+
+  /**
+   * A WATCHER'S NAME IS MODERATED LIKE A DRIVER'S. It is on every member's lobby screen
+   * (`roster.watchers`), and a watcher is usually signed out, so the name is whatever they typed.
+   * Best-effort and off the attach path, as `moderatePlayerNames` is.
+   */
+  private moderateWatcherName(w: Client): void {
+    if (!this.watchersShown()) return;
+    const was = w.player.name;
+    void scrubName(was, 'Guest')
+      .then((name) => {
+        if (!this.spectators.has(w.id) || w.player.name !== was || name === was) return;
+        w.player.name = this.uniqueName(name, w.id);
+        this.broadcastRoster();
+      })
+      .catch(() => {});
+  }
+
+  /** does this room name its watchers? A custom room's lobby does; a ranked or staged room keeps
+   *  its audience anonymous, as it always has. */
+  private watchersShown(): boolean {
+    return !!this.settings && this.config.kind === 'versus' && !this.ranked && !this.pendingMatch;
+  }
+
+  /** the watchers the roster names: hidden staff observers are left out, as from every count */
+  private watcherList(): RoomWatcher[] {
+    const out: RoomWatcher[] = [];
+    for (const w of this.spectators.values()) if (!w.hidden) out.push({ id: w.id, name: w.player.name });
+    return out;
+  }
+
+  /**
+   * A REACTION (`'rooms3'`): one of `ROOM_REACTIONS`, from a seat or a watcher, relayed to every
+   * member and watcher that can show one. Fixed text, so nothing to moderate; nothing stored; one a
+   * second per socket, and silently dropped past that.
+   */
+  private readonly reactAt = new Map<string, number>();
+  private react(id: string, k: unknown): void {
+    if (!this.clients.has(id) && !this.spectators.has(id)) return;
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= ROOM_REACTIONS.length) return;
+    const now = Date.now();
+    if (now - (this.reactAt.get(id) ?? -Infinity) < REACT_EVERY_MS) return;
+    this.reactAt.set(id, now);
+    const frame: ServerMsg = { t: 'react', from: id, k };
+    for (const m of [...this.clients.values(), ...this.spectators.values()]) {
+      if (m.connected !== false && m.caps?.includes(ROOMS3_CAP)) m.send(frame);
+    }
   }
 
   /** the matchStart payload for a client. `yourRobotId` = -1 for a spectator (no slot). */
@@ -1700,6 +1814,7 @@ export class Room {
       seats: this.seatsTaken,
       capacity: this.capacity,
       perAlliance: { ...s.perAlliance },
+      watching: this.visibleSpectators(),
       preset: s.preset,
       joinable: !playing && this.seatsTaken < this.capacity,
       region: SERVER_REGION || undefined,
@@ -1714,6 +1829,8 @@ export class Room {
     if (!s || s.hidden) return;
     s.hidden = true;
     this.broadcastSpectators();
+    // ...and off the lobby's list of watchers, which named it a moment ago
+    if (this.watchersShown()) this.broadcastRoster();
   }
 
   /** watchers as PLAYERS are told about them: hidden admin observers excluded.
@@ -1805,6 +1922,7 @@ export class Room {
     // a spectator socket closing — just drop it (no roster/grace/persistence impact)
     if (this.spectators.has(id)) {
       this.spectators.delete(id);
+      this.reactAt.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
       this.visuals.dropRecipient(id);
@@ -2178,7 +2296,16 @@ export class Room {
   private passCrown(id: string): void {
     if (this.hostId === id && this.reservedHost !== id) {
       const rest = [...this.clients.values()];
-      this.hostId = (rest.find((c) => c.connected) ?? rest[0])?.id ?? '';
+      // A PUBLIC ROOM IS LISTED ONLY UNDER A SIGNED-IN HOST (`listing`), so it goes to one when
+      // anybody connected is signed in. When nobody is, the room says it is Private now rather than
+      // dropping off Browse rooms while its settings still read Public.
+      const listed = !!this.settings?.listed;
+      const signedIn = listed ? rest.find((c) => c.connected && c.userId) : undefined;
+      this.hostId = (signedIn ?? rest.find((c) => c.connected) ?? rest[0])?.id ?? '';
+      if (listed && this.settings && this.hostId && !this.clients.get(this.hostId)?.userId) {
+        this.settings = { ...this.settings, listed: false };
+        this.config.settings = this.settings;
+      }
     }
   }
 
@@ -2255,6 +2382,14 @@ export class Room {
       if (!this.cancelled) this.visuals.onMessage(id, msg);
       return;
     }
+    // a reaction may come from a watcher too, so it is answered before the seat lookup; a seat's
+    // replaced socket no longer speaks for it (the rule below)
+    if (msg.t === 'react') {
+      const seat = this.clients.get(id);
+      if (seat && conn !== undefined && seat.conn !== undefined && conn !== seat.conn) return;
+      this.react(id, msg.k);
+      return;
+    }
     const c = this.clients.get(id);
     if (!c) return;
     /**
@@ -2306,6 +2441,7 @@ export class Room {
         }
         const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
+        if (patch.name !== undefined) c.player.name = this.uniqueName(c.player.name, c.id);
         this.visuals.specChanged(c.id); // a seat's assets stay only while it holds the robot they are for
         /**
          * ⚠️ A RENAME IS MODERATED TOO — ONLY THE JOIN USED TO BE.
@@ -2430,7 +2566,7 @@ export class Room {
         // HOST ONLY, like `start` and `lobby`: the roster is shared state and one guest must
         // not seat an AI into everybody else's match.
         if (id !== this.hostId) break;
-        const err = this.addBot(typeof msg.tier === 'string' ? msg.tier : undefined);
+        const err = this.addBot(typeof msg.tier === 'string' ? msg.tier : undefined, msg.alliance);
         if (err) c.send({ t: 'error', message: err });
         break;
       }
@@ -2464,7 +2600,10 @@ export class Room {
       case 'lobby':
         // host only, exactly like `start` — the room is shared state and one player must
         // not tear the results screen out from under the rest of it.
-        if (id === this.hostId && !this.pendingMatch?.competition) this.returnToLobby();
+        // `'rooms3'`: ANY member may, once the result is saved (`returnToLobby` refuses before). The
+        // room was about to go back by itself anyway (`armReturn`), so a press only brings that
+        // moment forward; an older client never offers it to anyone but the host.
+        if ((id === this.hostId || c.caps?.includes(ROOMS3_CAP)) && !this.pendingMatch?.competition) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -2734,10 +2873,50 @@ export class Room {
     this.beginMatch(setups, seed);
   }
 
+  /**
+   * A FINISHED CUSTOM ROOM GOES BACK TO ITS LOBBY BY ITSELF (`'rooms3'`, docs/rooms-redesign.md).
+   * Only the host could do it, and everybody else read a results screen whose one button, MENU,
+   * left the room. Armed once the result is saved (`resultPending` clear, the same moment the host's
+   * press is honoured), and only where every member advertised `'rooms3'`: an older client would be
+   * moved off its results screen with nothing having said so. Every member and watcher that can
+   * show it is told the countdown (`returnIn`). A rematch, a press, or the room emptying clears it.
+   */
+  private armReturn(): void {
+    if (this.returnTimer || RETURN_AFTER_MS <= 0 || this.world === null || !this.finalized || this.resultPending) return;
+    if (!this.canRecycle()) return;
+    const members = [...this.clients.values()];
+    if (!members.length || !members.every((c) => c.caps?.includes(ROOMS3_CAP))) return;
+    this.returnTimer = setTimeout(() => {
+      this.returnTimer = null;
+      if (this.clients.size > 0) this.returnToLobby();
+    }, RETURN_AFTER_MS);
+    if (this.returnTimer.unref) this.returnTimer.unref();
+    const frame: ServerMsg = { t: 'returnIn', ms: RETURN_AFTER_MS };
+    for (const m of [...members, ...this.spectators.values()]) if (m.caps?.includes(ROOMS3_CAP)) m.send(frame);
+  }
+
+  private clearReturn(): void {
+    if (!this.returnTimer) return;
+    clearTimeout(this.returnTimer);
+    this.returnTimer = null;
+  }
+
+  /** TEST SEAM: is the room counting down to its lobby? */
+  returnArmedForTest(): boolean {
+    return this.returnTimer !== null;
+  }
+
+  /** TEST SEAM: what the countdown would do when it ends, now */
+  returnNowForTest(): void {
+    this.clearReturn();
+    if (this.clients.size > 0) this.returnToLobby();
+  }
+
   /** shared world-init + `matchStart` broadcast + loop, for the host-handshake,
    * matchmaker, and ranked-from-pending paths. The caller must have built `setups`
    * and populated `robotOf` first. */
   private beginMatch(setups: RobotSetup[], seed: number): void {
+    this.clearReturn();
     // Autonomous does NOT run in server-authoritative matches yet — an auto path
     // isn't reconciled against the server's authority, so it would desync. Strip
     // it from EVERY setup here (the one chokepoint all match paths funnel through),
@@ -3818,6 +3997,7 @@ export class Room {
           if (this.resultWait) clearTimeout(this.resultWait);
           this.resultWait = null;
           this.maybeRematch();
+          this.armReturn();
         };
         this.resultWait = setTimeout(settle, 5000);
         if (this.resultWait.unref) this.resultWait.unref();
@@ -3857,6 +4037,7 @@ export class Room {
       }
     }
     this.stop();
+    this.armReturn(); // a write still in flight arms it from `settle` instead
     // the driver left once the run was decided (see `finishing`): it is saved now, so free the
     // room — at once for a deliberate close, after the reconnect grace for a dropped network
     const f = this.finishing;
@@ -4133,6 +4314,7 @@ export class Room {
     if (this.world === null) return; // already a lobby
     if (!this.finalized || this.resultPending) return;
     if (!this.canRecycle()) return;
+    this.clearReturn();
 
     this.stop(); // kills the tick loop AND releases every single-game lock
     if (this.graceReap) {
@@ -4217,7 +4399,7 @@ export class Room {
     // from the room's second match on every `rejoin`/`abandon` of a secured seat is refused.
     // `c.send` reaches only this seat's owner, so this is not a broadcast.
     for (const c of this.clients.values()) c.send({ t: 'lobby', clientId: c.id, seatToken: c.seatToken });
-    for (const c of this.spectators.values()) c.send({ t: 'lobby', clientId: c.id });
+    for (const c of this.spectators.values()) c.send({ t: 'lobby', clientId: c.id, spectator: true });
     this.broadcastRoster();
     this.broadcastRematch();
 
@@ -4410,6 +4592,7 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    this.clearReturn(); // the room is no longer a finished match waiting to go back
     this.holdUntil = 0; // a hold belongs to the match that is ending
     this.clearReady3d(); // nothing left to wait for; an unref'd timer still holds a closure
     // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
@@ -4709,7 +4892,13 @@ export class Room {
       const players = [...this.clients.values()]
         .map((c) => this.rosterPlayer(c))
         .concat(this.bots.map((b) => this.botPlayer(b)));
-      this.broadcast({ t: 'roster', players, hostId: this.hostId, ...(this.settings ? { settings: this.settings } : {}) });
+      this.broadcast({
+        t: 'roster',
+        players,
+        hostId: this.hostId,
+        ...(this.settings ? { settings: this.settings } : {}),
+        ...(this.watchersShown() ? { watchers: this.watcherList() } : {}),
+      });
       return;
     }
     // strategy window: ALLIANCE-ONLY reveal. Each recipient sees its own alliance's

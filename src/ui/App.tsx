@@ -8,8 +8,11 @@ import {
   fetchAdminStatus,
   fetchProfile,
   dismissRoomInvite,
+  serverCaps,
   type RoomInvite,
 } from '../net/api';
+import { isValidRoomCode, normalizeRoomCode } from '../net/roomCode';
+import { ROOMS3_CAP } from '../net/protocol';
 import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
 import { tabHosting } from '../lan/hosting';
 import { GAME_IDS } from '../games/types';
@@ -846,13 +849,27 @@ export function App() {
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
   // (see `onAutoJoinConsumed`), so a later NORMAL visit to the same screen never
   // re-triggers the join.
-  /** the Public/Private choice for the room about to be created: the dialog is open (`asking`), and
-   *  the answer (`listed`) the Lobby reads when it creates the room. Reset when the Lobby is left. */
-  const [roomChoice, setRoomChoice] = useState<{ asking: boolean; listed: boolean }>({ asking: false, listed: false });
+  /**
+   * A ROOM TO CREATE when the Lobby opens: Browse rooms' Private room / Public room, or Play's New
+   * room (Private; the host can make it Public in the room). No dialog and no form in between: the
+   * Lobby creates it on mount (`Lobby.create`). Reset when the Lobby is left.
+   */
+  const [roomCreate, setRoomCreate] = useState<{ listed: boolean } | null>(null);
+  /** the server holds the one-screen room (`'rooms3'`): any member may take a finished room back */
+  const [roomsV3, setRoomsV3] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setRoomsV3(c.includes(ROOMS3_CAP));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   /** Play's Solo setup popup (Match setup + Practice setup) */
   const [soloSetupOpen, setSoloSetupOpen] = useState(false);
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
-    { room: string; config: RoomConfig; region?: string; typed?: boolean } | null
+    { room: string; config: RoomConfig; region?: string; typed?: boolean; /** join as a watcher */ watch?: boolean } | null
   >(null);
 
   // DISCORD ACTIVITY: the home page offers a "Join Discord Lobby" button (with the
@@ -1575,6 +1592,19 @@ export function App() {
    * admin list) pass it; the code box looks it up first.
    */
   const spectateRoom = (code: string, region?: string): void => {
+    /*
+     * A PLAYER-MADE ROOM IS WATCHED FROM ITS OWN SCREEN. This socket only ever listened for
+     * `matchStart`, so a friend's room that was still a lobby showed nothing at all until its host
+     * started, and then the field jumped in. A custom code (bare, six characters) goes to the Lobby,
+     * which shows the room and hands the match to a watcher's session when it starts. A matchmaker
+     * code is a match already, and keeps this path.
+     */
+    const bare = normalizeRoomCode(code);
+    if (isValidRoomCode(bare)) {
+      setPendingAutoJoin({ room: bare, config: { kind: 'versus', game: settings.game }, region, watch: true });
+      navigate('lobby');
+      return;
+    }
     let transport: WebSocketTransport;
     try {
       const r = roomJoinRegion(region, selectedServer()?.region ?? '');
@@ -1901,7 +1931,7 @@ export function App() {
    */
   const [resumedRoom, setResumedRoom] = useState<ResumedRoom | null>(null);
 
-  const backToRoomLobby = (): void => {
+  const backToRoomLobby = (spectator = false): void => {
     const s = session;
     if (!s?.release || !s.room || !s.clientId) return;
     // a rejoin still waiting on this session no longer owns it: the socket is the lobby's now
@@ -1918,7 +1948,15 @@ export function App() {
     // ⚠️ THE SEAT'S SECRET TRAVELS WITH THE SOCKET: no `welcome` is re-sent on it, and a lobby
     // that dropped it built the next match's session with an empty token, so every rejoin,
     // Home rejoin card and Abandon was refused for this seat from the room's second match on.
-    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId, seatToken: s.seatToken ?? '' });
+    setResumedRoom({
+      transport,
+      code: s.room,
+      region: s.region,
+      clientId: s.clientId,
+      seatToken: s.seatToken ?? '',
+      spectator,
+      roster: s.lastRoster?.() ?? null,
+    });
     navigate('lobby');
   };
 
@@ -1936,7 +1974,7 @@ export function App() {
    * `onPracticeRun` fell into.
    */
   useEffect(() => {
-    session?.onLobby?.(() => backToRoomLobby());
+    session?.onLobby?.((_clientId, spectator) => backToRoomLobby(spectator));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -2202,7 +2240,7 @@ export function App() {
     return () => {
       setResumedRoom(null);
       setPendingLanName(null);
-      setRoomChoice({ asking: false, listed: false });
+      setRoomCreate(null);
     };
   }, [screen]);
 
@@ -2300,6 +2338,7 @@ export function App() {
             ? () => session.requestLobby?.()
             : undefined
         }
+        anyReturn={roomsV3}
       />
       </FriendsProvider>
     );
@@ -2523,39 +2562,6 @@ export function App() {
         </OverlayDialog>
       )}
 
-      {/* PUBLIC OR PRIVATE, asked before the lobby opens. Public needs an account: the server lists a
-          room only while its host is signed in (`Room.listing`), so offering it signed out would
-          promise a listing that never appears. Escape and the corner X both just close. */}
-      {roomChoice.asking && (
-        <OverlayDialog title="New room" onClose={() => setRoomChoice({ asking: false, listed: false })}>
-          <div className="overlay-buttons ds-dialog-actions">
-            <button
-              className="secondary"
-              onClick={() => guardStart(() => {
-                setRoomChoice({ asking: false, listed: false });
-                navigate('lobby');
-              })}
-            >
-              Private room
-            </button>
-            <button
-              disabled={!signedIn}
-              onClick={() => guardStart(() => {
-                setRoomChoice({ asking: false, listed: true });
-                navigate('lobby');
-              })}
-            >
-              Public room
-            </button>
-          </div>
-          <p className="ds-sub overlay-sub">
-            {signedIn
-              ? 'A private room is for you and friends, by code. A public room shows in Browse rooms.'
-              : 'Sign in to host a public room. A private room is for you and friends, by code.'}
-          </p>
-        </OverlayDialog>
-      )}
-
       {(screen === 'modes' || popup) && (
         <ModeSelect
           settings={shown}
@@ -2587,7 +2593,12 @@ export function App() {
           onRecordRun={() => guardStart(() => navigate('record'))}
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
-          onCustomRoom={() => setRoomChoice({ asking: true, listed: false })}
+          onCustomRoom={() =>
+            guardStart(() => {
+              setRoomCreate({ listed: false });
+              navigate('lobby');
+            })
+          }
           onSetup={() => setSoloSetupOpen(true)}
           onBrowse={() => navigate('rooms')}
           onLan={() => navigate('lan')}
@@ -2638,7 +2649,7 @@ export function App() {
               onStart={(s) => {
                 setResumedRoom(null);
                 setPendingLanName(null);
-                setRoomChoice({ asking: false, listed: false });
+                setRoomCreate(null);
                 beginSession(s, 'custom');
               }}
               /* a room entered as a spectator: the host started, and the session watches. No run of
@@ -2646,7 +2657,7 @@ export function App() {
               onWatchStart={(s) => {
                 setResumedRoom(null);
                 setPendingLanName(null);
-                setRoomChoice({ asking: false, listed: false });
+                setRoomCreate(null);
                 setSession(s);
                 setSessionKind(null);
                 navigate('game');
@@ -2654,7 +2665,8 @@ export function App() {
               onCancel={closePopup}
               config={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.config : undefined}
               signedIn={signedIn}
-              listed={roomChoice.listed}
+              listed={roomCreate?.listed ?? false}
+              create={!!roomCreate && !pendingAutoJoin && !resumedRoom}
               displayName={handle}
               myUserId={accountUserId}
               onOpenProfile={openProfile}
@@ -2664,6 +2676,7 @@ export function App() {
               autoJoinRegion={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.region : undefined}
               onAutoJoinConsumed={() => setPendingAutoJoin(null)}
               autoJoinTyped={pendingAutoJoin?.typed}
+              autoJoinWatch={pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin.watch : undefined}
               /* a typed code that is a duo-record room: the partner's way in from Browse rooms */
               onRecordCode={(room, region) => {
                 setPendingAutoJoin({ room, config: { kind: 'record', record: 'duo', game: settings.game }, region });
@@ -2757,7 +2770,7 @@ export function App() {
                 // the page's two buttons ARE the Public/Private choice, so the dialog that asks it is skipped
                 onHost={(listed) =>
                   guardStart(() => {
-                    setRoomChoice({ asking: false, listed });
+                    setRoomCreate({ listed });
                     navigate('lobby');
                   })
                 }

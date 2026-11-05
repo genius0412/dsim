@@ -1049,12 +1049,84 @@ async function spread(s: Server): Promise<void> {
   for (const x of socks) x.close();
 }
 
+/**
+ * THE ONE-SCREEN ROOM'S SOCKET HALF (`'rooms3'`, docs/rooms-redesign.md), at the real doors and on
+ * both server shapes: a join refused by a full room watches on the SAME socket, `seat` moves a
+ * socket between a seat and the watchers without a reconnect (and keeps its client id), a refused
+ * `seat` leaves the socket where it was, a custom room carries eight watchers, and a reaction
+ * reaches the room. On a worker room every step is posted ops and the `RoomFacts` mirror.
+ */
+async function seats(s: Server): Promise<void> {
+  const L = (name: string): string => `B[${s.label}]: rooms3 ${name}`;
+  const open = (): Promise<Sock> => new Sock(s.url).open();
+  const code = newCode();
+  const cfg: RoomConfig = { kind: 'versus', game: 'decode', settings: { preset: 'casual-1v1', perAlliance: { red: 1, blue: 1 }, teamSwitch: true, listed: false } };
+  const H = await open();
+  H.join(code, cfg, 'H', 'red');
+  await H.until('welcome');
+  const G = await open();
+  G.join(code, cfg, 'G', 'blue');
+  await G.until('welcome');
+  const gId = G.clientId;
+  check(L('the host sees a 1v1 with both seats taken'), !!(await H.until('roster', (m) => m.players.length === 2)));
+
+  const W = await open();
+  W.join(code, cfg, 'W', 'blue');
+  const full = await W.until('error');
+  check(L('a third driver is refused as room_full'), full?.code === 'room_full', full?.message);
+  W.send({ t: 'spectate', room: code, caps: CLIENT_CAPS, name: 'Watcher' });
+  const wWelcome = await W.until('welcome');
+  check(L('...and watches on the same socket, named on the host’s roster'),
+    !!wWelcome && !!(await H.until('roster', (m) => !!m.watchers?.some((w) => w.name === 'Watcher'), 5000)));
+  const wId = W.clientId;
+
+  let mark = H.log.length;
+  G.send({ t: 'seat', to: 'watch', name: 'G', caps: CLIENT_CAPS });
+  check(L('⚠️ a driver who picks Watch leaves the seat and joins the watchers, with no reconnect'),
+    !!(await H.until('roster', (m) => m.players.length === 1 && !!m.watchers?.some((w) => w.id === gId), 5000, mark)));
+  check(L('...and keeps its client id'), (await G.until('welcome', () => true, 5000, 0)) !== null && G.clientId === gId);
+
+  mark = H.log.length;
+  W.send({ t: 'seat', to: 'blue', player: makePlayer('W', 'blue', 0), config: cfg, caps: CLIENT_CAPS });
+  const seated = await H.until('roster', (m) => m.players.some((p) => p.clientId === wId && p.alliance === 'blue'), 5000, mark);
+  check(L('⚠️ a watcher who takes an open seat is seated on that side, same socket, same id'), !!seated && !seated.watchers?.some((w) => w.id === wId));
+
+  mark = G.log.length;
+  G.send({ t: 'seat', to: 'red', player: makePlayer('G', 'red', 0), config: cfg, caps: CLIENT_CAPS });
+  const refused = await G.until('error', () => true, 5000, mark);
+  const hMark = H.log.length;
+  await sleep(300);
+  const stillWatching = [...H.log.slice(0, hMark)].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  check(L('⚠️ a seat in a full room is refused BEFORE the watcher’s place is given up'),
+    refused?.code === 'room_full' && !!stillWatching?.watchers?.some((w) => w.id === gId) && H.log.slice(hMark).every((m) => m.t !== 'roster'), refused?.message);
+
+  mark = W.log.length;
+  H.send({ t: 'react', k: 0 });
+  check(L('a reaction reaches the room'), !!(await W.until('react', (m) => m.from === H.clientId && m.k === 0, 5000, mark)));
+
+  const crowd: Sock[] = [];
+  for (let i = 0; i < 7; i++) {
+    const c = await open();
+    c.send({ t: 'spectate', room: code, caps: CLIENT_CAPS, name: `C${i}` });
+    await c.until('welcome');
+    crowd.push(c);
+  }
+  const ninth = await open();
+  ninth.send({ t: 'spectate', room: code, caps: CLIENT_CAPS, name: 'Ninth' });
+  const capErr = await ninth.until('error');
+  check(L('⚠️ a custom room carries eight watchers; the ninth is told so, with a code'), capErr?.code === 'spectators_full', capErr?.message);
+  for (const c of [...crowd, ninth, H, G, W]) c.close();
+}
+
 async function partB(): Promise<void> {
   console.log('\n== B. the real server, in-process and on two workers ==');
   const base = 18_700 + Math.floor(Math.random() * 500);
   const servers = await Promise.all([boot('in-process', base, 0), boot('2 workers', base + 1, 2), boot('production gate, 2 workers', base + 2, 2, '')]);
   try {
-    for (const s of servers.slice(0, 2)) await scenarios(s);
+    for (const s of servers.slice(0, 2)) {
+      await scenarios(s);
+      await seats(s);
+    }
     await spread(servers[1]);
     await closedGate(servers[2]);
     for (const s of servers) {

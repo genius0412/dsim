@@ -422,8 +422,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   return (
     <>
       <div className="scorebar" data-hud-band>
-        <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
-          {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
+        <div className={`score-panel bb red ${hud.alliance === 'red' && !hud.spectator ? 'mine' : ''}`}>
+          {hud.alliance === 'red' && !hud.spectator && <span className="you-tag">YOU</span>}
           <span className="panel-score">{red}</span>
           <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.red)}
@@ -437,8 +437,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           </span>
           <span className="timer-time">{timer.time}</span>
         </div>
-        <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
-          {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
+        <div className={`score-panel bb blue ${hud.alliance === 'blue' && !hud.spectator ? 'mine' : ''}`}>
+          {hud.alliance === 'blue' && !hud.spectator && <span className="you-tag">YOU</span>}
           <span className="panel-score">{blue}</span>
           <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
             {cellLine(f?.cells.blue)}

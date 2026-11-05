@@ -22,6 +22,8 @@ import {
   type QueueMode,
   type RoomConfig,
   type RoomSettings,
+  type RoomSettingsPatch,
+  type RoomWatcher,
   type ErrorCode,
 } from './protocol';
 
@@ -83,7 +85,9 @@ export interface MatchStart {
  * caller mints a ServerSession that TAKES OVER this same transport.
  */
 type Handlers = {
-  roster: (players: LobbyPlayer[], hostId: string, settings?: RoomSettings) => void;
+  roster: (players: LobbyPlayer[], hostId: string, settings?: RoomSettings, watchers?: RoomWatcher[]) => void;
+  /** `'rooms3'`: somebody pressed reaction `k` (`ROOM_REACTIONS`) */
+  react: (from: string, k: number) => void;
   matchStart: (m: MatchStart) => void;
   queued: (mode: QueueMode, size: number, need: number) => void;
   /** ranked match found on a `?mm=1` connection: reconnect to `?room=<room>` (the
@@ -151,11 +155,11 @@ export class LobbyClient {
    * see `src/net/credentials.ts` for why that check lives at the send boundary rather than at
    * this call site and the two others like it. Do NOT re-derive the rule here.
    */
-  join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig, group?: string): void {
+  join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig, group?: string, anySide?: boolean): void {
     const doJoin = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(
-        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
+        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group, ...(anySide ? { anySide: true } : {}) }),
       );
       // `send` drops a frame on a socket that closed during the token read
       if (this.joinSentAt === null && this.transport.isOpen) this.joinSentAt = Date.now();
@@ -270,7 +274,7 @@ export class LobbyClient {
 
   /** SPECTATE a live match read-only. (Re)sends on open + reconnect. `matchStart`
    * arrives with yourRobotId -1 → build a spectator ServerSession from it. */
-  spectate(room: string): void {
+  spectate(room: string, name?: string): void {
     const doSpectate = async (): Promise<void> => {
       // The token is sent for ONE purpose: if the server verifies it as an admin,
       // this watcher is left out of the visible spectator count (moderation — see
@@ -281,10 +285,74 @@ export class LobbyClient {
       // server the cloud vouches for (`src/net/credentials.ts`). A LAN server has no
       // admins to recognise, so nothing is lost by its absence there.
       const authToken = (await getAuthToken()) ?? undefined;
-      this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS, authToken }));
+      this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS, authToken, ...(name ? { name } : {}) }));
     };
     this.transport.onOpen(() => void doSpectate());
     this.transport.onReopen(() => void doSpectate());
+  }
+
+  /**
+   * MOVE BETWEEN A SEAT AND THE WATCHERS ON THIS SOCKET (`'rooms3'`; the CALLER gates on the
+   * server advertising it). No reconnect and no new client id: the server leaves the old role and
+   * goes through the other door itself. A reconnect after this re-enters through the NEW role's
+   * door, so the reopen handler is re-pointed here too (it is single-slot, see `physicsReady`).
+   */
+  seat(
+    to: 'red' | 'blue' | 'watch',
+    room: string,
+    player: Omit<LobbyPlayer, 'clientId'>,
+    config?: RoomConfig,
+    group?: string,
+  ): void {
+    void (async () => {
+      const authToken = (await getAuthToken()) ?? undefined;
+      this.transport.send(
+        encodeMsg(
+          to === 'watch'
+            ? { t: 'seat', to, name: player.name, authToken, caps: CLIENT_CAPS }
+            : { t: 'seat', to, player: { ...player, alliance: to }, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group },
+        ),
+      );
+    })();
+    if (to === 'watch') {
+      this.seated = false;
+      this.transport.onReopen(() => {
+        void (async () => {
+          const authToken = (await getAuthToken()) ?? undefined;
+          this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS, authToken, name: player.name }));
+        })();
+      });
+    } else {
+      this.transport.onReopen(() => {
+        void (async () => {
+          const authToken = (await getAuthToken()) ?? undefined;
+          this.transport.send(
+            encodeMsg({ t: 'join', room, player: { ...player, alliance: to }, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
+          );
+        })();
+      });
+    }
+  }
+
+  /**
+   * ADOPT A WATCHER'S SOCKET COMING BACK FROM A FINISHED MATCH (`lobby` with `spectator`). The
+   * driver's `resume` sends an empty `update` to ask for the roster, which a room ignores from a
+   * watcher; the roster this needs is the one the room broadcast with the recycle, which the App
+   * hands over. A reconnect re-enters as a watcher, never through `join` (that would take a seat).
+   */
+  resumeWatching(room: string, clientId: string, name?: string): void {
+    this.clientId = clientId;
+    this.transport.onReopen(() => {
+      void (async () => {
+        const authToken = (await getAuthToken()) ?? undefined;
+        this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS, authToken, ...(name ? { name } : {}) }));
+      })();
+    });
+  }
+
+  /** `'rooms3'`: send reaction `k` (`ROOM_REACTIONS`) to the room */
+  react(k: number): void {
+    this.transport.send(encodeMsg({ t: 'react', k }));
   }
 
   /** change our own alliance / start pose / ready / spec */
@@ -361,8 +429,8 @@ export class LobbyClient {
    * ⚠️ The CALLER gates on `serverCaps()` containing `'bots'` — an older server ignores an
    * unknown message rather than refusing it, so an ungated button would silently do nothing.
    */
-  addBot(tier?: string): void {
-    this.transport.send(encodeMsg({ t: 'addBot', tier }));
+  addBot(tier?: string, alliance?: 'red' | 'blue'): void {
+    this.transport.send(encodeMsg({ t: 'addBot', tier, ...(alliance ? { alliance } : {}) }));
   }
 
   removeBot(seat: string): void {
@@ -370,7 +438,7 @@ export class LobbyClient {
   }
 
   /** HOST ONLY. The CALLER gates on `serverCaps()` containing `'rooms2'` — an older server ignores it. */
-  roomSettings(patch: Partial<RoomSettings>): void {
+  roomSettings(patch: RoomSettingsPatch): void {
     this.transport.send(encodeMsg({ t: 'roomSettings', patch }));
   }
 
@@ -469,7 +537,9 @@ export class LobbyClient {
       this.players = m.players;
       this.hostId = m.hostId;
       importVisuals.noteRoster(this.clientId, m.players);
-      this.handlers.roster?.(m.players, m.hostId, m.settings);
+      this.handlers.roster?.(m.players, m.hostId, m.settings, m.watchers);
+    } else if (m.t === 'react') {
+      this.handlers.react?.(m.from, m.k);
     } else if (m.t === 'matchStart') {
       this.stopStagedWatch(); // the three answers `watchStagedStart` waits for
       this.handlers.matchStart?.(m);

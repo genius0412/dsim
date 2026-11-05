@@ -883,7 +883,9 @@ const goldenScore = (w: World): number => w.match.scores.red.total + w.match.sco
   const v = coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', runLength: 'auto' });
   const r = coerceRoomSettings('record', 'solo', { runLength: 'auto' });
   check('auto-only room: creation reads runLength for versus and record rooms, nothing else', v?.runLength === 'auto' && r?.runLength === 'auto' && coerceRoomSettings('versus', undefined, { preset: 'casual-1v1', runLength: 'x' })?.runLength === undefined);
-  check('auto-only room: a settings patch cannot change it (members were admitted against it)', v && mergeRoomSettings(v, { runLength: 'full' }).runLength === 'auto' && mergeRoomSettings({ ...v, runLength: undefined }, { runLength: 'auto' }).runLength === undefined);
+  check('auto-only room: a patch keeps it unless it names it, and only `auto` or `full` (the room checks the members first: "rooms3:")',
+    !!v && mergeRoomSettings(v, {}).runLength === 'auto' && mergeRoomSettings(v, { runLength: 'x' }).runLength === 'auto' &&
+      mergeRoomSettings(v, { runLength: 'full' }).runLength === undefined && mergeRoomSettings({ ...v, runLength: undefined }, { runLength: 'auto' }).runLength === 'auto');
   check('auto-only room: the door refuses a client without the cap, and a full room admits everyone', !runLengthAllowed(v, []) && !runLengthAllowed(v, undefined) && runLengthAllowed(v, ['autoOnly']) && runLengthAllowed(undefined, []) && runLengthAllowed({}, undefined) && caps.includes('autoOnly'));
 }
 
@@ -19529,6 +19531,7 @@ const recordDrive: CommandSource = (tick) => {
   const { TEAM_BADGES } = await import('../src/badges');
   const src = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
   const lobby = src('src/ui/Lobby.tsx');
+  const screen = src('src/ui/RoomScreen.tsx');
   const browser = src('src/ui/RoomBrowser.tsx');
   const app = src('src/ui/App.tsx');
   const idx = src('server/index.ts');
@@ -19543,10 +19546,16 @@ const recordDrive: CommandSource = (tick) => {
     /onClick=\{\(\) => onHost\(false\)\}\s*>\s*Private room\s*</.test(browser) && /onClick=\{\(\) => onHost\(true\)\}\s*>\s*Public room\s*</.test(browser));
   check('rooms: Public is off signed out, with the reason on it', /disabled=\{!signedIn\}\s*title=\{signedIn \? undefined : 'Sign in to host a public room'\}/.test(browser));
   check('rooms: the old Host a room button is gone', !browser.includes('Host a room'));
-  check('rooms: those buttons skip the choice dialog and open the create screen with the visibility set',
-    /onHost=\{\(listed\) =>\s*guardStart\(\(\) => \{\s*setRoomChoice\(\{ asking: false, listed \}\);\s*navigate\('lobby'\);/.test(app));
-  check('rooms: Play’s New room dialog still sets the same visibility',
-    /listed: false \}\);\s*navigate\('lobby'\);\s*\}\)\}\s*>\s*Private room/.test(app) && /listed: true \}\);\s*navigate\('lobby'\);\s*\}\)\}\s*>\s*Public room/.test(app));
+  check('⚠️ rooms: Browse rooms’ two buttons CREATE the room and open it, with no dialog or form between',
+    /onHost=\{\(listed\) =>\s*guardStart\(\(\) => \{\s*setRoomCreate\(\{ listed \}\);\s*navigate\('lobby'\);/.test(app) &&
+      app.includes("create={!!roomCreate && !pendingAutoJoin && !resumedRoom}") &&
+      /if \(!create \|\| config\.kind !== 'versus' \|\| autoJoin \|\| resume \|\| createdRef\.current \|\| serverRooms3 === null\) return;\s*createdRef\.current = true;\s*createRoom\(\);/.test(lobby));
+  check('rooms: Play’s New room creates a Private room at once, and the New room dialog is gone',
+    /onCustomRoom=\{\(\) =>\s*guardStart\(\(\) => \{\s*setRoomCreate\(\{ listed: false \}\);\s*navigate\('lobby'\);/.test(app) &&
+      !app.includes('<OverlayDialog title="New room"') && !app.includes('roomChoice'));
+  check('rooms: the room’s title follows its visibility, and a duo record keeps its own',
+    rules.roomTitle(false, false) === 'Private room' && rules.roomTitle(false, true) === 'Public room' && rules.roomTitle(true, true) === 'Duo record' &&
+      lobby.includes('title={roomTitle(isRecord, !!roomSet?.listed)}'));
   const haveCode = lobby.match(/<span className="ot">Have a code<\/span>/g) ?? [];
   check('⚠️ rooms: a new room only creates: the code toggle is on a duo-record entry alone',
     haveCode.length === 1 && /\{isRecord && \(\s*<div className="ds-opts two">[\s\S]*?Have a code/.test(lobby));
@@ -19584,14 +19593,18 @@ const recordDrive: CommandSource = (tick) => {
     /code: busy \? \('in_progress' as const\) : \('room_full' as const\)/.test(refusal) &&
       /busy \?\s*'A match is already running in this room\. You can join when it finishes\.'\s*: 'This room is full\.'/.test(refusal) &&
       /const busy = state === 'match' \|\| state === 'strategy';/.test(refusal));
-  check('spectate: Spectate is one of Your alliance’s options, off for the host, a record run and a LAN room',
-    /<span className="ot">Spectate<\/span>/.test(lobby) && lobby.includes('const canSpectate = !isRecord && !isHost && !lanActive();') && /\{canSpectate && \(\s*<button/.test(lobby));
-  check('spectate: it drops the seat and attaches as a spectator; a side takes a seat again',
-    /function watchRoom\(roomCode: string, inRoom: boolean\)[\s\S]*?join\(roomCode, hostRegionRef\.current, \{ spectate: true, inRoom \}\);/.test(lobby) &&
-      /function takeSeat\(alliance: Alliance\)[\s\S]*?join\(code, hostRegionRef\.current, \{ alliance, inRoom: true \}\);/.test(lobby) &&
-      lobby.includes('lobby.spectate(roomCode)'));
-  check('spectate: the refusal handler watches through the rule, and a started match goes to a read-only session',
-    /watchesOnRefusal\(code, \{[\s\S]*?\}\)\s*\) \{\s*watchRoom\(roomCode, phaseRef\.current === 'room'\);/.test(lobby) &&
+  check('spectate: Watch is offered to everyone but the host, a record run, a LAN room and an activity',
+    rules.canWatch({ isHost: false, record: false, lan: false, activity: false }) &&
+      !rules.canWatch({ isHost: true, record: false, lan: false, activity: false }) &&
+      !rules.canWatch({ isHost: false, record: true, lan: false, activity: false }) &&
+      !rules.canWatch({ isHost: false, record: false, lan: true, activity: false }) &&
+      !rules.canWatch({ isHost: false, record: false, lan: false, activity: true }) &&
+      lobby.includes('canWatch={canWatch({ isHost, record: isRecord, lan: lanActive(), activity: !!group })}'));
+  check('⚠️ spectate: on a rooms3 server Watch and Take seat move the SAME socket; an older one reconnects as before',
+    /function watchRoom\(roomCode: string, inRoom: boolean\)[\s\S]*?serverRooms3Ref\.current[\s\S]*?lobby\.seat\('watch'[\s\S]*?join\(roomCode, hostRegionRef\.current, \{ spectate: true, inRoom \}\);/.test(lobby) &&
+      /function takeSeat\(alliance: Alliance\)[\s\S]*?lobby\.seat\(alliance[\s\S]*?join\(code, hostRegionRef\.current, \{ alliance, inRoom: true \}\);/.test(lobby));
+  check('spectate: a join refused at the door (full, or playing) watches on the same socket; a refused seat in the room reconnects',
+    /watchesOnRefusal\(code, \{[\s\S]*?\}\)\s*\) \{\s*if \(phaseRef\.current !== 'room'\) \{[\s\S]*?lobby\.spectate\(roomCode, name\.trim\(\) \|\| undefined\);\s*return;\s*\}\s*watchRoom\(roomCode, true\);/.test(lobby) &&
       /new ServerSession\(lobby\.transport, false, m, lobby\.clientId, roomCode, true\);\s*\(watchStartRef\.current \?\? onStart\)\(watch\);/.test(lobby));
   const seats = coerceRoomSettings('versus', undefined, { preset: 'casual-1v1' })!;
   const two = [{ alliance: 'red' as const }];
@@ -19610,7 +19623,7 @@ const recordDrive: CommandSource = (tick) => {
   check('move lock: host places drivers ⇒ a button on everybody', rules.hostMoveOffered({}, set(false), host) && rules.hostMoveOffered({ bot: 'Easy' }, set(false), host));
   check('move lock: ...never for a guest, a record run or a legacy room',
     !rules.hostMoveOffered({}, set(false), { isHost: false, record: false }) && !rules.hostMoveOffered({}, set(false), { isHost: true, record: true }) && !rules.hostMoveOffered({}, undefined, host));
-  check('move lock: the screen reads the rule', lobby.includes('hostMoveOffered(p, roomSet, { isHost, record: isRecord })'));
+  check('move lock: the screen reads the rule', lobby.includes('canMove={(p) => hostMoveOffered(p, roomSet, { isHost, record: isRecord })}') && screen.includes('const moving = props.isHost && props.canMove(p);'));
   {
     const sink: ServerMsg[] = [];
     const mkc = (id: string, alliance: Alliance, to: ServerMsg[]): Client => ({
@@ -19650,7 +19663,7 @@ const recordDrive: CommandSource = (tick) => {
     r2.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 2, blue: 1 } } });
     check('shrink: ...a side with a free seat can give it up, and the server agrees', !blueState.disabled && blueState.reason === null && r2.settings?.perAlliance.blue === 1);
     check('shrink: ...no seats left is off without a reason', rules.shrinkState([], { ...cur, perAlliance: { red: 0, blue: 2 } }, 'red').disabled && rules.shrinkState([], { ...cur, perAlliance: { red: 0, blue: 2 } }, 'red').reason === null);
-    check('shrink: the button reads the rule', lobby.includes('const fewer = shrinkState(players, roomSet, a);') && lobby.includes('disabled={fewer.disabled}'));
+    check('shrink: the button reads the rule', screen.includes('const fewer = shrinkState(players, set, a);') && screen.includes('disabled={fewer.disabled}'));
   }
 
   // ---- the team badge says what it is -------------------------------------------------------------
@@ -19659,6 +19672,188 @@ const recordDrive: CommandSource = (tick) => {
   check('badge: the label comes from that table, for team badges only, and only where BadgeMarks draws it',
     /ACCESS_GROUP_LABEL\[group\]/.test(badge) && /labelled && tier === 'team'/.test(badge) && /<BadgeArt key=\{b\.id\} id=\{b\.id\} n=\{b\.n\} labelled \/>/.test(badge));
   check('badge: the chip has the words, a title and a name for assistive tech', /className="badge-label" aria-hidden="true"/.test(badge) && /title=\{words \?/.test(badge) && /aria-label=\{said\}/.test(badge));
+}
+
+/**
+ * THE ONE-SCREEN ROOM (`'rooms3'`, docs/rooms-redesign.md): the seat map the screen draws, the rules
+ * for taking a seat and watching, and the room's half — named watchers, numbered default names, a
+ * fresh join landing where the seats are, reactions, a bot on the seat it was pressed on, a run
+ * length a lobby may change, a Public room's crown going to a signed-in member, and a finished room
+ * going back to its lobby by itself (and at any member's press). The socket half (`seat`) is pinned
+ * in source here and driven over real sockets in `npm run test:workers`.
+ */
+{
+  const rules = await import('../src/ui/lobbyRules');
+  const { coerceRoomSettings, ROOMS3_CAP, ROOM_REACTIONS, CUSTOM_ROOM_WATCHERS } = await import('../src/net/protocol');
+  const src = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const idx = src('server/index.ts');
+  const screenSrc = src('src/ui/RoomScreen.tsx');
+  const css = src('src/ui/room.css');
+  const NEW = ['recycle', 'autoOnly', ROOMS3_CAP];
+  const mk = (id: string, alliance: Alliance, to: ServerMsg[], caps: string[] = NEW, extra: Partial<Client> = {}): Client => ({
+    id, send: (m) => to.push(m), connected: true, disconnectAt: 0, caps,
+    player: { clientId: id, name: 'Player', teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    ...extra,
+  });
+  const lastRoster = (ms: ServerMsg[]) => [...ms].reverse().find((m): m is Extract<ServerMsg, { t: 'roster' }> => m.t === 'roster');
+  const twoV2 = () => ({ kind: 'versus' as const, settings: coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' }) });
+
+  // ---- the seat map ---------------------------------------------------------------------------
+  const set = coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' })!;
+  const p = (id: string, alliance: Alliance) => ({ clientId: id, name: id, teamName: '', teamNumber: 0, alliance, startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } });
+  const m1 = rules.seatMap([p('a', 'red')], set, 4, null);
+  check('⚠️ rooms3: a side draws every seat it has, open ones included, so a join moves nothing around it',
+    m1.red.length === 2 && m1.blue.length === 2 && m1.red[0].p?.clientId === 'a' && m1.red[1].p === null && m1.blue.every((x) => x.p === null));
+  const m2 = rules.seatMap([p('a', 'red')], set, 4, { id: 'a', to: 'blue' });
+  check('rooms3: a move this screen asked for is drawn as done', m2.blue[0].p?.clientId === 'a' && m2.red.every((x) => x.p === null));
+  const m3 = rules.seatMap([p('a', 'red')], set, 4, { id: 'a', to: 'watch' });
+  check('rooms3: ...and a move to the watchers takes the card off the side', m3.red.every((x) => x.p === null));
+  const m4 = rules.seatMap([p('a', 'red'), p('b', 'red')], undefined, 4, null);
+  check('rooms3: a legacy room (no sides) shows one open seat a side while any is left', m4.red.length === 3 && m4.blue.length === 1 && m4.blue[0].p === null);
+  check('rooms3: a watcher may take any open seat; a driver changes side only where drivers pick; a record run never',
+    rules.canTakeSeat('red', { spectating: true, me: null, set: { ...set, teamSwitch: false }, record: false }) &&
+      rules.canTakeSeat('blue', { spectating: false, me: { alliance: 'red' }, set, record: false }) &&
+      !rules.canTakeSeat('blue', { spectating: false, me: { alliance: 'red' }, set: { ...set, teamSwitch: false }, record: false }) &&
+      !rules.canTakeSeat('red', { spectating: false, me: { alliance: 'red' }, set, record: false }) &&
+      !rules.canTakeSeat('blue', { spectating: true, me: null, set, record: true }));
+  check('rooms3: the bar names what you are waiting for',
+    rules.barStatus({ spectating: true, anyOpen: true, isHost: false, record: false, players: [], capacity: 4, meReady: false }) === 'You are watching. Take an open seat to play.' &&
+      rules.barStatus({ spectating: false, anyOpen: true, isHost: true, record: false, players: [{ ready: true }, { ready: false }], capacity: 4, meReady: true }) === '1 of 2 ready' &&
+      rules.barStatus({ spectating: false, anyOpen: true, isHost: false, record: false, players: [{ ready: true }], capacity: 4, meReady: true }) === 'Waiting for the host to start');
+  check('rooms3: every seat card is one fixed height, and the alliance stripe is a shadow, not a border',
+    /\.rm-seat \{[\s\S]*?height: 112px;[\s\S]*?box-shadow: inset 4px 0 0 var\(--rm-side\);/.test(css) && !/\.rm-seat[^{]*\{[^}]*border-left/.test(css));
+  check('rooms3: the bar is the screen’s last row, so READY and START never scroll away',
+    /\.rm-screen \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;[\s\S]*?height: 100dvh;/.test(css) && /<footer className="rm-bar">/.test(screenSrc));
+
+  // ---- the room: names, sides, watchers --------------------------------------------------------
+  {
+    const s0: ServerMsg[] = [];
+    const room = new Room('rooms3-names', () => {}, twoV2());
+    room.add(mk('h', 'red', s0, NEW, { userId: 'u-h' }));
+    room.add(mk('g1', 'red', []));
+    room.add(mk('g2', 'red', []));
+    const names = lastRoster(s0)?.players.map((x) => x.name) ?? [];
+    check('⚠️ rooms3: three guests who typed no name are Player, Player 2 and Player 3', names.join('|') === 'Player|Player 2|Player 3', names.join('|'));
+    const sides = lastRoster(s0)?.players.map((x) => x.alliance) ?? [];
+    check('rooms3: ...a fresh rooms3 join without anySide keeps the old rule (its pick while it has room)', sides.join('|') === 'red|red|blue', sides.join('|'));
+    const room2 = new Room('rooms3-anyside', () => {}, twoV2());
+    const s2: ServerMsg[] = [];
+    room2.add(mk('h', 'blue', s2));
+    room2.add(mk('g', 'blue', [], NEW, { anySide: true }));
+    check('⚠️ rooms3: a fresh join with anySide lands on the emptier side (both guests used to land on BLUE)',
+      lastRoster(s2)?.players.find((x) => x.clientId === 'g')?.alliance === 'red');
+    const w: ServerMsg[] = [];
+    room.addSpectator(mk('w1', 'blue', w));
+    room.addSpectator(mk('w2', 'blue', []));
+    room.hideSpectator('w2');
+    const ws = lastRoster(s0)?.watchers ?? [];
+    check('⚠️ rooms3: a custom room names its watchers on the roster', ws.length === 1 && ws[0].id === 'w1' && ws[0].name === 'Player 4', JSON.stringify(ws));
+    check('rooms3: ...hidden staff observers are left out of the list, as from every count', !ws.some((x) => x.id === 'w2'));
+    const legacy = new Room('rooms3-legacy', () => {}, { kind: 'versus' });
+    const sl: ServerMsg[] = [];
+    legacy.add(mk('h', 'red', sl));
+    legacy.addSpectator(mk('w', 'blue', []));
+    check('rooms3: a room with no settings (staged, ranked, legacy) names nobody', lastRoster(sl)?.watchers === undefined);
+
+    // reactions
+    const before = s0.length;
+    room.onMessage('g1', { t: 'react', k: 2 });
+    const got = s0.slice(before).find((m): m is Extract<ServerMsg, { t: 'react' }> => m.t === 'react');
+    check('⚠️ rooms3: a reaction reaches the room', got?.from === 'g1' && got.k === 2 && ROOM_REACTIONS[got.k] === 'One sec');
+    const n1 = s0.filter((m) => m.t === 'react').length;
+    room.onMessage('g1', { t: 'react', k: 3 });
+    check('rooms3: ...one a second per socket', s0.filter((m) => m.t === 'react').length === n1);
+    room.onMessage('w1', { t: 'react', k: 0 });
+    check('rooms3: ...a watcher may react too', s0.some((m) => m.t === 'react' && m.from === 'w1'));
+    room.onMessage('g2', { t: 'react', k: 99 });
+    room.onMessage('g2', { t: 'react', k: 1.5 as number });
+    check('rooms3: ...an index outside the fixed list is dropped', !s0.some((m) => m.t === 'react' && m.from === 'g2'));
+    const oldSink: ServerMsg[] = [];
+    room.addSpectator(mk('wold', 'blue', oldSink, ['recycle']));
+    room.onMessage('g2', { t: 'react', k: 1 });
+    check('rooms3: ...and a client without the cap is never sent one', !oldSink.some((m) => m.t === 'react') && s0.some((m) => m.t === 'react' && m.from === 'g2'));
+  }
+
+  // ---- bots, run length, the crown -------------------------------------------------------------
+  {
+    const s0: ServerMsg[] = [];
+    const room = new Room('rooms3-bot', () => {}, { kind: 'versus', game: 'biobuzz', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' }) });
+    room.add(mk('h', 'red', s0));
+    room.onMessage('h', { t: 'addBot', alliance: 'red' });
+    check('rooms3: "+ Bot" seats the bot on the seat it was pressed on', lastRoster(s0)?.players.find((x) => x.bot)?.alliance === 'red');
+    room.onMessage('h', { t: 'addBot' });
+    check('rooms3: ...and without a side, on the emptier one, as before', lastRoster(s0)?.players.filter((x) => x.bot).map((x) => x.alliance).join('|') === 'red|blue');
+
+    const r2 = new Room('rooms3-run', () => {}, twoV2());
+    const s2: ServerMsg[] = [];
+    r2.add(mk('h', 'red', s2));
+    r2.onMessage('h', { t: 'roomSettings', patch: { runLength: 'auto' } });
+    check('rooms3: a lobby may make the room auto-only', r2.settings?.runLength === 'auto');
+    r2.onMessage('h', { t: 'roomSettings', patch: { runLength: 'full' } });
+    check('rooms3: ...and full again', r2.settings?.runLength === undefined);
+    r2.addSpectator(mk('w', 'blue', [], ['recycle']));
+    r2.onMessage('h', { t: 'roomSettings', patch: { runLength: 'auto' } });
+    check('⚠️ rooms3: ...but not while anyone in it (a watcher included) could not play an auto-only run',
+      r2.settings?.runLength === undefined && s2.some((m) => m.t === 'error' && /older version/.test(m.message)));
+
+    const r3 = new Room('rooms3-crown', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-2v2', listed: true }) });
+    const s3: ServerMsg[] = [];
+    r3.add(mk('h', 'red', [], NEW, { userId: 'u-h' }));
+    r3.add(mk('anon', 'red', s3));
+    r3.add(mk('acct', 'blue', [], NEW, { userId: 'u-a' }));
+    r3.detach('h');
+    check('⚠️ rooms3: a Public room’s crown goes to a signed-in member, so it stays listed', lastRoster(s3)?.hostId === 'acct' && r3.settings?.listed === true && r3.listing() !== null);
+    r3.detach('acct');
+    check('⚠️ rooms3: ...and with nobody signed in left it SAYS it is Private now, instead of silently dropping off Browse',
+      lastRoster(s3)?.hostId === 'anon' && lastRoster(s3)?.settings?.listed === false && r3.listing() === null);
+  }
+
+  // ---- after the match: the room goes back by itself, and any member may take it -----------------
+  {
+    const sink: Record<string, ServerMsg[]> = { h: [], g: [], w: [] };
+    const room = new Room('rooms3-return', () => {}, twoV2());
+    room.add(mk('h', 'red', sink.h));
+    room.add(mk('g', 'blue', sink.g));
+    room.addSpectator(mk('w', 'blue', sink.w));
+    room.onMessage('h', { t: 'start' });
+    forceRoomToPost(room);
+    check('rooms3: the match finished', room.worldForTest()?.match.phase === 'post');
+    check('⚠️ rooms3: a finished room of new clients counts down to its lobby, and says so to everyone',
+      room.returnArmedForTest() && sink.g.some((m) => m.t === 'returnIn' && m.ms === 30000) && sink.w.some((m) => m.t === 'returnIn'));
+    room.onMessage('g', { t: 'lobby' });
+    check('⚠️ rooms3: a member who is not the host can take the room back', room.worldForTest() === null && !room.returnArmedForTest());
+    const back = sink.w.find((m): m is Extract<ServerMsg, { t: 'lobby' }> => m.t === 'lobby');
+    check('⚠️ rooms3: a watcher is told it comes back AS A WATCHER', back?.spectator === true && back.clientId === 'w');
+    check('rooms3: ...and a driver is not', sink.g.some((m) => m.t === 'lobby' && m.spectator === undefined));
+
+    const s2: Record<string, ServerMsg[]> = { h: [], old: [] };
+    const mixed = new Room('rooms3-return-mixed', () => {}, twoV2());
+    mixed.add(mk('h', 'red', s2.h));
+    mixed.add(mk('old', 'blue', s2.old, ['recycle']));
+    mixed.onMessage('h', { t: 'start' });
+    forceRoomToPost(mixed);
+    check('⚠️ rooms3: a room holding an older client does not move it off its results screen by itself', !mixed.returnArmedForTest() && !s2.old.some((m) => m.t === 'returnIn'));
+    mixed.onMessage('old', { t: 'lobby' });
+    check('rooms3: ...and that older client cannot take the room back for the host', mixed.worldForTest() !== null);
+
+    const r3 = new Room('rooms3-return-timer', () => {}, twoV2());
+    const s3: ServerMsg[] = [];
+    r3.add(mk('h', 'red', s3));
+    r3.onMessage('h', { t: 'start' });
+    forceRoomToPost(r3);
+    r3.returnNowForTest();
+    check('rooms3: the countdown’s end does what the press does', r3.worldForTest() === null && s3.some((m) => m.t === 'lobby'));
+  }
+
+  // ---- the socket half, in source (driven for real in test:workers) ----------------------------
+  check('⚠️ seat: the door that would refuse is asked BEFORE the old role is given up',
+    /if \(msg\.to === 'watch'\) \{[\s\S]*?if \(r\.spectatorCount\(\) >= MAX_SPECTATORS_CUSTOM\) \{[\s\S]*?return;\s*\}\s*r\.detach\(id, conn \|\| undefined, true\);/.test(idx) &&
+      /if \(!r\.canJoin\(\)\) \{[\s\S]*?code: 'room_full'[\s\S]*?return;\s*\}\s*const code = r\.code;\s*r\.detach\(id, conn \|\| undefined, true\);\s*leaveWatching\(\);/.test(idx));
+  check('seat: lobby only, and it goes through the same two doors a fresh socket does',
+    /if \(state !== 'lobby' && state !== 'full'\) \{/.test(idx) && /attachSpectator\(\{ t: 'spectate', room: r\.code/.test(idx) && /void joinRoom\(\{ t: 'join', room: code, player/.test(idx));
+  check(`seat: a custom room carries ${CUSTOM_ROOM_WATCHERS} watchers, refused with a code the client can read`,
+    /if \(isCustomRoom\(r\) && r\.spectatorCount\(\) >= MAX_SPECTATORS_CUSTOM\) \{\s*send\(\{ t: 'error', message: WATCHERS_FULL, code: 'spectators_full' \}\);/.test(idx));
+  check('seat: a watcher is named by what it sent, or Guest', /name: coerceName\(msg\.name, 'Guest'\)/.test(idx));
 }
 
 /** THE RECORDS FEED (`server/recentRecords.ts`): a run's rank is replayed from the board's history. */
@@ -30883,7 +31078,7 @@ const dumperSetup = (): RobotSetup => {
   check(
     '⚠️ recycle seat: the client carries the token through the handover (App → ResumedRoom → LobbyClient)',
     /seatToken: string;/.test(readFileSync('src/ui/roomReturn.ts', 'utf8')) &&
-      /setResumedRoom\(\{[^}]*seatToken: s\.seatToken \?\? '' \}\)/.test(app) &&
+      /setResumedRoom\(\{[^}]*seatToken: s\.seatToken \?\? '',/.test(app) &&
       /\.resume\(resume\.code, myPlayer\(\), resume\.clientId, resume\.seatToken,/.test(lobbySrc) &&
       /clientId: string,\n    seatToken: string,[\s\S]{0,700}?this\.seatToken = seatToken;/.test(lc),
     'against an older server this is the only half; without it match two is built with an empty token',
@@ -30943,8 +31138,8 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     'lobby: an in-room refusal is shown in the room, and the next roster clears it',
-    /\{error && <p className="ds-form-err">⚠ \{error\}<\/p>\}/.test(lobby) &&
-      /lobby\.on\('roster', \(list, host, set\) => \{[\s\S]{0,500}?setError\(''\);/.test(lobby),
+    /error: error \|\| null,/.test(lobby) && /\{props\.bar\.error \? `⚠ \$\{props\.bar\.error\}`/.test(readFileSync('src/ui/RoomScreen.tsx', 'utf8')) &&
+      /lobby\.on\('roster', \(list, host, set, ws\) => \{[\s\S]{0,500}?setError\(''\);/.test(lobby),
   );
   check(
     'lobby: the "Trying again" countdown is said only where it runs (the activity)',
@@ -31598,7 +31793,7 @@ const dumperSetup = (): RobotSetup => {
     /join\(code, autoJoinRegion\)/.test(panel) && !/CREATE ROOM/.test(panel) && !/createRoom/.test(panel),
     'CREATE ROOM on the error screen minted a fresh room away from the group');
   check('auto-join: the panel is seeded from the props, so the form is not painted first',
-    /const \[autoEntry\] = useState\(!!autoJoin \|\| !!resume\);/.test(lobby));
+    /const \[autoEntry\] = useState\(!!autoJoin \|\| !!resume \|\| \(create && config\.kind === 'versus'\)\);/.test(lobby));
 
   check('⚠️ lobby: the transport’s own down signal reaches the screen',
     /transport\.onDown\(\(\) => setSlowConnect\(true\)\)/.test(lobby),
@@ -31608,8 +31803,9 @@ const dumperSetup = (): RobotSetup => {
     !!roster && /setSlowConnect\(false\)/.test(roster[0]));
   check('lobby: a first attempt that neither opens nor drops is covered by a timer too',
     /setTimeout\(\(\) => setSlowConnect\(true\), SLOW_CONNECT_MS\)/.test(lobby));
-  check('lobby: the waiting copy is ONE sentence pair, said the same on both screens',
-    (lobby.match(/Still connecting to the game server\. It keeps trying for about a minute\./g) ?? []).length === 2);
+  check('lobby: the waiting copy is ONE sentence, said the same on every connecting screen',
+    (lobby.match(/Still connecting to the game server\. It keeps trying for about a minute\./g) ?? []).length === 1 &&
+      (lobby.match(/STILL_CONNECTING/g) ?? []).length === 4);
 }
 
 /**
@@ -31641,12 +31837,11 @@ const dumperSetup = (): RobotSetup => {
   check('identity: one debounce writes BOTH fields, so neither drops the other',
     /const robot = robotName\.trim\(\) \|\| DEFAULT_ROBOT_NAME;[\s\S]{0,200}?const driver = name\.trim\(\);/.test(lobby) ||
       /const driver = name\.trim\(\);[\s\S]{0,200}?const robot = robotName\.trim\(\) \|\| DEFAULT_ROBOT_NAME;/.test(lobby));
-  check('⚠️ identity: the "You" card can sit ABOVE the roster, for somebody still unnamed',
-    /\{idFirst && youSection\}[\s\S]{0,120}<h2>Drivers<\/h2>/.test(lobby),
+  check('⚠️ identity: the "You" card opens FIRST, in the Setup drawer, for somebody still unnamed',
+    /const \[setupOpen, setSetupOpen\] = useState\(idFirst\);/.test(lobby),
     'an unprompted editor under four identical rows is not read');
-  check('identity: and below it once they are named — one card, two placements',
-    /\{!idFirst && youSection\}/.test(lobby) &&
-      (lobby.match(/idFirst && youSection\}/g) ?? []).length === 2);
+  check('identity: one card, in the drawer, for every signed-out driver as well as the activity',
+    /drawer=\{\s*<>\s*\{youSection\}/.test(lobby) && /const youSection = discordActivity \|\| !signedIn \? \(/.test(lobby));
   check('identity: where it sits is decided ONCE, so it cannot move under a cursor mid-keystroke',
     /const \[idFirst\] = useState\(/.test(lobby));
 }
@@ -39096,7 +39291,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   const rw = rd(joinPath('server', 'roomWorker.ts'));
   const rh = rd(joinPath('server', 'roomHost.ts'));
   check('visuals/pins: the room answers the relay’s two messages BEFORE it looks the sender up, so a watcher (who is not a seat) can ask',
-    /onMessage\(id: string, msg: ClientMsg, conn\?: number\): void \{[\s\S]{0,400}msg\.t === 'visualPut' \|\| msg\.t === 'visualGet'[\s\S]{0,200}const c = this\.clients\.get\(id\);/.test(room));
+    /onMessage\(id: string, msg: ClientMsg, conn\?: number\): void \{[\s\S]{0,400}msg\.t === 'visualPut' \|\| msg\.t === 'visualGet'[\s\S]{0,800}const c = this\.clients\.get\(id\);/.test(room));
   check('visuals/pins: every place the room drops a seat frees its assets, and the room closing disposes the relay',
     (room.match(/this\.visuals\.freeOwner\(/g) ?? []).length === 5 && /this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/.test(room) && !/[^.]this\.onEmpty\(\)/.test(room.replace(/this\.visuals\.dispose\(\);\s*this\.onEmpty\(\);/, '')));
   check('visuals/pins: a joiner, a watcher and a reclaimed seat are greeted; a seat’s robot change re-checks its assets',

@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { LiveRoom } from '../net/protocol';
-import { fetchLiveRoom, fetchLiveRooms } from '../net/api';
+import { fetchLiveRooms } from '../net/api';
 import { gameServerConfigured } from '../net/env';
-import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { seasonFor } from '../seasons';
 import { fmtTime } from './timerPanel';
 import { onUserActive, userIdle } from './userActivity';
@@ -126,81 +125,7 @@ export function WatchLive({
         )}
       </div>
 
-      {configured && <WatchByCode onWatch={onWatch} />}
     </>
-  );
-}
-
-/**
- * Spectate a CUSTOM room by its code.
- *
- * Resolves the code before opening a socket, for two reasons. It tells the player
- * WHY nothing happened when the match has already finished (the alternative is a
- * connection that opens and then silently reports an unknown room), and it returns
- * the hosting region — which a bare custom code cannot encode and the spectate
- * socket cannot do without.
- */
-function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string) => void }) {
-  const [code, setCode] = useState('');
-  const [status, setStatus] = useState<'idle' | 'looking' | 'missing'>('idle');
-  const ready = isValidRoomCode(code);
-
-  const go = (): void => {
-    if (!ready || status === 'looking') return;
-    setStatus('looking');
-    void fetchLiveRoom(code).then((room) => {
-      if (!room) {
-        setStatus('missing');
-        return;
-      }
-      setStatus('idle');
-      onWatch(room.room, room.region);
-    });
-  };
-
-  return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <h2 className="ds-panel-title">Watch a custom room</h2>
-      </div>
-      <div className="ds-panel-body stack">
-        {/* "Enter the room code to watch one" was the heading, the input's placeholder
-            and its aria-label said a third time. The sentence that stays answers a real
-            question — why isn't my friend's room in the list above? */}
-        <p className="ds-hint">A room shows in Browse rooms only if its host made it Public.</p>
-        <div className="ds-watchcode">
-          <input
-            className="ds-input"
-            value={code}
-            onChange={(e) => {
-              setCode(normalizeRoomCode(e.target.value));
-              setStatus('idle');
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && go()}
-            placeholder={'X'.repeat(ROOM_CODE_LENGTH)}
-            maxLength={ROOM_CODE_LENGTH}
-            spellCheck={false}
-            autoCapitalize="characters"
-            aria-label="Room code"
-          />
-          {/* ONE label: a busy "Looking…" was wider than "Watch" and resized the code field
-              beside it. The lookup shows as disabled + aria-busy instead. */}
-          <button
-            className="ds-btn"
-            disabled={!ready || status === 'looking'}
-            aria-busy={status === 'looking'}
-            onClick={go}
-          >
-            Watch
-          </button>
-        </div>
-        {status === 'missing' && (
-          <p className="ds-hint">
-            No live match under that code. It may have finished, or not started yet.
-          </p>
-        )}
-      </div>
-    </div>
   );
 }
 

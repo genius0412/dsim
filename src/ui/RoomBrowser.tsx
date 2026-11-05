@@ -31,7 +31,7 @@ export function RoomBrowser({
   onJoin: (room: string, game: ListedRoom['game'], region?: string) => void;
   /** join a room by a typed code, on the region the player picked (absent on a one-server build) */
   onJoinCode: (room: string, region?: string) => void;
-  /** open the create dialog for a new room that is Private (false) or Public (true) */
+  /** create a new room, Private (false) or Public (true), and open it: no dialog in between */
   onHost: (listed: boolean) => void;
   /** spectate a live match or a room by code (the former Watch live screen) */
   onWatchLive: (roomCode: string, region?: string) => void;
@@ -79,7 +79,8 @@ export function RoomBrowser({
 
   /** what the row does when pressed: take a seat, or watch from outside the room's seats */
   const goLabel = (r: ListedRoom): string => (r.state !== 'match' && r.joinable ? 'Join →' : 'Spectate →');
-  const stateNote = (r: ListedRoom): string => (r.state === 'match' ? ' · In a match' : r.joinable ? '' : ' · Full');
+  const stateNote = (r: ListedRoom): string =>
+    (r.state === 'match' ? ' · In a match' : r.joinable ? '' : ' · Full') + (r.watching ? ` · ${r.watching} watching` : '');
 
   return (
     <>
@@ -138,6 +139,8 @@ export function RoomBrowser({
         )}
       </div>
       {configured && <JoinByCode onJoinCode={onJoinCode} />}
+      {/* the live matches only: a custom room's code goes in Join with a code above, which watches
+          a room that is full or playing */}
       <WatchLive onWatch={onWatchLive} />
       {configured && (
         <p className="ds-hint">

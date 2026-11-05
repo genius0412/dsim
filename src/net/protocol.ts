@@ -318,6 +318,9 @@ export function coerceRoomSettings(
 }
 
 /** apply a (possibly hostile) partial over settings, clamping every field */
+/** what a host may send to change the room: `runLength: 'full'` clears an auto-only run */
+export type RoomSettingsPatch = Partial<Omit<RoomSettings, 'runLength'>> & { runLength?: 'auto' | 'full' };
+
 export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unknown>): RoomSettings {
   const side = (v: unknown, was: number): number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(ROOM_CAPACITY, Math.floor(v))) : was;
@@ -335,8 +338,9 @@ export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unkn
     perAlliance: { red, blue },
     teamSwitch: typeof patch.teamSwitch === 'boolean' ? patch.teamSwitch : base.teamSwitch,
     listed: typeof patch.listed === 'boolean' ? patch.listed : base.listed,
-    // set at creation and never changed by a patch: the members' caps were checked against it
-    ...(base.runLength ? { runLength: base.runLength } : {}),
+    // `'rooms3'`: a lobby may change it (`'full'` clears it). `Room` refuses the patch first when a
+    // member or a watcher could not play an auto-only run, so what lands here was checked.
+    ...(patch.runLength === 'auto' ? { runLength: 'auto' as const } : patch.runLength === 'full' ? {} : base.runLength ? { runLength: base.runLength } : {}),
   };
 }
 
@@ -563,6 +567,15 @@ export type PlayerPatch = Partial<
 
 // ---- client → server --------------------------------------------------------
 
+/**
+ * THE ONE-SCREEN ROOM'S CAPABILITY, both ways (docs/rooms-redesign.md). A client that says it is
+ * sent `react`, `returnIn` and a recycle that may come without the host pressing anything; a server
+ * that says it honours `seat`, `react`, a member's `lobby`, `addBot.alliance` and a lobby
+ * `runLength` patch. Nothing about it is a hard gate: an old client in a new room keeps today's
+ * lobby, and a new client on an old server keeps today's controls.
+ */
+export const ROOMS3_CAP = 'rooms3';
+
 /** capabilities THIS client build understands, sent on `join`/`queue` so ONE server
  * can serve mixed client versions (alpha/beta/main all point at it). A staged ranked
  * room opens the pre-match strategy window only when EVERY member advertises
@@ -570,7 +583,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'autoOnly', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP];
+export const CLIENT_CAPS: string[] = ['strategy', 'autoOnly', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat', ROBOT_IMPORT_CAP, IMPORT_VISUALS_CAP, ROOMS3_CAP];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -589,6 +602,22 @@ export const CLIENT_CAPS: string[] = ['strategy', 'autoOnly', 'startpose', 'game
  * saying something different depending on which door you came through.
  */
 export const BB3D_CAP = 'bb3d';
+
+
+/** the fixed room reactions (`react.k` indexes this list). Fixed text needs no moderation. */
+export const ROOM_REACTIONS = ['GG', 'Ready?', 'One sec', 'Swap?', 'Nice', 'Thanks'] as const;
+
+/** watchers a custom room carries (`MAX_SPECTATORS_CUSTOM` overrides it on the server) */
+export const CUSTOM_ROOM_WATCHERS = 8;
+
+/** how long a finished custom room shows its results before it goes back to its lobby by itself */
+export const ROOM_RETURN_MS = 30_000;
+
+/** one watcher as the roster names them (custom rooms only; hidden staff observers never appear) */
+export interface RoomWatcher {
+  id: string;
+  name: string;
+}
 export const BB3D_REFUSAL = 'Update DSIM to play this room.';
 
 /** may a client advertising `caps` be seated in a room running `physics`? A `'2d'` room
@@ -787,6 +816,14 @@ export const SERVER_CAPS: string[] = [
    * additive: a viewer on a build without the cap is sent none of it and sees the footprint.
    */
   IMPORT_VISUALS_CAP,
+  /**
+   * `'rooms3'` — THE ONE-SCREEN ROOM (docs/rooms-redesign.md): `seat` moves a socket between a seat
+   * and the watchers without a reconnect, `react` relays the fixed reactions, the roster names its
+   * watchers, any member may send a finished room back to its lobby, the room goes back by itself
+   * after `returnIn`, a `+ Bot` may name its side and a lobby may change its run length. The client
+   * offers each of those only when the server says this; an older server ignores every one of them.
+   */
+  ROOMS3_CAP,
 ];
 
 /** the formats a "play a friend" challenge can be issued in.Shared so the API's
@@ -834,6 +871,8 @@ export type ClientMsg =
        * lobby browser can list only the rooms from one activity. Set by the room
        * CREATOR; ignored on an existing room. Absent ⇒ ungrouped. */
       group?: string;
+      /** `'rooms3'`: put me on whichever side has more open seats (a fresh join, not a seat pick) */
+      anySide?: boolean;
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
@@ -862,7 +901,27 @@ export type ClientMsg =
   // `authToken` is optional here and used for ONE thing: if the server verifies it
   // as an admin, this watcher is not counted in the visible spectator total (see
   // Room.hideSpectator). It is never a claim the client can make on its own.
-  | { t: 'spectate'; room: string; caps?: string[]; authToken?: string }
+  | { t: 'spectate'; room: string; caps?: string[]; authToken?: string; name?: string }
+  /**
+   * `'rooms3'`: MOVE THIS SOCKET between a seat and the watchers, lobby only, without a reconnect.
+   * `'watch'` gives the seat up and attaches as a watcher (`name` is how the roster names you);
+   * `'red'`/`'blue'` takes a seat from the watchers through every check `join` makes, so it carries
+   * what a `join` carries. A refusal is an ordinary `error` and the socket is left roomless, so the
+   * client sends the opposite door again. An older server ignores it.
+   */
+  | {
+      t: 'seat';
+      to: 'red' | 'blue' | 'watch';
+      name?: string;
+      player?: Omit<LobbyPlayer, 'clientId'>;
+      config?: RoomConfig;
+      authToken?: string;
+      caps?: string[];
+      channel?: string;
+      group?: string;
+    }
+  /** `'rooms3'`: one of the fixed reactions (`ROOM_REACTIONS[k]`). One a second per socket. */
+  | { t: 'react'; k: number }
   /**
    * REPORT another driver in this room, by ROBOT ID.
    *
@@ -895,13 +954,13 @@ export type ClientMsg =
    * unknown folds to that driver's `defaultTier`, server-side, because a tier list is a
    * property of the game module and not of the client that names one.
    */
-  | { t: 'addBot'; tier?: string }
+  | { t: 'addBot'; tier?: string; /** `'rooms3'`: the side to seat it on, when it has a seat */ alliance?: 'red' | 'blue' }
   /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
    *  minted for it and put in the roster). */
   | { t: 'removeBot'; seat: string }
   /** HOST ONLY: change the room's settings (a partial; the server clamps it, and refuses one that
    *  would seat fewer than are already there). Gated on `SERVER_CAPS` `'rooms2'`. */
-  | { t: 'roomSettings'; patch: Partial<RoomSettings> }
+  | { t: 'roomSettings'; patch: RoomSettingsPatch }
   /** HOST ONLY: put the member (a roster `clientId`, bots included) on this alliance. */
   | { t: 'moveMember'; id: string; alliance: 'red' | 'blue' }
   /** HOST ONLY: turn a duo-record room into an ordinary room (one-way; it stops posting records).
@@ -1112,6 +1171,8 @@ export interface ListedRoom {
   preset: RoomPreset;
   /** can a new driver walk in right now (a seat is free and no match is running) */
   joinable: boolean;
+  /** how many are watching (hidden staff observers left out); absent from an older server */
+  watching?: number;
   /** which Fly region hosts it, so a join can aim its socket there */
   region?: string;
 }
@@ -1197,7 +1258,9 @@ export type ErrorCode =
    * ranked client waited in it forever. The client raises it itself when a staged room never
    * answers (`LobbyClient.watchStagedStart`).
    */
-  | 'match_gone';
+  | 'match_gone'
+  /** a custom room already has as many watchers as it carries (`CUSTOM_ROOM_WATCHERS`) */
+  | 'spectators_full';
 
 export type ServerMsg =
   /**
@@ -1233,7 +1296,19 @@ export type ServerMsg =
   /** A `visualPut` or `visualGet` was refused (`reason`), with a plain sentence. The viewer keeps
    *  the footprint; the owner is told so it stops sending. */
   | { t: 'visualRefused'; op: 'put' | 'get'; owner: string; id: string; kind: VisualKind; reason: VisualRefusal; message: string }
-  | { t: 'roster'; players: LobbyPlayer[]; hostId: string; settings?: RoomSettings }
+  | {
+      t: 'roster';
+      players: LobbyPlayer[];
+      hostId: string;
+      settings?: RoomSettings;
+      /** a custom room's watchers by name (hidden staff observers left out). Absent elsewhere and
+       *  from an older server; an older client ignores it. */
+      watchers?: RoomWatcher[];
+    }
+  /** `'rooms3'`: someone in the room pressed reaction `k` (`ROOM_REACTIONS`) */
+  | { t: 'react'; from: string; k: number }
+  /** `'rooms3'`: this finished room goes back to its lobby in `ms` (null: it will not by itself) */
+  | { t: 'returnIn'; ms: number | null }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
    *
@@ -1249,7 +1324,7 @@ export type ServerMsg =
    * advertises it, because a client that ignores this message would sit on a dead
    * results screen while the room restarted around it.
    */
-  | { t: 'lobby'; clientId: string; seatToken?: string }
+  | { t: 'lobby'; clientId: string; seatToken?: string; /** this socket is a watcher: come back as one */ spectator?: boolean }
   /**
    * `message` is human-readable and every client since the first build shows it.
    *

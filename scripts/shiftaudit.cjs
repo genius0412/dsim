@@ -7,6 +7,16 @@
  *   DSIM_THEME=dark npm run shiftaudit                 # one theme
  *   DSIM_NAV=only npm run shiftaudit                   # just the cross-route nav comparison (~1 min)
  *   DSIM_SCROLL=only npm run shiftaudit                # just the scroll-on-navigation pass (~2 min)
+ *   DSIM_ROOM=only npm run shiftaudit                  # just the one-screen room (needs a game server, below)
+ *
+ * THE ONE-SCREEN ROOM (docs/rooms-redesign.md, 2026-11-04). A room is reached through a game server,
+ * so its pass is opt-in: build with `VITE_GAME_SERVER_URL` pointing at a running server (the admin
+ * harness, or `npm run server:start`) and set `DSIM_ROOM=1` (with the rest) or `DSIM_ROOM=only`;
+ * `DSIM_ROOM_WS` is that server's socket (default ws://localhost:8787). The window creates a Private
+ * room and fake members join it over plain sockets from this process. Every probe below runs on the
+ * room empty and full, and the room's own transitions are checked as states: a watcher joining and
+ * leaving, READY toggled, the Setup drawer opened, and the crown passing to this window. None of them
+ * may move a seat card, a side's header or a button in the bar. At 1366x768 and 390x844, both themes.
  *
  * WHERE A NAVIGATION LANDS (2026-11-04, owner: "Clicking one of the settings menus (like 'Network')
  * while I am on a different tab (like 'Graphics') while being scrolled down, it does not bring me to
@@ -117,6 +127,11 @@ const NAV_MEASURE = `(() => [...document.querySelectorAll('.ds-bar-nav-btn')].ma
 const SCROLL = process.env.DSIM_SCROLL || 'on'; // 'on' | 'only' | '0'
 const SCROLL_PAD = process.env.DSIM_SCROLL_PAD !== '0';
 const SCROLL_SIZES = [[1366, 768], [390, 844]];
+const ROOM = process.env.DSIM_ROOM || '0'; // '1' | 'only' | '0'
+const ROOM_WS = process.env.DSIM_ROOM_WS || 'ws://localhost:8787';
+const ROOM_SIZES = [[1366, 768], [390, 844]];
+/** what a room transition must not move: every seat card, each side's header, the bar's buttons */
+const ROOM_FIXED = '.rm-seat, .rm-side-h, .rm-bar, .rm-cta, .rm-head';
 const SCROLL_CASES = [
   // the bar's sections and the mark
   { from: '/decode/configure/controls', sel: '.ds-bar-nav-btn', name: 'Records', to: '/records/leaderboard' },
@@ -611,11 +626,103 @@ app.whenReady().then(async () => {
     say(`  scroll pass: ${scrollChecked} landings checked, ${scrollFailed} failed`);
   };
 
+  /**
+   * THE ONE-SCREEN ROOM (`DSIM_ROOM`). The probes on the room empty and full, then its transitions,
+   * each a before/after of `ROOM_FIXED` (nothing in it may move; a card's own CONTENT may change).
+   */
+  let roomChecked = 0;
+  const roomPass = async (theme) => {
+    const WS = require('ws');
+    const CAPS = ['recycle', 'autoOnly', 'rooms3', 'strategy', 'startpose', 'game'];
+    const socks = [];
+    const member = (room, name, alliance, watch = false, config) =>
+      new Promise((resolve) => {
+        const ws = new WS(ROOM_WS);
+        socks.push(ws);
+        ws.on('open', () => {
+          ws.send(JSON.stringify(watch
+            ? { t: 'spectate', room, caps: CAPS, name }
+            : { t: 'join', room, caps: CAPS, config: config ?? { kind: 'versus', game: 'decode' },
+                player: { name, teamName: '', teamNumber: 0, alliance, startIndex: 0, ready: false } }));
+        });
+        ws.on('message', (d) => { if (String(d).includes('"t":"welcome"')) resolve(ws); });
+        ws.on('error', () => resolve(ws));
+        setTimeout(() => resolve(ws), 5000);
+      });
+    // GEOMETRY BY ROLE: a seat by its side and place, a bar button by what it is. A box's own
+    // classes and text may change (a seat filling, READY gaining ✓) and a new button may arrive
+    // (START, with the crown); none of the boxes that were there may move or go.
+    const RECTS = `(() => { const out = {}; const put = (k, e) => { const r = e.getBoundingClientRect(); out[k] = [r.x, r.y, r.width, r.height].map(Math.round).join(' '); };
+      for (const side of document.querySelectorAll('.rm-side')) { const a = side.classList.contains('red') ? 'red' : 'blue';
+        put('side-h ' + a, side.querySelector('.rm-side-h')); side.querySelectorAll('.rm-seat').forEach((e, n) => put('seat ' + a + n, e)); }
+      for (const b of document.querySelectorAll('.rm-cta')) put(/START/.test(b.textContent) ? 'start' : 'ready', b);
+      for (const sel of ['.rm-bar', '.rm-head']) { const e = document.querySelector(sel); if (e) put(sel, e); }
+      return out; })()`;
+    const same = async (label, act, wait) => {
+      const before = await js(RECTS);
+      await act();
+      if (wait) await until(wait, 6000);
+      await sleep(400);
+      const after = await js(RECTS);
+      roomChecked++;
+      const moved = Object.keys(before).filter((k) => after[k] !== before[k]).map((k) => `${k}: ${before[k]}  ->  ${after[k] ?? 'gone'}`);
+      if (moved.length) {
+        problems++;
+        say(`  SHIFT [${theme}] room: ${label}`);
+        moved.slice(0, 6).forEach((x) => say(`          ${x}`));
+      } else log(`  room ${label}: nothing moved`);
+    };
+    for (const [w, h] of ROOM_SIZES) {
+      win.setContentSize(w, h);
+      await win.loadURL(BASE + '/decode/rooms');
+      await sleep(1500);
+      const made = await js(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Private room'); if (!b) return false; b.click(); return true; })()`);
+      if (!made || !(await until(`!!document.querySelector('.rm-bar .rm-cta') && /^[A-Z0-9]{6}$/.test(document.querySelector('.rm-code-v')?.textContent ?? '')`, 10000))) {
+        say(`  (could not open a room at ${w}x${h} in ${theme}: is DSIM_ROOM_WS (${ROOM_WS}) the server this build talks to?)`);
+        continue;
+      }
+      const code = (await js(`document.querySelector('.rm-code-v').textContent`)).toLowerCase();
+      await auditHere(`[${theme}] ${w}x${h} room, alone`, false);
+      await member(code, 'Guest A', 'red');
+      await until(`document.querySelectorAll('.rm-seat:not(.open)').length >= 2`, 5000);
+      let watcher;
+      await same(`${w}x${h} a watcher joins`, async () => { watcher = await member(code, 'Watcher', 'blue', true); }, `document.querySelectorAll('.rm-watcher').length >= 1`);
+      await same(`${w}x${h} a watcher leaves`, async () => { watcher.close(1000); }, `document.querySelectorAll('.rm-watcher').length === 0`);
+      await same(`${w}x${h} READY toggled`, async () => { await js(`[...document.querySelectorAll('.rm-cta')].find((b) => /READY/.test(b.textContent))?.click(); true`); }, `[...document.querySelectorAll('.rm-cta')].some((b) => /✓ READY/.test(b.textContent))`);
+      await same(`${w}x${h} the Setup drawer opens`, async () => { await js(`[...document.querySelectorAll('.rm-seat .ds-btn')].find((b) => b.textContent.trim() === 'Setup')?.click(); true`); }, `!!document.querySelector('.rm-drawer')`);
+      await js(`[...document.querySelectorAll('.rm-drawer .ds-btn')].find((b) => b.textContent.trim() === 'Done')?.click(); true`);
+      await member(code, 'Guest B', 'blue');
+      await member(code, 'Guest C', 'blue');
+      await until(`document.querySelectorAll('.rm-seat.open').length === 0`, 5000);
+      await auditHere(`[${theme}] ${w}x${h} room, full`, false);
+      for (const ws of socks.splice(0)) ws.close(1000);
+
+      // the crown passing to this window: a socket hosts, this window joins, the socket leaves
+      const ABC = '23456789BCDFGHJKMNPQRSTVWXYZ'; // the room-code alphabet (`ROOM_CODE_ALPHABET`)
+      const code2 = Array.from({ length: 6 }, () => ABC[Math.floor(Math.random() * ABC.length)]).join('').toLowerCase();
+      const host = await member(code2, 'Host', 'red', false, { kind: 'versus', game: 'decode', settings: { preset: 'casual-2v2', listed: false } });
+      await win.loadURL(BASE + '/decode/rooms');
+      await sleep(1200);
+      await js(`(() => { const i = document.querySelector('input[aria-label="Room code"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(code2.toUpperCase())}); i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await js(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Join room')?.click(); true`);
+      if (!(await until(`!!document.querySelector('.rm-bar .rm-cta')`, 8000))) {
+        say(`  (could not join the second room at ${w}x${h} in ${theme})`);
+        continue;
+      }
+      // the narrow bar shares its width between READY and START, so only the wide one is held to it
+      if (w >= 760) await same(`${w}x${h} the crown passes to this window`, async () => { host.close(1000); }, `[...document.querySelectorAll('.rm-cta')].some((b) => /START/.test(b.textContent))`);
+      for (const ws of socks.splice(0)) ws.close(1000);
+    }
+    win.setContentSize(1400, 900);
+  };
+
   for (const theme of THEMES) {
     // stamped by the blocking inline script in index.html, so it must precede the load
     await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
     log(`\n############################ THEME: ${theme.toUpperCase()}`);
 
+    if (ROOM !== '0') await roomPass(theme);
+    if (ROOM === 'only') continue;
     if (navOn) await navAcrossRoutes(theme);
     // where a page lands does not depend on the theme: once, in the first
     if (scrollOn && theme === THEMES[0]) await scrollPass();
@@ -690,7 +797,7 @@ app.whenReady().then(async () => {
   }
 
   await js(`localStorage.removeItem('decodesim.theme'); 'ok'`);
-  say(`===== ${checked} state changes checked · ${navChecked} route pairs compared for the bar's sections · ${scrollChecked} navigation landings checked (${scrollFailed} wrong) · ${problems} problems in all${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
+  say(`===== ${checked} state changes checked · ${roomChecked} room transitions · ${navChecked} route pairs compared for the bar's sections · ${scrollChecked} navigation landings checked (${scrollFailed} wrong) · ${problems} problems in all${importerOpen ? '' : ' · the importer NOT audited (not in this build)'} =====`);
   dbg.detach();
   process.exit(problems === 0 ? 0 : 1);
 });

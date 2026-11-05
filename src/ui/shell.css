@@ -1135,10 +1135,22 @@
   height: 100dvh;
   overflow: hidden;
 }
-.ds-room-layout > .ds-console {
+.ds-room-layout > .ds-console,
+.ds-room-layout > .rm-screen {
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+/* THE ROOM'S BAR OWNS THE BOTTOM EDGE (READY / START, `room.css`), so a pinned notification (a
+   ranked search, a competition call) stands on it rather than over the two buttons */
+body:has(.rm-screen) .ds-queuebar {
+  bottom: calc(var(--ds-s-7) * 2);
+}
+@media (max-width: 759px) {
+  /* the narrow bar is two rows: its line, then the buttons */
+  body:has(.rm-screen) .ds-queuebar {
+    bottom: calc(var(--ds-s-7) * 3);
+  }
 }
 .ds-room-layout > .ds-friends {
   top: 0;

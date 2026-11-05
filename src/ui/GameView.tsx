@@ -257,6 +257,8 @@ interface Props {
    * session's own `isHost`, which tracks the crown as it migrates.
    */
   onBackToLobby?: () => void;
+  /** the server lets ANY member take a finished room back (`'rooms3'`), not only the host */
+  anyReturn?: boolean;
   /**
    * RUN THE TUTORIAL (roadmap item 6) — a scripted solo practice, offered from the Modes page
    * and from Controls.
@@ -298,6 +300,7 @@ export function GameView({
   onRestartRun,
   onQueueAgain,
   onBackToLobby,
+  anyReturn = false,
   tutorial = false,
   testDrive,
   recordMode,
@@ -1019,7 +1022,8 @@ export function GameView({
           the touch pad's own presses reach the canvas whatever the window thinks. Not in
           `post` either — the results overlay is up, it is interactive, and the match is over,
           so there is nothing left to drive. */}
-      {hud && !hud.windowFocused && !coarsePointer && hud.phase !== 'post' && (
+      {/* ...and never to a watcher, who has nothing to drive */}
+      {hud && !hud.windowFocused && !coarsePointer && hud.phase !== 'post' && !hud.spectator && (
         <div className="focus-hint">
           Your keystrokes are going somewhere else. Click the field to drive.
         </div>
@@ -1039,7 +1043,8 @@ export function GameView({
           /* Host only, and read fresh on every results render rather than captured once:
              the crown migrates when a host leaves, and this overlay re-renders off the HUD
              clock, so the player who inherits the room sees the control appear. */
-          onBackToLobby={onBackToLobby && session?.isHost() ? onBackToLobby : undefined}
+          onBackToLobby={onBackToLobby && (session?.isHost() || anyReturn) ? onBackToLobby : undefined}
+          returnAt={session?.roomReturnAt?.() ?? null}
           onRematchVote={() => controllerRef.current?.toggleRematch()}
           onExit={onExit}
           /* every OTHER driver in this match, by robot id + the name they played under.
@@ -1144,8 +1149,8 @@ function Hud({
         <GameScoreBar hud={hud} />
       ) : hud.mode === 'match' ? (
         <div className="scorebar" data-hud-band>
-          <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`} role="group" aria-label="Red alliance score">
-            {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
+          <div className={`score-panel red ${hud.alliance === 'red' && !hud.spectator ? 'mine' : ''}`} role="group" aria-label="Red alliance score">
+            {hud.alliance === 'red' && !hud.spectator && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
           </div>
           <div className={`timer-panel ${timer.cls}`}>
@@ -1157,8 +1162,8 @@ function Hud({
             <span className="timer-time">{timer.time}</span>
             {dec && <MotifDots className="timer-motif" motif={hud.motif} />}
           </div>
-          <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`} role="group" aria-label="Blue alliance score">
-            {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
+          <div className={`score-panel blue ${hud.alliance === 'blue' && !hud.spectator ? 'mine' : ''}`} role="group" aria-label="Blue alliance score">
+            {hud.alliance === 'blue' && !hud.spectator && <span className="you-tag">YOU</span>}
             <span className="panel-score">{blueScore}</span>
           </div>
         </div>
@@ -1234,7 +1239,8 @@ function Hud({
               the whole cluster down, which read as a floating badge over the field
               rather than as part of the HUD chrome. */}
           <div className="status-row" data-hud-band={coarsePointer ? undefined : true}>
-            <div className="robot-status">
+            {/* the LOCAL robot's card (hopper, gate, power): a watcher has no robot of its own */}
+            {!hud.spectator && <div className="robot-status">
               {GameChips && <GameChips hud={hud} />}
               {dec && (
                 <div className="dec-hud">
@@ -1288,7 +1294,7 @@ function Hud({
                   A chip added back here also widens `[data-hud-band]` (it is on the row), and a
                   band that changes width mid-match re-frames the 3D field — measured at 1440px:
                   one spectator chip took the band from 83px to 227px in BIOBUZZ. */}
-            </div>
+            </div>}
           </div>
           {/* A REFEREE'S CARD, directly under the game's own card: a sanction outranks the drive
               modes below it, and it stands for the rest of the match. Not in `[data-hud-band]`

@@ -226,10 +226,17 @@ export interface NetSession {
    * older build simply never sends it.
    */
   abandonSlot?(): void;
-  /** host only: ask the server to send this finished room back to its lobby */
+  /** ask the server to send this finished room back to its lobby (the host; any member on a
+   *  `'rooms3'` server) */
   requestLobby?(): void;
-  /** the room went back to its lobby; `clientId` is ours on the socket being handed over */
-  onLobby?(cb: (clientId: string) => void): void;
+  /** the room went back to its lobby; `clientId` is ours on the socket being handed over, and
+   *  `spectator` says this socket is a watcher's (it comes back as one) */
+  onLobby?(cb: (clientId: string, spectator: boolean) => void): void;
+  /** `'rooms3'`: when (this client's clock, ms) the finished room goes back to its lobby by itself,
+   *  or null when it will not */
+  roomReturnAt?(): number | null;
+  /** the last roster the room sent this socket, for the lobby that adopts it after a match */
+  lastRoster?(): Extract<import('./protocol').ServerMsg, { t: 'roster' }> | null;
   /**
    * Give up the socket WITHOUT closing it, so the lobby can adopt the same connection.
    * The caller must re-point the transport's `onMessage` immediately — see

@@ -26,7 +26,7 @@ import { clamp } from '../math';
  * queue's game so server limits == config-menu limits.
  */
 
-function coerceName(raw: unknown, fallback: string): string {
+export function coerceName(raw: unknown, fallback: string): string {
   return typeof raw === 'string' && raw.trim() ? raw.slice(0, 24) : fallback;
 }
 

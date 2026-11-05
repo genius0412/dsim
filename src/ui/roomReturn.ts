@@ -1,4 +1,5 @@
 import type { Transport } from '../net/transport';
+import type { ServerMsg } from '../net/protocol';
 
 /**
  * THE SOCKET, HANDED BACK FROM A FINISHED MATCH TO THE ROOM'S OWN LOBBY.
@@ -27,4 +28,8 @@ export interface ResumedRoom {
   /** THE SEAT'S SECRET (protocol.ts `welcome`). No `welcome` is re-sent on this socket, so it
    * travels with the socket, or the room's next match is built with an empty token. */
   seatToken: string;
+  /** the socket is a WATCHER's (`lobby.spectator`): it comes back as one, never through `join` */
+  spectator?: boolean;
+  /** the roster the room sent with the recycle (it lands on the match's session, not the lobby) */
+  roster?: Extract<ServerMsg, { t: 'roster' }> | null;
 }

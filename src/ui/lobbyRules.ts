@@ -107,3 +107,107 @@ export function retriesAsRecord(message: string, c: { typed: boolean; record: bo
 export function entryTitle(record: boolean, listed: boolean, signedIn: boolean): string {
   return record ? 'Duo record' : listed && signedIn ? 'Public room' : 'Private room';
 }
+
+// ---- the one-screen room (docs/rooms-redesign.md) -----------------------------------------------
+
+/** where a seat move is going: a side, or the watchers */
+export type SeatTo = Alliance | 'watch';
+
+/** a move this screen asked for and the room has not answered yet (drawn as if it had) */
+export interface PendingSeat {
+  id: string;
+  to: SeatTo;
+}
+
+/** one place on a side: a member, or an open seat (`p: null`) */
+export interface Seat {
+  a: Alliance;
+  p: LobbyPlayer | null;
+}
+
+/**
+ * THE SEAT MAP: each side's members in roster order, then its open seats, so a side always draws
+ * as many cards as it has seats and a join or a leave moves nothing around it. A move this screen
+ * has asked for is drawn as done (`pending`); the next roster says whether it was. A side holding
+ * more members than seats (a host shrank it under an older server) shows them all. A legacy room
+ * has a total and no sides, so each side shows one open seat while any is left.
+ */
+export function seatMap(
+  players: readonly LobbyPlayer[],
+  set: RoomSettings | undefined,
+  capacity: number,
+  pending: PendingSeat | null,
+): { red: Seat[]; blue: Seat[] } {
+  const shown = players
+    .filter((p) => !(pending?.to === 'watch' && p.clientId === pending.id))
+    .map((p) => (pending && pending.to !== 'watch' && p.clientId === pending.id ? { ...p, alliance: pending.to } : p));
+  const side = (a: Alliance): Seat[] => shown.filter((p) => p.alliance === a).map((p) => ({ a, p }));
+  const red = side('red');
+  const blue = side('blue');
+  if (set) {
+    while (red.length < set.perAlliance.red) red.push({ a: 'red', p: null });
+    while (blue.length < set.perAlliance.blue) blue.push({ a: 'blue', p: null });
+  } else if (shown.length < capacity) {
+    red.push({ a: 'red', p: null });
+    blue.push({ a: 'blue', p: null });
+  }
+  return { red, blue };
+}
+
+/**
+ * MAY THIS VIEWER TAKE AN OPEN SEAT ON `a`? A watcher may take any (the room checks the side), a
+ * driver may change side only where drivers pick their own (`teamSwitch`), and a record run's seats
+ * are fixed.
+ */
+export function canTakeSeat(
+  a: Alliance,
+  v: { spectating: boolean; me: Pick<LobbyPlayer, 'alliance'> | null; set: RoomSettings | undefined; record: boolean },
+): boolean {
+  if (v.record) return false;
+  if (v.spectating) return true;
+  if (!v.me || v.me.alliance === a) return false;
+  return !v.set || v.set.teamSwitch;
+}
+
+/**
+ * MAY THIS PLAYER WATCH INSTEAD OF DRIVE? Not the host (the room would be left with nobody to start
+ * it), not a record run (its seats are the point), not a LAN room (a tab-hosted room has no watcher
+ * socket) and not inside a Discord activity, whose room is everybody's one lobby.
+ */
+export function canWatch(v: { isHost: boolean; record: boolean; lan: boolean; activity: boolean }): boolean {
+  return !v.isHost && !v.record && !v.lan && !v.activity;
+}
+
+/** the room's title: which kind of room this is. It follows the host's Private/Public switch. */
+export function roomTitle(record: boolean, listed: boolean): string {
+  return record ? 'Duo record' : listed ? 'Public room' : 'Private room';
+}
+
+/**
+ * THE ACTION BAR'S ONE LINE: what this player is waiting for, or what they can do next. It sits
+ * beside READY and START, so it never restates them.
+ */
+export function barStatus(v: {
+  spectating: boolean;
+  anyOpen: boolean;
+  isHost: boolean;
+  record: boolean;
+  players: readonly Pick<LobbyPlayer, 'ready'>[];
+  capacity: number;
+  meReady: boolean;
+}): string {
+  if (v.spectating) return v.anyOpen ? 'You are watching. Take an open seat to play.' : 'You are watching. Every seat is taken.';
+  if (v.record && v.players.length < v.capacity) return 'Waiting for your partner to join with the code';
+  const ready = v.players.filter((p) => p.ready).length;
+  if (v.isHost) return ready === v.players.length ? 'Everyone is ready' : `${ready} of ${v.players.length} ready`;
+  return v.meReady ? 'Waiting for the host to start' : `${ready} of ${v.players.length} ready`;
+}
+
+/** the room's shape in one line, for everyone but the host (who has the controls instead) */
+export function settingsLine(set: RoomSettings): string {
+  return [
+    `${set.perAlliance.red} red · ${set.perAlliance.blue} blue`,
+    set.teamSwitch ? 'drivers pick a side' : 'the host places drivers',
+    set.runLength === 'auto' ? 'auto only' : 'full match',
+  ].join(' · ');
+}

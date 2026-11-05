@@ -606,6 +606,7 @@ export function Results({
   onRematchVote,
   onQueueAgain,
   onBackToLobby,
+  returnAt = null,
   onExit,
   matchResult,
   practiceRun,
@@ -641,6 +642,8 @@ export function Results({
   onRematchVote: () => void;
   onQueueAgain?: () => void;
   onBackToLobby?: () => void;
+  /** `'rooms3'`: when (this client's clock) the room goes back to its lobby by itself */
+  returnAt?: number | null;
   onExit: () => void;
   matchResult: MatchResultInfo | null;
   /**
@@ -999,6 +1002,11 @@ export function Results({
                   : '✓ Saved on this device. Sign in to keep it on your account.'}
               </p>
             )}
+            {/* THE ROOM GOES BACK BY ITSELF (`'rooms3'`): everybody is told when, so nobody reads
+                MENU as the only way out. Re-read on every HUD render, so it counts down. */}
+            {returnAt !== null && (
+              <p className="resx-note">Back to the room in {Math.max(0, Math.ceil((returnAt - Date.now()) / 1000))} s</p>
+            )}
             {/* EXIT FIRST, PRIMARY LAST (ui-standard §6: primary is rightmost). Everything but
                 `primary` is a secondary, so the row says which one the screen expects. */}
             <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
@@ -1018,7 +1026,7 @@ export function Results({
                   when somebody left, or when the sides want swapping. */}
               {onBackToLobby && (
                 <button className={rank(primary === 'lobby')} onClick={onBackToLobby}>
-                  BACK TO LOBBY
+                  BACK TO ROOM
                 </button>
               )}
               {canRematch && (

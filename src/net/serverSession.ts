@@ -103,7 +103,16 @@ export class ServerSession implements NetSession {
   private recordResult: RecordRankInfo | null = null;
   private restartCb: (() => void) | null = null;
   /** the room went back to its lobby — see `onLobby` */
-  private lobbyCb: ((clientId: string) => void) | null = null;
+  private lobbyCb: ((clientId: string, spectator: boolean) => void) | null = null;
+  /** `'rooms3'`: when the finished room goes back to its lobby by itself (`returnIn`) */
+  private returnAt: number | null = null;
+  /**
+   * THE LAST ROSTER, kept for the lobby that adopts this socket after a match. The room broadcasts
+   * one with the recycle, and it lands HERE (React has not re-pointed `onMessage` yet). A driver's
+   * lobby asks again with an empty `update`; a watcher cannot (the room ignores a watcher's
+   * frames), so this is its only copy.
+   */
+  private roster: Extract<ServerMsg, { t: 'roster' }> | null = null;
   /** the seat's secret (see protocol.ts `welcome`). Carried in, and refreshed by every
    * `welcome` the server sends — including the one a reattach re-sends — so a reclaimed
    * seat always holds a working credential. */
@@ -450,15 +459,24 @@ export class ServerSession implements NetSession {
     );
   }
 
-  /** host only: ask the server to send this finished room back to its lobby. */
+  /** ask the server to send this finished room back to its lobby (the host; any member on a
+   *  `'rooms3'` server, which brings the room's own countdown forward). */
   requestLobby(): void {
     this.transport.send(encodeMsg({ t: 'lobby' }));
   }
 
   /** the room went back to its lobby; `clientId` is ours, re-sent because the lobby that
    *  adopts this socket never sends a `join` and so never gets a `welcome`. */
-  onLobby(cb: (clientId: string) => void): void {
+  onLobby(cb: (clientId: string, spectator: boolean) => void): void {
     this.lobbyCb = cb;
+  }
+
+  roomReturnAt(): number | null {
+    return this.returnAt;
+  }
+
+  lastRoster(): Extract<ServerMsg, { t: 'roster' }> | null {
+    return this.roster;
   }
 
   /** a robot's static spec, re-injected into slimmed snapshots (from setups) */
@@ -581,6 +599,7 @@ export class ServerSession implements NetSession {
       this.runLength = m.runLength; // ALWAYS re-read: a recycled room may change it
       this.gen = m.gen ?? 0;
       this.rematch = { votes: 0, need: 0, mine: false }; // a new match, a clean tally
+      this.returnAt = null; // a rematch cancels the room's way back
       this.ranked = m.ranked ?? false;
       this.intros = m.intros ?? [];
       // ALWAYS re-read, for the reason `physics` two statements up is: a recycled room can
@@ -606,6 +625,7 @@ export class ServerSession implements NetSession {
       // (`Room.passCrown`) — so without this the player who INHERITED the room would be
       // shown no host controls and the room would look stuck to everyone in it.
       this.host = m.hostId !== '' && m.hostId === this.clientId;
+      this.roster = m;
       // ...and, for the visuals relay, who holds an imported robot (a watcher or a late joiner learns it here)
       importVisuals.noteRoster(this.clientId, m.players);
     } else if (m.t === 'welcome') {
@@ -621,9 +641,12 @@ export class ServerSession implements NetSession {
        * a session that is over rather than one that is merely quiet.
        */
       this.connected = false;
+      this.returnAt = null;
       // the recycle re-states the seat's secret (a current server); the App hands it on
       if (m.seatToken) this.seatToken = m.seatToken;
-      this.lobbyCb?.(m.clientId);
+      this.lobbyCb?.(m.clientId, m.spectator === true || this.spectator);
+    } else if (m.t === 'returnIn') {
+      this.returnAt = typeof m.ms === 'number' && m.ms > 0 ? Date.now() + m.ms : null;
     } else if (m.t === 'rejoined') {
       if (!m.ok) {
         // the grace window lapsed / the match is gone — the held slot can't be

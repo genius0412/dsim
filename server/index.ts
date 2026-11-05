@@ -18,8 +18,8 @@ import {
 import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
 import { visualSourceKey } from './importVisuals';
 import { clientIp } from './analytics';
-import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, runLengthAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
-import { sanitizePlayer } from '../src/net/sanitize';
+import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, CUSTOM_ROOM_WATCHERS, DEFAULT_ROOM_CONFIG, physicsAllowed, runLengthAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type LobbyPlayer, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
+import { coerceName, sanitizePlayer } from '../src/net/sanitize';
 import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -734,6 +734,17 @@ const spectatorCap = (name: string, dflt: number): number => {
 };
 const MAX_SPECTATORS_PER_ROOM = spectatorCap('MAX_SPECTATORS_PER_ROOM', 24);
 const MAX_SPECTATORS = spectatorCap('MAX_SPECTATORS', 192);
+/**
+ * A CUSTOM ROOM'S WATCHERS (docs/rooms-redesign.md). Its lobby names every one of them, and each
+ * costs a driver's snapshot stream once the match starts (costprobe: 24 KiB/s a watcher in a DECODE
+ * 2v2, 20 in BIOBUZZ 3D, 83 in Chain Reaction), so a friends' room carries eight: two teams' worth,
+ * and at most three times a 2v2's own egress. A ranked or competition match keeps the per-room cap
+ * above. `0` disables, env-overridable.
+ */
+const MAX_SPECTATORS_CUSTOM = spectatorCap('MAX_SPECTATORS_CUSTOM', CUSTOM_ROOM_WATCHERS);
+/** a player-made versus room (a code somebody typed, never one the matchmaker staged) */
+const isCustomRoom = (r: RoomHandle): boolean => r.config.kind === 'versus' && !!r.config.settings && !isStagedRoomCode(r.code);
+const WATCHERS_FULL = `This room already has ${CUSTOM_ROOM_WATCHERS} spectators.`;
 /** attached spectators across every room on this machine (see the caps above) */
 let spectatorTotal = 0;
 
@@ -4023,6 +4034,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       channel: typeof msg.channel === 'string' ? msg.channel : undefined,
       // who pays for this seat's imported-robot visuals: its account, else its address, hashed
       budgetKey: visualSourceKey(user ? `u:${user.userId}` : `ip:${clientIp(req)}`),
+      // `'rooms3'`: a fresh join lands where the open seats are (`Room.add`)
+      ...(msg.anySide === true ? { anySide: true } : {}),
     };
     if (user) {
       client.userId = user.userId;
@@ -4104,6 +4117,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // NOT `region_full`: that code tells the client to try a different region, which is
     // exactly wrong here — the room is on THIS machine and exists nowhere else. This is
     // the plain-message refusal every client since the first build already renders.
+    if (isCustomRoom(r) && r.spectatorCount() >= MAX_SPECTATORS_CUSTOM) {
+      send({ t: 'error', message: WATCHERS_FULL, code: 'spectators_full' });
+      return;
+    }
     if (
       r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM ||
       spectatorTotal >= MAX_SPECTATORS ||
@@ -4133,7 +4150,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       send,
       sendRaw,
       backlog,
-      player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
+      // a watcher is named on a custom room's lobby (`roster.watchers`): what it typed, or Guest
+      player: { ...sanitizePlayer(undefined, r.config.game), name: coerceName(msg.name, 'Guest'), clientId: id },
       connected: true,
       disconnectAt: 0,
       caps: coerceCaps(msg.caps),
@@ -4160,6 +4178,77 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     spectatorsByNet.set(netKey, (spectatorsByNet.get(netKey) ?? 0) + 1);
     const key = r.addSpectator(spec);
     if (typeof key === 'number') conn = key; // a room on a worker: what this socket's detach carries
+  };
+
+  /** this socket stops counting as a watcher (its spectator seat was given up on purpose) */
+  const leaveWatching = (): void => {
+    if (spectating) {
+      spectating = false;
+      spectatorTotal = Math.max(0, spectatorTotal - 1);
+    }
+    if (spectatingNet) {
+      spectatingNet = false;
+      const left = (spectatorsByNet.get(netKey) ?? 1) - 1;
+      if (left <= 0) spectatorsByNet.delete(netKey);
+      else spectatorsByNet.set(netKey, left);
+    }
+  };
+
+  /**
+   * MOVE THIS SOCKET BETWEEN A SEAT AND THE WATCHERS (`'rooms3'`, docs/rooms-redesign.md).
+   *
+   * It used to be a reconnect: drop the socket, dial again, take a new client id, and land 350-660
+   * ms later on a lobby that had flashed. Now it is the two existing doors on the SAME socket,
+   * composed: leave the role this socket holds (`detach`, a lobby leave, which a room on a worker
+   * receives as an ordinary posted op), then go through `attachSpectator` or `joinRoom` exactly as a
+   * fresh socket would, every check included (capacity and sides, the one-game lock, the 3D and
+   * import gates, the watcher caps). The client id is this socket's and does not change.
+   *
+   * Lobby only: a match in progress keeps its seats and its audience. The cap that would refuse
+   * the new role is asked BEFORE the old one is given up, so the common refusal leaves the player
+   * where they were; one that still lands after (somebody took the last seat in the same instant)
+   * is the door's own `error`, and the socket is roomless, so the client asks the opposite door.
+   */
+  const handleSeat = (msg: Extract<ClientMsg, { t: 'seat' }>): void => {
+    const r = room;
+    if (!r || rejoining) return;
+    const state = r.lobbySummary().state;
+    if (state !== 'lobby' && state !== 'full') {
+      send({ t: 'error', message: 'Seats change between matches.' });
+      return;
+    }
+    if (msg.to === 'watch') {
+      if (spectating) return;
+      if (!isCustomRoom(r)) {
+        send({ t: 'error', message: 'This room can’t be watched from a seat.' });
+        return;
+      }
+      if (r.spectatorCount() >= MAX_SPECTATORS_CUSTOM) {
+        send({ t: 'error', message: WATCHERS_FULL, code: 'spectators_full' });
+        return;
+      }
+      r.detach(id, conn || undefined, true);
+      room = null;
+      conn = 0;
+      attachSpectator({ t: 'spectate', room: r.code, caps: msg.caps, authToken: msg.authToken, name: msg.name });
+      return;
+    }
+    if (msg.to !== 'red' && msg.to !== 'blue') return;
+    if (!spectating) return; // a seated driver changes side with `update`, where the room's rules are
+    if (!r.canJoin()) {
+      send({ t: 'error', message: 'This room is full.', code: 'room_full' });
+      return;
+    }
+    const code = r.code;
+    r.detach(id, conn || undefined, true);
+    leaveWatching();
+    room = null;
+    conn = 0;
+    const player = { ...((msg.player ?? {}) as Omit<LobbyPlayer, 'clientId'>), alliance: msg.to };
+    void joinRoom({ t: 'join', room: code, player, config: msg.config, authToken: msg.authToken, caps: msg.caps, channel: msg.channel, group: msg.group }).catch((e) => {
+      console.error(`[server] seat error from ${id}:`, e);
+      if (!room && !closed) send({ t: 'error', message: 'Couldn’t take that seat. Try again.' });
+    });
   };
 
   // inbound rate bucket for this socket — see MSG_RATE_LIMIT
@@ -4227,6 +4316,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
         attachSpectator(msg);
+      } else if (msg.t === 'seat') {
+        handleSeat(msg);
       } else if (msg.t === 'rejoin') {
         if (room || rejoining) return;
         const r = rooms.get(msg.room.toLowerCase());
@@ -4648,17 +4739,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     closed = true; // an in-flight async join must stop and hand its room back
     idleWatch.delete(ws);
     onlineCount--;
-    if (spectating) {
-      spectating = false;
-      spectatorTotal = Math.max(0, spectatorTotal - 1);
-    }
+    leaveWatching();
     if (liveSockets.get(id) === mySock) liveSockets.delete(id);
-    if (spectatingNet) {
-      spectatingNet = false;
-      const left = (spectatorsByNet.get(netKey) ?? 1) - 1;
-      if (left <= 0) spectatorsByNet.delete(netKey);
-      else spectatorsByNet.set(netKey, left);
-    }
     if (authedUserId) {
       const n = (authedUsers.get(authedUserId) ?? 1) - 1;
       if (n <= 0) authedUsers.delete(authedUserId);

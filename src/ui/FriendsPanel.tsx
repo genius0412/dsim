@@ -97,6 +97,7 @@ export function FriendsPanel({
   myUserId,
   room,
   allowProfileNavigation = true,
+  openSignal,
 }: {
   signedIn: boolean;
   onOpenProfile: (username: string) => void;
@@ -110,6 +111,8 @@ export function FriendsPanel({
   room?: RoomInviteTarget;
   /** Keep links inert when leaving this surface would abandon a live room. */
   allowProfileNavigation?: boolean;
+  /** bumped by a room's Invite button: the panel opens (0 or absent: nothing) */
+  openSignal?: number;
 }) {
   // AN OVERLAY, NOT A COLUMN (owner, 2026-10-10: "pressing friends should open friends as an overlay
   // instead of pushing everything to the side"). The button stays where it is and the panel opens over
@@ -117,6 +120,9 @@ export function FriendsPanel({
   // screen on load, which is the opposite of what an overlay is for.
   const [open, setOpen] = useState(false);
   const expanded = open;
+  useEffect(() => {
+    if (openSignal) setOpen(true);
+  }, [openSignal]);
   useEscape(() => setOpen(false), open);
   // THE PROFILE PREVIEW a press on a row opens. Its own Escape is consumed before the sheet's sees it, and
   // it goes with the sheet: a preview left in state would reopen over the next visit.

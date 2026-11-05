@@ -1,7 +1,7 @@
 # Custom rooms redesign plan
 
-Plan, 2026-11-04. Cues: Brawl Stars friendly rooms (all slots on one screen, tap to move) and
-Valorant customs (team columns, observer list, host settings beside them).
+Plan 2026-11-04, built the same day (below). Cues: Brawl Stars friendly rooms (all slots on one
+screen, tap to move) and Valorant customs (team columns, observer list, host settings beside them).
 
 ## Audit
 
@@ -26,12 +26,12 @@ Local harness, five offscreen clients, DECODE, 1366×768.
 ## Layout model
 
 Height binds (465 px short, width spare). Desktop: one unscrolled screen, RED seats, room panel,
-BLUE seats, fixed action bar. Phone: stacked, bar pinned. Under 640 px tall, one-line cards.
-Robot and start position move to a Setup drawer.
+BLUE seats, fixed action bar. Phone: stacked, bar pinned. On a short window the seats scroll inside
+their row and the bar stays. Robot and start position move to a Setup drawer.
 
 ```
 +----------------------------------------------------------------------------+
-| <- Leave  Room K5JJBW  [Copy code] [Copy link] [Invite]   Private  US East  |
+| <- Leave  Private room  K5JJBW  [Copy code] [Invite]              US East   |
 +------------------------+--------------------------+------------------------+
 | RED                    | ROOM          (host only)| BLUE                   |
 | +--------------------+ | Seats   red  [-] 2 [+]   | +--------------------+ |
@@ -44,14 +44,14 @@ Robot and start position move to a Setup drawer.
 | +--------------------+ | Dana, Eli                | + - - - - - - - - - -+ |
 |                        | [GG] [Ready?] [One sec]  |                        |
 +------------------------+--------------------------+------------------------+
-| 3/4 ready                               [ READY ]      [ START MATCH ]      |
+| 3/4 ready                               [ START MATCH ]      [ READY ]      |
 +----------------------------------------------------------------------------+
 ```
 
 ```
 +--------------------------+
-| <- Room K5JJBW  [Share]  |
-| Private . 2v2 . US East  |
+| <- Private room  K5JJBW  |
+| [Copy code] [Invite]     |
 | RED                      |
 | | Alice *         READY  |
 | | Bot . Medium      [x]  |
@@ -59,9 +59,10 @@ Robot and start position move to a Setup drawer.
 | | You . Close   [Setup]  |
 | | Open seat [Take][+Bot] |
 | Spectators 2/8  [Watch]  |
-| [Room settings >] host   |
+| Room settings (host)     |
 +--------------------------+
-| [ READY ]   [ START ]    |
+| 3/4 ready                |
+| [ START ]   [ READY ]    |
 +--------------------------+
 ```
 
@@ -82,9 +83,11 @@ Robot and start position move to a Setup drawer.
 
 ## Smoothness
 
-- New room opens the lobby (Private, 2v2): 1 click, 0 dialogs.
+- Browse rooms keeps its **Private room** and **Public room** buttons (owner ruling, 2026-11-04);
+  each creates the room and opens it, one click, no dialog. Play's New room opens a Private one.
+  The title says Private room or Public room, and follows the host's switch in Room settings.
 - Open seats hold their space, so nothing shifts. Cards ease 150 ms.
-- After a match the room returns 30 s after the result saves, or on the host's press, with a
+- After a match the room returns 30 s after the result saves, or on any member's press, with a
   countdown for all. Seats, bots and robots stay.
 - Six fixed reactions (no moderation, ~40 bytes); no free chat. Default names get numbers.
 
@@ -93,22 +96,40 @@ Robot and start position move to a Setup drawer.
 Additive, behind cap `rooms3` both ways. Nothing per tick.
 
 - `{t:'seat', to}` (red, blue, watch), lobby only, through the `join`/`spectate` checks. Worker
-  rooms: an `Op` and in-flight counts.
+  rooms: the existing `detach`/`add`/`addSpectator` ops, in order.
 - `spectate` carries `name`; `roster.watchers` lists them on change.
 - `{t:'react', k}`, 1 a second per socket.
-- `lobby` gains `recycleAt`, `spectator`. `runLength` patchable given `autoOnly` all round.
+- `lobby` gains `spectator`; `returnIn` announces the countdown. `runLength` patchable given
+  `autoOnly` all round.
 - Old clients see today's lobby; new clients on old servers keep today's controls. Alpha deploy.
 
 ## Removed
 
-The New room dialog and form, Browse's Private/Public buttons, the Watch box (into Join with a
-code), Your alliance (Spectate stays a seat-map choice), the bot row.
+The New room dialog and form, the Watch box (into Join with a code), Your alliance (Spectate stays
+a seat-map choice), the bot row.
 
 ## Checks
 
 - `npm test`: lobbyRules, `seat` doors, watchers, recycle, names, reactions; keep "rooms:",
   "spectate:", "move lock:", "shrink:".
 - `test:workers` for `seat`; `test:mm` untouched.
-- `shiftaudit`: empty/full rooms, host/guest/watcher, ready, crown, drawer; both themes, 1366×768,
-  1024×640, 390×844.
+- `shiftaudit` (`DSIM_ROOM`): empty and full rooms, a watcher joining and leaving, ready, crown,
+  drawer; both themes, 1366×768 and 390×844.
 - `costprobe` bytes unchanged; `uiaudit`, `contrast`, `docaudit`, `build`, `server:check`.
+
+## Built (2026-11-04)
+
+Same harness, before → after:
+
+| Path | Clicks | Dialogs | Time | Layout shift |
+|---|---|---|---|---|
+| Create (Play, or Browse's two buttons) | 4 → 1 | 2 → 0 | 350 → 340 ms | 0 |
+| Full or playing room | 2 → 2 | 1 → 1 | 660 → 370 ms to watch, 790 → 490 to the field | 0 |
+| Watch, or take a seat | 1 | 0 | 350 ms → 50 ms (same socket) | 52 px → 0 for others |
+| Back to the room | host only → anyone, or 30 s | 0 | 60 ms | 0 |
+
+READY/START: y=1089 → 702 at 1366×768 (no page scroll), y=1802 → 725 at 390×844 (bar pinned).
+`DSIM_ROOM=only npm run shiftaudit`: 376 probes and 18 room transitions, 0 shifts, both themes.
+
+Departures: no copy-link (the code and Invite cover it); START sits left of READY, so a crown
+arriving never moves READY; on a phone the two share the bar's width.
