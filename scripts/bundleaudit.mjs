@@ -852,7 +852,13 @@ const BASELINE = {
   // 2026-10-04: 33.14 -> 36.06, raised on purpose. The base (alpha 7fb1d7ba) measured 34.06 inside the
   // tolerance; +2.00 is undo and redo in the editor (`editorHistory.ts`, the edit names in `copy.ts`,
   // the header buttons and the keys).
-  importerui: { gzip: 36.06 * 1000 },
+  // 2026-11-05: 36.06 -> 40.82, raised on purpose and measured. The base (alpha 0e504e80) already
+  // measures 38.88 (+2.82 of drift since the last raise, inside the tolerance, not attributed here).
+  // PR #126 adds +1.16 (Detail on the drop box before the read, the staged tile, leave parts out of
+  // the footprint), and its review +0.78: a zip that holds a STEP (`fileSelection.ts`), the staged
+  // Detail kept on the tile with Keep current model, the Review warning for left-out parts, and the
+  // share file's `apart`/`motion` validation (`shareFile-*.js` 1.38 -> 1.81).
+  importerui: { gzip: 40.82 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 
