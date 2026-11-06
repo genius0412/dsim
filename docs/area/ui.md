@@ -437,6 +437,9 @@ rulings below are theirs, not defaults.
 - **ONE stage behind both screens** (`src/ui/MenuStage.tsx`, mounted by `App` while `screen` is `home`
   or `modes`). Going Home → Play is a change of `view`, not a remount, which is what lets the camera
   FLY (`FLY_MS`, `--ds-dur-fly`: 1 s ease-in-out, instant under reduced motion; Back flies it back).
+  The 3D fly runs on FRAME time (`stageFly.ts`): a frame advances it at most 50 ms' worth and its first
+  frame not at all, so a long task in it (the click's commit, the robot built) holds the camera
+  instead of skipping part of the path.
 - **The selected game's field.** BIOBUZZ: the match's own 3D scene (`createBiobuzzScene`, lazy,
   `interactive: false`), drawn through `SceneFrame.pose` ON DEMAND (while the camera moves, once more
   50 ms after a move ends, and once when `assetsSettled` resolves for EVERY world it builds: 2026-11-02, it was only the boot's, so an import picked on Play stayed on its outline until another robot was picked and back), not every frame.

@@ -43598,6 +43598,31 @@ function fxImportFixed(): RobotSpec {
     'menu stage: the 3D stage’s robot is on the field on Home too, so the fly neither adds nor drops it',
     /world = stageWorld\(game, spec, alliance, '3d'\);/.test(stageSrc) && !/robotOn|dropRobotAt/.test(stageSrc),
   );
+  // the idea is PR #125's: the first Play's camera "jumps half way through the movement" when a long
+  // task lands in the fly, because it ran on the wall clock
+  {
+    const { flyStep, FLY_STEP_MAX_S } = await import('../src/ui/stageFly');
+    // a 1 s fly at 60 fps with a 126 ms stall (the click's commit) on its first frame and a 61 ms one
+    // (the robot built) on the second: frame gaps in seconds, the first frame's 0 being `lastT` at rest
+    const gaps = [0, 0.126, 0.061, ...Array.from({ length: 80 }, () => 1 / 60)];
+    const path: number[] = [];
+    gaps.reduce((p, dt) => (path.push(flyStep(p, dt, 1000)), path[path.length - 1]), 0);
+    const steps = path.map((p, i) => p - (i ? path[i - 1] : 0));
+    const landsAt = path.indexOf(1);
+    let at20 = 0;
+    let frames20 = 0;
+    while (at20 < 1) (at20 = flyStep(at20, 0.05, 1000)), frames20++;
+    check(
+      'menu stage: the fly runs on frame time: its first frame moves nothing, a stalled frame moves it at most 5 % (never the stall’s share), it lands at exactly 1 on a steady 60 fps and in 20 frames at 20 fps, and at once under reduced motion',
+      FLY_STEP_MAX_S === 0.05 && steps[0] === 0 && Math.max(...steps) <= 0.05 + 1e-12 && Math.abs(steps[1] - 0.05) < 1e-12 &&
+        landsAt > 0 && path.slice(landsAt).every((p) => p === 1) && frames20 === 20 && flyStep(0, 0, 0) === 1 && flyStep(0.4, 0.3, 0) === 1,
+      JSON.stringify({ first: steps.slice(0, 4), landsAt, frames20 }),
+    );
+    check(
+      'menu stage: the 3D stage advances its fly by flyStep (progress, not a start time) and the fly’s first frame starts from rest (source pin)',
+      stageSrc.includes('fly.p = flyStep(fly.p, dt, fly.ms);') && !/fly\.t0|t0: performance\.now\(\)/.test(stageSrc) && /p: 0,\s*ms: reducedMotion\(\) \? 0 : FLY_MS,\s*\};\s*\/\/[^\n]*\n\s*lastT = 0;/.test(stageSrc),
+    );
+  }
   check(
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
     /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,
