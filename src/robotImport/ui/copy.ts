@@ -204,7 +204,6 @@ export const COPY = {
   tryAgain: 'Try again',
   previewOff: 'Couldn’t start the 3D preview on this device. Showing the footprint.',
   bakeFailed: 'Couldn’t prepare the model. Try again, or reload the page.',
-  storageBlocked: 'Saving needs site storage, which this browser is blocking.',
 
   // ---- preview ----
   cameras: [
@@ -226,7 +225,6 @@ export const COPY = {
     apart: 'Orange: the parts left out of the footprint.',
     floating: 'Blue: the parts that float apart from the robot.',
   },
-  resetView: 'Reset view',
 
   // ---- Drivetrain ----
   drivetrain: 'Drivetrain',
@@ -241,19 +239,16 @@ export const COPY = {
   gearbox: 'Gearbox',
   freeSpeed: 'Free speed',
   extRatio: 'External ratio',
-  extRatioHint: 'motor turns per wheel turn',
   tankRatio: 'Traction ratio',
   zeroPower: ZERO_POWER_LABEL,
   wheel: 'Wheel',
   custom: 'Custom',
   diameter: 'Diameter',
   weight: 'Weight',
-  weightHint: 'with the battery in',
   statRpm: 'Drive rpm',
   statSpeed: 'Top speed',
   statAccel: 'Accel',
   statPush: 'Push',
-  limitsTitle: 'How the sim reads it',
   rpmOk: (dt: string, min: number, max: number) => `The sim drives ${dt} from ${min} to ${max} rpm.`,
   rpmHigh: (dt: string, max: number) => `Over the sim’s ${max} rpm for ${dt}. It drives at ${max}.`,
   rpmLow: (dt: string, min: number) => `Under the sim’s ${min} rpm for ${dt}. It drives at ${min}.`,
@@ -265,7 +260,6 @@ export const COPY = {
   pushLine: 'Grows with weight and traction, and with gearing down.',
 
   // ---- Mechanisms ----
-  mechanisms: 'Mechanisms',
   placement: 'Placement',
   mechAria: 'Mechanisms, seen from above, front up',
   height: 'Height',
@@ -287,7 +281,6 @@ export const COPY = {
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,
   cadHandLoaded: 'no intake (loaded by hand)',
-  moving: 'Moving parts',
   movingHint: 'Select a part to see it in the preview and change it.',
   movingNone: 'Nothing moves yet. Find moving parts looks for the wheels, rollers, flywheels and a turret.',
   motionRole: (role: MotionRole, corner?: number) =>
@@ -363,13 +356,11 @@ export const COPY = {
   },
 
   // ---- Review ----
-  checks: 'Checks',
   allPass: 'All checks pass',
   toFix: (n: number) => `${n} to fix before saving`,
   notes: (n: number) => `Ready, with ${n} ${n === 1 ? 'note' : 'notes'}`,
   passFits: 'Fits the 18 in cube',
-  apartWarn: (n: number) =>
-    `${n} ${n === 1 ? 'part is' : 'parts are'} left out of the footprint. ${n === 1 ? 'It is' : 'They are'} still drawn, but ${n === 1 ? 'has' : 'have'} no collision and ${n === 1 ? 'is' : 'are'} not counted in the 18 in cube.`,
+  apartWarn: (n: number) => `${n} ${n === 1 ? 'part' : 'parts'} left out of the footprint: drawn, but no collision and not counted in the 18 in cube.`,
   tooSmall: (side: number, min: number) =>
     `The footprint is only ${side.toFixed(1)} in across. The sim needs ${min} in a side, so check the units.`,
   passWheels: 'Four wheels on the footprint',
@@ -388,8 +379,6 @@ export const COPY = {
   levelNames: { block: 'must fix', warn: 'note', info: 'note', ok: 'passes' } as const,
 
   // ---- test drive (the HUD's own ALL CAPS voice) ----
-  hudBack: 'EDITOR',
-  hudBackTitle: 'Back to the importer (Esc)',
 } as const;
 
 /** "4.5 in forward, 5.3 in right, 12.0 in high": signs as words, from the footprint's centre */

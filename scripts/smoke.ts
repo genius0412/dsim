@@ -39961,8 +39961,8 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     check(
       `import UI review: parts left out of the footprint are a WARNING (drawn, no collision, not counted in the 18 in cube) whose Fix goes to Parts; it blocks nothing, and none left out says nothing — ${game}`,
       apart?.level === 'warn' && apart.fix?.step === 0 && apart.fix.focus === 'ri-parts' && blocks(apartItems) === 0 &&
-        apart.text === '2 parts are left out of the footprint. They are still drawn, but have no collision and are not counted in the 18 in cube.' &&
-        /^1 part is left out of the footprint\. It is still drawn, but has no collision and is not counted/.test(reviewItems(meas(16, 14, 15), ok, game, false, [], 1).find((i) => i.id === 'apart')?.text ?? '') &&
+        apart.text === '2 parts left out of the footprint: drawn, but no collision and not counted in the 18 in cube.' &&
+        /^1 part left out of the footprint: drawn/.test(reviewItems(meas(16, 14, 15), ok, game, false, [], 1).find((i) => i.id === 'apart')?.text ?? '') &&
         !reviewItems(meas(16, 14, 15), ok, game).some((i) => i.id === 'apart'),
       apart?.text,
     );

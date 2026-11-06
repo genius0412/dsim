@@ -10,7 +10,7 @@
  * lengths; every chunk after it is copied byte for byte, which keeps their alignment.
  */
 import type { GameId, RobotSpec } from '../types';
-import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionDrive, type MotionRole } from './types';
+import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionRole } from './types';
 
 const MAGIC = 0x46546c67; // 'glTF'
 const CHUNK_JSON = 0x4e4f534a; // 'JSON'
@@ -95,39 +95,45 @@ function parseGlb(bytes: Uint8Array): Parsed | { ok: false; error: ShareReadErro
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 /** a body id: what `MeshPart.body` numbers */
-const isBody = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+const isBody = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0;
 /** a list of body ids, ascending with no repeats (how the editor writes `apart`) */
-export const isBodyList = (v: unknown): v is number[] => Array.isArray(v) && v.every((b, i) => isBody(b) && (i === 0 || b > (v[i - 1] as number)));
-const AXES = ['forward', 'left', 'up', 'part'];
-const POSES = ['deployed', 'folded'];
-const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
-/** the most moving parts a share file may carry (the stored mesh numbers them below 64 too) */
-const MAX_MOTION = 64;
+export const isBodyList = (v: unknown): boolean => Array.isArray(v) && v.every((b, i) => isBody(b) && (!i || b > v[i - 1]));
+/** absent, or one of `of` */
+const oneOf = (v: unknown, of: readonly unknown[]): boolean => v === undefined || of.includes(v);
+const num = (v: unknown): boolean => v === undefined || Number.isFinite(v);
 
 /**
  * Is `v` a setup's moving parts as the editor writes them (`MotionGroup[]`)? A share file is another
  * player's, and these index each other (`follows`, `rideOn`) and name bodies, so a damaged one is
- * refused rather than read: every role and choice known, every number finite, every body an id, and
- * every index another row's. Fields the editor does not write are not looked at.
+ * refused rather than read: every role and choice known, every number finite, every body an id, every
+ * index another row's, and at most 64 rows (the stored mesh numbers its moving parts below 64).
+ * Fields the editor does not write are not looked at.
  */
 export function isMotionList(v: unknown): boolean {
-  if (!Array.isArray(v) || v.length > MAX_MOTION) return false;
-  const row = (i: unknown, self: number): boolean => typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < v.length && i !== self;
-  return v.every((g, i) => {
-    if (!isObj(g) || !MOTION_ROLES.includes(g.role as MotionRole)) return false;
-    if (!Array.isArray(g.bodies) || !g.bodies.every(isBody)) return false;
-    if (g.flip !== undefined && typeof g.flip !== 'boolean') return false;
-    if (g.found !== undefined && typeof g.found !== 'boolean') return false;
-    if (g.corner !== undefined && !(Number.isInteger(g.corner) && (g.corner as number) >= 0 && (g.corner as number) < 4)) return false;
-    if (g.filePose !== undefined && !POSES.includes(g.filePose as string)) return false;
-    if (g.drive !== undefined && !MOTION_DRIVES.includes(g.drive as MotionDrive)) return false;
-    if (g.axis !== undefined && !AXES.includes(g.axis as string)) return false;
-    if (g.axisBody !== undefined && !isBody(g.axisBody)) return false;
-    for (const k of ['foldDeg', 'deployDeg', 'amount'] as const) if (g[k] !== undefined && !finite(g[k])) return false;
-    if (g.follows !== undefined && !(isObj(g.follows) && row(g.follows.group, i) && finite(g.follows.ratio))) return false;
-    if (g.rideOn !== undefined && !row(g.rideOn, i)) return false;
-    return true;
-  });
+  const row = (r: unknown, self: number): boolean => Number.isInteger(r) && (r as number) >= 0 && (r as number) < (v as unknown[]).length && r !== self;
+  return (
+    Array.isArray(v) &&
+    v.length <= 64 &&
+    v.every(
+      (g, i) =>
+        isObj(g) &&
+        MOTION_ROLES.includes(g.role as MotionRole) &&
+        Array.isArray(g.bodies) &&
+        g.bodies.every(isBody) &&
+        oneOf(g.flip, [true, false]) &&
+        oneOf(g.found, [true, false]) &&
+        oneOf(g.corner, [0, 1, 2, 3]) &&
+        oneOf(g.filePose, ['deployed', 'folded']) &&
+        oneOf(g.drive, MOTION_DRIVES) &&
+        oneOf(g.axis, ['forward', 'left', 'up', 'part']) &&
+        (g.axisBody === undefined || isBody(g.axisBody)) &&
+        num(g.foldDeg) &&
+        num(g.deployDeg) &&
+        num(g.amount) &&
+        (g.follows === undefined || (isObj(g.follows) && row(g.follows.group, i) && Number.isFinite(g.follows.ratio))) &&
+        (g.rideOn === undefined || row(g.rideOn, i)),
+    )
+  );
 }
 
 /** the `asset.extras.dsim` block of a GLB, validated for shape (the spec is coerced by the caller) */
@@ -149,10 +155,9 @@ export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult 
   }
   if (!isObj(dsim.spec) || !isObj(dsim.setup)) return fail('bad-payload', 'Couldn’t read this robot’s setup: the robot or its setup is missing.');
   if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', 'Couldn’t read this robot’s setup: its name is missing or too long.');
-  if (dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) {
-    return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts left out of the footprint is damaged.');
+  if ((dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) || (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion))) {
+    return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts is damaged.');
   }
-  if (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion)) return fail('bad-payload', 'Couldn’t read this robot’s setup: its moving parts are damaged.');
   return {
     ok: true,
     json: parsed.json,
