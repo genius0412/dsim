@@ -217,10 +217,20 @@ export function stepOf(item: ReviewItem): StepIndex {
  * Every check, passes included, in step order. `block` disables Save, Test drive and Export.
  * A pass line stands in for a category with nothing to say, so the list says what was checked.
  */
-export function reviewItems(m: ImportMeasurement | null, built: Built | null, game: GameId, assumedFront = false, notes: readonly string[] = []): ReviewItem[] {
+export function reviewItems(
+  m: ImportMeasurement | null,
+  built: Built | null,
+  game: GameId,
+  assumedFront = false,
+  notes: readonly string[] = [],
+  apart = 0,
+): ReviewItem[] {
   if (!m || !built) return [{ id: 'empty', level: 'block', text: COPY.dropTitle, fix: { step: 0, focus: 'ri-choose' } }];
   const items: ReviewItem[] = [];
   if (assumedFront) items.push({ id: 'front-assumed', level: 'info', text: COPY.frontAssumedNote, fix: FIX['front-assumed'] });
+  // parts left out of the footprint (`ImportSetup.apart`) are drawn, but nothing else knows them: no
+  // collision, and the 18 in check measures the drive base without them
+  if (apart > 0) items.push({ id: 'apart', level: 'warn', text: COPY.apartWarn(apart), fix: { step: 0, focus: 'ri-parts' } });
   // the reader's own notes (a large STEP's left-out fasteners, an .obj without its .mtl)
   notes.forEach((text, i) => items.push({ id: `read-note-${i}`, level: 'info', text }));
   const codes = new Set(m.checks.map((c) => c.code));
@@ -552,6 +562,42 @@ export function floatingOffer(m: Pick<ImportMeasurement, 'floating'> | null, set
   const keep = new Set(setup.keepFloating ?? []);
   return m.floating.filter((g) => !g.bodies.every((b) => keep.has(b)));
 }
+
+/** how `ImportEditor.readModel` is asked to read */
+export interface ReadOpts {
+  /** set over the fresh setup: a re-read's whole setup, a saved robot's, or a staged file's detail */
+  setup?: Partial<ImportSetup>;
+  /** a saved robot's stored mesh (re-opened, or a share file set up for this game) */
+  savedModel?: boolean;
+  /** the same file read again (a Detail change) */
+  keepHistory?: boolean;
+}
+
+/**
+ * The setup a read starts from. A new file is a new robot: how it stands, its wheels, its layout,
+ * what moves and which bodies are deleted or left out are found again (the bodies are numbered per
+ * file), unless `opts.setup` says otherwise. A saved robot's stored mesh has no deleted bodies.
+ */
+export function readSetup(base: ImportSetup, opts: ReadOpts): ImportSetup {
+  const setup: ImportSetup = {
+    ...base,
+    units: 'auto',
+    up: 'auto',
+    yaw: 0,
+    wheels: null,
+    wheelLayout: undefined,
+    motion: undefined,
+    removed: undefined,
+    apart: undefined,
+    keepFloating: undefined,
+    ...opts.setup,
+  };
+  return opts.savedModel ? savedSetup(setup) : setup;
+}
+
+/** does the read keep what was built from the model (`cadBuild`)? Only the same file read again or a
+ *  saved robot: a staged file's detail alone (`opts.setup.triBudget`) is a new file */
+export const readKeepsBuild = (opts: ReadOpts): boolean => !!(opts.keepHistory || opts.savedModel);
 
 /** the setup a saved robot keeps: no deleted bodies, since its stored mesh is made without them (and
  *  a body id names a body of the file as read, not of the stored mesh read back) */

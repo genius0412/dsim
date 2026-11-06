@@ -36215,6 +36215,36 @@ function impPlayCheck(g: GameId): void {
       JSON.stringify(errs) === JSON.stringify(['not-dsim', 'bad-length', 'not-glb', 'too-short']) && !r3.ok && r3.error === 'newer-version' && !r4.ok && r4.error === 'bad-payload',
       JSON.stringify(errs),
     );
+    const withSetup = (s: object): string => {
+      const r = share.readShareFile(share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'biobuzz', spec: {}, setup: s, name: 'x' } } } }));
+      return r.ok ? 'ok' : r.error;
+    };
+    const goodMotion = [
+      { role: 'wheel', bodies: [3, 1], corner: 0, found: true },
+      { role: 'spin', bodies: [7], drive: 'intake', axis: 'part', axisBody: 7, amount: 2, follows: { group: 0, ratio: -0.5 } },
+      { role: 'fold', bodies: [9], filePose: 'folded', deployDeg: 90, rideOn: 1, flip: false },
+    ];
+    const badApart = ['3', [5, 2], [2, 2], [-1], [1.5], [null], ['3']].map((a) => withSetup({ apart: a }));
+    const badMotion = [
+      {},
+      [{ role: 'laser', bodies: [] }],
+      [{ role: 'wheel' }],
+      [{ role: 'wheel', bodies: [-1] }],
+      [{ role: 'wheel', bodies: [], corner: 4 }],
+      [{ role: 'spin', bodies: [], drive: 'warp' }],
+      [{ role: 'spin', bodies: [], axis: 'sideways' }],
+      [{ role: 'swing', bodies: [], amount: '90' }],
+      [{ role: 'spin', bodies: [], follows: { group: 0, ratio: 1 } }],
+      [{ role: 'spin', bodies: [], rideOn: 3 }],
+      [{ role: 'fold', bodies: [], filePose: 'sideways' }],
+      Array.from({ length: 65 }, () => ({ role: 'roller', bodies: [] })),
+    ].map((m) => withSetup({ motion: m }));
+    check(
+      'robot import: a share file’s left-out parts must be ascending body ids, and its moving parts known roles and choices, finite numbers, body ids and other rows’ indices, or it is refused',
+      withSetup({}) === 'ok' && withSetup({ apart: [2, 5, 9] }) === 'ok' && withSetup({ motion: goodMotion }) === 'ok' &&
+        badApart.every((e) => e === 'bad-payload') && badMotion.every((e) => e === 'bad-payload'),
+      JSON.stringify({ badApart, badMotion }),
+    );
   }
 
   // ---- the boundaries the main chunk relies on --------------------------------------------
@@ -36682,7 +36712,9 @@ function impPlayCheck(g: GameId): void {
   const said = [errs.EXPORT_HINT, errs.stepCutOff('bot.step').message, errs.notStep('bot.step').message, noModel];
   check(
     'robot import (real CAD): the STEP failures say Couldn’t …, name the exact export menus in Onshape, Fusion, SolidWorks and Inventor, and keep the copy rules',
-    said.every((s) => !/'|\.\.\.|\s-\s|"/.test(s)) && /^Couldn’t read bot\.step: the file is cut off\./.test(said[1]) && ['Onshape', 'Fusion', 'SolidWorks', 'Inventor', 'GLB', 'STL'].every((w) => errs.EXPORT_HINT.includes(w)),
+    said.every((s) => !/'|\.\.\.|\s-\s|"/.test(s)) && /^Couldn’t read bot\.step: the file is cut off\./.test(said[1]) && ['Onshape', 'Fusion', 'SolidWorks', 'Inventor', 'STEP'].every((w) => errs.EXPORT_HINT.includes(w)) &&
+      // the editor takes STEP only: a hint to export a mesh would send the player to a refusal
+      !/GLB|STL/.test(errs.EXPORT_HINT),
   );
 
   // ---- 3MF off the main thread ----
@@ -39924,6 +39956,16 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     check(`import UI review: an ordinary 16 × 14 in robot carries its import and blocks nothing — ${game}`, !!ok.spec.imported && blocks(reviewItems(meas(16, 14, 15), ok, game)) === 0, reviewItems(meas(16, 14, 15), ok, game).filter((i) => i.level === 'block').map((i) => i.text).join(' | '));
     const tiny = meas(0.6, 0.5, 0.6);
     check(`import UI review: ⚠️ a footprint under the sim’s 6-in floor BLOCKS (coerceImported would drop it) — ${game}`, reviewItems(tiny, buildSpec(doc, tiny), game).some((i) => i.id === 'tiny' && i.level === 'block'));
+    const apartItems = reviewItems(meas(16, 14, 15), ok, game, false, [], 2);
+    const apart = apartItems.find((i) => i.id === 'apart');
+    check(
+      `import UI review: parts left out of the footprint are a WARNING (drawn, no collision, not counted in the 18 in cube) whose Fix goes to Parts; it blocks nothing, and none left out says nothing — ${game}`,
+      apart?.level === 'warn' && apart.fix?.step === 0 && apart.fix.focus === 'ri-parts' && blocks(apartItems) === 0 &&
+        apart.text === '2 parts are left out of the footprint. They are still drawn, but have no collision and are not counted in the 18 in cube.' &&
+        /^1 part is left out of the footprint\. It is still drawn, but has no collision and is not counted/.test(reviewItems(meas(16, 14, 15), ok, game, false, [], 1).find((i) => i.id === 'apart')?.text ?? '') &&
+        !reviewItems(meas(16, 14, 15), ok, game).some((i) => i.id === 'apart'),
+      apart?.text,
+    );
   }
   check('import UI: the draft key names the game and the robot, a new import is `new`', draftKey('chain', null) === 'chain:new' && draftKey('biobuzz', 'abc') === 'biobuzz:abc');
   check('import UI: a robot is named after its file, cut to the name field’s 24', baseName('my_robot_v3.step') === 'my robot v3' && baseName('a'.repeat(40) + '.glb').length === 24);
@@ -42150,19 +42192,115 @@ function fxImportFixed(): RobotSpec {
   );
   const dz = readFileSync('src/robotImport/ui/DropZone.tsx', 'utf8').replace(/\r\n/g, '\n');
   check(
-    'drop box: Detail is chosen before STEP reads, handed files wait for that choice, and only STEP CAD or a DSIM share candidate is accepted',
-    /export const ACCEPT = '\.step,\.stp,\.glb';/.test(dz) &&
-      /export const isImportFileSelection/.test(dz) &&
-      /if \(!isImportFileSelection\(files\)\)/.test(dz) &&
-      /label=\{COPY\.detail\}/.test(dz) &&
+    'drop box: Detail is chosen before STEP reads, handed files wait for that choice, and every way in asks checkImportFiles (source pins)',
+    /label=\{COPY\.detail\}/.test(dz) &&
       /onPick=\{onDetail\}/.test(dz) &&
       /pendingFiles\?\.length/.test(dz) &&
       /COPY\.startImport/.test(dz) &&
       !/robotOnly|COPY\.scope/.test(dz) &&
-      /isImportFileSelection\(files\)/.test(ms) &&
-      /if \(!isImportFileSelection\(files\)\)/.test(ed) &&
+      /accept=\{ACCEPT\}/.test(dz) &&
+      /accept=\{ACCEPT\}/.test(ms) &&
+      /void checkFiles\(files\)\.then/.test(ms) &&
+      /const sel = await checkFiles\(files\);\s*if \(!sel\.ok\)/.test(ed) &&
       /const stageHandedFiles = useCallback/.test(ed) &&
-      /if \(files\) stageHandedFiles\(files\)/.test(ed),
+      /if \(files\) void stageHandedFiles\(files\)/.test(ed),
+  );
+
+  // ---- what the editor takes (`fileSelection.ts`), asked of `File`s as a drop hands them over ----
+  const sel = await import('../src/robotImport/ui/fileSelection');
+  const { zipFileNames, resolveFiles } = await import('../src/robotImport/engine/load');
+  const { COPY: IC } = await import('../src/robotImport/ui/copy');
+  const { zipSync, strToU8 } = await import('three/examples/jsm/libs/fflate.module.js');
+  const file = (name: string, bytes: Uint8Array = strToU8('x')): File => new File([bytes as Uint8Array<ArrayBuffer>], name);
+  const zipOf = (name: string, entries: Record<string, Uint8Array>): File => file(name, zipSync(entries));
+  const verdict = async (files: File[]): Promise<string> => {
+    const r = await sel.checkImportFiles(files, zipFileNames);
+    return r.ok ? r.kind : `refused: ${r.text}`;
+  };
+  const stepZip = zipOf('starter.zip', { 'bot/robot.step': strToU8('ISO-10303-21;'), 'readme.txt': strToU8('hi') });
+  const cases: [string, File[], string][] = [
+    ['a STEP', [file('robot.step')], 'step'],
+    ['an upper-case .STP', [file('ROBOT.STP')], 'step'],
+    ['two STEP files', [file('a.step'), file('b.stp')], 'step'],
+    ['a STEP with a PNG', [file('robot.step'), file('render.png')], `refused: ${IC.notStep('robot.step, render.png')}`],
+    ['two GLBs', [file('a.glb'), file('b.glb')], `refused: ${IC.notStep('a.glb, b.glb')}`],
+    ['one GLB (a share file, checked by the editor)', [file('bot.glb')], 'share'],
+    ['an STL', [file('robot.stl')], `refused: ${IC.notStep('robot.stl')}`],
+    ['a zip with a STEP in a folder', [stepZip], 'zip'],
+    ['a zip of meshes', [zipOf('meshes.zip', { 'robot.stl': strToU8('solid'), 'readme.txt': strToU8('hi') })], `refused: ${IC.zipNoStep('meshes.zip', 'robot.stl, readme.txt')}`],
+    ['a zip whose only STEP is a macOS resource fork', [zipOf('mac.zip', { '__MACOSX/._robot.step': strToU8('x'), 'notes.txt': strToU8('y') })], `refused: ${IC.zipNoStep('mac.zip', 'notes.txt')}`],
+    ['an empty zip', [zipOf('empty.zip', {})], `refused: ${IC.zipNoStep('empty.zip', '')}`],
+    ['a zip with a STEP beside it', [stepZip, file('robot.step')], `refused: ${IC.notStep('starter.zip, robot.step')}`],
+  ];
+  const got = await Promise.all(cases.map(([, files]) => verdict(files)));
+  const wrong = cases.filter(([, , want], i) => got[i] !== want).map(([what], i) => `${what}: ${got[i]}`);
+  check(
+    'drop box: STEP files (any case), one zip whose directory holds a STEP, or one GLB for the share check are taken; a STEP with anything else, two GLBs, an STL, a zip without a STEP (a resource fork does not count) and an empty zip are refused, each with its sentence',
+    wrong.length === 0 && sel.ACCEPT === '.step,.stp,.zip,.glb',
+    wrong.join(' | '),
+  );
+  const damaged = await verdict([file('broken.zip', strToU8('this is no zip, it only has the name of one'))]);
+  const engineDown = await sel.checkImportFiles([stepZip], async () => {
+    throw new TypeError('Failed to fetch dynamically imported module');
+  });
+  check(
+    'drop box: a file named .zip that is not one is refused with the zip reader’s own sentence; an engine that does not load says so',
+    /^refused: Couldn’t open broken\.zip: it isn’t a zip, or it is cut off\./.test(damaged) && !engineDown.ok && engineDown.text === IC.engineFailed,
+    damaged,
+  );
+  const both = zipOf('both.zip', { 'render.glb': strToU8('glTF'), 'cad/robot.step': strToU8('ISO-10303-21;') });
+  const anyModel = await resolveFiles([both]);
+  const stepOnly = await resolveFiles([both], { zipFormats: ['step'] });
+  let noStep = '';
+  try {
+    await resolveFiles([zipOf('meshes.zip', { 'robot.stl': strToU8('solid') })], { zipFormats: ['step'] });
+  } catch (e) {
+    noStep = e instanceof Error ? e.message : String(e);
+  }
+  check(
+    'drop box: the editor reads a zip as its STEP (zipFormats), even beside a GLB the priority would pick, and a zip with none says so',
+    anyModel.format === 'glb' && stepOnly.format === 'step' && stepOnly.zip?.name === 'robot.step' && /^Couldn’t find a STEP file in meshes\.zip: it holds robot\.stl\./.test(noStep),
+    `${anyModel.format}, ${stepOnly.format}, ${noStep}`,
+  );
+
+  // ---- a file staged at a Detail is read as a NEW file at that detail ----
+  const em = await import('../src/robotImport/ui/editorModel');
+  const loaded = {
+    ...geo.defaultImportSetup(),
+    triBudget: geo.LIGHT_TRI_BUDGET,
+    units: 'mm' as const,
+    up: '+z' as const,
+    yaw: 1 as const,
+    removed: [3],
+    apart: [4],
+    keepFloating: [5],
+    motion: [{ role: 'wheel' as const, bodies: [1] }],
+  };
+  const staged = em.readSetup(loaded, { setup: { triBudget: geo.FULL_DETAIL } });
+  const saved = em.readSetup(loaded, { setup: { units: 'm', up: '+y', yaw: 0, apart: [4] }, savedModel: true });
+  check(
+    'drop box: a staged file is read at the tile’s Detail as a new file (nothing of the loaded model’s setup, its build not kept); a Detail change re-reads and keeps the build; a saved robot keeps its left-out parts and has no deleted ones',
+    staged.triBudget === geo.FULL_DETAIL && staged.units === 'auto' && staged.up === 'auto' && staged.yaw === 0 && staged.removed === undefined && staged.apart === undefined &&
+      staged.keepFloating === undefined && staged.motion === undefined && staged.wheels === null &&
+      !em.readKeepsBuild({ setup: { triBudget: geo.FULL_DETAIL } }) && em.readKeepsBuild({ setup: loaded, keepHistory: true }) && em.readKeepsBuild({ savedModel: true }) &&
+      JSON.stringify(saved.apart) === '[4]' && !('removed' in saved) && saved.triBudget === geo.LIGHT_TRI_BUDGET,
+  );
+  check(
+    'drop box: the Detail picked on the tile is the Model step’s own state, passed to the read at Start and never written into the open document; a loaded model offers Keep current model (source pins)',
+    /const \[stagedDetail, setStagedDetail\] = useState<number \| null>\(null\);/.test(ms) &&
+      /onDetail=\{setStagedDetail\}/.test(ms) &&
+      /onFiles\(files, detail\);/.test(ms) &&
+      /onStartPending\(detail\);/.test(ms) &&
+      /onKeepCurrent=\{m \? keepCurrent : undefined\}/.test(ms) &&
+      /COPY\.keepCurrent/.test(dz) &&
+      !/beforeRead/.test(ed + ms) &&
+      /void readModel\(files, budget === undefined \? \{\} : \{ setup: \{ triBudget: budget \} \}\);/.test(ed) &&
+      /cadBuild: readKeepsBuild\(opts\) \? baseDoc\.cadBuild : undefined,/.test(ed) &&
+      /zipFormats: \['step'\],/.test(ed),
+  );
+  check(
+    'drop box: a share file set up for another game keeps its parts left out of the footprint (source pin)',
+    /drive: payload\.setup\.drive, apart: payload\.setup\.apart \}, savedModel: true/.test(ed),
   );
 }
 

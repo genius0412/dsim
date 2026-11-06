@@ -395,10 +395,15 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   priority as dropped files; a .gltf brings its .bin, an .obj its .mtl). The model is inflated where
   it is read, in 4 MB slices of the compressed data into a buffer of its stated size: in the STEP
   worker for a STEP (390 MB in 1.8 s), in the import worker for the rest.
+- **The editor reads a zip as its STEP.** It takes a zip only when the directory names a `.step` or
+  `.stp` (`fileSelection.ts`, through the engine's `zipFileNames`), and reads with
+  `ImportOptions.zipFormats: ['step']`, so a zip that also holds a GLB (which the priority would pick)
+  is read as its STEP. The dev harness and the engine's own tests read a zip's model of any format.
 - **A file cut off is said before occt sees it** (`checkStepText`: a STEP opens with
   `ISO-10303-21;` and ends with `END-ISO-10303-21;`): "Couldn’t read …: the file is cut off …".
-  Every STEP failure ends with `EXPORT_HINT`, the mesh export menu by menu for Onshape, Fusion,
-  SolidWorks and Inventor. `step-reader` (the reader did not load) is the only one with Try again.
+  Every STEP failure ends with `EXPORT_HINT`, a fresh STEP export menu by menu for Onshape, Fusion,
+  SolidWorks and Inventor (it named a GLB or STL export until the editor stopped taking them).
+  `step-reader` (the reader did not load) is the only one with Try again.
 
 | starter bot (file) | read | longest main-thread task | renderer peak | triangles in → kept | footprint (L × W), height | wheels (corner four) | front |
 |---|---|---|---|---|---|---|---|
@@ -815,9 +820,13 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
 - **The UI** (Model step, Parts). The mode is "Select parts": a click selects, then Leave out of
   footprint or Delete selected. Include all brings them back. They show orange on the Model step
   while left out. One undo step each ("leave 2 parts out of the footprint").
-- **Not done yet:** a left-out part is not a moving part, so it is drawn at the starting pose, outside
-  the collision hull, and the 18 in start check does not count it. Marking it a `fold`/`slide` row
-  is the next step.
+- **Review warns** (`reviewItems`, id `apart`, Fix goes to Parts): a left-out part is not a moving
+  part, so it is drawn at the starting pose, outside the collision hull, and the 18 in start check
+  does not count it. Marking it a `fold`/`slide` row is the next step.
+- **Share files.** "Set it up for …" (a share file from another game) carries `apart`, since it names
+  the stored mesh's own bodies. `readShareFile` refuses an `apart` that is not ascending body ids, and a
+  `motion` with an unknown role or choice, a number that is not finite, or a `follows`/`rideOn` that is
+  not another row (`isBodyList`, `isMotionList`).
 
 ### The drop box, before a file is read
 
@@ -827,12 +836,21 @@ the robot page's Import card until the player chooses Detail and starts the read
 beside the tile rather than inside it: the tile's content still swaps between empty, ready, reading
 and failed without moving the page.
 
-- **STEP is the only CAD import.** `DropZone.tsx`'s `ACCEPT` and `isImportFileSelection` gate the
-  picker, drops and Replace to STEP files, plus one possible `.glb` share file. `ImportEditor.tsx`
-  validates that GLB's contents and accepts it only through the DSIM share path (a newer share can
-  offer its mesh for a fresh setup). Other formats are refused with `COPY.notStep`, including files
-  handed from the robot page. The engine's other readers remain for stored meshes, share files and
-  the dev harness.
+- **STEP is the only CAD import** (owner, 2026-11-05). `checkImportFiles` (`fileSelection.ts`) is
+  asked for every way in: the picker and a drop, Replace, and files handed from the robot page. It
+  takes STEP files, one zip whose directory names a STEP (goBILDA ships its starter bots that way), or
+  one `.glb`, which `ImportEditor.tsx` then accepts only as a DSIM share file (a newer share can offer
+  its mesh for a fresh setup). Anything else is refused with `COPY.notStep`, a zip without a STEP with
+  `COPY.zipNoStep` (it names what the zip holds), a damaged zip with the zip reader's own sentence.
+  The engine's other readers remain for stored meshes, share files and the dev harness.
+- **Detail on the tile is the Model step's own state**, passed to the read as `opts.setup.triBudget`
+  when it starts, never written into the open document. It was, and a Replace staged at Full and then
+  left (Drivetrain and back) showed Full over a Light model, and the next Light click re-read the old
+  file and lost its deleted and left-out parts. `readSetup`/`readKeepsBuild` (`editorModel.ts`) say
+  what a read keeps: a staged file is a new file whatever its detail; only a Detail change on the
+  model already read (`keepHistory`) or a saved robot keeps its build.
+- **Keep current model**: a file waiting on the tile while a model is loaded (a Replace, or a file
+  handed from the robot page) can be put down, back to the model as it was.
 
 ### Floating parts
 
@@ -1157,7 +1175,8 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
 - `scripts/importshots.cjs` photographs every editor state at 1440×900, 1100×720 and 390×844 in
   both themes, in an OFFSCREEN Electron window, into `scratch/importshots/<sha>/` with an
   `index.html` sheet. `scripts/importpad.cjs` walks the editor by stubbed gamepad and then by
-  real key events and asserts each step. Both need `npx vite --port 5194 --strictPort` running
+  real key events and asserts each step. Every probe seeds with `robot.step` (the editor takes no
+  other fixture format), so the first read waits for the occt reader. Both need `npx vite --port 5194 --strictPort` running
   and `env -u ELECTRON_RUN_AS_NODE npx electron scripts/<file>`.
 - `scripts/importprobe.cjs` measures the UI's cost against a PRODUCTION build (`npx vite preview
   --port 4173`), cold cache, long tasks observed from before the first script. Measured

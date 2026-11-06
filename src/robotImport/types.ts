@@ -283,7 +283,7 @@ export interface StoredMotion {
   follow?: { id: number; ratio: number };
 }
 
-const MOTION_ROLES: readonly MotionRole[] = ['wheel', 'roller', 'flywheel', 'turret', 'ramp', 'fold', 'spin', 'swing', 'slide'];
+export const MOTION_ROLES: readonly MotionRole[] = ['wheel', 'roller', 'flywheel', 'turret', 'ramp', 'fold', 'spin', 'swing', 'slide'];
 /** a generic joint's amount, at most: 50 turns a second, two full turns of swing, 60 in of slide */
 const AMOUNT_MAX: Readonly<Record<'spin' | 'swing' | 'slide', number>> = { spin: 50, swing: 4 * Math.PI, slide: 60 };
 

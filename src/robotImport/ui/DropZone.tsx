@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { OptRow } from '../../ui/OptRow';
 import { FULL_DETAIL, LIGHT_TRI_BUDGET } from '../geometry';
 import { COPY } from './copy';
+import { ACCEPT, selectionKind } from './fileSelection';
 
 /** what the drop box shows while a file is being read */
 export interface Phase {
@@ -20,16 +21,6 @@ export interface DropError {
   extra?: { label: string; run: () => void };
 }
 
-/** STEP is the CAD import; GLB is accepted only so ImportEditor can validate a DSIM share file. */
-export const ACCEPT = '.step,.stp,.glb';
-const STEP_NAME = /\.(step|stp)$/i;
-const GLB_NAME = /\.glb$/i;
-/** is this a STEP file? */
-export const isStepFile = (file: File): boolean => STEP_NAME.test(file.name);
-/** the only non-STEP candidate is a single GLB, which ImportEditor must validate as a DSIM share */
-export const isImportFileSelection = (files: readonly File[]): boolean =>
-  files.length > 0 && (files.every(isStepFile) || (files.length === 1 && GLB_NAME.test(files[0].name)));
-
 /**
  * THE DROP BOX: one `.ds-opt-add` tile of a fixed height (`.ds-import-drop`) whose CONTENT swaps
  * between empty, reading and failed, so none of the three moves the page. The file picker is a
@@ -38,7 +29,12 @@ export const isImportFileSelection = (files: readonly File[]): boolean =>
  *
  * Before a file is chosen, the box also asks the one thing a file cannot carry — the DETAIL it is
  * read at (Full keeps every triangle, Light simplifies to `LIGHT_TRI_BUDGET`) — so the choice is
- * made once, before the read starts, instead of by re-reading a big STEP afterwards.
+ * made once, before the read starts, instead of by re-reading a big STEP afterwards. That choice is
+ * the CALLER's own state (`ModelStep`), passed to the read when it starts: it is never written into
+ * the open document, so a model already loaded keeps the detail it was read at.
+ *
+ * What may be imported is `checkImportFiles` (`fileSelection.ts`), asked by `ImportEditor` for every
+ * file that arrives here; a refusal comes back as `error`.
  */
 export function DropZone({
   phase,
@@ -49,6 +45,7 @@ export function DropZone({
   onDetail,
   pendingFiles,
   onStartPending,
+  onKeepCurrent,
   detailDisabled,
 }: {
   phase: Phase | null;
@@ -58,29 +55,19 @@ export function DropZone({
   /** the triangle budget the file will be read at (`ImportSetup.triBudget`) */
   detail: number;
   onDetail: (budget: number) => void;
-  /** files handed from the robot page; wait for the player's Detail choice before reading them */
+  /** files waiting for the player's Detail choice (handed from the robot page, or a Replace) */
   pendingFiles?: File[] | null;
   onStartPending?: () => void;
+  /** a model is loaded: put the waiting files down and go back to it */
+  onKeepCurrent?: () => void;
   detailDisabled?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const [notStep, setNotStep] = useState<string | null>(null);
-  const pendingShare = pendingFiles?.length === 1 && GLB_NAME.test(pendingFiles[0].name);
-  const pick = (): void => {
-    setNotStep(null);
-    input.current?.click();
-  };
-  /** STEP files and a single possible share file go to ImportEditor; it validates the GLB contents. */
+  const pendingShare = !!pendingFiles && selectionKind(pendingFiles) === 'share';
+  const pick = (): void => input.current?.click();
   const take = (files: File[]): void => {
-    if (!files.length) return;
-    if (!isImportFileSelection(files)) {
-      setNotStep(COPY.notStep(files.map((f) => f.name).slice(0, 3).join(', ')));
-      onFiles(files);
-      return;
-    }
-    setNotStep(null);
-    onFiles(files);
+    if (files.length) onFiles(files);
   };
   const pct = phase?.frac === undefined ? 2 : Math.max(2, Math.round(phase.frac * 100));
   return (
@@ -178,6 +165,11 @@ export function DropZone({
               <button type="button" className="ds-btn" id="ri-choose" onClick={pick}>
                 {COPY.chooseAnother}
               </button>
+              {onKeepCurrent ? (
+                <button type="button" className="ds-btn ghost" id="ri-keep" onClick={onKeepCurrent}>
+                  {COPY.keepCurrent}
+                </button>
+              ) : null}
             </span>
           </>
         ) : (
@@ -186,9 +178,7 @@ export function DropZone({
             <button type="button" className="ds-btn primary" id="ri-choose" onClick={pick}>
               {COPY.choose}
             </button>
-            <span className={notStep ? 'od err' : 'od'} role={notStep ? 'alert' : undefined}>
-              {notStep ?? COPY.dropFormats}
-            </span>
+            <span className="od">{COPY.dropFormats}</span>
           </>
         )}
       </div>

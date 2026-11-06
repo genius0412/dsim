@@ -16,7 +16,7 @@ import type { ModelFormat } from '../types';
 import { EXPORT_HINT, ImportError } from './importError';
 import { WORKER_FORMATS, assembleLoaded, extOf, parseFiles, type LoadProgress, type LoadedModel, type ParsedFiles } from './parse';
 import type { StepPart } from './stepConvert';
-import { entryBaseName, unzipFiles, zipEntries, type ZipPick } from './zip';
+import { entryBaseName, unzipFiles, zipEntries, type ZipEntry, type ZipPick } from './zip';
 
 export type { ZipPick } from './zip';
 
@@ -71,7 +71,7 @@ function tooLarge(name: string, bytes: number, format: ModelFormat): ImportError
   return new ImportError(
     'too-large',
     format === 'step'
-      ? `${name} is ${mb(bytes)} MB; the importer reads STEP files up to ${mb(MAX_STEP_BYTES)} MB. Export it without fasteners, or ${EXPORT_HINT.charAt(0).toLowerCase()}${EXPORT_HINT.slice(1)}`
+      ? `${name} is ${mb(bytes)} MB; the importer reads STEP files up to ${mb(MAX_STEP_BYTES)} MB. Hide the fasteners, then ${EXPORT_HINT.charAt(0).toLowerCase()}${EXPORT_HINT.slice(1)}`
       : `${name} is ${mb(bytes)} MB; the importer reads ${format.toUpperCase()} files up to ${mb(MAX_FILE_BYTES)} MB. Export it without hidden parts or fasteners and try again.`,
   );
 }
@@ -105,19 +105,42 @@ export function checkFiles(input: readonly File[] | FileList): { files: File[]; 
 /** what is dropped, resolved: plain files, or the model inside a zip */
 export type Resolved = { files: File[]; file: File; format: ModelFormat; zip: null } | { files: File[]; file: File; format: ModelFormat; zip: ZipPick };
 
+/** a zip's own files: the macOS resource forks and dotfiles a zip tool adds are left out */
+const ownEntries = (entries: readonly ZipEntry[]): ZipEntry[] => entries.filter((e) => !/(^|\/)(__MACOSX|\.)/.test(e.name));
+
+/**
+ * The names of the files in a zip (its directory, the last few KB of the file; no entry is
+ * inflated). The editor reads this before it takes a zip: a zip is a CAD import only when a STEP
+ * file is in it. Throws `ImportError('zip')` when the file is not a zip or its directory is damaged.
+ */
+export async function zipFileNames(zip: File): Promise<string[]> {
+  return ownEntries(await zipEntries(zip, zip.name)).map((e) => entryBaseName(e.name));
+}
+
+export interface ResolveOptions {
+  /** the formats a ZIP's model may be (absent: any). The editor asks for STEP: a vendor's zip of its
+   *  starter bot is read as its STEP, whatever else the zip holds */
+  zipFormats?: readonly ModelFormat[];
+}
+
 /**
  * `checkFiles`, and for a zip its directory read (the last few KB of the file) and the model in it
  * picked by the same priority as dropped files, with the same caps on its unpacked size.
  */
-export async function resolveFiles(input: readonly File[] | FileList): Promise<Resolved> {
+export async function resolveFiles(input: readonly File[] | FileList, opts: ResolveOptions = {}): Promise<Resolved> {
   const c = checkFiles(input);
   if (c.format !== 'zip') return { files: c.files, file: c.file, format: c.format, zip: null };
   const zip = c.file;
   const entries = await zipEntries(zip, zip.name);
-  const pick = pickModel(entries.filter((e) => !/(^|\/)(__MACOSX|\.)/.test(e.name)));
+  const only = opts.zipFormats;
+  const pick = pickModel(ownEntries(entries).filter((e) => !only || only.includes(EXT_FORMAT[extOf(e.name)])));
   if (!pick) {
     const inside = entries.slice(0, 6).map((e) => entryBaseName(e.name)).join(', ') || 'nothing';
-    throw new ImportError('zip', `Couldn’t find a robot model in ${zip.name}: it holds ${inside}${entries.length > 6 ? ' …' : ''}. Drop a zip with a GLB, glTF, STEP, STL, OBJ, 3MF or PLY in it, or the model itself.`);
+    const more = entries.length > 6 ? ' …' : '';
+    if (only?.length === 1 && only[0] === 'step') {
+      throw new ImportError('zip', `Couldn’t find a STEP file in ${zip.name}: it holds ${inside}${more}. Drop a zip with a .step or .stp file in it, or the STEP file itself.`);
+    }
+    throw new ImportError('zip', `Couldn’t find a robot model in ${zip.name}: it holds ${inside}${more}. Drop a zip with a GLB, glTF, STEP, STL, OBJ, 3MF or PLY in it, or the model itself.`);
   }
   const { item: entry, format } = pick;
   const name = entryBaseName(entry.name);
@@ -129,7 +152,7 @@ export async function resolveFiles(input: readonly File[] | FileList): Promise<R
   return { files: c.files, file: zip, format, zip: { zip, entry, entries: [entry, ...extra], format, name } };
 }
 
-export interface LoadOptions {
+export interface LoadOptions extends ResolveOptions {
   /** stop a STEP read (its worker is terminated) and reject with an `AbortError` */
   signal?: AbortSignal;
   /** a STEP read in pieces keeps its smallest parts too (Full detail; `StepRequest.keepSmall`) */
@@ -157,7 +180,7 @@ export async function readRaw(
   onProgress?: LoadProgress,
   opts: LoadOptions = {},
 ): Promise<{ name: string; format: ModelFormat; parsed: ParsedFiles }> {
-  const r = await resolveFiles(input);
+  const r = await resolveFiles(input, opts);
   const name = r.zip ? r.zip.name : r.file.name;
   onProgress?.('read');
   if (r.format === 'step') return { name, format: r.format, parsed: await readStepFile(r, onProgress, opts.signal, opts.keepSmall) };

@@ -94,8 +94,10 @@ export const COPY = {
   // ---- Model ----
   dropTitle: 'Choose a file or drop it here',
   choose: 'Choose a file',
-  dropFormats: 'STEP CAD (.step or .stp), or a DSIM robot share (.glb)',
-  notStep: (names: string) => `Couldn’t import ${names}. Choose a STEP CAD file (.step or .stp) or a DSIM robot share (.glb).`,
+  dropFormats: 'STEP CAD (.step or .stp) or a zip of it, or a DSIM robot share (.glb)',
+  notStep: (names: string) => `Couldn’t import ${names}. Choose a STEP CAD file (.step or .stp), a zip with one in it, or a DSIM robot share (.glb).`,
+  zipNoStep: (zip: string, inside: string) =>
+    `Couldn’t import ${zip}: ${inside ? `it holds ${inside} but no STEP file` : 'it is empty'}. Choose a zip with a .step or .stp file in it, or the STEP file itself.`,
   sidecarHint: 'Export the robot from your CAD program as a STEP file.',
   dropNow: 'Drop to import',
   detailBefore: 'Before the file is read',
@@ -103,6 +105,7 @@ export const COPY = {
   pendingFiles: (names: string) => `${names} · choose Detail, then start the import.`,
   pendingShare: (name: string) => `${name} · start to restore this DSIM robot.`,
   startImport: 'Start import',
+  keepCurrent: 'Keep current model',
   phase: {
     read: (file: string) => `Reading ${file}…`,
     unzip: (file: string) => `Unzipping ${file}…`,
@@ -365,6 +368,8 @@ export const COPY = {
   toFix: (n: number) => `${n} to fix before saving`,
   notes: (n: number) => `Ready, with ${n} ${n === 1 ? 'note' : 'notes'}`,
   passFits: 'Fits the 18 in cube',
+  apartWarn: (n: number) =>
+    `${n} ${n === 1 ? 'part is' : 'parts are'} left out of the footprint. ${n === 1 ? 'It is' : 'They are'} still drawn, but ${n === 1 ? 'has' : 'have'} no collision and ${n === 1 ? 'is' : 'are'} not counted in the 18 in cube.`,
   tooSmall: (side: number, min: number) =>
     `The footprint is only ${side.toFixed(1)} in across. The sim needs ${min} in a side, so check the units.`,
   passWheels: 'Four wheels on the footprint',

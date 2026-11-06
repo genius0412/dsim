@@ -23,7 +23,7 @@ import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAss
 import { COPY } from './copy';
 import { DrivetrainStep } from './DrivetrainStep';
 import { dropDraft, flushDraft, keepDraft, liveDraft, restoreDraft, type LiveDraft } from './draftStore';
-import { isImportFileSelection, type DropError, type Phase } from './DropZone';
+import type { DropError, Phase } from './DropZone';
 import {
   baseName,
   blocks,
@@ -53,6 +53,9 @@ import {
   wheelLayoutOf,
   type EditorDoc,
   type RectNumber,
+  readKeepsBuild,
+  readSetup,
+  type ReadOpts,
   type ReviewItem,
   type StepIndex,
 } from './editorModel';
@@ -72,6 +75,7 @@ import {
   type EditHow,
 } from './editorHistory';
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
+import { checkImportFiles } from './fileSelection';
 import { libraryChanged, postRobotNotice, takeHandedFiles } from './handoff';
 import { ConfirmDialog, DuplicateDialog } from './LibraryDialogs';
 import { MechanismsStep } from './MechanismsStep';
@@ -240,7 +244,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const readModel = useCallback(
     async (
       files: File[],
-      opts: { setup?: Partial<ImportSetup>; savedModel?: boolean; spec?: RobotSpec; keepSource?: EditorDoc['source']; keepHistory?: boolean } = {},
+      opts: ReadOpts & { spec?: RobotSpec; keepSource?: EditorDoc['source'] } = {},
     ) => {
       const my = ++gen.current;
       // one import at a time: a new drop stops the last one's workers
@@ -269,6 +273,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const full = isFullDetail(budget);
         const prepared = await e.importModel(files, {
           budget,
+          // a zip is a CAD import for its STEP (`fileSelection.ts`), whatever else is in it
+          zipFormats: ['step'],
           signal: abort.signal,
           onProgress: (p) => {
             if (my !== gen.current) return;
@@ -285,24 +291,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const cur = draftRef.current;
         const baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
         // a new file is a new robot: everything about how it stands, where its wheels are and what
-        // moves is found again (the wheel layout too: its wheels decide it; the moving parts and the
-        // deleted parts too: the bodies are numbered per file), unless the caller says otherwise
-        let setup: ImportSetup = {
-          ...baseDoc.setup,
-          units: 'auto',
-          up: 'auto',
-          yaw: 0,
-          wheels: null,
-          wheelLayout: undefined,
-          motion: undefined,
-          removed: undefined,
-          apart: undefined,
-          keepFloating: undefined,
-          ...opts.setup,
-        };
-        // a saved robot's stored mesh is made without its deleted parts, and its body ids are not the
-        // file's: nothing is deleted from it
-        if (opts.savedModel) setup = savedSetup(setup);
+        // moves is found again (`readSetup`), unless the caller says otherwise. A saved robot's stored
+        // mesh is made without its deleted parts, and its body ids are not the file's
+        let setup = readSetup(baseDoc.setup, opts);
         // the first measurement in the measure worker; `normalise` then answers from its cache
         await e.prepareMeasure(prepared, setup);
         if (my !== gen.current) {
@@ -349,7 +340,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           sourceName: model.name,
           savedModel: !!opts.savedModel,
           // a new file's mechanisms are read from it again; a re-read of the same one keeps what was set
-          cadBuild: opts.setup || opts.savedModel ? baseDoc.cadBuild : undefined,
+          cadBuild: readKeepsBuild(opts) ? baseDoc.cadBuild : undefined,
           notes: model.notes.length ? model.notes : undefined,
           updated: Date.now(),
         };
@@ -387,7 +378,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           text: COPY.wrongGame(payload.name, season, seasonFor(payload.game).name),
           extra: {
             label: COPY.setUpFor(season),
-            run: () => void readModel([file], { setup: { units: 'm', up: '+y', yaw: 0, drive: payload.setup.drive }, savedModel: true }),
+            // the parts left out of the footprint are the stored mesh's own bodies, so they carry over
+            run: () => void readModel([file], { setup: { units: 'm', up: '+y', yaw: 0, drive: payload.setup.drive, apart: payload.setup.apart }, savedModel: true }),
           },
         });
         return;
@@ -471,15 +463,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     [game, ensureEngine, readModel, onSaved],
   );
 
-  /** CAD imports are STEP. A GLB is accepted only when it is a valid DSIM share file. */
+  /** may these files be imported (`fileSelection.ts`)? A zip's directory is read by the engine */
+  const checkFiles = useCallback(
+    (files: readonly File[]) => checkImportFiles(files, async (zip) => (await ensureEngine()).zipFileNames(zip)),
+    [ensureEngine],
+  );
+
+  /** CAD imports are STEP, or a zip holding one. A GLB is accepted only when it is a valid DSIM share
+   *  file. `budget` is the Detail the drop box chose (absent: the document's) */
   const onFiles = useCallback(
-    async (files: File[]) => {
+    async (files: File[], budget?: number) => {
       if (!files.length) return;
-      if (!isImportFileSelection(files)) {
-        setError({ text: COPY.notStep(files.map((f) => f.name).slice(0, 3).join(', ')) });
+      const sel = await checkFiles(files);
+      if (!sel.ok) {
+        setError({ text: sel.text });
         return;
       }
-      if (files.length === 1 && /\.glb$/i.test(files[0].name)) {
+      if (sel.kind === 'share') {
         try {
           const res = readShareFile(await files[0].arrayBuffer());
           if (res.ok) return void addShared(files[0], res.payload);
@@ -495,25 +495,29 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         setError({ text: COPY.notStep(files[0].name) });
         return;
       }
-      void readModel(files);
+      void readModel(files, budget === undefined ? {} : { setup: { triBudget: budget } });
     },
-    [addShared, readModel],
+    [addShared, readModel, checkFiles],
   );
 
-  const startPendingFiles = useCallback((): void => {
-    const files = pendingFiles;
-    if (!files) return;
-    setPendingFiles(null);
-    void onFiles(files);
-  }, [pendingFiles, onFiles]);
+  const startPendingFiles = useCallback(
+    (budget: number): void => {
+      const files = pendingFiles;
+      if (!files) return;
+      setPendingFiles(null);
+      void onFiles(files, budget);
+    },
+    [pendingFiles, onFiles],
+  );
 
-  const stageHandedFiles = useCallback((files: File[]): void => {
-    if (!isImportFileSelection(files)) {
-      setError({ text: COPY.notStep(files.map((f) => f.name).slice(0, 3).join(', ')) });
-      return;
-    }
-    setPendingFiles(files);
-  }, []);
+  const stageHandedFiles = useCallback(
+    async (files: File[]): Promise<void> => {
+      const sel = await checkFiles(files);
+      if (sel.ok) setPendingFiles(files);
+      else setError({ text: sel.text });
+    },
+    [checkFiles],
+  );
 
   // ---- boot: a handed file, the live draft, the stored draft, a library robot, or empty ----
   useEffect(() => {
@@ -531,7 +535,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const staged = files ? { ...d, doc: { ...d.doc, step: 0 as StepIndex } } : d;
         setDraft(staged);
         if (staged.model) void ensureEngine().catch(() => setError({ text: COPY.engineFailed }));
-        if (files) stageHandedFiles(files);
+        if (files) void stageHandedFiles(files);
         if (focusOnReturn) {
           pendingFocus.current = focusOnReturn;
           focusOnReturn = null;
@@ -567,7 +571,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         return;
       }
       setDraft({ doc: freshDoc(settings, key, null), model: null, modelStored: false, baked: null });
-      if (files) stageHandedFiles(files);
+      if (files) void stageHandedFiles(files);
     })();
     return () => {
       dead = true;
@@ -626,7 +630,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const defs = useMemo(() => (built ? mechHandlesFor(game, built.spec) : []), [built, game]);
   const assumedFront = frontAssumed(doc);
   const readNotes = doc?.notes;
-  const items = useMemo(() => reviewItems(m, built, game, assumedFront, readNotes ?? []), [m, built, game, assumedFront, readNotes]);
+  const apartCount = doc?.setup.apart?.length ?? 0;
+  const items = useMemo(
+    () => reviewItems(m, built, game, assumedFront, readNotes ?? [], apartCount),
+    [m, built, game, assumedFront, readNotes, apartCount],
+  );
   const mechChecks = useMemo(() => (built ? validateMechFor(built.spec, game) : []), [built, game]);
   const numbers = useMemo(() => (built ? driveNumbers(built, game) : null), [built, game]);
 
@@ -814,11 +822,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // the new model is measured. Without the files (a reload, a saved robot) it applies next read.
   // NOT AN UNDO STEP: the re-read can take minutes and the model is not in the document, so the
   // history keeps the detail the model was read at and goes on across the change (`restoreDoc`).
-  const onDetail = (budget: number, beforeRead = false): void => {
-    if (!doc || (doc.savedModel && !beforeRead) || budget === doc.setup.triBudget) return;
+  // A file not read yet takes its detail from the drop box (`ModelStep`'s own state, passed to the
+  // read), never through here: this changes the detail of the model the document HAS.
+  const onDetail = (budget: number): void => {
+    if (!doc || doc.savedModel || budget === doc.setup.triBudget) return;
     const files = sourceFiles.current;
     update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }), 'auto');
-    if (beforeRead || !files) return;
+    if (!files) return;
     // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
     // small parts out, so a body id names another solid at the other detail. The floating parts are
     // offered again once it is read.
@@ -1344,12 +1354,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                 wheels={shownWheels}
                 selectedWheel={selWheel}
                 layout={layout}
-                onFiles={(f) => {
+                onFiles={(f, budget) => {
                   setPendingFiles(null);
-                  void onFiles(f);
+                  void onFiles(f, budget);
                 }}
                 pendingFiles={pendingFiles}
                 onStartPending={startPendingFiles}
+                onKeepPending={() => setPendingFiles(null)}
+                checkFiles={async (f) => {
+                  const sel = await checkFiles(f);
+                  return sel.ok ? null : sel.text;
+                }}
                 onCancel={() => {
                   gen.current++;
                   // terminates the import's workers: the CPU stops with the bar
