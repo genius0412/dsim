@@ -1,3 +1,16 @@
+# HANDOFF — 2026-11-06 (Robot cards: one edit)
+
+**State: on `alpha` (d30f8882), client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On d30f8882: `npm test` (shared 5106, BIOBUZZ 6322), `build`, `bundleaudit`, `uiaudit`, `docaudit`, `contrast` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **One edit (owner: "kinda weird to have the pencil on each robot be robot name edit but also have a separate edit button").**
+  - A robot card only picks. The ✎ (`ds-opt-edit`) and both rename dialogs (`SavedIdentityDialog`, `IdentityDialog`) are deleted; the builder lists keep their ✕.
+  - Play's **Edit** and a second click on the card that is on open the robot page. For an import that click used to open the importer; now it matches Edit.
+  - Name, team name and team number are fields on the robot page: Build's first row (saved by Save changes, like any build edit), and the same three at the top of the Imported robot panel (`IdentityField`), written to the library and the active spec on Enter or blur. `identityPatch` (`src/robotImport/identity.ts`) decides what a field writes; an empty name reverts.
+  - Rules: `docs/area/ui.md` "ONE EDIT, AND A CARD ONLY PICKS", `docs/area/robot-import.md` rule 3.
+- **`importpad` had been stale since 95358e3c (Oct 4):** two RBs from Drivetrain land on Moving parts, so Y pressed "Next: Review" and every robot-page check after it failed. It presses RB three times now. Run it after importer UI changes; it was not run when #126/#129 landed.
+- **Open:** a renamed saved robot shows as "Unsaved" on Play until Save changes, as any build edit does. If the owner wants a rename to save on its own, that is a Build-panel change.
+- **Still open from 11-05:** the contributor's CLA sentence (asked on #126); a failed staged read has no "Keep current model"; shiftaudit's "(could not reach Free drive)"; supporter plate-font tiers; the claim-less token log line on dsim-alpha; `sync:alpha` after the next promotion; Records Auto/TeleOp split.
+
 # HANDOFF — 2026-11-05 (Room lobby polish; contributor PRs #125/#126/#128/#129 landed)
 
 **State: on `alpha` (0e504e80..179a621d), all client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 179a621d: `npm test` (shared 5102, BIOBUZZ 6322), `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass.
