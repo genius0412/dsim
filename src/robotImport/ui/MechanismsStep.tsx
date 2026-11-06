@@ -5,7 +5,7 @@ import { moduleFor } from '../../games';
 import { BuiltinMechRows } from '../../ui/builderMechs';
 import { rangeFill } from '../../ui/rangeFill';
 import { q64 } from '../geometry';
-import { AIM, buildHandles, moveHandle, splitKey, wrapDeg } from './mechMove';
+import { AIM, buildHandles, moveHandle, splitKey, wrapDeg, zRange } from './mechMove';
 import type { MechCheck, MechHandleDef } from './placement';
 import { COPY } from './copy';
 import { edgeRange } from './editorModel';
@@ -128,8 +128,7 @@ export function MechanismsStep({
       status = selCheck?.text ?? COPY.placed(selDef.label, p.x, p.y, p.z);
       const set = (patch: Partial<{ x: number; y: number; z: number }>): void => onMech({ ...mech, [field]: { ...p, ...patch } });
       // the release heights the game accepts (lane 2), else the floor to the top of the robot
-      const zLo = Math.max(0, selDef.zMin ?? 0);
-      const top = Math.max(zLo + 0.25, Math.round(Math.min(heightIn, selDef.zMax ?? heightIn) * 4) / 4);
+      const { lo: zLo, hi: top } = zRange(selDef, heightIn);
       const facing = field === 'shooter' && selDef.facingDeg !== undefined ? (mech.shooterYawDeg ?? selDef.facingDeg) : null;
       if (facing !== null && selected?.endsWith(AIM)) status = COPY.facingPlaced(selDef.label, facing);
       controls = (

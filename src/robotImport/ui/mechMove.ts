@@ -39,6 +39,23 @@ export function spanEnds(edge: ImportedEdge, from: number, to: number, hull: rea
   return { a: { x: from, y: r.at }, b: { x: to, y: r.at }, mid: { x: (from + to) / 2, y: r.at }, axis: 'x' };
 }
 
+/**
+ * The heights a point may be placed at (in): the game's release window (`zMin`/`zMax`) inside the
+ * floor and the top of the robot, on the quarter inch. The Mechanisms step's height slider and a
+ * handle dragged in 3D both read it, so neither can put a launcher above the robot.
+ */
+export function zRange(def: Pick<MechHandleDef, 'zMin' | 'zMax'>, heightIn: number): { lo: number; hi: number } {
+  const lo = Math.max(0, def.zMin ?? 0);
+  return { lo, hi: Math.max(lo + 0.25, Math.round(Math.min(heightIn, def.zMax ?? heightIn) * 4) / 4) };
+}
+
+/** the handle the 3D view opens on, once, when the Mechanisms step is entered: the launcher, else the
+ *  first point, else the first span's middle */
+export function firstHandle(defs: readonly MechHandleDef[]): string | null {
+  const point = defs.find((d) => d.field === 'shooter') ?? defs.find((d) => d.field !== 'intake');
+  return point ? point.key : defs.length ? `${defs[0].key}:mid` : null;
+}
+
 /** `intake:front:mid` → [`intake:front`, 'mid']; a point's or an aim's key has no part */
 export function splitKey(key: string): [string, SpanPart | null] {
   return key.split(':').length === 3 ? [key.slice(0, key.lastIndexOf(':')), key.slice(key.lastIndexOf(':') + 1) as SpanPart] : [key, null];
@@ -75,8 +92,9 @@ export function buildHandles(defs: readonly MechHandleDef[], mech: ImportedMech,
 
 /**
  * A handle moved to `p`: the placements with it written back, or null when nothing can be written
- * (an unknown key, a facing handle dragged onto its own point). `p.z` is read only by a point;
- * the 2D map has none, and the point keeps its height.
+ * (an unknown key, a facing handle dragged onto its own point). A point stays within `REACH_IN` of
+ * the footprint's centre. `p.z` is read only by a point, within `zRange` (the robot's height is
+ * `heightIn`); the 2D map has none, and the point keeps its height.
  */
 export function moveHandle(
   mech: ImportedMech,
@@ -84,6 +102,7 @@ export function moveHandle(
   hull: readonly Vec2[],
   key: string,
   p: { x: number; y: number; z?: number },
+  heightIn = Infinity,
 ): ImportedMech | null {
   if (key.endsWith(AIM)) {
     // the FACING handle: the direction from the launcher's point to where it was dragged
@@ -116,7 +135,6 @@ export function moveHandle(
   const old = mech[field];
   if (!old) return null;
   const lim = (v: number): number => Math.max(-REACH_IN, Math.min(REACH_IN, v));
-  const zLo = Math.max(0, def.zMin ?? 0);
-  const z = p.z === undefined ? old.z : Math.max(zLo, Math.min(def.zMax ?? Infinity, p.z));
-  return { ...mech, [field]: { x: q64(lim(p.x)), y: q64(lim(p.y)), z: p.z === undefined ? z : q64(z) } };
+  const zr = zRange(def, heightIn);
+  return { ...mech, [field]: { x: q64(lim(p.x)), y: q64(lim(p.y)), z: p.z === undefined ? old.z : q64(Math.max(zr.lo, Math.min(zr.hi, p.z))) } };
 }

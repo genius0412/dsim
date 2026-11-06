@@ -58,6 +58,9 @@ per deployment, in two halves over one rule. **Do not open it on production with
   Every caller reaches the engine through `loadImporterEngine()` (`engineLoader.ts`), the one
   dynamic specifier. The RENDER lane (`scripts/smoke-biobuzz/render.ts`) fails a static import of
   `engine/` from outside it, a second specifier, or three.js anywhere but the two zones.
+- `engine/gizmo.ts` (the placement handles in 3D, with three's TransformControls) is reached by its
+  own `import()` from `engine/preview.ts` the first time a state carries `gizmo`, so the engine chunk
+  does not carry it (bundleaudit's `gizmo` route, 7.8 KB gz; static, it put `importer` at 105.4).
 - `engine/stepReader.ts` is reached by its own `import()` from `engine/load.ts` and starts the STEP
   worker (`stepWorker.ts`), which reads the dropped file itself and runs occt in workers of its own
   (`occtWorker.ts`, a worker made inside a worker, which Vite bundles as its own chunk), so the glue
@@ -1150,6 +1153,22 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
 - **Test drive** passes the draft's spec to `GameView` (`testDrive`), frozen at mount: free
   drive, its own assists, the default start, no other robots, no Zenith auto. Leaving the
   match returns to the editor route, and the draft is flushed first, so nothing is lost.
+- **Layout** (owner, 2026-11-05). Where the editor's container is 860 px or wider, the step body and
+  its buttons are one column (`.ds-import-dock`, 19 to 24 rem) left of the 3D view, and the step rail is
+  its own centred row above both. The page widens by that column (`.ds-main:has(.ds-import)`, 1080 to
+  1480 px), so the view keeps its width where the window has room: 435 to 1061 px wide at 1920. Narrower,
+  the dock is `display: contents` and the grid stacks as before. Nothing overlaps the view, so the
+  model is centred in it (an inset for a dock over the view was always 0, and is gone).
+- **Placements in 3D** (Mechanisms). Every placement is a handle over the model (`engine/gizmo.ts`):
+  a click picks one, the gizmo's arrows drag it. Keys, while the pointer is on the view or a grab is
+  on: G grabs (the handle follows the pointer until a click or Enter); X, Y or Z locks an axis (again:
+  unlocks; mid-grab, the grab goes on along it); Esc puts a grab back where G was pressed, else drops
+  the lock, else clears the pick. The launcher, else the first point, is picked ONCE on entering the
+  step: a pick that came back whenever none was set made Esc jump to the launcher. The map and the 3D
+  view both write through `mechMove.ts` (`moveHandle`): a point stays within 12 in of the footprint's
+  centre (`REACH_IN`), its height inside `zRange` (the game's window under the robot's top, the height
+  slider's own range). The handle list is memoised (`gizmoState`): the preview compares it by
+  identity, and a new one every render rebuilt every handle mesh on every render and drag frame.
 - **The preview takes a fresh `<canvas>` per controller.** Re-using one after `dispose()`
   (which forces a context loss) threw `Cannot read properties of null (reading 'precision')`
   on the next mount. A lost context falls back to the top-down map.

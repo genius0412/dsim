@@ -84,7 +84,7 @@ import { MotionPanel, type PickTarget } from './MotionPanel';
 import { TunePanel } from './TunePanel';
 import { driveTuneFields, mechTuneFields } from './tuneFields';
 import { PreviewPane } from './PreviewPane';
-import { AIM, buildHandles, moveHandle, splitKey } from './mechMove';
+import { AIM, buildHandles, firstHandle, moveHandle, splitKey } from './mechMove';
 import { ReviewStep } from './ReviewStep';
 import { TopDownMap } from './TopDownMap';
 import './../../ui/importer.css';
@@ -639,13 +639,19 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const mechChecks = useMemo(() => (built ? validateMechFor(built.spec, game) : []), [built, game]);
   const numbers = useMemo(() => (built ? driveNumbers(built, game) : null), [built, game]);
 
-  // arriving on Mechanisms with nothing picked, the launcher (else the first placement) is picked, so
-  // the 3D view opens with a gizmo on something instead of an empty scene
+  // arriving on Mechanisms with nothing picked, the launcher (else the first placement) is picked ONCE,
+  // so the 3D view opens with a gizmo on something instead of an empty scene. Not again while the step
+  // stays: Esc in the view clears the pick, and a pick that came straight back made Esc jump there.
   const hasMech = !!doc?.mech;
+  const autoPicked = useRef(false);
   useEffect(() => {
-    if (doc?.step !== 2 || !hasMech || selHandle || !defs.length) return;
-    const point = defs.find((d) => d.field === 'shooter') ?? defs.find((d) => d.field !== 'intake');
-    setSelHandle(point ? point.key : `${defs[0].key}:mid`);
+    if (doc?.step !== 2) {
+      autoPicked.current = false;
+      return;
+    }
+    if (autoPicked.current || !hasMech || !defs.length) return;
+    autoPicked.current = true;
+    if (!selHandle) setSelHandle(firstHandle(defs));
   }, [doc?.step, hasMech, selHandle, defs]);
 
   // placements default in once there is a footprint, and again when a mechanism appears
@@ -673,6 +679,22 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- actions -------------------------------------------------------------------------------
   const step = doc?.step ?? 0;
+  // the placements as 3D handles, made again only when they change: the preview compares `gizmo` by
+  // identity, and a new object every render rebuilt every handle mesh on every render and drag frame
+  const mechNow = doc?.mech ?? null;
+  const hullNow = m?.hull;
+  const gizmoState = useMemo(
+    () =>
+      step === 2 && mechNow && hullNow
+        ? {
+            handles: buildHandles(defs, mechNow, hullNow, mechChecks).handles.flatMap((h) =>
+              h.shape === 'wheel' ? [] : [{ ...h, z: h.z ?? 0, shape: h.shape }],
+            ),
+            selected: selHandle,
+          }
+        : null,
+    [step, mechNow, hullNow, defs, mechChecks, selHandle],
+  );
   // A STEP REPLACES THE EDITOR'S CONTENT: the page goes to its top and focus to the step's title
   // (`pageScroll.ts`); a Fix's own focus target, set in the effect above, lands after it
   const bodyRef = useRef<HTMLElement>(null);
@@ -1163,15 +1185,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         origin: step === 0 ? m.origin : null,
         // the Mechanisms step draws its placements as handles to drag (`gizmo`), Review as plain marks
         mech: step === REVIEW_STEP ? doc.mech : null,
-        gizmo:
-          step === 2 && doc.mech
-            ? {
-                handles: buildHandles(defs, doc.mech, m.hull, mechChecks).handles.flatMap((h) =>
-                  h.shape === 'wheel' ? [] : [{ ...h, z: h.z ?? 0, shape: h.shape }],
-                ),
-                selected: selHandle,
-              }
-            : null,
+        gizmo: gizmoState,
         size: m.size,
         showCube: true,
         motion: m.motion ?? null,
@@ -1190,7 +1204,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const name = lowerFirst(defs.find((d) => d.key === base)?.label ?? '');
       update(
         (d) => {
-          const next = d.mech ? moveHandle(d.mech, defs, m.hull, key, p) : null;
+          const next = d.mech ? moveHandle(d.mech, defs, m.hull, key, p, m.heightIn) : null;
           return next ? { ...d, mech: next } : d;
         },
         aim ? { label: COPY.edits.aim(name), key: `mech:${base}:aim` } : { label: COPY.edits.move(name), key: `mech:${base}` },

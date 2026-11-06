@@ -19,13 +19,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 45 |
+| `.ds-import` | src/ui/competitions.css:4 | 43 |
 | `.ds-import-before` | src/ui/importer.css:202 | 1 |
 | `.ds-import-body` | src/ui/importer.css:40 | 1 |
 | `.ds-import-canvas` | src/ui/importer.css:98 | 2 |
 | `.ds-import-canvas-host` | src/ui/importer.css:94 | 1 |
 | `.ds-import-checks` | src/ui/importer.css:500 | 1 |
-| `.ds-import-dock` | src/ui/importer.css:50 | 2 |
+| `.ds-import-dock` | src/ui/importer.css:50 | 1 |
 | `.ds-import-drop` | src/ui/importer.css:206 | 4 |
 | `.ds-import-drop-acts` | src/ui/importer.css:222 | 2 |
 | `.ds-import-filerow` | src/ui/importer.css:230 | 1 |
@@ -33,7 +33,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-import-handle` | src/ui/importer.css:425 | 1 |
 | `.ds-import-headacts` | src/ui/importer.css:540 | 1 |
 | `.ds-import-hero-img` | src/ui/shell.css:5710 | 1 |
-| `.ds-import-in` | src/ui/importer.css:27 | 2 |
+| `.ds-import-in` | src/ui/importer.css:27 | 1 |
 | `.ds-import-legend` | src/ui/importer.css:177 | 1 |
 | `.ds-import-map` | src/ui/importer.css:353 | 4 |
 | `.ds-import-map-front` | src/ui/importer.css:403 | 1 |

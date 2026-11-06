@@ -37395,6 +37395,66 @@ function l2DecodeScene(spec: RobotSpec, local: Vec2): { w: World; ball: Artifact
   check('imported mechanisms: a STANDARD spec has nothing to place and nothing to check', mechHandles('decode', DEFAULT_SPEC).length === 0 && validateImportedMech(DEFAULT_SPEC, 'decode').length === 0 && isDeepStrictEqual(defaultImportedMech('decode', DEFAULT_SPEC), {}));
 }
 
+/**
+ * THE PLACEMENT HANDLES' ONE WRITER (`ui/mechMove.ts`): the top-down map and the 3D view move a
+ * placement through the same function, so the same limits hold for both: a point stays within 12 in
+ * of the footprint's centre, and its height inside the game's window and under the top of the robot
+ * (the height slider's own `zRange`).
+ */
+{
+  const mm = await import('../src/robotImport/ui/mechMove');
+  const hull = [{ x: -8, y: -7 }, { x: 8, y: -7 }, { x: 8, y: 7 }, { x: -8, y: 7 }];
+  const defs = [
+    { key: 'intake:front', kind: 'span', label: 'Intake', field: 'intake', edge: 'front' },
+    { key: 'shooter', kind: 'point', label: 'Launcher', field: 'shooter', zMin: 4, zMax: 18 },
+    { key: 'place', kind: 'point', label: 'Place', field: 'place' },
+  ] as Parameters<typeof mm.moveHandle>[1];
+  const mech = { shooter: { x: 0, y: 0, z: 10 }, place: { x: 1, y: 1, z: 2 }, intakes: [{ edge: 'front' as const, from: -3, to: 3 }] };
+  const at = (key: string, p: { x: number; y: number; z?: number }, top = 15) => mm.moveHandle(mech, defs, hull, key, p, top);
+  const far = at('shooter', { x: 30, y: -30, z: 10 });
+  const high = at('shooter', { x: 1, y: 2, z: 40 });
+  const low = at('shooter', { x: 1, y: 2, z: -5 });
+  const placeHigh = at('place', { x: 1, y: 1, z: 99 }, 12.3);
+  const flat = at('shooter', { x: 2.5, y: -3.25 });
+  check(
+    'mechMove: a point dragged past 12 in from the centre stops at ±12 in x and y; its height stays in the game window and under the robot’s top (quarter inch); the map, with no z, keeps the height',
+    far?.shooter?.x === 12 && far.shooter.y === -12 && far.shooter.z === 10 &&
+      high?.shooter?.z === 15 && low?.shooter?.z === 4 && placeHigh?.place?.z === 12.25 &&
+      flat?.shooter?.x === 2.5 && flat.shooter.y === -3.25 && flat.shooter.z === 10,
+    JSON.stringify({ far: far?.shooter, high: high?.shooter, low: low?.shooter, placeHigh: placeHigh?.place, flat: flat?.shooter }),
+  );
+  check(
+    'mechMove: zRange is the height slider’s range: the game window inside the floor and the robot’s top, never under a quarter inch tall; no height cap without a robot top (the map)',
+    JSON.stringify(mm.zRange({ zMin: 4, zMax: 18 }, 15)) === JSON.stringify({ lo: 4, hi: 15 }) &&
+      JSON.stringify(mm.zRange({}, 12.3)) === JSON.stringify({ lo: 0, hi: 12.25 }) &&
+      JSON.stringify(mm.zRange({ zMin: 4, zMax: 18 }, 3)) === JSON.stringify({ lo: 4, hi: 4.25 }) &&
+      mm.moveHandle(mech, defs, hull, 'shooter', { x: 0, y: 0, z: 17 })?.shooter?.z === 17,
+  );
+  check(
+    'mechMove: the 3D view opens on the launcher, else the first point, else the first span’s middle; nothing to place, nothing picked',
+    mm.firstHandle(defs) === 'shooter' && mm.firstHandle([defs[0], defs[2]]) === 'place' && mm.firstHandle([defs[0]]) === 'intake:front:mid' && mm.firstHandle([]) === null,
+  );
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const ms = readFileSync('src/robotImport/ui/MechanismsStep.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8').replace(/\r\n/g, '\n');
+  const gz = readFileSync('src/robotImport/engine/gizmo.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'mechanisms in 3D: the default pick happens once on entering the step (Esc clears it for good), the handles are made again only when they change, a drag in 3D is capped at the robot’s top, and the slider reads the same zRange (source pins)',
+    /if \(autoPicked\.current \|\| !hasMech \|\| !defs\.length\) return;\s*autoPicked\.current = true;\s*if \(!selHandle\) setSelHandle\(firstHandle\(defs\)\);/.test(ed) &&
+      /const gizmoState = useMemo\(/.test(ed) &&
+      /gizmo: gizmoState,/.test(ed) &&
+      /moveHandle\(d\.mech, defs, m\.hull, key, p, m\.heightIn\)/.test(ed) &&
+      /const \{ lo: zLo, hi: top \} = zRange\(selDef, heightIn\);/.test(ms),
+  );
+  check(
+    'mechanisms in 3D: the handles and TransformControls are a lazy chunk the preview fetches when a state carries them; Esc after an X/Y/Z mid-grab still puts the handle back where G was pressed (source pins)',
+    /import\('\.\/gizmo'\)/.test(pv) && !/from 'three\/examples\/jsm\/controls\/TransformControls\.js'/.test(pv) && !/setInset/.test(pv) &&
+      /const origin = grab\.origin;\s*endGrab\(true\);\s*startGrab\(origin\);/.test(gz) &&
+      /if \(!keep\) emitMove\(g\.key, g\.origin\);/.test(gz) &&
+      /origin: origin \?\? start,/.test(gz),
+  );
+}
+
 /** two runs of an import scene, every game, end on one hash (determinism) */
 {
   await initPhysics3d();

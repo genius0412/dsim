@@ -15662,7 +15662,11 @@ function modelVenueChecks(check: Check): void {
     check('venue model: no splat renderer, no Spark dependency', !existsSync(join(SCENE_DIR, 'renderSplatVenue.ts')) && !/sparkjsdev|splat/i.test(sc) && !/sparkjsdev/.test(readFileSync(join(root, 'package.json'), 'utf8')));
     check('venue model: the minimap cuts at the model’s ceiling like the overhead camera', /this\.pipCamera\.near = Number\.isFinite\(top\) \? Math\.max\(1, 300 - top\) : 1;/.test(sc));
     const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
-    check('venue model: the dev server serves KTX2Loader from node_modules, so its transcoder URL resolves', /optimizeDeps: \{ exclude: \['three\/examples\/jsm\/loaders\/KTX2Loader\.js'\] \}/.test(vite));
+    // the entry, not its formatting: `optimizeDeps` may list more (the importer pre-bundles its own)
+    check(
+      'venue model: the dev server serves KTX2Loader from node_modules, so its transcoder URL resolves',
+      /optimizeDeps:\s*\{[^}]*\bexclude:\s*\[[^\]]*'three\/examples\/jsm\/loaders\/KTX2Loader\.js'[^\]]*\]/.test(vite),
+    );
   }
 
   // ---- every SHIPPED model: its file, its version, and the play in sight from every eye
