@@ -157,6 +157,8 @@ export function ModelStep({
   const wheelFact =
     m.wheelSource === 'manual'
       ? COPY.wheelsManual
+      : m.wheelsGuessed
+        ? COPY.wheelsGuessed
       : m.wheelSource === 'none' || !det
         ? COPY.wheelsNone
         : m.wheelsSquared

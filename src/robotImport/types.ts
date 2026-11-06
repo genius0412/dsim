@@ -416,9 +416,11 @@ export interface ImportMeasurement {
   /** which way the geometry says the robot faces (measured in this orientation, given as a yaw) */
   front: FrontDetection;
   /** wheels in force: the override, else detected (lined up into a rectangle when the layout asks
-   *  for one, `squareWheels`), else null */
+   *  for one, `squareWheels`), else the guess inside the drive base (`wheelsGuessed`), else null */
   wheelsUsed: Vec2[] | null;
   wheelSource: 'manual' | 'detected' | 'none';
+  /** none were found or placed, and `wheelsUsed` is the guess inside the drive base (`wheelGuess`) */
+  wheelsGuessed?: true;
   /** the detected wheels were moved to line them up into a rectangle (absent when they were not,
    *  an exact rectangle included) */
   wheelsSquared?: true;

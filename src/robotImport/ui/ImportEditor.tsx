@@ -13,11 +13,11 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
-import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type WheelLayout } from '../types';
+import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type QuarterTurns, type WheelLayout } from '../types';
 import { defaultMechFor, mechHandlesFor, mechRobotToModel, validateMechFor } from './placement';
 import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAssets } from '../../render/importedAssets';
 import { COPY } from './copy';
@@ -30,6 +30,7 @@ import {
   buildSpec,
   draftKey,
   frontAssumed,
+  frontFromBuild,
   driveNumbers,
   layoutPatch,
   motionNames,
@@ -913,7 +914,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const intakes = doc.mech?.intakes ?? [];
     // the edges the rollers are looked for at are the robot's own, not a ramp's the file shows down
     const over = findOverhang(parts, taken(), 18, intakes.map((i) => i.edge));
-    if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+    if (intakes.length) {
+      out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+      // and the intake-sized rollers at the other edges (a robot that takes in at both ends)
+      out.push(...findEdgeRollers(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+    }
     // spoked axles anywhere else (a transfer column of surgical tubing)
     out.push(...findSpokedRollers(parts, taken()));
     const shooter = doc.mech?.shooter;
@@ -969,7 +974,26 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // default in for that build, and this runs again to find the moving parts from them
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
+      const cad = readBuild(detectParts(), wheels, launchElementD(game));
+      // a front the geometry left ASSUMED turns to a clear intake (`frontFromBuild`), once; after a
+      // turn the build is read again in the new frame
+      if (frontAssumed(doc)) {
+        const axles = m?.wheelSource === 'detected' && baseWheels ? wheelAxleVotes(detectParts(), baseWheels) : { x: 0, y: 0 };
+        const turn = frontFromBuild(cad, axles);
+        if (turn !== null) {
+          const yaw = ((doc.setup.yaw + turn) % 4) as QuarterTurns;
+          update(
+            (d) => ({
+              ...d,
+              setup: turn ? { ...d.setup, yaw, wheels: null } : d.setup,
+              detected: d.detected ? { ...d.detected, yaw, front: 'detected', cue: 'intake' } : d.detected,
+            }),
+            'auto',
+          );
+          if (turn) return;
+        }
+      }
+      const r = buildFromCad(game, doc.spec, cad);
       update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) }), 'auto');
       return;
     }
@@ -1288,6 +1312,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     ) : null;
 
   const why = blocked ? COPY.fixFirst : undefined;
+  // what the editor reads by itself has landed: a new file's build, then its moving parts (each an
+  // effect a render after the last), so a save from the header never stores a robot half-read
+  const autoDone = !!doc && (doc.savedModel || !!doc.editId || (doc.cadBuild !== undefined && doc.setup.motion !== undefined));
   return (
     <>
       <div className="ds-head">
@@ -1332,6 +1359,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               {doc.editId ? COPY.discardEdit : COPY.discardNew}
             </button>
           </div>
+        ) : null}
+        {/* SAVE FROM ANY STEP (2026-11-06, "as streamlined as possible"): a model the importer read right
+            needs no step walked through. Review keeps its own, with Test drive and Export. Not
+            `primary`: the step's own action (Next) stays the pad's Y, which presses the first
+            `.ds-btn.primary` on the page (`PadNavLayer`). Its own item, so a phone puts it beside Back
+            instead of alone on a line under the group (`.ds-import-headsave`) */}
+        {hasModel && step < REVIEW_STEP ? (
+          <button
+            type="button"
+            id="ri-save-head"
+            className="ds-btn small ds-import-headsave"
+            disabled={blocked || busy || measuring || !autoDone}
+            title={why}
+            onClick={save}
+          >
+            {doc.editId ? COPY.saveEdit : COPY.saveNew}
+          </button>
         ) : null}
       </div>
       <h1 className="ds-h1">{title}</h1>

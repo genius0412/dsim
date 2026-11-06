@@ -20268,7 +20268,8 @@ const recordDrive: CommandSource = (tick) => {
       // second click on the card that is on open the robot page, where the name and team are fields.
       const cardSrc = readFileSync('src/ui/RobotCard.tsx', 'utf8');
       const modeSrc = readFileSync('src/ui/ModeSelect.tsx', 'utf8');
-      const impSrc = readFileSync('src/robotImport/ui/ImportedRobots.tsx', 'utf8');
+      // LF whatever the checkout: the `<IdentityField\n` count below fails on a CRLF one
+      const impSrc = readFileSync('src/robotImport/ui/ImportedRobots.tsx', 'utf8').replace(/\r\n/g, '\n');
       check('cards: a robot card has no ✎ (RobotCard takes no onEdit, the class and its CSS are gone), only a delete ✕',
         !/onEdit/.test(cardSrc) && !cardSrc.includes('ds-opt-edit') && !css.includes('.ds-opt-edit') && !css.includes('.ds-opt-slot.two') &&
           cardSrc.includes('className="ds-opt-del"'));
@@ -39740,6 +39741,189 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     void THREE;
   } finally {
     if (!hadReader) delete g.FileReader;
+  }
+}
+
+/**
+ * MOVING PARTS BY CONTACT, RINGS, AND A CAD WITHOUT WHEELS (`docs/area/robot-import.md`, 2026-11-06).
+ * Synthetic solids in the robot-local frame, a body each: a diagonal ramp arm whose box holds a foot it
+ * never touches, a ramp with a roller standing on it and one only near it, an intake shaft with a hub
+ * whose rollers are bodies of their own beside a plate's bolt circle, and a robot on drive pods with no
+ * wheels in the file under a top that overhangs them.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const withBodies = (prisms: import('./robot-import/synthRobot').Prism[], map?: (v: import('./robot-import/synthRobot').V3) => import('./robot-import/synthRobot').V3): P[] =>
+    synth.synthParts(prisms, map).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const sorted = (a: readonly number[]): string => JSON.stringify([...a].sort((x, y) => x - y));
+
+  // ---- a diagonal arm's box holds the chassis under it: only what TOUCHES the arm is mounted on it ----
+  {
+    // the arm: a 0.75 in plate slanting from (0, 7) down to (14, 1), 0.25 in thick along y
+    const arm: import('./robot-import/synthRobot').Prism = { name: 'arm', color: [0.8, 0.2, 0.6], base: [[0, 4, 7], [14, 4, 1], [14, 4, 1.75], [0, 4, 7.75]], extrude: [0, 0.25, 0] };
+    const prisms = [
+      arm,
+      // a bolt on the arm's end face, and a nut on the bolt (it touches the bolt, not the arm)
+      synth.box('bolt', [0.6, 0.6, 0.6], 14, 14.25, 4.05, 4.2, 1.2, 1.5),
+      synth.box('nut', [0.6, 0.6, 0.6], 14.25, 14.3, 4.07, 4.18, 1.25, 1.45),
+      // a part of the chassis under the arm, inside its box, 2.7 in below it
+      synth.box('foot', [0.2, 0.2, 0.2], 3, 5, 4, 4.25, 1, 3),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const took = motion.mountedBodies(parts, id('arm'));
+    check(
+      'moving parts by contact: a click on a diagonal arm takes the bolt on it and the nut on the bolt, never the foot inside its box that it does not touch',
+      sorted(took) === sorted([id('arm'), id('bolt'), id('nut')]),
+      JSON.stringify(took),
+    );
+    const pairs = motion.touchingPairs(parts, new Set(prisms.map((_, i) => i)), motion.CONTACT_IN);
+    check(
+      'moving parts by contact: touchingPairs finds the bolt on the arm and the nut on the bolt, both ways, and nothing for the foot',
+      !!pairs.get(id('arm'))?.has(id('bolt')) && !!pairs.get(id('bolt'))?.has(id('arm')) && !!pairs.get(id('nut'))?.has(id('bolt')) && !pairs.get(id('foot')) && !pairs.get(id('nut'))?.has(id('arm')),
+      JSON.stringify([...pairs].map(([k, v]) => [k, [...v]])),
+    );
+  }
+
+  // ---- a roller rides a folding part only when it touches it --------------------------------------
+  {
+    const prisms = [
+      synth.box('chassis', [0.5, 0.5, 0.5], -8, 8, -7, 7, 1, 4),
+      // the ramp the file shows deployed, flat out in front
+      synth.box('ramp', [0.9, 0.8, 0.2], 8, 18, -6, 6, 0.2, 0.45),
+      // a roller just over the ramp's root, centred inside its box, 0.15 in clear of it
+      synth.cylY('near_roller', [0.2, 0.7, 0.3], 8.6, 1.1, 0.5, -5, 5, 16),
+      // a roller standing on the ramp's far end
+      synth.cylY('ramp_roller', [0.2, 0.7, 0.3], 17, 0.85, 0.4, -5, 5, 16),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const plans = motion.planFolds(parts, [
+      { role: 'ramp', bodies: [id('ramp')] },
+      { role: 'roller', bodies: [id('near_roller')] },
+      { role: 'roller', bodies: [id('ramp_roller')] },
+    ]);
+    check(
+      'moving parts by contact: the roller standing on the ramp rides it; the one only near it (centre inside the ramp’s box, 0.15 in clear) stays on the robot',
+      plans.length === 1 && JSON.stringify(plans[0].riders) === '[2]' && plans[0].bodies.includes(id('ramp_roller')) && !plans[0].bodies.includes(id('near_roller')),
+      JSON.stringify(plans.map((p) => p.riders)),
+    );
+  }
+
+  // ---- a hub's rollers, bodies of their own, turn with it; a plate's bolt circle beside it does not ----
+  {
+    // rollers seated in the hub's rim (each its own body, standing 0.25 in past it)
+    const ring = [0, 1, 2, 3, 4, 5].map((k) => {
+      const a = (k * Math.PI) / 3;
+      return synth.cylY(`roller_${k}`, [0.1, 0.1, 0.1], 1.05 * Math.cos(a), 3 + 1.05 * Math.sin(a), 0.2, 4.1, 4.9, 16);
+    });
+    // a plate's bolt circle beside the hub, outside what turns
+    const bolts = [0, 1, 2, 3].map((k) => {
+      const a = (k * Math.PI) / 2 + 0.3;
+      return synth.cylY(`bolt_${k}`, [0.6, 0.6, 0.6], 0.7 * Math.cos(a), 3 + 0.7 * Math.sin(a), 0.08, 5.5, 5.8, 12);
+    });
+    // a motor face's screws round the hub's long sleeve, within the turning stack's span, touching nothing that turns
+    const screws = [0, 1, 2, 3].map((k) => {
+      const a = (k * Math.PI) / 2 + 0.7;
+      return synth.cylY(`screw_${k}`, [0.5, 0.5, 0.5], 0.75 * Math.cos(a), 3 + 0.75 * Math.sin(a), 0.1, 3.0, 3.6, 12);
+    });
+    const prisms = [
+      synth.cylY('shaft', [0.7, 0.7, 0.7], 0, 3, 0.15, -6, 6, 12),
+      synth.cylY('hub', [0.9, 0.5, 0.1], 0, 3, 1, 4, 5, 32),
+      synth.cylY('sleeve', [0.9, 0.5, 0.1], 0, 3, 0.45, 2.8, 4, 24),
+      synth.box('plate', [0.4, 0.4, 0.4], -2, 2, 5.5, 5.7, 1, 5),
+      ...ring,
+      ...bolts,
+      ...screws,
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const got = motion.coaxialBodies(parts, id('hub'), 'roller');
+    const rollers = ring.map((p) => id(p.name));
+    const boltIds = bolts.map((p) => id(p.name));
+    const screwIds = screws.map((p) => id(p.name));
+    check(
+      'moving parts: a ring of rollers round a hub (each its own body, 0.25 in past the hub) turns with it; the shaft too; not the plate or its bolt circle',
+      rollers.every((b) => got.includes(b)) && got.includes(id('shaft')) && !got.includes(id('plate')) && boltIds.every((b) => !got.includes(b)),
+      JSON.stringify(got),
+    );
+    check('moving parts: screws round the hub’s sleeve, inside what turns but touching none of it, are no ring of it', got.includes(id('sleeve')) && screwIds.every((b) => !got.includes(b)), JSON.stringify(got));
+    const fewer = withBodies(prisms.filter((p) => !/^roller_[2-5]$/.test(p.name)));
+    const two = motion.coaxialBodies(fewer, 1, 'roller');
+    const twoIds = [fewer.findIndex((p) => p.name === 'roller_0'), fewer.findIndex((p) => p.name === 'roller_1')];
+    check('moving parts: two alike bodies are no ring (rotational symmetry needs three that go round)', twoIds.every((b) => !two.includes(b)), JSON.stringify(two));
+  }
+
+  // ---- rollers at the edges the intake is not placed at: intake-sized ones only ----
+  {
+    const prisms = [...synth.synthRobot(), synth.cylY('spool', [0.3, 0.3, 0.3], -6.5, 3, 0.5, 3.5, 6, 16)];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const back = motion.findEdgeRollers(parts, [{ edge: 'back' }], new Set());
+    check('edge rollers: with the intake placed at the back, the front roller (the robot’s width) is still found', back.some((g) => g.bodies.includes(id('intake'))), JSON.stringify(back));
+    const front = motion.findEdgeRollers(parts, [{ edge: 'front' }], new Set());
+    const plain = motion.findRollerGroups(parts, [{ edge: 'back', from: -1e3, to: 1e3 }], new Set());
+    check(
+      'edge rollers: a short spool by the back edge is a roller to the plain search but not an intake roller at an edge the intake is not placed at',
+      plain.some((g) => g.bodies.includes(id('spool'))) && !front.some((g) => g.bodies.includes(id('spool'))),
+      JSON.stringify({ plain, front }),
+    );
+  }
+
+  // ---- no wheels in the file: they are guessed inside the DRIVE BASE, not at the whole box's corners ----
+  {
+    const pods = [
+      // two drive pods and a belly plate hanging 0.05 in off the floor, feet at the pods' ends: three
+      // long floor contacts, the feet joined to their pods
+      synth.box('pod_left', [0.2, 0.2, 0.2], -5, 5, 4.5, 6.5, 0.05, 4),
+      synth.box('pod_right', [0.2, 0.2, 0.2], -5, 5, -6.5, -4.5, 0.05, 4),
+      synth.box('belly', [0.6, 0.6, 0.6], -5, 5, -3, 3, 0.05, 0.2),
+      synth.box('foot_fl', [0.1, 0.1, 0.3], 5, 5.8, 4.5, 6.5, 0, 2),
+      synth.box('foot_fr', [0.1, 0.1, 0.3], 5, 5.8, -6.5, -4.5, 0, 2),
+      synth.box('foot_bl', [0.1, 0.1, 0.3], -5.8, -5, 4.5, 6.5, 0, 2),
+      synth.box('foot_br', [0.1, 0.1, 0.3], -5.8, -5, -6.5, -4.5, 0, 2),
+      // a top that overhangs the base at the back and the front
+      synth.box('top', [0.9, 0.5, 0.1], -8, 9, -5, 5, 9, 10),
+      synth.box('post', [0.5, 0.5, 0.5], -1, 1, -1, 1, 4, 9),
+    ];
+    const parts = withBodies(pods, synth.FRAMES.cadMm);
+    const setup = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+    const m = geo.measureParts(parts, setup, { format: 'stl' }).measurement;
+    const w = m.wheelsUsed ?? [];
+    const o = m.origin;
+    const xs = w.map((p) => p.x - o.x);
+    const ys = w.map((p) => p.y - o.y);
+    check(
+      'no wheels in the file: none detected, and the wheels in force are the guess 2 in inside the drive base’s ends and 1.5 in inside its sides (±3.8, ±5), not the whole box’s corners',
+      m.wheelSource === 'none' && m.wheelsGuessed === true && w.length === 4 && xs.every((x) => Math.abs(Math.abs(x) - 3.8) < 0.02) && ys.every((y) => Math.abs(Math.abs(y) - 5) < 0.02),
+      JSON.stringify({ src: m.wheelSource, w, o }),
+    );
+    check(
+      'no wheels in the file: Review says where they stand and to drag them onto the wheels (a note, not a block)',
+      m.checks.some((c) => c.code === 'few-wheels' && c.level === 'warn' && /corners of the drive base/.test(c.message)) && !m.checks.some((c) => c.level === 'block'),
+      JSON.stringify(m.checks),
+    );
+    const imp = geo.buildDescriptor({ id: 'guess', measurement: m });
+    check('no wheels in the file: the saved robot carries the guessed wheels (the sim would otherwise use the whole box’s corners)', imp.wheels?.length === 4 && imp.wheels.every((p) => Math.abs(Math.abs(p.x) - 3.8) < 0.02), JSON.stringify(imp.wheels));
+    check('no wheels in the file: Home puts them back at the guess', JSON.stringify(em.wheelHomes(m, 'rect')) === JSON.stringify(m.wheelsUsed));
+    const placed = geo.measureParts(parts, { ...setup, wheels: [{ x: 3, y: 5 }, { x: 3, y: -5 }, { x: -3, y: 5 }, { x: -3, y: -5 }] }, { format: 'stl' }).measurement;
+    check('no wheels in the file: wheels placed by hand stand, and nothing says they were guessed', placed.wheelSource === 'manual' && !placed.wheelsGuessed && placed.wheelsUsed?.[0].x === 3);
+  }
+
+  // ---- the front from the build, when the geometry left it assumed (`frontFromBuild`) ----
+  {
+    const e = (f: number, b: number, l: number, r: number) => ({ front: f, back: b, left: l, right: r });
+    const none = { x: 0, y: 0 };
+    check('front from the build: a ramp the file shows deployed at the front is the front (no turn)', em.frontFromBuild({ intake: { edge: 'front', upright: false, ramp: true }, edges: e(2.5, 2, 0, 0) }, none) === 0);
+    check('front from the build: a ramp at the back turns the robot half round', em.frontFromBuild({ intake: { edge: 'back', upright: false, ramp: true }, edges: e(1, 1.5, 0, 0) }, none) === 2);
+    check('front from the build: rollers only at the left turn it a quarter (left to front)', em.frontFromBuild({ intake: { edge: 'left', upright: false }, edges: e(0, 0, 2, 0) }, none) === 3);
+    check('front from the build: ...but not when its wheels roll along x (an axle about y)', em.frontFromBuild({ intake: { edge: 'left', upright: false }, edges: e(0, 0, 2, 0) }, { x: 0, y: 4 }) === null);
+    check('front from the build: a tie between two edges with no ramp says nothing', em.frontFromBuild({ intake: { edge: 'front', upright: false }, edges: e(2, 2, 0, 0) }, none) === null);
+    check('front from the build: no intake, or no roller, says nothing', em.frontFromBuild({ intake: null, edges: e(0, 0, 0, 0) }, none) === null);
   }
 }
 

@@ -313,10 +313,12 @@ export function wheelLayoutOf(setup: Pick<ImportSetup, 'wheelLayout' | 'wheels'>
   return !detected || isRectangle(detected, WHEEL_SQUARE_TOL_IN) ? 'rect' : 'free';
 }
 
-/** where Home puts the wheels: the detected ones (lined up, in a rectangle), else the rectangle default */
-export function wheelHomes(m: Pick<ImportMeasurement, 'wheels' | 'hull'>, layout: WheelLayout): Vec2[] | null {
+/** where Home puts the wheels: the detected ones (lined up, in a rectangle), else the guess inside the
+ *  drive base (`wheelsGuessed`), else the rectangle default */
+export function wheelHomes(m: Pick<ImportMeasurement, 'wheels' | 'hull' | 'wheelsUsed' | 'wheelsGuessed'>, layout: WheelLayout): Vec2[] | null {
   const det = m.wheels.wheels;
   if (det) return layout === 'rect' ? squareWheels(det) : det.map((w) => ({ x: w.x, y: w.y }));
+  if (m.wheelsGuessed && m.wheelsUsed) return m.wheelsUsed.map((w) => ({ x: w.x, y: w.y }));
   return m.hull.length >= 3 ? rectangleWheels(m.hull) : null;
 }
 
@@ -618,6 +620,26 @@ export function motionNames(groups: readonly MotionGroup[]): string[] {
     seen.set(n, k);
     return `${n} ${k}`;
   });
+}
+
+/**
+ * THE FRONT FROM THE BUILD the model shows (`readBuild`), for a front the geometry left ASSUMED: the
+ * quarter turns that bring the intake to the front (0 when it is there), or null when the intake is
+ * not clear. Clear: a ramp the file shows deployed at that edge, or more roller groups there than at
+ * any other edge. A quarter turn only when no wheel's axle says the robot rolls the other way
+ * (`axles`, `wheelAxleVotes`: a wheel about y rolls along x). The geometry's own intake cue reads
+ * geometry under 3 in past the outermost wheel, so a CAD without drive wheels, or with its intake
+ * rollers higher up, left a ramp intake "Assumed" (2026-11-06).
+ */
+export function frontFromBuild(cad: Pick<CadBuild, 'intake' | 'edges'>, axles: { x: number; y: number }): QuarterTurns | null {
+  const intake = cad.intake;
+  if (!intake) return null;
+  const best = cad.edges?.[intake.edge] ?? 0;
+  const clear = !!intake.ramp || (!!cad.edges && (Object.keys(cad.edges) as (keyof typeof cad.edges)[]).every((e) => e === intake.edge || cad.edges![e] < best));
+  if (!clear || best < 1) return null;
+  const turn = ({ front: 0, right: 1, back: 2, left: 3 } as const)[intake.edge];
+  if ((turn === 1 || turn === 3) && axles.y > 0) return null;
+  return turn;
 }
 
 /**

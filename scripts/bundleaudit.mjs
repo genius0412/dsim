@@ -798,7 +798,12 @@ const BASELINE = {
   // (+4.1: `motion.ts`'s surgical-tubing spokes and stars, the staged and transfer rollers, what a
   // wheel's shaft carries, the gears a wheel drives, the wheel click's own wheel; `geometry.ts`'s
   // thin floor slab).
-  importer: { gzip: 95.54 * 1000 },
+  // 2026-11-06 (moving parts by contact, rings, edge rollers, the wheel guess): 95.54 -> 101.74,
+  // raised on purpose. HEAD before it (e91f917c) already measured 99.62, over the line: the 2026-11-05
+  // STEP-only and placement work grew it without a raise. This change is +2.12: `motion.ts`'s
+  // `touchingPairs` and the contact rules built on it, `ringsAbout`, `findEdgeRollers`, and
+  // `geometry.ts`'s `wheelGuessIn` (`geometry-*.js` 29.76 -> 31.87).
+  importer: { gzip: 101.74 * 1000 },
   // 2026-11-05: NEW. `gizmo-*.js` 7.78: the placement handles drawn, picked and G-grabbed in the 3D
   // preview (`engine/gizmo.ts`) and three's TransformControls (~5.6 of it). Statically in the engine it
   // put `importer` at 105.4; lazy, the engine keeps 98.7 and only the Mechanisms step fetches this.

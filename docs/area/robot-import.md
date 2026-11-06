@@ -132,6 +132,14 @@ per deployment, in two halves over one rule. **Do not open it on production with
   (confidence 0.12, and 0.09–0.30) and their CAD front is their real one. Never wrongly detected
   on any of them (measured on the stored meshes the editor saved, turned through all 24
   orientations).
+  **The build's intake settles an assumed front** (`frontFromBuild`, 2026-11-06). The intake cue
+  above reads geometry under 3 in past the outermost wheel, so a CAD without drive wheels, or with
+  its rollers higher up, stays assumed. When the front is assumed and `readBuild` (below, the
+  editor's first read of a new file) finds a CLEAR intake edge (a ramp the file shows deployed
+  there, or more roller groups at that edge than at any other: `CadBuild.edges`), the editor turns the
+  robot to it once and calls the front detected ("Detected from the intake"); after a turn the build
+  is read again in the new frame. A quarter turn only when no detected wheel rolls the other way
+  (`wheelAxleVotes`). Never over a detected front, a player's turn, or a saved robot.
 - **Floor contacts → wheels**: vertices within 0.15 in of the floor (0.5 in if that finds fewer
   than four wheels), joined when within 1 in of each other OR when a mesh edge runs between them
   inside the slab. The edges matter: a cylinder's contact line is two cap vertices a wheel-width
@@ -145,6 +153,14 @@ per deployment, in two halves over one rule. **Do not open it on production with
   No four corners, or four that are no rectangle within `WHEEL_SQUARE_TOL_IN`, are looked for again
   at 0.08 in and taken when they are one (Offset: its four mecanum wheels). A robot found square at
   0.15 is measured as before.
+  ⚠️ **No wheels found: a guess inside the DRIVE BASE** (`wheelGuessIn`, `OrientedMeasure.wheelGuess`,
+  2026-11-06). A CAD exported without its drive wheels stands on whatever is lowest, and the old
+  default (1.5 in inside the WHOLE footprint box) put the wheels under a top, a turret or a folded ramp
+  that overhangs the base. The guess is 2 in inside the front and back and 1.5 in inside the sides of
+  the box of everything within 1 in of the floor. It is `wheelsUsed` (so the origin, the stored
+  descriptor's `wheels`, the turn rate and Home use it) with `wheelSource` still `'none'` and
+  `wheelsGuessed` set: the Model step says "Placed at the drive base's corners" and Review keeps the
+  `few-wheels` note. Wheels placed by hand or detected never read it.
 - **Footprint hull**: monotone chain on every vertex's (x, y), reduced to ≤ 16 vertices by a
   MIN-MAX search (binary search on the tolerance; farthest-reach walks from every start), an inner
   approximation whose measured maximum deviation is reported. Greedy removal alone is a local
@@ -684,7 +700,35 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
   drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
   any change to what the finders find. A saved robot's re-open is left alone. 2: tubing, what a wheel's
-  shaft carries, the gears it drives, a wheel's axle along x.
+  shaft carries, the gears it drives, a wheel's axle along x. 5: the three rules below.
+- ⚠️ **MOUNTED MEANS TOUCHING** (`mountedOn`, `touchingPairs`, `CONTACT_IN` 0.04 in, 2026-11-06). What
+  is mounted on a plate (a click on it, and a deployed part's members, `findOverhang`) was every
+  smaller body inside its box. A deployed ramp's arm can be a diagonal truss whose box holds the
+  chassis under it: chassis plates and an intake shaft's rollers folded up with the ramp. Now a
+  candidate must also TOUCH the seed, or touch another candidate that does (a nut on a screw through
+  the plate): a vertex of one within `CONTACT_IN` of a triangle of the other. Mated CAD faces coincide
+  in the occt mesh to thousandths of an inch; a part that turns has clearance. `touchingPairs` collects the
+  candidates' triangles in one pass, grids them, and tests each body's vertices against the others' in
+  its cell.
+- ⚠️ **A ROLLER RIDES A FOLDING PART ONLY WHEN IT TOUCHES IT** (`planFolds`, `RIDE_CONTACT_IN` 0.08 in on
+  the measured copy). Centre-inside-the-box alone took an intake roller held by the chassis between a
+  ramp's arms and folded it up with the ramp.
+- ⚠️ **RINGS ROUND A TURNING HUB TURN WITH IT** (`ringsAbout`, in `spinAxle`). A mecanum or omni wheel on
+  an intake shaft has its rollers as bodies of their own, standing past the hub, so neither the axle
+  nor the cylinder rule took them: the hubs turned and the rollers stood still. Three or more bodies
+  ALIKE about the axle (reach in and out, span along it, to `RING_TOL_IN` 0.03) that go round it
+  (`goesRound`), within one STACK of touching rotors and reaching into its radius, at most
+  `RING_REACH_IN` (0.35) past it, each at least `RING_MIN_IN` (0.15) across, and TOUCHING what turns
+  (or a ring that does). A stack ends at a gap: a bearing retainer's bolt circle round the shaft is
+  the frame's. The contact rule is what keeps a motor's face screws out: on AndyMark's RoBits bots the
+  40T gear's long hub spans the NeveRest's face, whose four screws are alike round its shaft, knurl
+  ridge by knurl ridge (248 slivers a gear, before the rule). A flywheel's through-bolts touch it and
+  turn with it (goBILDA's DECODE bot: four M4 × 20 that stood still before).
+- **Rollers at every edge** (`findEdgeRollers`, from the editor's `findAll`): the intake spans' rollers
+  first, then those at the other edges that are as long along the edge as an intake roller (at least
+  half the robot, `EDGE_ROLLER_SPAN`), so a robot that takes in at both ends turns both whichever end
+  the build places its intake at. Without the length rule Offset's slide spools by its back edge were
+  offered as intake rollers.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now
@@ -750,7 +794,8 @@ The editor, rebuilt with this code, finds the same groups as the Node probe on a
   rotated frame before the box, hull and contacts: the hinge is level, square to the direction the
   part sits out from the robot, through its innermost point; it folds up until its far end is over
   the hinge (or by `foldDeg`). That is how a robot whose CAD has its ramp out fits the 18-in start.
-  A spinning part whose box centre is inside the hinged part's box rides on it and folds with it.
+  A spinning part whose box centre is inside the hinged part's box AND that touches it rides on it and
+  folds with it.
   `toModelFrame` re-applies the folds at the same step, so the main thread rebuilds the worker's
   model frame bit for bit. Use the box centre, not the vertex mean, for "inside": a fanned cap puts
   half a cylinder's vertices on one rim point.
@@ -1150,6 +1195,18 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   - Proof: the `import UI undo` checks in `npm test`, and `scripts/robot-import/undoeditor.cjs`, which
     drives the production editor offscreen (two edits, two undos, two redos, a units change, a Detail
     change, a handle stepped by keys) and reads the persisted draft after each.
+- **Save from any step** (2026-11-06, owner: "as streamlined as possible"). The header carries Save robot
+  (Save changes for an edit) on every step but Review, whose footer has it with Test drive and Export.
+  A model the importer read right then needs no step walked through: drop the file, look at it, save.
+  It waits, like Review's, for no block and no measurement, and for what the editor reads by itself
+  (`autoDone`: a new file's build, then its moving parts, each an effect a render after the last), so
+  a save from the Model step never stores a robot half-read. ⚠️ It is a plain `.ds-btn`, not `primary`:
+  the pad's Y presses the first `.ds-btn.primary` on the page (`PadNavLayer`), which must stay the
+  step's Next. It is its own item in the header, after the Undo/Redo/Discard group; under 560 px the
+  four do not fit a line, so it moves up beside Back and the group wraps under them whole
+  (`.ds-import-headsave`), rather than leaving Save alone on a third line. Checked end to end in the
+  production editor: what it saves from the Model step is what the five steps save (wheels, moving
+  parts, build).
 - **Test drive** passes the draft's spec to `GameView` (`testDrive`), frozen at mount: free
   drive, its own assists, the default start, no other robots, no Zenith auto. Leaving the
   match returns to the editor route, and the draft is flushed first, so nothing is lost.

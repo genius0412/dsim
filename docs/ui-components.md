@@ -10,16 +10,16 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-451 classes · 147 families · 3 with no reference found.
+452 classes · 147 families · 3 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
-## `ds-import` — 33
+## `ds-import` — 34
 
 | class | declared | used |
 |---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 43 |
+| `.ds-import` | src/ui/competitions.css:4 | 45 |
 | `.ds-import-before` | src/ui/importer.css:202 | 1 |
 | `.ds-import-body` | src/ui/importer.css:40 | 1 |
 | `.ds-import-canvas` | src/ui/importer.css:98 | 2 |
@@ -32,6 +32,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-import-foot` | src/ui/importer.css:44 | 1 |
 | `.ds-import-handle` | src/ui/importer.css:425 | 1 |
 | `.ds-import-headacts` | src/ui/importer.css:540 | 1 |
+| `.ds-import-headsave` | src/ui/importer.css:547 | 2 |
 | `.ds-import-hero-img` | src/ui/shell.css:5676 | 1 |
 | `.ds-import-in` | src/ui/importer.css:27 | 1 |
 | `.ds-import-legend` | src/ui/importer.css:177 | 1 |
@@ -626,7 +627,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-head` | src/ui/shell.css:4861 | 17 |
-| `.ds-head-spacer` | src/ui/importer.css:546 | 14 |
+| `.ds-head-spacer` | src/ui/importer.css:560 | 14 |
 
 ## `ds-hint` — 2
 
@@ -791,7 +792,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1026 | 399 |
+| `.ds-btn` | src/ui/shell.css:1026 | 401 |
 
 ## `ds-checkline` — 1
 

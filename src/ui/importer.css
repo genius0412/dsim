@@ -541,6 +541,20 @@
   margin-left: auto;
   justify-content: flex-end;
 }
+/* Save robot: after the group on a wide screen. On a phone the group and it do not fit one line, and
+   Save alone on the last line is what the group's own wrap avoids, so it joins Back on the first line
+   and the group wraps under them as a whole */
+.ds-import-headsave {
+  order: 1;
+}
+@media (max-width: 560px) {
+  .ds-import-headsave {
+    order: 0;
+  }
+  .ds-import-headacts {
+    order: 1;
+  }
+}
 
 /* the footer: Back on the left, the step's actions on the right */
 .ds-import-foot .ds-head-spacer {

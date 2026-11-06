@@ -144,6 +144,7 @@ export const COPY = {
   wheelsUneven: '4 found, not a rectangle',
   wheelsManual: 'Placed by hand',
   wheelsNone: 'None found. Drag all four into place.',
+  wheelsGuessed: 'None found. Placed at the drive base’s corners: drag them onto the wheels.',
   units: 'Units',
   up: 'Up axis',
   detected: (v: string) => `Detected: ${v}`,

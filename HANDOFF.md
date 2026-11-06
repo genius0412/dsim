@@ -1,3 +1,27 @@
+# HANDOFF — 2026-11-06b (Importer accuracy: moving parts by contact, rings, a wheel guess, the front from the intake; Save from any step)
+
+**State: on `alpha`, client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 5, so a draft's found moving parts are looked for again when it is opened. `npm test` (shared 5125, BIOBUZZ 6322), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner:** "Make the robot import feature as streamlined and accurate as possible." Validated on a private team CAD; nothing from it is in the repo.
+- **Accuracy** (rules in `docs/area/robot-import.md`, synthetic checks in smoke's `MOVING PARTS BY CONTACT` block):
+  - Mounted means touching (`mountedOn`, `touchingPairs`). A deployed part's members, and a click on a plate, take only the smaller bodies in its box that touch it. The box alone took chassis plates and intake rollers under a diagonal ramp arm.
+  - A roller rides a folding part only when it touches it (`planFolds`).
+  - Rings round a turning hub turn with it (`ringsAbout`): a mecanum or omni wheel's rollers on an intake shaft. A ring must touch what turns. Without that, a motor's face screws round a gear's long hub came in, 248 knurl slivers a gear on AndyMark's bots.
+  - Rollers at the other edges, intake-length only (`findEdgeRollers`): a robot that takes in at both ends turns both. Offset's slide spools stay out.
+  - No wheels found: a guess inside the drive base (`wheelGuessIn`), stored in the descriptor. The old default sat under anything that overhangs the base.
+  - An assumed front turns to a clear intake that `readBuild` found (`frontFromBuild`, `CadBuild.edges`).
+- **Streamlining:** Save robot in the editor header on every step but Review (`#ri-save-head`). It waits for no block and for the editor's own reading (`autoDone`). It is a plain button, so the pad's Y still presses Next. Under 560 px it sits beside Back (`.ds-import-headsave`).
+- **Measured** on the eight vendor and public STEPs (Node, the editor's own pipeline; scratch probes, not committed), old code against new:
+  - No bot lost a group or a body.
+  - Added: goBILDA DECODE's four flywheel screws and Offset's four flywheel through-bolts (both touch the wheel), and eight lock nuts on an AndyMark roller.
+  - goBILDA's BIOBUZZ mecanum front: now detected from its side rollers.
+  - AndyMark: front and back tie on rollers, so the front stays assumed, as before.
+- **Bundle:** `importer` baseline raised 95.54 → 101.74 KB. HEAD before this already measured 99.62 (over the line, from the 11-05 work); this change is +2.12.
+- **Smoke fix:** the `builder:` rename check counted `<IdentityField\n` and failed on a CRLF checkout (alpha HEAD too); it reads the file as LF now.
+- **Open:**
+  - A deployed ramp still folds about its innermost point, not the axle it may pivot on.
+  - An assumed front with a front/back roller tie stays assumed: `detectFront` does not report which way its weak vote pointed.
+
 # HANDOFF — 2026-11-06 (Robot cards: one edit)
 
 **State: on `alpha` (d30f8882), client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On d30f8882: `npm test` (shared 5106, BIOBUZZ 6322), `build`, `bundleaudit`, `uiaudit`, `docaudit`, `contrast` pass; `importpad` (offscreen, dev server) ALL PASS.
