@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from 'react';
 import type { Alliance } from '../types';
 import { ROOM_CAPACITY, ROOM_REACTIONS, type LobbyPlayer, type RoomSettings, type RoomSettingsPatch, type RoomWatcher } from '../net/protocol';
 import { SupporterBadge } from './SupporterBadge';
@@ -103,8 +103,38 @@ export interface RoomScreenProps {
   onCloseDrawer: () => void;
 }
 
+/**
+ * WHAT IS PINNED TO THE WINDOW'S BOTTOM STANDS ON THE BAR. A ranked search or a competition call
+ * (`.ds-queuebar`) and the friend toasts are fixed to the bottom corner, and the bar is not always
+ * the window's bottom edge: on a narrow window the Friends strip sits under the room, up to 360 px
+ * of it when opened. A fixed offset put the notice over "n of m ready" on a phone (2026-11-05). So
+ * the room publishes how far the bar's top is from the window's bottom as `--rm-bar-clear` on the
+ * root, re-measured whenever the room or its bar changes size.
+ */
+function useBarClearance(screen: RefObject<HTMLElement | null>, bar: RefObject<HTMLElement | null>): void {
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const put = (): void => {
+      const b = bar.current;
+      if (b) root.style.setProperty('--rm-bar-clear', `${Math.max(0, Math.round(window.innerHeight - b.getBoundingClientRect().top))}px`);
+    };
+    put();
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(put) : null;
+    for (const el of [screen.current, bar.current]) if (el) ro?.observe(el);
+    window.addEventListener('resize', put);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', put);
+      root.style.removeProperty('--rm-bar-clear');
+    };
+  }, [screen, bar]);
+}
+
 export function RoomScreen(props: RoomScreenProps) {
   const { players, settings, capacity, pending, myId, spectating } = props;
+  const screenRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLElement>(null);
+  useBarClearance(screenRef, barRef);
   const map = seatMap(players, settings, capacity, pending);
   const me = players.find((p) => p.clientId === myId) ?? null;
   const shownWatchers =
@@ -264,7 +294,7 @@ export function RoomScreen(props: RoomScreenProps) {
   const hostPanel = props.host ? <HostPanel host={props.host} players={players} capacity={capacity} bots={props.bots} /> : null;
 
   return (
-    <div className="rm-screen">
+    <div className="rm-screen" ref={screenRef}>
       <header className="rm-head">
         <button type="button" className="ds-back" onClick={props.onLeave}>
           ← Leave
@@ -341,7 +371,7 @@ export function RoomScreen(props: RoomScreenProps) {
         </section>
         {side('blue', map.blue)}
       </div>
-      <footer className="rm-bar">
+      <footer className="rm-bar" ref={barRef}>
         <div className="rm-bar-text">
           <span className="rm-status" aria-live="polite">
             {props.bar.status}

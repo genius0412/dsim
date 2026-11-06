@@ -19723,7 +19723,22 @@ const recordDrive: CommandSource = (tick) => {
   check('rooms3: every seat card is one fixed height, and the alliance stripe is a shadow, not a border',
     /\.rm-seat \{[\s\S]*?height: 112px;[\s\S]*?box-shadow: inset 4px 0 0 var\(--rm-side\);/.test(css) && !/\.rm-seat[^{]*\{[^}]*border-left/.test(css));
   check('rooms3: the bar is the screen’s last row, so READY and START never scroll away',
-    /\.rm-screen \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;[\s\S]*?height: 100dvh;/.test(css) && /<footer className="rm-bar">/.test(screenSrc));
+    /\.rm-screen \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;[\s\S]*?height: 100dvh;/.test(css) && /<footer className="rm-bar"[ >]/.test(screenSrc));
+  {
+    // 2026-11-05: three things that sat ON the room. A reaction covered the READY chip; the collapsed
+    // Friends card was a flex column that cut the bar 80px short of the edge; a pinned notice used a
+    // fixed offset and covered "n of m ready" where the Friends strip sits under a narrow room.
+    const shellCss = src('src/ui/shell.css');
+    check('rooms3: a reaction sits at the free end of the actions row, not over the top-right chips',
+      /\.rm-bubble \{[^}]*bottom: var\(--ds-s-2\);[^}]*right: var\(--ds-s-3\);/.test(css) && !/^\.rm-bubble \{[^}]*top:/m.test(css));
+    check('rooms3: wide, the collapsed Friends card floats over the room (the bar runs to the edge), under the Setup drawer',
+      /@media \(min-width: 901px\) \{[\s\S]*?\.ds-room-layout:has\(> \.rm-screen\) > \.ds-friends\.collapsed \{[^}]*position: absolute;[^}]*z-index: 1;/.test(shellCss) &&
+        /\.rm-drawer \{[^}]*z-index: 2;/.test(css) && /\.rm-scrim \{[^}]*z-index: 2;/.test(css));
+    check('rooms3: the pinned notice and the toasts stand on the MEASURED bar, which the room publishes as --rm-bar-clear',
+      /body:has\(\.rm-screen\) \.ds-queuebar \{\s*bottom: calc\(var\(--rm-bar-clear/.test(shellCss) &&
+        /body:has\(\.rm-screen\) \.fr-toasts:not\(\.in-match\) \{\s*bottom: calc\(var\(--rm-bar-clear/.test(shellCss) &&
+        /setProperty\('--rm-bar-clear'/.test(screenSrc) && /removeProperty\('--rm-bar-clear'\)/.test(screenSrc) && /ResizeObserver/.test(screenSrc));
+  }
 
   // ---- the room: names, sides, watchers --------------------------------------------------------
   {

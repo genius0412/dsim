@@ -1142,15 +1142,19 @@
   min-height: 0;
 }
 /* THE ROOM'S BAR OWNS THE BOTTOM EDGE (READY / START, `room.css`), so a pinned notification (a
-   ranked search, a competition call) stands on it rather than over the two buttons */
+   ranked search, a competition call) and the friend toasts stand on it rather than over it.
+   `--rm-bar-clear` is the bar's top measured from the window's bottom (`RoomScreen`), because on a
+   narrow window the Friends strip sits under the bar and a fixed offset covered its first line.
+   80px is the wide bar, for the frame before the room has measured. */
 body:has(.rm-screen) .ds-queuebar {
-  bottom: calc(var(--ds-s-7) * 2);
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4));
 }
-@media (max-width: 759px) {
-  /* the narrow bar is two rows: its line, then the buttons */
-  body:has(.rm-screen) .ds-queuebar {
-    bottom: calc(var(--ds-s-7) * 3);
-  }
+body:has(.rm-screen) .fr-toasts:not(.in-match) {
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4));
+}
+/* ...and above the notice when there is one (the same one-line offset as off the room, below) */
+body:has(.rm-screen):has(.ds-queuebar:not(.over)) .fr-toasts:not(.in-match) {
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4) + 44px + var(--ds-s-2));
 }
 .ds-room-layout > .ds-friends {
   top: 0;
@@ -1158,6 +1162,26 @@ body:has(.rm-screen) .ds-queuebar {
 }
 .ds-room-layout > .ds-friends.collapsed {
   top: var(--ds-s-4);
+}
+/* THE ROOM RUNS TO THE WINDOW'S RIGHT EDGE. As a flex column, the collapsed Friends card (one
+   64px button) cut the room's pinned READY / START bar 80px short of the edge, leaving a hole
+   under the card (2026-11-05). Where it is a side column (wide), it floats over the room's top
+   corner instead. The room's head keeps clear of it, the Setup drawer covers it (`room.css`),
+   and expanded it is a full-height column again that the room makes way for. Narrow, it is a
+   strip under the room and this does not apply. */
+@media (min-width: 901px) {
+  .ds-room-layout:has(> .rm-screen) {
+    position: relative;
+  }
+  .ds-room-layout:has(> .rm-screen) > .ds-friends.collapsed {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    right: 0;
+  }
+  .ds-room-layout:has(> .ds-friends.collapsed) .rm-head {
+    padding-right: calc(64px + var(--ds-s-4) * 2);
+  }
 }
 /* the whole collapsed rail IS the button — glyph over label, so the hit area is the
    width of the strip rather than a 38px square adrift in it */
