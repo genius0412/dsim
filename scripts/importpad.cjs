@@ -72,11 +72,11 @@ app.whenReady().then(async () => {
   await win.loadURL(BASE + '/decode/configure/robot/import');
   await sleep(1500);
   await js(`(async () => {
-    const b = await (await fetch('/scripts/fixtures/robot-import/robot.stl')).blob();
+    const b = await (await fetch('/scripts/fixtures/robot-import/robot.step')).blob();
     const input = document.querySelector('.ds-import-drop input[type=file]');
-    const dt = new DataTransfer(); dt.items.add(new File([b], 'robot.stl'));
+    const dt = new DataTransfer(); dt.items.add(new File([b], 'robot.step'));
     input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
-    for (let i = 0; i < 60 && !document.querySelector('.ds-import-filerow'); i++) await new Promise((r) => setTimeout(r, 200));
+    for (let i = 0; i < 300 && !document.querySelector('.ds-import-filerow'); i++) await new Promise((r) => setTimeout(r, 200));
     return !!document.querySelector('.ds-import-filerow');
   })()`);
   await sleep(800);

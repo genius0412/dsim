@@ -5,7 +5,10 @@
  *   VITE_ROBOT_IMPORT=1 npm run build && npx vite preview --port 4173 --strictPort   # the importer
  *                                     # ships on alpha only; the variable opens it in a local build
  *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/robot-import/stressprobe.cjs \
- *       [--port 4173] [--dir <stress dir>] [--files stress-s.glb,stress-l.stl] [--gpu] [--out results.json]
+ *       [--port 4173] [--dir <stress dir>] [--files stress-s.step,stress-l.step] [--gpu] [--out results.json]
+ *
+ * The editor takes STEP CAD (or a zip of it) and a DSIM share file, so the files are `stress.ts`'s STEP
+ * robots (its GLB and STL ones are refused at the drop box, as a player's would be).
  *
  * Per file, in a FRESH window (so the renderer's memory peak is this import's):
  *   1. the drop: the stage timeline read off the drop box's status line, every long task (> 50 ms)
@@ -35,7 +38,7 @@ const argOf = (name, fallback) => {
 };
 const BASE = `http://localhost:${argOf('port', '4173')}`;
 const DIR = path.resolve(argOf('dir', path.join(os.tmpdir(), 'dsim-robot-stress')));
-const FILES = argOf('files', 'stress-s.glb,stress-s-flat.glb,stress-s.stl,stress-s.step,stress-m.glb,stress-m-flat.glb,stress-m.stl,stress-l.glb,stress-l-flat.glb,stress-l.stl').split(',');
+const FILES = argOf('files', 'stress-s.step,stress-m.step,stress-l.step').split(',');
 const OUT = argOf('out', '');
 const GAME = argOf('game', 'decode');
 

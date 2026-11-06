@@ -7,7 +7,7 @@
  * (`VITE_ROBOT_IMPORT=1`: the importer ships on the alpha channel only, `importerEnabled`; a local
  * build without it has no editor route.)
  *
- * Drops the GLB fixture into the DECODE importer and checks that the editor's own edits leave Undo and
+ * Drops the STEP fixture into the DECODE importer and checks that the editor's own edits leave Undo and
  * Redo off; then two edits (a turn, the weight), Ctrl+Z inside the number field (left to the field),
  * two undos (the keys, the button), a redo by Ctrl+Y and one by Ctrl+Shift+Z, reading the persisted
  * draft and the buttons after each; then five arrow presses on a placement handle, one step. Writes
@@ -23,7 +23,8 @@ const argOf = (name, fallback) => {
 };
 const OUT = path.resolve(argOf('out', 'scratch/undoeditor'));
 const BASE = `http://localhost:${argOf('port', '4174')}`;
-const FILE = path.join(__dirname, '../fixtures/robot-import/robot.glb');
+// the editor takes STEP CAD (or a zip of it) and a DSIM share file
+const FILE = path.join(__dirname, '../fixtures/robot-import/robot.step');
 fs.mkdirSync(OUT, { recursive: true });
 app.setPath('userData', path.join(OUT, 'userdata'));
 app.disableHardwareAcceleration();
@@ -95,7 +96,7 @@ app.whenReady().then(async () => {
     await until(`document.querySelector('.ds-import-drop input[type=file]')`);
     ok('before a file: no Undo or Redo', (await btn('ri-undo')) === null && (await btn('ri-redo')) === null);
     const b64 = fs.readFileSync(FILE).toString('base64');
-    await js(`(() => { const bin = atob(${JSON.stringify(b64)}); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const f = new File([u], 'robot.glb'); const input = document.querySelector('.ds-import-drop input[type=file]'); const dt = new DataTransfer(); dt.items.add(f); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    await js(`(() => { const bin = atob(${JSON.stringify(b64)}); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const f = new File([u], 'robot.step'); const input = document.querySelector('.ds-import-drop input[type=file]'); const dt = new DataTransfer(); dt.items.add(f); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     const loaded = await until(`document.querySelector('.ds-import-filerow') && (document.querySelector('.ds-import-canvas-host canvas') || document.querySelector('.ds-import-map'))`, 60000);
     ok('the fixture imports', loaded);
     // the editor's own edits land now: placements, the moving parts, the CAD build

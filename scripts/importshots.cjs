@@ -157,9 +157,10 @@ app.whenReady().then(async () => {
       await js(`__scroll('.ds-import-drop')`);
       await snap(label, 'editor-error');
 
-      // the STL is in millimetres: Units → in makes it oversize for the failing review below
-      await js(`__drop(['robot.stl'])`);
-      await js(`__until(() => document.querySelector('.ds-import-filerow'))`);
+      // the STEP is in millimetres: Units → in makes it oversize for the failing review below. The
+      // editor takes STEP (or a zip of it) and a DSIM share file; the first read loads the occt reader
+      await js(`__drop(['robot.step'])`);
+      await js(`__until(() => document.querySelector('.ds-import-filerow'), 90000)`);
       await sleep(1200);
       await js(`__top()`);
       await snap(label, 'model-loaded');
@@ -232,8 +233,8 @@ app.whenReady().then(async () => {
       for (const game of ['biobuzz', 'chain']) {
         await load(`/${game}/configure/robot/import`);
         await js(`__until(() => document.querySelector('.ds-import-drop, .ds-import-filerow'))`);
-        await js(`__drop(['robot.stl'])`);
-        await js(`__until(() => document.querySelector('.ds-import-filerow'))`);
+        await js(`__drop(['robot.step'])`);
+        await js(`__until(() => document.querySelector('.ds-import-filerow'), 90000)`);
         await sleep(800);
         await js(`__step(2)`);
         await sleep(500);

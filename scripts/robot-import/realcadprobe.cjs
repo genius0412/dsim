@@ -9,9 +9,10 @@
  * The files are vendors' published CAD (a STEP, or the zip it is published in), never committed:
  * goBILDA publishes no licence, REV's is CC BY-NC-SA. Per file, in a FRESH window, per Detail in
  * `--details` (default: whatever the editor reads at):
- *   1. the drop: the status-line timeline, every long task (> 50 ms) on the page, the renderer's
- *      peak working set (the import's workers are threads of it), and the time to the preview; a
- *      Detail other than the one the file was read at is then picked (a re-read, timed the same way);
+ *   1. the drop: the Detail picked in the drop box first (the editor asks it before the file is
+ *      read), then the status-line timeline, every long task (> 50 ms) on the page, the renderer's
+ *      peak working set (the import's workers are threads of it), and the time to the preview. Where
+ *      the file still reads at another Detail, that one is picked after (a re-read, timed the same way);
  *   2. what the Model step says (size, triangles, wheels, units, up, front) and pictures of it;
  *      `--orbit` drags the preview round for two seconds and times its frames;
  *   3. Save (timed), then the library record's descriptor (hull, wheels, height, in robot-local
@@ -232,11 +233,13 @@ app.whenReady().then(async () => {
     };
 
     /** drop the file on a fresh import page; the import's row */
-    const importOnce = async () => {
+    const importOnce = async (detail) => {
       await clearDrafts();
       await win.loadURL(`${BASE}/${GAME}/configure/robot/import`);
       await until(`document.querySelector('.ds-import-drop input[type=file]')`);
       await sleep(800);
+      // the Detail is the drop box's own question, asked before the file is read
+      if (detail) await click('.ds-import-before .ds-opt', detail);
       await js(`(async () => { const r = await fetch('http://127.0.0.1:${port}/${encodeURIComponent(name)}'); window.__file = new File([await r.blob()], ${JSON.stringify(name)}); return 1; })()`);
       await sleep(500);
       const mem0 = memNow();
@@ -345,7 +348,7 @@ app.whenReady().then(async () => {
       console.log(`GL: ${row.glRenderer}`);
       const robots = [];
       for (const want of DETAILS.length ? DETAILS : ['']) {
-        const d = { import: await importOnce() };
+        const d = { import: await importOnce(want) };
         row.details.push(d);
         if (!d.import.ok) {
           d.error = await js(`(document.querySelector('.ds-import-drop')?.innerText ?? '').replace(/\\s+/g, ' ')`);
