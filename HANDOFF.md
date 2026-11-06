@@ -1,3 +1,33 @@
+# HANDOFF — 2026-11-05 (Room lobby polish; contributor PRs #125/#126/#128/#129 landed)
+
+**State: on `alpha` (0e504e80..179a621d), all client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 179a621d: `npm test` (shared 5102, BIOBUZZ 6322), `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass.
+
+- **Room lobby polish (0e504e80).**
+  - A reaction bubble sits at the free end of a card's actions row; over the top corner it covered READY.
+  - When wide (>900 px), the collapsed Friends card floats over the room's corner. As a flex column it cut the READY/START bar 80 px short.
+  - The pinned notice and the friend toasts stand on the bar's measured top: `--rm-bar-clear`, from `RoomScreen`'s `useBarClearance`. A fixed offset covered "n of m ready" on phones, where the Friends strip sits under the room.
+  - `DSIM_ROOM` shiftaudit: 0 shifts.
+- **Contributor PRs, squashed onto alpha with fixes.** Pushing to the fork was blocked, so the PRs are closed with comments naming the commits.
+  - **#126 STEP-only importer (9dbb344d, by Ethan Zhang @aevalmere; #128 is its second commit).** CAD is STEP (.step/.stp), with Detail chosen before the read; a DSIM share .glb restores a robot; GLB/STL/OBJ/3MF/PLY CAD imports are gone. Parts can be left out of the footprint. Fixes:
+    - 77e40c4b: every importer probe seeds the STEP fixture (shiftaudit had been skipping the editor).
+    - ac83ab82:
+      - A zip holding a STEP still imports (`ui/fileSelection.ts`, engine `zipFileNames`), for the vendor kits.
+      - The staged Detail stays local until Start, and the tile has "Keep current model".
+      - The Review step warns about left-out parts (no collision, not in the 18 in check, still drawn).
+      - `apart`/`motion` are validated in share files.
+    - 16855170: `importerui` baseline raised 36.06 → 40.82. Alpha already measured 38.88.
+  - **#129 menu column + 3D handles (68453418, by the same contributor).**
+    - **Layout:** the 3D view goes 435 → 1061 px at 1920, and the page max width 1080 → 1480. Owner approved.
+    - **Fixes:**
+      - 68603011: the gizmo, handles and TransformControls are a lazy `engine/gizmo.ts` chunk (the new `gizmo` bundle route, 7.78 KB). Esc after an axis switch returns to the G point.
+      - e18a0dd8: Esc deselects. A drag shares the slider's `zRange`. Handles are memoized. Adds `mechMove` smoke checks.
+  - **#125 first-Play fly:** superseded by a1155882. Its one missing piece landed as 179a621d: the fly advances on frame time (`src/ui/stageFly.ts`, ≤50 ms a frame).
+  - **Open:**
+    - The contributor's PR descriptions lack the CLA sentence `CONTRIBUTING.md` requires (the CONTRIBUTORS.md line says "signed CLA 2026-11-04"). Asked on #126.
+    - With a model loaded, a failed read of a staged file lands on the error tile, which has no "Keep current model" button.
+    - shiftaudit's HUD pass logs "(could not reach Free drive)". Not investigated.
+- **Still open from 11-04e:** supporter plate-font tiers; the claim-less token log line on dsim-alpha; `sync:alpha` after the next promotion; Records Auto/TeleOp split.
+
 # HANDOFF — 2026-11-04e (Custom rooms redesign; text-field focus ring)
 
 **State: on `alpha` (be019570..4215cb42). SERVER CHANGE (the `seat` and `react` messages, named watchers, the room's own return), DEPLOYED: `dsim-alpha` on image `deployment-01M6MQJAQX8FT26PT99YH2SYTV` (4215cb42), /health ok.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 4215cb42: `npm test` (shared 5075, BIOBUZZ 6322, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` (451), `test:mm` (234), `test:workers` (188), `dbtest` pass.
