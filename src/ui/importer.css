@@ -46,7 +46,7 @@
   align-self: start;
 }
 /* the step body and the buttons under it travel together: transparent to layout on a narrow
-   window (the grid places the two as before), one floating column over the picture on a wide one */
+   window (the grid places the two as before), the menu column beside the picture on a wide one */
 .ds-import-dock {
   display: contents;
 }
@@ -122,7 +122,7 @@
      body and its buttons are one column on the left, in the page's own panel; the 3D view is the cell
      beside it and keeps the editor's old height. The step rail is its own row, centred over both,
      so it sits across neither the menu nor the camera buttons. The
-     preview centres the model in its own box (PreviewPane insets it only by a dock that overlaps). */
+     preview centres the model in its own box: nothing overlaps it. */
   .ds-import-in {
     position: relative;
     grid-template-columns: clamp(19rem, 25%, 24rem) minmax(0, 1fr);

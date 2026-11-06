@@ -65,21 +65,13 @@ export function PreviewPane({
       setFailed(true);
     };
     el.addEventListener('webglcontextlost', onLost);
-    // A dock that overlaps the picture's left edge insets the model so it is centred in what the dock
-    // leaves free. On a wide window the dock is its own column beside the picture (inset 0, centred in
-    // the picture); on a narrow one it is `display: contents`, which has no box.
-    const dock = host.current.closest('.ds-import-in')?.querySelector<HTMLElement>('.ds-import-dock') ?? null;
     const fit = (): void => {
       const r = host.current?.getBoundingClientRect();
-      if (!r || r.width <= 0) return;
-      c.resize(Math.round(r.width), Math.round(r.height));
-      const d = dock && getComputedStyle(dock).display !== 'contents' ? dock.getBoundingClientRect() : null;
-      c.setInset(d && d.width > 0 ? Math.max(0, d.right - r.left) : 0);
+      if (r && r.width > 0) c.resize(Math.round(r.width), Math.round(r.height));
     };
     fit();
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(fit) : null;
     ro?.observe(host.current);
-    if (dock) ro?.observe(dock);
     return () => {
       ro?.disconnect();
       el.removeEventListener('webglcontextlost', onLost);
