@@ -787,11 +787,52 @@ lists the bodies the player deleted, as `MeshPart.body` ids of the model as read
   BIOBUZZ bot's 7,235 Light ids, 4,585 name the same part at Full; REV 3,522 of 4,010). An undo
   across a Detail change keeps the deletions the model was read with (`restoreDoc`). The moving parts
   are kept across a Detail change and have that problem (open).
-- **The UI** (Model step, Parts). Delete parts turns on a mode in which a click in the preview selects
+- **The UI** (Model step, Parts). Select parts (was Delete parts) turns on a mode in which a click in the preview selects
   a body (Shift adds or takes one out), tinted blue; Delete selected or the Delete or Backspace key
   (not in a field) deletes them. The cap counts what is deleted; Restore all brings every body back.
   The mode ends with the step. A deletion, Restore all and Keep are one undo step each ("delete 5
   parts").
+
+### Leaving parts out of the footprint
+
+Owner, 2026-11-04: select parts "not part of footprint" (a deployed ramp; a moving part later) and have
+the drive base generated again without them. `ImportSetup.apart` lists the bodies (`MeshPart.body` ids).
+
+- **In the mesh, not in the drive base.** `orientParts` keeps them in `modelParts` (so the preview
+  draws them, a click picks them, the finders see them and the bake stores them), but the model
+  frame's box (centre and floor), `size`, the hull, floor contacts (wheels), the height bands, the
+  front vote and the floating-part finder all read `withoutBodies(modelParts, apart)`. Units and the
+  up axis still read EVERY part, so leaving a ramp out cannot turn the model. `orientKey` names the
+  ids (`|a…`), so each set is an orientation of its own. Smoke `leave out of footprint:` holds a
+  measurement with the cube left out to the file without it, field for field (`trisIn` aside).
+- **Saved, unlike deleted.** The stored mesh keeps these bodies and their `_BODY` ids, and a re-open
+  re-measures it, so `savedSetup` keeps `apart` (it drops `removed`); without it a re-save would put
+  the ramp back into the footprint. A new file and a Detail change clear it (ids name another solid at
+  the other detail), `restoreDoc` keeps the current one across a Detail change like `removed`.
+- **The frame.** Same rule as a deletion, asked of the drive base: `removalMovesFrame` over
+  `apart` vs `apart + selection` (`leaveOutBodies`, `includeAllBodies`); when the base's box moves,
+  placed wheels and placements are found again. Deleting a body drops it from `apart`.
+- **The UI** (Model step, Parts). The mode is "Select parts": a click selects, then Leave out of
+  footprint or Delete selected. Include all brings them back. They show orange on the Model step
+  while left out. One undo step each ("leave 2 parts out of the footprint").
+- **Not done yet:** a left-out part is not a moving part, so it is drawn at the starting pose, outside
+  the collision hull, and the 18 in start check does not count it. Marking it a `fold`/`slide` row
+  is the next step.
+
+### The drop box, before a file is read
+
+The Model step asks **Detail** (Full or Light, the same `triBudget` it shows after reading) BEFORE a
+CAD file is read, so a big STEP is read once at the chosen detail. It also stages files dropped on
+the robot page's Import card until the player chooses Detail and starts the read. Detail lives
+beside the tile rather than inside it: the tile's content still swaps between empty, ready, reading
+and failed without moving the page.
+
+- **STEP is the only CAD import.** `DropZone.tsx`'s `ACCEPT` and `isImportFileSelection` gate the
+  picker, drops and Replace to STEP files, plus one possible `.glb` share file. `ImportEditor.tsx`
+  validates that GLB's contents and accepts it only through the DSIM share path (a newer share can
+  offer its mesh for a fresh setup). Other formats are refused with `COPY.notStep`, including files
+  handed from the robot page. The engine's other readers remain for stored meshes, share files and
+  the dev harness.
 
 ### Floating parts
 

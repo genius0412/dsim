@@ -10,10 +10,47 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-450 classes · 147 families · 3 with no reference found.
+451 classes · 147 families · 3 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
+
+## `ds-import` — 32
+
+| class | declared | used |
+|---|---|---|
+| `.ds-import` | src/ui/competitions.css:4 | 42 |
+| `.ds-import-before` | src/ui/importer.css:142 | 1 |
+| `.ds-import-body` | src/ui/importer.css:40 | 1 |
+| `.ds-import-canvas` | src/ui/importer.css:93 | 2 |
+| `.ds-import-canvas-host` | src/ui/importer.css:89 | 1 |
+| `.ds-import-checks` | src/ui/importer.css:440 | 1 |
+| `.ds-import-drop` | src/ui/importer.css:146 | 4 |
+| `.ds-import-drop-acts` | src/ui/importer.css:162 | 2 |
+| `.ds-import-filerow` | src/ui/importer.css:170 | 1 |
+| `.ds-import-foot` | src/ui/importer.css:44 | 1 |
+| `.ds-import-handle` | src/ui/importer.css:365 | 1 |
+| `.ds-import-headacts` | src/ui/importer.css:480 | 1 |
+| `.ds-import-hero-img` | src/ui/shell.css:5702 | 1 |
+| `.ds-import-in` | src/ui/importer.css:27 | 1 |
+| `.ds-import-legend` | src/ui/importer.css:277 | 1 |
+| `.ds-import-map` | src/ui/importer.css:293 | 4 |
+| `.ds-import-map-front` | src/ui/importer.css:343 | 1 |
+| `.ds-import-map-status` | src/ui/importer.css:354 | 1 |
+| `.ds-import-map-wrap` | src/ui/importer.css:104 | 1 |
+| `.ds-import-moving` | src/ui/importer.css:197 | 6 |
+| `.ds-import-moving-edit` | src/ui/importer.css:258 | 1 |
+| `.ds-import-moving-hinge` | src/ui/importer.css:270 | 3 |
+| `.ds-import-moving-row` | src/ui/importer.css:220 | 1 |
+| `.ds-import-preview` | src/ui/importer.css:37 | 4 |
+| `.ds-import-preview-empty` | src/ui/importer.css:99 | 1 |
+| `.ds-import-preview-stage` | src/ui/importer.css:79 | 1 |
+| `.ds-import-preview-tools` | src/ui/importer.css:107 | 1 |
+| `.ds-import-steps` | src/ui/importer.css:34 | 1 |
+| `.ds-import-thumb` | src/ui/shell.css:5697 | 3 |
+| `.ds-import-tune` | src/ui/importer.css:185 | 2 |
+| `.ds-import-tune-row` | src/ui/importer.css:190 | 1 |
+| `.ds-import-turns` | src/ui/importer.css:178 | 5 |
 
 ## `ds-comp` — 31
 
@@ -50,42 +87,6 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-comp-tags` | src/ui/competitions.css:47 | 3 |
 | `.ds-comp-textarea` | src/ui/competitions.css:427 | 3 |
 | `.ds-comp-title` | src/ui/competitions.css:37 | 2 |
-
-## `ds-import` — 31
-
-| class | declared | used |
-|---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 40 |
-| `.ds-import-body` | src/ui/importer.css:40 | 1 |
-| `.ds-import-canvas` | src/ui/importer.css:93 | 2 |
-| `.ds-import-canvas-host` | src/ui/importer.css:89 | 1 |
-| `.ds-import-checks` | src/ui/importer.css:437 | 1 |
-| `.ds-import-drop` | src/ui/importer.css:143 | 3 |
-| `.ds-import-drop-acts` | src/ui/importer.css:159 | 1 |
-| `.ds-import-filerow` | src/ui/importer.css:167 | 1 |
-| `.ds-import-foot` | src/ui/importer.css:44 | 1 |
-| `.ds-import-handle` | src/ui/importer.css:362 | 1 |
-| `.ds-import-headacts` | src/ui/importer.css:477 | 1 |
-| `.ds-import-hero-img` | src/ui/shell.css:5702 | 1 |
-| `.ds-import-in` | src/ui/importer.css:27 | 1 |
-| `.ds-import-legend` | src/ui/importer.css:274 | 1 |
-| `.ds-import-map` | src/ui/importer.css:290 | 4 |
-| `.ds-import-map-front` | src/ui/importer.css:340 | 1 |
-| `.ds-import-map-status` | src/ui/importer.css:351 | 1 |
-| `.ds-import-map-wrap` | src/ui/importer.css:104 | 1 |
-| `.ds-import-moving` | src/ui/importer.css:194 | 6 |
-| `.ds-import-moving-edit` | src/ui/importer.css:255 | 1 |
-| `.ds-import-moving-hinge` | src/ui/importer.css:267 | 3 |
-| `.ds-import-moving-row` | src/ui/importer.css:217 | 1 |
-| `.ds-import-preview` | src/ui/importer.css:37 | 4 |
-| `.ds-import-preview-empty` | src/ui/importer.css:99 | 1 |
-| `.ds-import-preview-stage` | src/ui/importer.css:79 | 1 |
-| `.ds-import-preview-tools` | src/ui/importer.css:107 | 1 |
-| `.ds-import-steps` | src/ui/importer.css:34 | 1 |
-| `.ds-import-thumb` | src/ui/shell.css:5697 | 3 |
-| `.ds-import-tune` | src/ui/importer.css:182 | 2 |
-| `.ds-import-tune-row` | src/ui/importer.css:187 | 1 |
-| `.ds-import-turns` | src/ui/importer.css:175 | 5 |
 
 ## `ds-replay` — 16
 
@@ -625,13 +626,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-head` | src/ui/shell.css:4853 | 17 |
-| `.ds-head-spacer` | src/ui/importer.css:483 | 14 |
+| `.ds-head-spacer` | src/ui/importer.css:486 | 14 |
 
 ## `ds-hint` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/importer.css:261 | 246 |
+| `.ds-hint` | src/ui/importer.css:264 | 246 |
 | `.ds-hint-caption` | src/ui/shell.css:4822 | 1 |
 
 ## `ds-homestats` — 2
@@ -790,13 +791,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1018 | 397 |
+| `.ds-btn` | src/ui/shell.css:1018 | 401 |
 
 ## `ds-checkline` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/importer.css:264 | 9 |
+| `.ds-checkline` | src/ui/importer.css:267 | 9 |
 
 ## `ds-chip` — 1
 

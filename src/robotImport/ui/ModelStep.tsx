@@ -1,11 +1,11 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { Vec2 } from '../../types';
 import { OptRow } from '../../ui/OptRow';
 import { FULL_DETAIL, isFullDetail, isRectangle, LIGHT_TRI_BUDGET, WHEEL_SQUARE_TOL_IN } from '../geometry';
 import type { ImportMeasurement, ImportSetup, LengthUnit, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { LENGTH_UNITS, UP_AXES } from '../types';
 import { COPY, FORMAT_LABEL, UNIT_LABEL, sizeLabel, upLabel } from './copy';
-import { ACCEPT, DropZone, type DropError, type Phase } from './DropZone';
+import { ACCEPT, DropZone, isImportFileSelection, type DropError, type Phase } from './DropZone';
 import { rectNumbers, snapWheel, WHEEL_MIN_SPAN_IN, wheelHomes, type EditorDoc, type RectNumber } from './editorModel';
 import { NumberField } from './NumberField';
 import { TopDownMap, type MapHandle } from './TopDownMap';
@@ -22,6 +22,8 @@ const WHEEL_STEP = 1 / 16;
 export interface PartsControls {
   /** bodies deleted so far */
   deleted: number;
+  /** bodies left out of the footprint (`ImportSetup.apart`) */
+  apart: number;
   /** bodies selected while `deleting` */
   selected: number;
   deleting: boolean;
@@ -29,6 +31,8 @@ export interface PartsControls {
   floating: { count: number; near: number; far: number } | null;
   onDeleting: (on: boolean) => void;
   onDelete: () => void;
+  onLeaveOut: () => void;
+  onIncludeAll: () => void;
   onRestore: () => void;
   onDeleteFloating: () => void;
   onKeepFloating: () => void;
@@ -51,6 +55,8 @@ export function ModelStep({
   onLayout,
   onDetail,
   canReread,
+  pendingFiles,
+  onStartPending,
   parts,
 }: {
   doc: EditorDoc;
@@ -71,17 +77,44 @@ export function ModelStep({
   onSelectWheel: (i: number) => void;
   onLayout: (layout: WheelLayout) => void;
   /** the triangle budget the file is read at (`ImportSetup.triBudget`) */
-  onDetail: (budget: number) => void;
+  onDetail: (budget: number, beforeRead?: boolean) => void;
   /** the dropped files are still in memory, so a new detail can re-read them */
   canReread: boolean;
+  /** files handed from the robot page, waiting for Detail before they are read */
+  pendingFiles: File[] | null;
+  onStartPending: () => void;
   /** deleting parts (`PartsControls`) */
   parts: PartsControls;
 }) {
   const replace = useRef<HTMLInputElement>(null);
-  if (!m || phase || error) {
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  const [replaceFiles, setReplaceFiles] = useState<File[] | null>(null);
+  const stagedFiles = pendingFiles ?? replaceFiles;
+  const readFiles = (files: File[]): void => {
+    setReplaceFiles(null);
+    onFiles(files);
+  };
+  const startStagedFiles = (): void => {
+    if (pendingFiles) {
+      onStartPending();
+      return;
+    }
+    if (replaceFiles) readFiles(replaceFiles);
+  };
+  if (!m || phase || error || stagedFiles) {
     return (
       <>
-        <DropZone phase={phase} error={error} onFiles={onFiles} onCancel={onCancel} />
+        <DropZone
+          phase={phase}
+          error={error}
+          onFiles={readFiles}
+          onCancel={onCancel}
+          detail={doc.setup.triBudget}
+          onDetail={(budget) => onDetail(budget, true)}
+          pendingFiles={stagedFiles}
+          onStartPending={startStagedFiles}
+          detailDisabled={!!phase}
+        />
         {!phase ? <p className="ds-hint">{COPY.sidecarHint}</p> : null}
       </>
     );
@@ -154,10 +187,17 @@ export function ModelStep({
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
               e.target.value = '';
-              if (files.length) onFiles(files);
+              if (!files.length) return;
+              if (!isImportFileSelection(files)) {
+                setReplaceError(COPY.notStep(files.map((f) => f.name).slice(0, 3).join(', ')));
+                return;
+              }
+              setReplaceError(null);
+              setReplaceFiles(files);
             }}
           />
         </div>
+        {replaceError ? <span className="od err" role="alert">{replaceError}</span> : null}
       </div>
 
       <dl className="ds-facts">
@@ -177,7 +217,9 @@ export function ModelStep({
       <div className="ds-field" id="ri-parts">
         <span className="cap">
           {COPY.parts}
-          {parts.selected || parts.deleted ? <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted)}</span> : null}
+          {parts.selected || parts.deleted || parts.apart ? (
+            <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted, parts.apart)}</span>
+          ) : null}
         </span>
         {parts.floating ? (
           <>
@@ -205,8 +247,18 @@ export function ModelStep({
             {parts.deleting ? COPY.deleteDone : COPY.deleteParts}
           </button>
           {parts.deleting ? (
-            <button type="button" className="ds-btn danger small" disabled={!parts.selected} onClick={parts.onDelete}>
-              {COPY.deleteSelected}
+            <>
+              <button type="button" className="ds-btn small" disabled={!parts.selected} onClick={parts.onLeaveOut}>
+                {COPY.leaveOut}
+              </button>
+              <button type="button" className="ds-btn danger small" disabled={!parts.selected} onClick={parts.onDelete}>
+                {COPY.deleteSelected}
+              </button>
+            </>
+          ) : null}
+          {parts.apart ? (
+            <button type="button" className="ds-btn ghost small" onClick={parts.onIncludeAll}>
+              {COPY.includeAll}
             </button>
           ) : null}
           {parts.deleted ? (

@@ -39796,6 +39796,48 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         J(restoreDoc(at(0), at(250_000, [9])).setup.removed) === J([9]),
     );
   }
+
+  // ---- LEAVE OUT OF THE FOOTPRINT (`ImportSetup.apart`): in the mesh, not in the drive base ----
+  {
+    const lo = geo.measureParts(withCube, { ...base, apart: [cubeId] }, opts);
+    const noTris = (m: typeof ref.measurement): string => J({ ...m, trisIn: 0 });
+    const hasCube = (ps: readonly P[]): boolean => ps.some((p) => p.body?.includes(cubeId));
+    check(
+      'leave out of footprint: a body left out is measured exactly as the file without it (size, hull, wheels, bands, front, checks, floating), where the whole file is oversize',
+      full.measurement.checks.some((c) => c.code === 'oversize') && !lo.measurement.checks.some((c) => c.code === 'oversize') && noTris(lo.measurement) === noTris(ref.measurement) &&
+        J(lo.measurement.sourceToModel) === J(ref.measurement.sourceToModel),
+      `${lo.measurement.size.width.toFixed(2)} wide, ${ref.measurement.size.width.toFixed(2)} without`,
+    );
+    check(
+      'leave out of footprint: the body stays in the model frame’s parts (drawn, picked, stored) and the rest are the file-without-it’s arrays bit for bit',
+      hasCube(lo.modelParts) && lo.measurement.trisIn === full.measurement.trisIn && sameArrays(lo.modelParts.filter((p) => !p.body?.includes(cubeId)), ref.modelParts),
+    );
+    check(
+      'leave out of footprint: the orientation key names the bodies (a change re-measures), no list is the old key',
+      geo.orientKey({ ...base, apart: [cubeId] }) !== geo.orientKey(base) && geo.orientKey({ ...base, apart: [] }) === geo.orientKey(base) &&
+        geo.orientKey({ ...base, apart: [cubeId] }) !== geo.orientKey({ ...base, removed: [cubeId] }),
+    );
+    const prepared = { name: 'cube.stl', format: 'stl' as const, bytes: 0, fileUnit: null, parts: withCube, full: withCube, trisIn: geo.triangleCount(withCube), notes: [], trisOut: geo.triangleCount(withCube), simplifyError: 0, fullDetail: true };
+    const n = new Measurer(prepared).normalise({ ...base, apart: [cubeId] });
+    check(
+      'leave out of footprint: the engine’s measured and shown parts keep the body, and its size is the drive base’s',
+      hasCube(n.modelParts) && !!n.shownParts && hasCube(n.shownParts) && J(n.measurement.size) === J(ref.measurement.size),
+    );
+    const out = em.leaveOutBodies(doc, [cubeId], true);
+    const outInside = em.leaveOutBodies(doc, [id('belly')], false);
+    check(
+      'leave out of footprint: it is one document edit: the ids join the list (nothing deleted), a moved frame clears placed wheels and placements, one inside the base keeps them, and the same ids again change nothing',
+      J(out.setup.apart) === J([cubeId]) && J(out.setup.removed) === J(doc.setup.removed) && out.setup.wheels === null && out.mech === null &&
+        J(outInside.setup.wheels) === J(doc.setup.wheels) && outInside.mech === doc.mech && em.leaveOutBodies(out, [cubeId], true) === out,
+    );
+    const inc = em.includeAllBodies(out, true);
+    const del2 = em.deleteBodies(out, [cubeId], false);
+    check(
+      'leave out of footprint: Include all puts them back; deleting a body that was left out drops it from the list; a saved setup keeps the list (its stored mesh keeps the bodies)',
+      inc.setup.apart === undefined && del2.setup.apart === undefined && J(del2.setup.removed).includes(String(cubeId)) &&
+        J(em.savedSetup(out.setup).apart) === J([cubeId]) && em.includeAllBodies(doc, false) === doc,
+    );
+  }
 }
 
 /**
@@ -42105,6 +42147,22 @@ function fxImportFixed(): RobotSpec {
       /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
       /disabled=\{doc\.savedModel\}/.test(ms) &&
       /onPick=\{onDetail\}/.test(ms),
+  );
+  const dz = readFileSync('src/robotImport/ui/DropZone.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'drop box: Detail is chosen before STEP reads, handed files wait for that choice, and only STEP CAD or a DSIM share candidate is accepted',
+    /export const ACCEPT = '\.step,\.stp,\.glb';/.test(dz) &&
+      /export const isImportFileSelection/.test(dz) &&
+      /if \(!isImportFileSelection\(files\)\)/.test(dz) &&
+      /label=\{COPY\.detail\}/.test(dz) &&
+      /onPick=\{onDetail\}/.test(dz) &&
+      /pendingFiles\?\.length/.test(dz) &&
+      /COPY\.startImport/.test(dz) &&
+      !/robotOnly|COPY\.scope/.test(dz) &&
+      /isImportFileSelection\(files\)/.test(ms) &&
+      /if \(!isImportFileSelection\(files\)\)/.test(ed) &&
+      /const stageHandedFiles = useCallback/.test(ed) &&
+      /if \(files\) stageHandedFiles\(files\)/.test(ed),
   );
 }
 

@@ -87,14 +87,22 @@ export const COPY = {
     deleteParts: (n: number) => `delete ${n} ${n === 1 ? 'part' : 'parts'}`,
     restoreParts: 'restore the deleted parts',
     keepFloating: 'keep the floating parts',
+    leaveOut: (n: number) => `leave ${n} ${n === 1 ? 'part' : 'parts'} out of the footprint`,
+    includeAll: 'include all parts in the footprint',
   },
 
   // ---- Model ----
   dropTitle: 'Choose a file or drop it here',
   choose: 'Choose a file',
-  dropFormats: 'GLB, glTF, STEP, STL, OBJ, 3MF or PLY, or a zip of one',
-  sidecarHint: 'A glTF or OBJ comes with a .bin or .mtl file. Drop them together.',
+  dropFormats: 'STEP CAD (.step or .stp), or a DSIM robot share (.glb)',
+  notStep: (names: string) => `Couldn’t import ${names}. Choose a STEP CAD file (.step or .stp) or a DSIM robot share (.glb).`,
+  sidecarHint: 'Export the robot from your CAD program as a STEP file.',
   dropNow: 'Drop to import',
+  detailBefore: 'Before the file is read',
+  pendingTitle: 'File ready to import',
+  pendingFiles: (names: string) => `${names} · choose Detail, then start the import.`,
+  pendingShare: (name: string) => `${name} · start to restore this DSIM robot.`,
+  startImport: 'Start import',
   phase: {
     read: (file: string) => `Reading ${file}…`,
     unzip: (file: string) => `Unzipping ${file}…`,
@@ -165,16 +173,19 @@ export const COPY = {
   left: 'Left',
   useDetected: 'Use detected wheels',
   parts: 'Parts',
-  partsState: (selected: number, deleted: number) =>
-    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : ''].filter(Boolean).join(', '),
+  partsState: (selected: number, deleted: number, apart = 0) =>
+    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : ''].filter(Boolean).join(', '),
   floating: (n: number, near: number, far: number) =>
     `${n} ${n === 1 ? 'part floats' : 'parts float'} ${near.toFixed(1)}${far - near >= 0.05 ? ` to ${far.toFixed(1)}` : ''} in away from the robot. Delete ${n === 1 ? 'it' : 'them'}?`,
   floatDelete: 'Delete',
   floatKeep: 'Keep',
-  deleteParts: 'Delete parts',
+  deleteParts: 'Select parts',
   deleteDone: 'Done',
   deleteSelected: 'Delete selected',
-  deleteHint: 'Click a part in the preview to select it. Shift-click selects more. The Delete key removes them.',
+  leaveOut: 'Leave out of footprint',
+  includeAll: 'Include all',
+  deleteHint:
+    'Click a part in the preview to select it. Shift-click selects more. Leave out of footprint keeps a part (a deployed ramp) on the robot but measures the footprint and wheels without it. The Delete key removes them.',
   restoreAll: 'Restore all',
   grabPad: (dpad: string, a: string, b: string) => `Move with ${dpad} or the left stick. ${a} to drop, ${b} to cancel.`,
   grabKeys: 'Arrow keys move it. Hold Shift for small steps. Home puts it back.',
@@ -208,7 +219,8 @@ export const COPY = {
     mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
       ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
     moving: 'Blue: the selected part. Orange: the other moving parts.',
-    deleting: 'Blue: the parts selected to delete.',
+    deleting: 'Blue: the selected parts. Orange: the parts left out of the footprint.',
+    apart: 'Orange: the parts left out of the footprint.',
     floating: 'Blue: the parts that float apart from the robot.',
   },
   resetView: 'Reset view',
