@@ -39,7 +39,6 @@ export function RobotCard({
   preset = false,
   thumb,
   onPick,
-  onEdit,
   onDelete,
 }: {
   spec: RobotSpec;
@@ -61,9 +60,10 @@ export function RobotCard({
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
   onPick(): void;
-  /** present ⇒ an edit ✎ beside the card (its name, team name and team number), in a `.ds-opt-slot` */
-  onEdit?: () => void;
-  /** present ⇒ a delete ✕ beside the card, in a `.ds-opt-slot` */
+  /** present ⇒ a delete ✕ beside the card, in a `.ds-opt-slot`. There is NO per-card edit: a pick
+   *  makes the robot the one on, and the page's own Edit (Play's panel head) or the panel under the
+   *  list (the robot page) edits it, name and team included. A ✎ that only renamed sat beside an Edit
+   *  that opened the builder: two "edit"s for two jobs (owner, 2026-11-06). */
   onDelete?: () => void;
 }) {
   const cls = `ds-opt ds-robot-card${on ? ' on' : ''}`;
@@ -94,36 +94,21 @@ export function RobotCard({
       {body}
     </button>
   );
-  if (!onDelete && !onEdit) return card;
-  // the card and its ✎ / ✕ are SIBLINGS in a slot (design review C09): a button may not hold a
+  if (!onDelete) return card;
+  // the card and its ✕ are SIBLINGS in a slot (design review C09): a button may not hold a
   // button, and a `div role=button` around one had no clean name and swallowed its keys
   return (
-    <div className={`ds-opt-slot${onEdit && onDelete ? ' two' : ''}`}>
+    <div className="ds-opt-slot">
       {card}
-      {onEdit ? (
-        <button
-          type="button"
-          className={`ds-opt-edit${onDelete ? ' beside' : ''}`}
-          title="Edit name and team"
-          aria-label={`Edit ${spec.name || 'this robot'}`}
-          onClick={onEdit}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-            <path d="M11.2 2.3a1.4 1.4 0 0 1 2 0l.5.5a1.4 1.4 0 0 1 0 2L5.6 12.9 2.2 13.8l.9-3.4z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-          </svg>
-        </button>
-      ) : null}
-      {onDelete ? (
-        <button
-          type="button"
-          className="ds-opt-del"
-          title="Delete this robot"
-          aria-label={`Delete ${spec.name || 'this robot'}`}
-          onClick={onDelete}
-        >
-          ✕
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="ds-opt-del"
+        title="Delete this robot"
+        aria-label={`Delete ${spec.name || 'this robot'}`}
+        onClick={onDelete}
+      >
+        ✕
+      </button>
     </div>
   );
 }

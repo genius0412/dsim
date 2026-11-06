@@ -541,13 +541,19 @@ rulings below are theirs, not defaults.
   it was the robot being driven, the next saved robot (the one that took its place, else the last) is
   driven instead, else the default preset's build under a fresh player's name; and no copy of it stays in
   the kept slots. It used to drive on with the deleted build, which Play then listed as an "Unsaved" card.
-  **EDIT DETAILS IS ON THE CARD**: a saved robot's and an import's card carries a ✎ (`ds-opt-edit`, the
-  delete's twin, beside the ✕ in the builder's lists) that opens ONE dialog (`IdentityDialog`,
-  `robotImport/ui/LibraryDialogs.tsx`, lazy) for the robot name, team name and team number, with the
-  limits `coerceSpec` has (`src/robotImport/identity.ts`: 24 / 48 / 0-99999, an empty name refused).
-  A saved robot's edit writes `settings.savedRobots[i]` (and `settings.spec` when it is the one on, so the
-  card stays on); an import's writes the device library (`updateIdentity`) and the active spec when it is
-  active, which is what the account syncs. The dialog is a portal on Play, whose panel is a floating surface.
+  ⚠️ **ONE EDIT, AND A CARD ONLY PICKS** (owner, 2026-11-06: "kinda weird to have the pencil on each
+  robot be robot name edit but also have a separate edit button to go into the actual edit menu"). A
+  robot card carries no ✎ (`RobotCard` takes no `onEdit`; `ds-opt-edit` is deleted): a ✎ reads as "edit
+  this robot", and it opened a rename dialog while Play's Edit opened the robot page. Now Play's **Edit**
+  (the robot panel head) and a second click on the card that is on, an import's included, open the robot
+  page; a builder-list card loads the robot into the panel under the list. The NAME, TEAM NAME and TEAM
+  NUMBER are fields there beside everything else about the robot: Build's first row for a robot built
+  here (saved by Save changes, as any build edit is), and the same three fields at the top of the
+  Imported robot panel for an import (`IdentityField` in `robotImport/ui/ImportedRobots.tsx`), written to
+  the device library (`updateIdentity`) and the active spec on Enter or when focus leaves, with the
+  limits `coerceSpec` has (`identityPatch`/`cleanIdentity`, `src/robotImport/identity.ts`: 24 / 48 /
+  0-99999; an empty name puts the stored one back). Renaming an import never opens the importer.
+  The builder lists keep their ✕.
 - ⚠️ **PLAY'S RIGHT COLUMN IS EVERY MODE, ONE CLICK AWAY** (owner, 2026-11-01: "VERY, VERY awkward to
   navigate the tiny panel on the play page. The current main's navigation is 1000% easier"). ONE card
   (`.ds-play-modes`), two labelled groups the way main's "Pick a mode" page lays them out: **Solo**

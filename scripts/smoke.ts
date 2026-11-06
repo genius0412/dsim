@@ -20263,15 +20263,29 @@ const recordDrive: CommandSource = (tick) => {
       check('play: the strip and the builder list the same saved robots, from settings.savedRobots, and one sameRobot decides which is on',
         /settings\.savedRobots\.map\(\(r, i\) => \(/.test(row2) && /savedRobots\.map\(\(r, i\) => \(/.test(menuSrc) &&
           (menuSrc.match(/function sameRobot\(/g) ?? []).length === 1 && !/const sameRobot =/.test(menuSrc));
-      // EDIT DETAILS FROM THE CARD: a saved robot's and an import's name, team name and team number, on Play
-      // and in the builder, with the limits every other door has
-      check('cards: saved and imported robots carry an edit button on Play and in the builder, over one dialog',
-        (menuSrc.match(/onEdit=\{/g) ?? []).length >= 4 && menuSrc.includes('importActions.requestEdit') &&
-          menuSrc.includes('withSavedIdentity(settings, editingDetails, next)') &&
-          readFileSync('src/robotImport/ui/LibraryDialogs.tsx', 'utf8').includes('export function IdentityDialog('));
+      // ONE EDIT (owner, 2026-11-06: "kinda weird to have the pencil on each robot be robot name edit but
+      // also have a separate edit button to go into the actual edit menu"). A card picks; Play's Edit and a
+      // second click on the card that is on open the robot page, where the name and team are fields.
+      const cardSrc = readFileSync('src/ui/RobotCard.tsx', 'utf8');
+      const modeSrc = readFileSync('src/ui/ModeSelect.tsx', 'utf8');
+      const impSrc = readFileSync('src/robotImport/ui/ImportedRobots.tsx', 'utf8');
+      check('cards: a robot card has no ✎ (RobotCard takes no onEdit, the class and its CSS are gone), only a delete ✕',
+        !/onEdit/.test(cardSrc) && !cardSrc.includes('ds-opt-edit') && !css.includes('.ds-opt-edit') && !css.includes('.ds-opt-slot.two') &&
+          cardSrc.includes('className="ds-opt-del"'));
+      check('cards: nothing renames a robot in a dialog any more (the saved-robot and import dialogs are deleted)',
+        !menuSrc.includes('SavedIdentityDialog') && !menuSrc.includes('withSavedIdentity') && !menuSrc.includes('editingDetails') &&
+          !readFileSync('src/robotImport/ui/LibraryDialogs.tsx', 'utf8').includes('IdentityDialog') && !impSrc.includes('requestEdit'));
+      check('play: Edit in the robot panel head is the one edit, and a second click on the card that is on (an import too) does what it does',
+        />\s*Edit\s*<\/button>/.test(modeSrc) && modeSrc.includes('<RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} />') &&
+          row2.includes('const pick = (on: boolean, apply: () => void) => (on ? onEdit() : apply());') && !row2.includes('onImport'));
+      check('builder: a saved robot is renamed in Build (its first fields), an import in the Imported robot panel, which has no Edit details',
+        />\s*Robot name\s*<\/span>/.test(menuSrc) && impSrc.includes('function IdentityField(') &&
+          (impSrc.match(/<IdentityField\n/g) ?? []).length === 3 && impSrc.includes('onBlur={(e) => commit(e.currentTarget.value)}') &&
+          impSrc.includes("onCommit={write('name')}") && !impSrc.includes('editDetails') &&
+          menuSrc.includes('onIdentity={(next) => importedEntry && importActions.rename(importedEntry, next)}'));
     }
     {
-      const { cleanIdentity, teamNumberFrom, withIdentityAt, identityOf, ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX } = await import('../src/robotImport/identity');
+      const { cleanIdentity, teamNumberFrom, identityPatch, identityOf, ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX } = await import('../src/robotImport/identity');
       const c = cleanIdentity({ name: '  Bugger II  ', teamName: '  Iron Works ', teamNumber: 18754.4 });
       check('identity: a name and team are trimmed, a team number is a whole number', c?.name === 'Bugger II' && c.teamName === 'Iron Works' && c.teamNumber === 18754);
       check('identity: an empty name is refused, whole (not half-applied)', cleanIdentity({ name: '   ', teamName: 'x' }) === null);
@@ -20281,16 +20295,22 @@ const recordDrive: CommandSource = (tick) => {
           cleanIdentity({ teamName: 't'.repeat(80) })?.teamName?.length === 48 &&
           teamNumberFrom('123456') === 99999 && teamNumberFrom('-5') === 5 && teamNumberFrom('') === 0 && teamNumberFrom('abc') === 0);
       check('identity: a rename leaves the team alone (only the fields given come back)', JSON.stringify(cleanIdentity({ name: 'A' })) === '{"name":"A"}');
-      const base = coerceSpec({ ...DEFAULT_SPEC, name: 'A', teamName: 'T', teamNumber: 1 }, undefined, 'biobuzz');
-      const list = [base, { ...base, name: 'B' }, { ...base, name: 'C' }];
-      const after = withIdentityAt(list, 1, { name: 'B2', teamNumber: 77 });
-      check('identity: withIdentityAt edits one slot and leaves the others and the list as they were',
-        after[1].name === 'B2' && after[1].teamNumber === 77 && after[1].teamName === 'T' && after[0] === list[0] && after[2] === list[2] && list[1].name === 'B' &&
-          withIdentityAt(list, 1, { name: ' ' })[1] === list[1] && withIdentityAt(list, 9, { name: 'Z' }).length === 3);
-      check('identity: identityOf reads the three fields', JSON.stringify(identityOf(after[1])) === '{"name":"B2","teamName":"T","teamNumber":77}');
-      // what the stored robot comes back as through the sim's own validator: nothing the dialog stores is changed by it
-      const back = coerceSpec(after[1], undefined, 'biobuzz');
-      check('identity: coerceSpec keeps what the dialog stored', back.name === 'B2' && back.teamName === 'T' && back.teamNumber === 77);
+      const base = coerceSpec({ ...DEFAULT_SPEC, name: 'Bugger', teamName: 'Iron Works', teamNumber: 123 }, undefined, 'biobuzz');
+      const now = identityOf(base);
+      check('identity: identityOf reads the three fields', JSON.stringify(now) === '{"name":"Bugger","teamName":"Iron Works","teamNumber":123}');
+      // THE IMPORTED ROBOT PANEL'S FIELDS write on blur, so tabbing through one, or typing what cleans back
+      // to the stored value, must write nothing
+      check('identity: a field writes only a real change, cleaned, and only its own field',
+        JSON.stringify(identityPatch('name', '  Bugger II ', now)) === '{"name":"Bugger II"}' &&
+          JSON.stringify(identityPatch('teamNumber', '18754', now)) === '{"teamNumber":18754}' &&
+          JSON.stringify(identityPatch('teamName', '', now)) === '{"teamName":""}' &&
+          JSON.stringify(identityPatch('teamNumber', '', now)) === '{"teamNumber":0}');
+      check('identity: a field that cleans back to what is stored, or an empty name, writes nothing',
+        identityPatch('name', ' Bugger ', now) === null && identityPatch('name', '   ', now) === null &&
+          identityPatch('teamName', 'Iron Works  ', now) === null && identityPatch('teamNumber', '00123', now) === null);
+      // what the stored robot comes back as through the sim's own validator: nothing a field stores is changed by it
+      const back = coerceSpec({ ...base, ...identityPatch('name', 'n'.repeat(40), now), ...identityPatch('teamNumber', '777', now) }, undefined, 'biobuzz');
+      check('identity: coerceSpec keeps what a field stored', back.name === 'n'.repeat(24) && back.teamName === 'Iron Works' && back.teamNumber === 777);
     }
     // DELETING A SAVED ROBOT (owner, 2026-11-04: the builder's list and Play's strip disagreed): the robot
     // being driven moves to the next saved robot, else the default preset's build, and no copy of the deleted

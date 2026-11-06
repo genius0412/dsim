@@ -12,7 +12,7 @@
  * fixture through its file input, then puts the mouse away for good.
  *
  * Then the ROBOT PAGE, by pad again: the import is saved (Y on Review), and the library row, the
- * Imported robot panel and its dialogs (Edit details, Duplicate, Export, Delete, a copy's ✕) are walked
+ * Imported robot panel (its name field, Duplicate, Export, Delete, a copy's ✕) are walked
  * and asserted, the export lands as a file (the download is caught, never a dialog), and the page's
  * OUT-OF-DATE state is staged (the synced spec moved under the record) and checked: the line, the
  * footprint in the hero, Import the file in Edit's place, and the lit card a no-op.
@@ -208,9 +208,12 @@ app.whenReady().then(async () => {
   const focus = (expr) => js(`(() => { const e = ${expr}; if (!e) return false; e.scrollIntoView({ block: 'center' }); e.focus(); return document.activeElement === e; })()`);
   const btnIn = (scope, text) => `[...document.querySelectorAll(${JSON.stringify(scope)})].find((b) => b.textContent.trim() === ${JSON.stringify(text)})`;
   const panelBtn = (text) => btnIn('.ds-panel .ds-btn', text);
+  // three sections since Moving parts (step 4) came after Mechanisms: twice landed on it, and Y pressed
+  // its "Next: Review" instead of saving
   await js(`__press(${RB})`);
   await js(`__press(${RB})`);
-  check('pad: RB twice from Drivetrain: Review', (await tab()) === '4', await tab());
+  await js(`__press(${RB})`);
+  check('pad: RB three times from Drivetrain: Review', (await tab()) === '5', await tab());
   await js(`__press(${Y})`);
   check('pad: Y on Review saves the robot and lands on the robot page', await until(`location.pathname.endsWith('/configure/robot') && [...document.querySelectorAll('.ds-panel-title')].some((h) => h.textContent.trim() === 'Imported robot')`));
   await sleep(600);
@@ -233,13 +236,25 @@ app.whenReady().then(async () => {
     reached = await js(`!!document.activeElement?.closest('.ds-panel') && document.activeElement.classList.contains('ds-btn') && [...document.querySelectorAll('.ds-panel-title')].some((h) => h.textContent.trim() === 'Imported robot' && h.closest('.ds-panel').contains(document.activeElement))`);
   }
   check('panel: the d-pad reaches the Imported robot panel’s actions from the library row', reached, await active());
-  // Edit details: A opens it with focus inside, B closes it and hands focus back
-  await focus(panelBtn('Edit details'));
-  await js(`__press(${A})`);
-  check('panel: A on Edit details opens the dialog with focus inside it', await until(`!!document.activeElement?.closest('.ds-modal') && !!document.querySelector('.ds-modal input')`, 4000));
-  await shot('dialog-rename');
-  await js(`__press(${B})`);
-  check('panel: B closes Edit details and hands focus back to it', await until(`!document.querySelector('.ds-modal') && document.activeElement?.textContent.trim() === 'Edit details'`, 4000), await active());
+  // THE NAME IS A FIELD in the panel (2026-11-06: no ✎, no Edit details dialog). Typed, it is written on
+  // Enter or when focus leaves: the lit card says it. An empty name is refused and the field shows the
+  // stored one again. This window is never focused, so `el.blur()` fires nothing: the leave is a dispatched
+  // `focusout`, which is what React's onBlur listens to.
+  const nameField = `[...document.querySelectorAll('.ds-panel')].find((p) => p.querySelector('.ds-panel-title')?.textContent.trim() === 'Imported robot')?.querySelector('input[type=text]')`;
+  const typeName = (v, how = 'leave') =>
+    js(`(() => { const el = ${nameField}; if (!el) return false; el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)}); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(${how === 'enter' ? "new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })" : "new FocusEvent('focusout', { bubbles: true })"}); return true; })()`);
+  const named = await js(`(${nameField})?.value ?? null`);
+  check('panel: the robot’s name is a field in the Imported robot panel, holding its name', !!named && (await js(`document.querySelector('.ds-robot-card.on')?.textContent.includes(${JSON.stringify(named ?? '')})`)));
+  await typeName('Pad Rename');
+  check('panel: a name typed there is the lit card’s once focus leaves it (no importer, no dialog)', await until(`document.querySelector('.ds-robot-card.on')?.textContent.includes('Pad Rename') && !document.querySelector('.ds-modal')`, 6000));
+  await typeName('   ');
+  check('panel: an empty name is refused, and the field shows the stored one again', await until(`(${nameField})?.value === 'Pad Rename'`, 4000));
+  await typeName(named ?? 'Imported', 'enter');
+  await js(`(() => { const p = [...document.querySelectorAll('.ds-panel')].find((x) => x.querySelector('.ds-panel-title')?.textContent.trim() === 'Imported robot'); p?.scrollIntoView({ block: 'center' }); return !!p; })()`);
+  await sleep(300);
+  await shot('panel-identity');
+  check('panel: Enter writes it too (the name back)', await until(`document.querySelector('.ds-robot-card.on')?.textContent.includes(${JSON.stringify(named ?? 'Imported')})`, 6000));
+  await until(`(${nameField})?.value === ${JSON.stringify(named ?? 'Imported')}`, 6000);
   // Duplicate: a second card
   await focus(panelBtn('Duplicate'));
   await js(`__press(${A})`);

@@ -3,12 +3,12 @@ import type { RobotSpec } from '../types';
 /**
  * WHO A ROBOT IS: the three fields a player types, with the limits every other door into a spec
  * already applies (`coerceSpec`: a name is 1-24 characters, a team name up to 48, a team number a
- * whole 0-99999). The "Edit details" dialog on a robot card, the device library's write and the
- * saved-robot list all read this one definition, so a card edit cannot store what the builder's
- * own fields, the importer's Review step or the server would not.
+ * whole 0-99999). The Imported robot panel's fields and the device library's write read this one
+ * definition, so a rename on the robot page cannot store what the builder's own fields, the
+ * importer's Review step or the server would not.
  *
- * A leaf (types only): the library, the dialog and the Play page each import it, and none of them
- * may pull the importer's editor in.
+ * A leaf (types only): the library and the robot page each import it, and neither may pull the
+ * importer's editor in.
  */
 export interface RobotIdentity {
   name: string;
@@ -50,9 +50,13 @@ export function cleanIdentity(p: Partial<RobotIdentity>): Partial<RobotIdentity>
   return out;
 }
 
-/** `list` with robot `i`'s identity replaced (the list itself when `p` is not storable or `i` is not in it) */
-export function withIdentityAt(list: readonly RobotSpec[], i: number, p: Partial<RobotIdentity>): RobotSpec[] {
-  const id = cleanIdentity(p);
-  if (!id || i < 0 || i >= list.length) return [...list];
-  return list.map((r, j) => (j === i ? { ...r, ...id } : r));
+/**
+ * WHAT ONE TYPED FIELD CHANGES, cleaned, or null when it changes nothing or may not be stored (an
+ * empty name). The Imported robot panel writes a field when focus leaves it, so a field tabbed
+ * through, or one whose typing cleans back to what is stored (`" Bugger "`, `"00123"`), writes nothing.
+ */
+export function identityPatch(field: keyof RobotIdentity, typed: string, now: RobotIdentity): Partial<RobotIdentity> | null {
+  const c =
+    field === 'name' ? cleanIdentity({ name: typed }) : field === 'teamName' ? cleanIdentity({ teamName: typed }) : cleanIdentity({ teamNumber: teamNumberFrom(typed) });
+  return !c || c[field] === now[field] ? null : c;
 }

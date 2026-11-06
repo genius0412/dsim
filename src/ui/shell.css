@@ -5188,48 +5188,14 @@ tr.lb-detail td {
   background: color-mix(in srgb, var(--ds-red) 14%, transparent);
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }
-/* per-card EDIT (✎, the delete's twin): the top-right corner when it is the card's only button, one
-   button's width left of the ✕ when both are there (`.beside`, the slot is `.two`, which gives the
-   card's text the room for both). Its hover is the accent, the delete's is red; neither moves. */
-.ds-opt-edit {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--ds-round-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ds-mut);
-  cursor: pointer;
-  transition: color var(--ds-dur-fade), background var(--ds-dur-fade), border-color var(--ds-dur-fade);
-}
-.ds-opt-edit.beside {
-  right: calc(var(--ds-s-2) + 24px + var(--ds-s-1));
-}
-.ds-opt-edit:hover {
-  color: var(--ds-ink);
-  background: color-mix(in srgb, var(--ds-accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
-}
-.ds-opt-slot.two > .ds-opt {
-  padding-right: calc(var(--ds-s-7) + var(--ds-s-4));
-}
+/* NO per-card edit (a ✎ that renamed in a dialog, gone 2026-11-06): a robot card picks, and the
+   page's Edit or the panel under the list edits, name and team included. See `RobotCard`. */
 @media (max-width: 640px) {
-  .ds-opt-del,
-  .ds-opt-edit {
+  .ds-opt-del {
     width: 32px;
     height: 32px;
     top: 4px;
     right: 4px;
-  }
-  .ds-opt-edit.beside {
-    right: calc(var(--ds-s-1) + 32px + var(--ds-s-1));
-  }
-  .ds-opt-slot.two > .ds-opt {
-    padding-right: calc(var(--ds-s-7) + var(--ds-s-6));
   }
 }
 /* A LIST OF OPTIONS AT ROW HEIGHT: one column, the name left and its state right, for a set that

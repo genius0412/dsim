@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState, type DragEvent } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, type DragEvent } from 'react';
 import type { GameSettings } from '../../game';
 import type { RobotSpec } from '../../types';
 import type { LibraryEntry } from '../types';
@@ -12,20 +12,18 @@ import { invalidateImportedAssets } from '../../render/importedAssets';
 import { libraryChanged, onRobotNotice, peekRobotNotice, postRobotNotice, takeRobotNotice } from './handoff';
 import type { LibraryView } from './useLibrary';
 import { libraryEntryFor } from '../libraryIds';
-import { identityOf, type RobotIdentity } from '../identity';
+import { ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX, identityOf, identityPatch, type RobotIdentity } from '../identity';
 
 /**
  * CONFIGURE ▸ ROBOT'S HALF OF THE IMPORTER, in the main chunk: the Imported robots row (one card
  * per library robot and the add card), the Imported robot panel that stands in for Build while an
- * import is active, and the library actions both of them trigger (edit details, duplicate, export,
- * delete). Everything heavier — the editor, the engine, three.js — is behind the editor's route.
+ * import is active (its name and team are fields there, as they are in Build), and the library
+ * actions both of them trigger (rename, duplicate, export, delete). Everything heavier — the editor, the engine, three.js — is behind the editor's route.
  *
  * The DIALOGS and the EXPORT are not in the main chunk either: they load on the click that needs
  * them (a sub-1 KB chunk the editor shares), so the robot page pays only for what it draws.
  */
 
-/** the edit-details dialog, for the robot lists that edit a SAVED robot the same way (`Menu`) */
-export const IdentityDialog = lazy(() => import('./LibraryDialogs').then((m) => ({ default: m.IdentityDialog })));
 const ConfirmDialog = lazy(() => import('./LibraryDialogs').then((m) => ({ default: m.ConfirmDialog })));
 
 /** how long a "Saved Ironclad." notice holds the Start from title (Controls' NOTICE_MS) */
@@ -54,7 +52,6 @@ export function ImportedRow({
   view,
   activeId,
   onPick,
-  onEdit,
   onDelete,
   onImport,
   onDropFiles,
@@ -62,7 +59,6 @@ export function ImportedRow({
   view: LibraryView;
   activeId: string | null;
   onPick: (e: LibraryEntry) => void;
-  onEdit: (e: LibraryEntry) => void;
   onDelete: (e: LibraryEntry) => void;
   onImport: () => void;
   onDropFiles: (files: File[]) => void;
@@ -93,7 +89,6 @@ export function ImportedRow({
               </span>
             }
             onPick={() => onPick(e)}
-            onEdit={() => onEdit(e)}
             onDelete={() => onDelete(e)}
           />
         ))}
@@ -123,6 +118,67 @@ export function ImportedRow({
   );
 }
 
+/**
+ * ONE IDENTITY FIELD of an import, edited where it is shown (owner, 2026-11-06: one edit, not a ✎ on
+ * the card that renamed in a dialog beside an Edit that opened the editor). Build's own name and team
+ * fields write the robot as they are typed; an import's are its library record, an IndexedDB write
+ * each, so this one holds what is typed and writes it on Enter or when focus leaves (`onCommit`,
+ * which answers whether it wrote). Esc, or a value that may not be stored (an empty name), puts the
+ * stored one back. Each field keeps its own draft, so the name's write landing never resets a team
+ * name being typed, and a value already sent is not sent again by the blur after its Enter.
+ */
+function IdentityField({
+  label,
+  stored,
+  narrow = false,
+  numeric = false,
+  maxLength,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  stored: string;
+  narrow?: boolean;
+  numeric?: boolean;
+  maxLength?: number;
+  disabled: boolean;
+  onCommit: (typed: string) => boolean;
+}) {
+  const [draft, setDraft] = useState(stored);
+  const sent = useRef<string | null>(null);
+  useEffect(() => {
+    sent.current = null;
+    setDraft(stored);
+  }, [stored]);
+  // what the INPUT holds, not `draft`: a blur in the same tick as the last keystroke runs before the
+  // render that would put that keystroke in `draft`
+  const commit = (typed: string): void => {
+    if (typed === stored || typed === sent.current) return;
+    sent.current = typed;
+    if (onCommit(typed)) return;
+    sent.current = null;
+    setDraft(stored);
+  };
+  return (
+    <label className={narrow ? 'ds-field narrow' : 'ds-field'}>
+      <span className="cap">{label}</span>
+      <input
+        className="ds-input"
+        type={numeric ? 'number' : 'text'}
+        {...(numeric ? { min: 0, max: TEAM_NUMBER_MAX } : { maxLength })}
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={(e) => commit(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit(e.currentTarget.value);
+          else if (e.key === 'Escape') setDraft(stored);
+        }}
+      />
+    </label>
+  );
+}
+
 /** the stand-in for the Build panel while the active robot is imported */
 export function ImportedPanel({
   spec,
@@ -131,7 +187,7 @@ export function ImportedPanel({
   stale = false,
   error,
   onEdit,
-  onEditDetails,
+  onIdentity,
   onDuplicate,
   onExport,
   onDelete,
@@ -148,7 +204,8 @@ export function ImportedPanel({
   stale?: boolean;
   error: string | null;
   onEdit: () => void;
-  onEditDetails: () => void;
+  /** write the name, team name or team number (cleaned: `cleanIdentity`) to the record and the active spec */
+  onIdentity: (patch: Partial<RobotIdentity>) => void;
   onDuplicate: () => void;
   onExport: () => void;
   onDelete: () => void;
@@ -156,6 +213,14 @@ export function ImportedPanel({
 }) {
   const imp = spec.imported;
   const b = imp ? bbox(imp.hull) : null;
+  /** a field's commit: write what it changes (`identityPatch`), or answer false so it shows the stored value */
+  const write =
+    (field: keyof RobotIdentity) =>
+    (typed: string): boolean => {
+      const patch = identityPatch(field, typed, spec);
+      if (patch) onIdentity(patch);
+      return !!patch;
+    };
   const fmt = (v: number): string => (Math.round(v * 10) / 10).toFixed(1);
   return (
     <section className="ds-panel">
@@ -187,6 +252,33 @@ export function ImportedPanel({
             {/* one line, and it arrives with the record itself (the same render that adds the File
                 row), so nothing below moves after the panel has settled */}
             {entry && stale ? <p className="ds-hint warn">{COPY.staleText}</p> : null}
+            {/* WHO IT IS, as Build's first row says it for a robot built here: the same three fields,
+                labels and limits. Off until the record is read, so the row is there from the
+                first render and nothing below moves when it arrives. */}
+            <div className="ds-fields">
+              <IdentityField
+                label={COPY.robotName}
+                stored={spec.name}
+                maxLength={ROBOT_NAME_MAX}
+                disabled={!entry}
+                onCommit={write('name')}
+              />
+              <IdentityField
+                label={COPY.teamNameLabel}
+                stored={spec.teamName}
+                maxLength={TEAM_NAME_MAX}
+                disabled={!entry}
+                onCommit={write('teamName')}
+              />
+              <IdentityField
+                label={COPY.teamNumberLabel}
+                stored={spec.teamNumber ? String(spec.teamNumber) : ''}
+                narrow
+                numeric
+                disabled={!entry}
+                onCommit={write('teamNumber')}
+              />
+            </div>
             <dl className="ds-facts">
               {entry ? (
                 <>
@@ -212,9 +304,6 @@ export function ImportedPanel({
               ) : null}
             </dl>
             <div className="ds-actions">
-              <button type="button" className="ds-btn small" disabled={!entry} onClick={onEditDetails}>
-                {COPY.editDetails}
-              </button>
               <button type="button" className="ds-btn small" disabled={!entry} onClick={onDuplicate}>
                 {COPY.duplicate}
               </button>
@@ -252,19 +341,18 @@ export function useImportedActions({
    *  page shows (`libraryEntryFor`: its id, else a share-file copy that carried it) */
   entries?: readonly LibraryEntry[] | null;
 }) {
-  const [dialog, setDialog] = useState<{ kind: 'edit' | 'delete'; entry: LibraryEntry } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: 'delete'; entry: LibraryEntry } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const active = settings.spec.imported?.id ?? null;
   const activeEntryId = libraryEntryFor(entries, active)?.id ?? active;
   const isActive = (e: LibraryEntry): boolean => !!active && e.id === activeEntryId;
 
   /**
-   * NAME, TEAM NAME and TEAM NUMBER, from the card: the library's record (this device) and, when it
-   * is the robot being driven, the active spec too, which is what the account syncs and a room
-   * reads. The same two writes the rename was, so nothing reopens the importer.
+   * NAME, TEAM NAME or TEAM NUMBER, from the Imported robot panel's fields: the library's record (this
+   * device) and, when it is the robot being driven, the active spec too, which is what the account
+   * syncs and a room reads. Nothing reopens the importer.
    */
-  const edit = async (entry: LibraryEntry, next: RobotIdentity): Promise<void> => {
-    setDialog(null);
+  const rename = async (entry: LibraryEntry, next: Partial<RobotIdentity>): Promise<void> => {
     const { updateIdentity } = await import('../library');
     const r = await updateIdentity(entry.id, next);
     if (!r.ok) return setError(r.message);
@@ -303,9 +391,7 @@ export function useImportedActions({
 
   const fallback = standardRobotFor(settings);
   const open =
-    dialog?.kind === 'edit' ? (
-      <IdentityDialog identity={identityOf(dialog.entry.spec)} onSave={(next) => void edit(dialog.entry, next)} onClose={() => setDialog(null)} />
-    ) : dialog?.kind === 'delete' ? (
+    dialog?.kind === 'delete' ? (
       <ConfirmDialog
         title={COPY.deleteTitle(dialog.entry.spec.name || 'this robot')}
         body={
@@ -325,7 +411,7 @@ export function useImportedActions({
   return {
     error,
     dialogs,
-    requestEdit: (entry: LibraryEntry) => setDialog({ kind: 'edit', entry }),
+    rename: (entry: LibraryEntry, next: Partial<RobotIdentity>) => void rename(entry, next),
     requestDelete: (entry: LibraryEntry) => setDialog({ kind: 'delete', entry }),
     duplicate: (entry: LibraryEntry) => void duplicate(entry),
     exportIt: (entry: LibraryEntry) => void exportIt(entry),

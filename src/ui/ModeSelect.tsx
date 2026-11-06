@@ -228,7 +228,8 @@ export function ModeSelect({
         <div className="ds-panel-h">
           <h2 className="ds-panel-title">Robot</h2>
           {/* EDIT SAYS WHAT A SECOND CLICK ON THE CARD THAT IS ON DOES (owner, 2026-11-01: "the UI is
-              still unintuitive"); the builder is Configure's Robot section */}
+              still unintuitive"): the robot page, Configure's Robot section. It is the ONE edit here:
+              the cards carry no ✎ (owner, 2026-11-06), and the name and team are fields on that page */}
           <div className="ds-actions">
             <button className="ds-btn small" onClick={() => startNewRobot(settings, onChange, onEditRobot)}>
               New robot
@@ -242,7 +243,7 @@ export function ModeSelect({
           </div>
         </div>
         <div className="ds-panel-body">
-          <RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} onImport={onImport} />
+          <RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} />
         </div>
       </section>
 
