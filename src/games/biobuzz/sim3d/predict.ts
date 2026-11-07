@@ -33,6 +33,7 @@ import {
   import3dShapes,
   chassis3dReachShapes,
   clearChassis3dColliders,
+  skirtColliderDesc,
   swapChassis3dReachColliders,
   elementMass,
   reachColliderDesc,
@@ -862,6 +863,8 @@ function fitChassis(
           body,
         );
       }
+      // ...and the skirt and NECTAR gate, as the authority builds them from `SIM_PATCH` 14
+      for (const sk of shapes.skirt) world3d.createCollider(skirtColliderDesc(RAPIER, sk), body);
     }
     for (const sh of chassis3dReachShapes(r.spec, heightIn, rampReady)) world3d.createCollider(reachColliderDesc(RAPIER, sh), body);
     return;
@@ -962,7 +965,7 @@ function fitChassis(
 function predictBaseColliderCount(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): number {
   if (r.spec.imported) {
     const shapes = import3dShapes(r.spec, heightIn);
-    return body.isDynamic() ? shapes.chassis.length + shapes.pocket.length : shapes.remote.length;
+    return body.isDynamic() ? shapes.chassis.length + shapes.pocket.length + shapes.skirt.length : shapes.remote.length;
   }
   if (usesCompound(body, r, heightIn)) {
     return predictChassisShapes(r.spec, heightIn).length + chassis3dPocketShapes(r.spec, heightIn).length;

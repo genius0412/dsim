@@ -79,6 +79,14 @@ export interface EditorDoc {
   /** the model was turned (or its units or up axis changed) before the player changed the build:
    *  read it again in the new frame */
   cadReread?: boolean;
+  /**
+   * the MODEL frame `mech`, `cadMech`, `turretRing` and the placed `setup.wheels` are written in:
+   * the measurement's `sourceToModel` when they were (`followFrame`). Absent in drafts from before
+   * 2026-11-06, which are taken to be in the frame they open in.
+   */
+  mechAt?: number[];
+  /** the measured turret axis the launcher was last put on (MODEL frame, `turretOnRing`) */
+  turretRing?: Vec2;
   updated: number;
 }
 
@@ -519,9 +527,86 @@ export function deleteBodies(d: EditorDoc, bodies: readonly number[], movesFrame
  * (`cadMech`, in the old frame); while the player has not changed the build that read set
  * (`cadKey`), it is read again in the new frame (`cadReread`).
  */
-export function frameMoved(d: EditorDoc): Pick<EditorDoc, 'mech' | 'cadMech'> & { cadReread?: boolean } {
+export function frameMoved(d: EditorDoc): Pick<EditorDoc, 'mech' | 'cadMech' | 'turretRing'> & { cadReread?: boolean } {
   const reread = d.cadBuild !== undefined && d.cadKey !== undefined && d.cadKey === cadMechKey(d.spec);
-  return { mech: null, cadMech: undefined, ...(reread ? { cadReread: true } : {}) };
+  return { mech: null, cadMech: undefined, turretRing: undefined, ...(reread ? { cadReread: true } : {}) };
+}
+
+/** are two `sourceToModel`s the same frame (every entry equal)? An absent one is no frame. */
+export function sameFrame(a: readonly number[] | undefined, b: readonly number[]): boolean {
+  return !!a && a.length === 16 && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * ⚠️ **THE PLACEMENTS FOLLOW THE MODEL FRAME** (owner, 2026-11-06: "The turret is not turning around
+ * the correct point"). The model frame is centred on the model's box, so folding a part the file
+ * shows deployed (a ramp lying out front, `planFolds`) moves it, while every part that does not fold
+ * stays where the file has it. A new import's build is read BEFORE its moving parts are found, so its
+ * placements were written in the unfolded frame and stayed there: a turret read on its ring ended up
+ * inches off it, and the game turned the turret, aimed and launched about that wrong point.
+ *
+ * `mechAt` is the `sourceToModel` the placements are written in. A measurement with the same linear
+ * part (the same units, up axis and front) moves them by the difference in its shift, the move every
+ * part that does not fold made. A frame turned or scaled clears them (`frameMoved`), so there this
+ * only records the new frame. The same document returned when nothing moved.
+ */
+export function followFrame(d: EditorDoc, sourceToModel: readonly number[]): EditorDoc {
+  const at = d.mechAt;
+  if (sameFrame(at, sourceToModel)) return d;
+  const stamp = [...sourceToModel];
+  // the same linear part: every entry but the shift (12, 13, 14)
+  const sameLinear = !!at && at.length === 16 && at.every((v, i) => i === 12 || i === 13 || i === 14 || v === sourceToModel[i]);
+  if (!sameLinear) return { ...d, mechAt: stamp };
+  const dx = sourceToModel[12] - at[12];
+  const dy = sourceToModel[13] - at[13];
+  const dz = sourceToModel[14] - at[14];
+  const out: EditorDoc = { ...d, mechAt: stamp };
+  if (d.mech) out.mech = shiftMech(d.mech, dx, dy, dz);
+  if (d.cadMech) out.cadMech = shiftMech(d.cadMech, dx, dy, dz);
+  if (d.turretRing) out.turretRing = { x: d.turretRing.x + dx, y: d.turretRing.y + dy };
+  if (d.setup.wheels) out.setup = { ...d.setup, wheels: d.setup.wheels.map((w) => ({ x: w.x + dx, y: w.y + dy })) };
+  return out;
+}
+
+/** a MODEL-frame placement set moved by (dx, dy, dz): the points, and each span along its own edge */
+export function shiftMech(mech: ImportedMech, dx: number, dy: number, dz: number): ImportedMech {
+  const p3 = (p: { x: number; y: number; z: number }) => ({ x: p.x + dx, y: p.y + dy, z: p.z + dz });
+  const out: ImportedMech = { ...mech };
+  if (mech.shooter) out.shooter = p3(mech.shooter);
+  if (mech.shooter2) out.shooter2 = p3(mech.shooter2);
+  if (mech.place) out.place = p3(mech.place);
+  if (mech.intakes) {
+    out.intakes = mech.intakes.map((m) => {
+      const s = m.edge === 'front' || m.edge === 'back' ? dy : dx;
+      return { ...m, from: m.from + s, to: m.to + s };
+    });
+  }
+  return out;
+}
+
+/**
+ * THE GAME TURNS AN IMPORT'S TURRET ABOUT ITS LAUNCHER PLACEMENT (`turretLocal`), and the 3D mesh
+ * turns it about the ring the model measured (`MotionPart.pivot`, `ringIn`). Those have to be one
+ * point, or the drawn turret swings about one place while the game aims and launches from another.
+ * So the launcher goes onto the measured axis whenever that axis is new to the document (a turret
+ * found, its parts changed, a saved robot opened): `ring` is the one turret part's axis (MODEL frame),
+ * and a later drag of the launcher is kept until the axis moves again. Its height is left alone.
+ */
+export function turretOnRing(d: EditorDoc, ring: Vec2 | null): EditorDoc {
+  if (!ring || !d.mech?.shooter) return d;
+  const last = d.turretRing;
+  // a thousandth: the same ring measured again in a moved frame differs in its float32 rounding
+  if (last && Math.abs(last.x - ring.x) < 1e-3 && Math.abs(last.y - ring.y) < 1e-3) return d;
+  return { ...d, turretRing: { x: ring.x, y: ring.y }, mech: { ...d.mech, shooter: { ...d.mech.shooter, x: ring.x, y: ring.y } } };
+}
+
+/** the measured axis of the model's one upright turret part (MODEL frame), or null: none, or two */
+export function measuredTurretRing(m: Pick<ImportMeasurement, 'motion'> | null): Vec2 | null {
+  const turrets = (m?.motion ?? []).filter((p) => p.role === 'turret');
+  if (turrets.length !== 1) return null;
+  const t = turrets[0];
+  if (Math.abs(t.axis[2]) < 0.999) return null;
+  return { x: t.pivot[0], y: t.pivot[1] };
 }
 
 /** the document with every deleted body back (the moving parts keep what they have) */

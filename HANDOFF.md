@@ -1,3 +1,56 @@
+# HANDOFF — 2026-11-06c (Imports push NECTAR away; the turret on its ring; the intake's later stages)
+
+**State: on `alpha`. `SIM_PATCH` 14 (3D physics for imports), so the dsim-alpha server is redeployed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 6. `npm test` (shared 5139, BIOBUZZ 6330), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).
+
+- **Owner, three reports on the private team CAD (nothing from it is in the repo):**
+  - "The robot should not be able to get stuck on top of a nectar."
+  - "The turret is not turning around the correct point."
+  - "You still missed part of the intake/transfer rollers further inside the robot."
+  - Also "The intake does not actually work" (loose POLLEN): not reproduced in the client or headless.
+    Every robot starts with 4 preloaded POLLEN, which is the hopper's cap, so nothing is taken until it
+    shoots. The NECTAR that used to roll into the mouth and ride there is now kept out (below).
+- **NECTAR, `SIM_PATCH` 14** (`sim3d/bodies.ts` `import3dShapes`, rules in `docs/area/biobuzz.md`):
+  - **The bug.** A frame band starting above an element's centre (a frame a couple of inches up over
+    drive pods) met a NECTAR on its upper half and lifted the robot onto it, and it stayed there
+    (0.67 in on the IMPORT lane's synthetic frame-over-pods robot).
+  - **The skirt.** Under every such band, element-only colliders (`GROUP_SKIRT`, `GROUP_SKIRT_NECTAR`)
+    from `BB3_IMPORT_SKIRT_Z0` up to the band.
+  - **The NECTAR gate.** On a POLLEN-only feed, the mouth's open strip is solid to a NECTAR.
+  - **Effect.** The robot always ends on the tiles; at most a hop of a few hundredths for a tick when
+    rammed into a pinned NECTAR. POLLEN pickup and FLOWER retrieval are unchanged.
+  - **Scope.** Standard robots step bit-identically; a replay recorded before patch 14 builds none of
+    it (`importSkirtsPre14`).
+- **Turret** (`editorModel.ts` `followFrame`, `turretOnRing`; rules in `docs/area/robot-import.md`):
+  - **The bug.** Folding a part the file shows deployed (a ramp) moves the model frame. Placements read
+    before the fold stayed where they were, so the saved turret centre was inches off its ring.
+  - **Placements follow the frame.** They carry the frame they are written in (`EditorDoc.mechAt`) and
+    move with it. Undo restores the frame with them, and the built spec (Save, Test drive, Export,
+    Review) always uses the settled placements.
+  - **Turret on its ring.** A single turret's launcher goes onto the ring the model measured whenever
+    that ring is new to the document. This also repairs a robot saved before the fix: open it in the
+    importer and save.
+- **The intake's later stages** (`motion.ts` `findStageRollers`, last in `findAll`): level axles chained
+  within 4 in of a roller already found, each one:
+  - on the path from an intake roller to the launcher (1.25 element diameters);
+  - on a shaft of its own of at least 1.5 in;
+  - with a rim of at least 0.6 in.
+
+  Measured on the nine STEPs, old finders against new (Node, the editor's own pipeline; scratch probes,
+  not committed):
+  - The private CAD gains its transfer stages and nothing else.
+  - Offset gains its two silicone transfer rollers and two belt-driven shafts of the intake's drive
+    (one holds five bodies an encoder board's CAD put on its axle).
+  - goBILDA DECODE/BIOBUZZ, REV, AndyMark ×3: unchanged.
+  - First cut (near a roller and round, nothing else) took twelve non-stages on Offset: odometry pods,
+    servo spools, a slide's belt spools, a pulley, a gear blank. The path, shaft and rim rules are
+    what removed them, each measured.
+- **Real client, offscreen** (the private STEP, `dist-import` preview):
+  - Import, then Save from the header: the saved turret centre is on the measured ring.
+  - Its transfer stages are in the saved moving parts.
+  - Test drive: four preloaded POLLEN fired, then a loose POLLEN taken.
+- **Open:** a deployed ramp still folds about its innermost point; an assumed front with a front/back
+  roller tie stays assumed (both from 11-06b).
+
 # HANDOFF — 2026-11-06b (Importer accuracy: moving parts by contact, rings, a wheel guess, the front from the intake; Save from any step)
 
 **State: on `alpha`, client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 5, so a draft's found moving parts are looked for again when it is opened. `npm test` (shared 5125, BIOBUZZ 6322), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.

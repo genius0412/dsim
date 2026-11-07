@@ -729,6 +729,51 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   half the robot, `EDGE_ROLLER_SPAN`), so a robot that takes in at both ends turns both whichever end
   the build places its intake at. Without the length rule Offset's slide spools by its back edge were
   offered as intake rollers.
+- **The intake's later stages** (`findStageRollers`, last in `findAll`, `MOTION_FINDER` 6; owner,
+  2026-11-06: "You still missed part of the intake/transfer rollers further inside the robot"). An edge
+  roller sits within `ROLLER_DEPTH_IN` of its edge, and deeper only a SPOKED axle chained to one was
+  found, so a transfer of compliant wheels on plain shafts inside the frame was found nowhere. Now a
+  LEVEL axle (along x or y), seeded by a round body as the edge finder seeds one and under
+  `ROLLER_TOP_IN`, is a roller when its axle comes within `ROLLER_STAGE_IN` (4 in) of a roller already
+  found. Axle to axle as SEGMENTS over the bodies' length, so a stage square to the one before it counts.
+  Each stage found can hand on to the next. It runs last, so a turret, flywheel, slide or ramp has its
+  parts first.
+  - ⚠️ **NEAR A ROLLER IS NOT ENOUGH.** On Offset's concept robot "within 4 in" took its two transfer
+    rollers and twelve other parts: odometry pods, servo-driven spools, a slide's belt spools, a
+    pulley and a gear blank. A stage must also satisfy three rules:
+    - **On the element's path**: within `STAGE_PATH_SHARE` (1.25) element diameters of the line from
+      an intake roller's middle to the launcher (the point the flywheel search uses). No launcher
+      means no stages. Offset's transfer rollers stand 0.1–0.5 in off it; its pods and side spools
+      4.1–5.3 in.
+    - **On a shaft of its own** at least `STAGE_SHAFT_MIN_IN` (1.5 in) long. Servo spools turn on the
+      servo's screw (0.66 in) and odometry pods on a pin (0.61); Offset's transfer rollers turn on 5-in shafts.
+      `onShaft`'s roller-bar rule alone also takes a single round part with no shaft (a motor can).
+    - **Something to grip with**: a rim at least `STAGE_R_MIN_IN` (0.6 in) from the axle. A belt spool
+      measured 0.55 and a pulley 0.41; Offset's transfer rollers 0.94.
+  - **Tried and dropped**:
+    - An element-sized ball clear of structure beside each stage: a real transfer's timing belts and
+      guides stand within half an inch of its wheels.
+    - A drive link to the intake: a transfer is often driven apart from it, and contact over a few
+      thousand bodies takes minutes.
+  - **Measured**: on a private team CAD, its transfer found and nothing else. Offset gets its two
+    transfer rollers and two belt-driven shafts of the intake's drive.
+- ⚠️ **THE PLACEMENTS FOLLOW THE MODEL FRAME** (`EditorDoc.mechAt`, `followFrame`; owner, 2026-11-06:
+  "The turret is not turning around the correct point"). A new import's build is read BEFORE its
+  moving parts are found. When those include a part the file shows deployed, the measurement folds it,
+  the model's box shrinks, and the frame (centred on the box) moves. Every part that does not fold
+  stays where the file has it, and the placements did not move with them: a turret read on its ring
+  ended inches off it, and the game turned, aimed and launched about that point while the 3D mesh
+  turned about the ring. `mechAt` is the `sourceToModel` the placements, the home placements, the
+  turret axis and the hand-placed wheels are written in. A measurement with the same linear part
+  carries them by the difference in its shift. A frame turned or scaled clears them (`frameMoved`), so
+  there it is only recorded. Every effect that reads placements waits until they are in the current
+  frame (`sameFrame`), and undo restores the frame WITH them (`restoreDoc`).
+- **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
+  turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
+  about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto
+  the measured axis whenever that axis is new to the document (a turret found, its parts changed, a
+  saved robot opened, which is what repairs a robot saved before the fix). A later drag is kept until
+  the axis moves again. Height is never touched, and a double turret is left alone.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now

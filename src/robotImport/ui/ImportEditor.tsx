@@ -13,7 +13,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -44,7 +44,11 @@ import {
   includeAllBodies,
   launchElementD,
   leaveOutBodies,
+  followFrame,
   keepEditedMotion,
+  measuredTurretRing,
+  sameFrame,
+  turretOnRing,
   restoreBodies,
   reviewItems,
   reviewSummary,
@@ -125,6 +129,13 @@ const STAGE_LABEL = (stage: LoadStage, file: string): string => {
   const p = COPY.phase[stage];
   return typeof p === 'function' ? p(file) : p;
 };
+
+/** is this build's launcher ONE turret (its placement is the turret's centre, `turretOnRing`)? */
+function singleTurret(game: GameId, spec: RobotSpec): boolean {
+  if (game === 'biobuzz') return bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG).kind === 'turret';
+  if (game === 'chain') return spec.scoreMode === 'turret';
+  return !decodeFixedLauncher(spec);
+}
 
 /** does this build's launcher sit on a turret (so a turret is worth looking for in the model)? */
 function turretBuild(game: GameId, spec: RobotSpec): boolean {
@@ -568,7 +579,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const imp = rec.spec.imported;
         if (cur?.model && imp?.mech && engRef.current) {
           const n = engRef.current.normalise(cur.model, cur.doc.setup);
-          setDraft({ ...cur, doc: { ...cur.doc, mech: mechRobotToModel(imp.mech, n.measurement.origin) } });
+          setDraft({ ...cur, doc: { ...cur.doc, mech: mechRobotToModel(imp.mech, n.measurement.origin), mechAt: [...n.measurement.sourceToModel] } });
         }
         return;
       }
@@ -628,7 +639,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     return () => window.clearTimeout(t);
   }, [measuring]);
   const m = normalised?.measurement ?? null;
-  const built = useMemo(() => (doc && m ? buildSpec(doc, m) : null), [doc, m]);
+  // what Save, Test drive, Export and Review read: the placements already in this measurement's frame
+  // and a single turret's launcher on its ring, the same rules the effects below write into the
+  // document a render later, so nothing read in between sees them where they were
+  const built = useMemo(() => {
+    if (!doc || !m) return null;
+    let d = followFrame(doc, m.sourceToModel);
+    if (d.mech) d = turretOnRing(d, singleTurret(game, d.spec) ? measuredTurretRing(m) : null);
+    return buildSpec(d, m);
+  }, [doc, m, game]);
   const defs = useMemo(() => (built ? mechHandlesFor(game, built.spec) : []), [built, game]);
   const assumedFront = frontAssumed(doc);
   const readNotes = doc?.notes;
@@ -655,13 +674,27 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (!selHandle) setSelHandle(firstHandle(defs));
   }, [doc?.step, hasMech, selHandle, defs]);
 
+  // the placements follow the model frame (`followFrame`): a fold found among the moving parts moves
+  // it. Declared before every effect that reads them, which wait for it (`sameFrame`)
+  const frameNow = m?.sourceToModel;
+  const mechAt = doc?.mechAt;
+  useEffect(() => {
+    if (!frameNow || measuring || sameFrame(mechAt, frameNow)) return;
+    update((d) => followFrame(d, frameNow), 'auto');
+  }, [frameNow, mechAt, measuring, update]);
+
   // placements default in once there is a footprint, and again when a mechanism appears
   // (never from a measurement of the orientation being replaced: the placements would land on it)
   useEffect(() => {
-    if (!doc || !m || !built || m.hull.length < 3 || measuring) return;
-    // the game's defaults round what the player placed, else what the model showed (`cadMech`)
+    if (!doc || !m || !built || m.hull.length < 3 || measuring || !sameFrame(doc.mechAt, m.sourceToModel)) return;
+    // the game's defaults round what the player placed, else what the model showed (`cadMech`); a
+    // single turret's launcher on the ring the model turns it about (`turretOnRing`)
     const next = defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null);
-    if (JSON.stringify(next) !== JSON.stringify(doc.mech)) update((d) => ({ ...d, mech: next }), 'auto');
+    const ring = singleTurret(game, built.spec) ? measuredTurretRing(m) : null;
+    const want = turretOnRing({ ...doc, mech: next }, ring);
+    if (JSON.stringify(want.mech) !== JSON.stringify(doc.mech) || want.turretRing !== doc.turretRing) {
+      update((d) => (sameFrame(d.mechAt, m.sourceToModel) ? { ...d, mech: want.mech, turretRing: want.turretRing } : d), 'auto');
+    }
   }, [doc, m, built, game, update, measuring]);
 
   // focus after a "Fix", a step change, or a return from the test drive
@@ -867,11 +900,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // offered again once it is read.
     const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
     const keepMech = doc.mech;
+    const keepAt = doc.mechAt;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
     // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
     const keepFront = doc.detected ? { yaw: doc.detected.yaw, front: doc.detected.front, cue: doc.detected.cue } : null;
     void readModel(files, { setup, spec: doc.spec, keepHistory: true }).then(() => {
-      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
+      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech, mechAt: keepAt } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
     });
   };
 
@@ -922,10 +956,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // spoked axles anywhere else (a transfer column of surgical tubing)
     out.push(...findSpokedRollers(parts, taken()));
     const shooter = doc.mech?.shooter;
+    // where an element is carried to: the flywheel the model shows, where there is one; else the
+    // launcher's placed point
+    let launcherAt: [number, number, number] | null = null;
     if (shooter && built) {
-      // the flywheel the model shows, where there is one; else the launcher's placed point
       const cad = readBuild(parts, taken()).launcher;
       const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
+      launcherAt = at;
       // the flywheels before the turret: they stand on it, and it would take them (Offset's transfer
       // roller under the ring was offered as its flywheel, 2026-10-04); on a turret, none below its ring
       const turret = turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret');
@@ -942,12 +979,18 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
       if (dep) out.push(dep);
     }
+    // the intake's later stages inside the robot, on the way from a roller found to the launcher; last,
+    // so a turret, a flywheel, a slide and a ramp have their parts first
+    if (intakes.length) out.push(...findStageRollers(parts, [...have, ...out].filter((g) => g.role === 'roller'), taken(), launchElementD(game), launcherAt));
     return out;
   };
   // the moving parts are looked for once, on a setup that has never had any, once the placements are
   // in (rollers, flywheels and a turret are looked for by the intake spans and the launcher)
   useEffect(() => {
     if (!doc || !normalised || measuring || !baseWheels || !doc.mech) return;
+    // the placements are in this measurement's frame first (`followFrame`)
+    const frame = normalised.measurement.sourceToModel;
+    if (!sameFrame(doc.mechAt, frame)) return;
     // the model turned before the player changed the build: the build is read again in the new frame
     if (doc.cadReread) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
@@ -956,7 +999,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         (d) =>
           !d.cadReread
             ? d
-            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) },
+            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) },
         'auto',
       );
       return;
@@ -994,7 +1037,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         }
       }
       const r = buildFromCad(game, doc.spec, cad);
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) }), 'auto');
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) }), 'auto');
       return;
     }
     // the placements default in first (the effect above, a render later): the build just read placed

@@ -318,8 +318,14 @@ export const SIM_VERSION = 7;
  *      per MATCH, and its third instance in a match is STRATEGIC however short. Both rules re-arm
  *      an instance only after `BB_CONTROL_REARM_S`. In 3D an element riding on or under a frame
  *      is CONTROLLED (QA34). Only fouls and cards move; no physics changes. 2026-11-01, `alpha`.
+ *  14  BIOBUZZ 3D, an imported robot: under a CAD band whose underside an element meets above its
+ *      centre, a skirt solid to elements only, so the robot pushes a NECTAR away instead of riding
+ *      up onto it; and on a POLLEN-only intake a NECTAR-only gate across the mouth, so a NECTAR
+ *      stops at the mouth's outer line instead of rolling in under the lintel
+ *      (`sim3d/bodies.ts`'s `import3dShapes`). A standard robot steps bit-identically.
+ *      2026-11-06, `alpha`.
  */
-export const SIM_PATCH = 13;
+export const SIM_PATCH = 14;
 
 /** does `world` run the rules of `SIM_PATCH` `n`? A live world (no `simPatch`) runs them all; a
  *  replay runs the ones it was recorded under. */

@@ -39925,6 +39925,163 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     check('front from the build: a tie between two edges with no ramp says nothing', em.frontFromBuild({ intake: { edge: 'front', upright: false }, edges: e(2, 2, 0, 0) }, none) === null);
     check('front from the build: no intake, or no roller, says nothing', em.frontFromBuild({ intake: null, edges: e(0, 0, 0, 0) }, none) === null);
   }
+
+  // ---- the placements follow the model frame when a fold moves it (`followFrame`), and a single
+  // turret's launcher sits on the ring the model turns it about (`turretOnRing`; owner, 2026-11-06:
+  // "The turret is not turning around the correct point") ----
+  {
+    const prisms = [
+      synth.cylY('wheel_l_f', [0.1, 0.1, 0.1], 5, 2, 2, 5.5, 6.5, 24),
+      synth.cylY('wheel_r_f', [0.1, 0.1, 0.1], 5, 2, 2, -6.5, -5.5, 24),
+      synth.cylY('wheel_l_b', [0.1, 0.1, 0.1], -5, 2, 2, 5.5, 6.5, 24),
+      synth.cylY('wheel_r_b', [0.1, 0.1, 0.1], -5, 2, 2, -6.5, -5.5, 24),
+      synth.box('chassis', [0.5, 0.5, 0.5], -7, 7, -5.5, 5.5, 1, 4),
+      // the turret: a ring off the middle, and a head standing on it
+      synth.cylZ('turret_ring', [0.8, 0.6, 0.2], 1.5, 0, 3, 4, 4.5, 32),
+      synth.box('turret_head', [0.8, 0.6, 0.2], -0.5, 3.5, -1.5, 1.5, 4.5, 9),
+      // the ramp the file shows deployed, lying out in front
+      synth.box('ramp', [0.9, 0.8, 0.2], 7, 17, -5, 5, 0.1, 0.35),
+    ];
+    const parts = withBodies(prisms, synth.FRAMES.cadMm);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const setup = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+    const turret = { role: 'turret' as const, bodies: [id('turret_ring'), id('turret_head')] };
+    const mA = geo.measureParts(parts, { ...setup, motion: [turret] }, { format: 'stl' }).measurement;
+    const mB = geo.measureParts(parts, { ...setup, motion: [turret, { role: 'ramp', bodies: [id('ramp')] }] }, { format: 'stl' }).measurement;
+    const ringA = em.measuredTurretRing(mA);
+    const ringB = em.measuredTurretRing(mB);
+    type Doc = import('../src/robotImport/ui/editorModel').EditorDoc;
+    const doc = {
+      setup: { ...setup, wheels: [{ x: 4, y: 5 }, { x: 4, y: -5 }, { x: -6, y: 5 }, { x: -6, y: -5 }] },
+      mech: { shooter: { x: ringA!.x, y: ringA!.y, z: 9 }, intakes: [{ edge: 'front' as const, from: -4, to: 4 }, { edge: 'left' as const, from: -3, to: 1 }] },
+      cadMech: { shooter: { x: ringA!.x, y: ringA!.y, z: 9 } },
+      mechAt: [...mA.sourceToModel],
+    } as unknown as Doc;
+    const moved = mB.sourceToModel[12] - mA.sourceToModel[12];
+    const f = em.followFrame(doc, mB.sourceToModel);
+    const s = f.mech!.shooter!;
+    check(
+      'placements follow the frame: folding the ramp moves the model frame (the box loses the ramp), and the launcher placed on the turret ring before the fold is on it after',
+      !!ringA && !!ringB && Math.abs(moved) > 2 && Math.abs(ringB.x - ringA.x - moved) < 1e-3 && Math.abs(s.x - ringB.x) < 1e-3 && Math.abs(s.y - ringB.y) < 1e-3 && s.z === 9,
+      JSON.stringify({ moved, ringA, ringB, s }),
+    );
+    const robot = geo.mechModelToRobot(f.mech!, mB.origin).shooter!;
+    check(
+      'placements follow the frame: ...so the saved turret centre is the ring’s, robot-local (1.5 in ahead of the drive base’s middle)',
+      Math.abs(robot.x - (ringB!.x - mB.origin.x)) < 0.02 && Math.abs(robot.x - 1.5) < 0.05 && Math.abs(robot.y) < 0.02,
+      JSON.stringify(robot),
+    );
+    check(
+      'placements follow the frame: a span moves along its own edge (a front span by the y move, a left span by the x move), the home placements and placed wheels move too, and the frame is recorded',
+      f.mech!.intakes![0].from === -4 + (mB.sourceToModel[13] - mA.sourceToModel[13]) &&
+        f.mech!.intakes![1].from === -3 + moved &&
+        Math.abs(f.cadMech!.shooter!.x - ringB!.x) < 1e-3 &&
+        f.setup.wheels![0].x === 4 + moved &&
+        em.sameFrame(f.mechAt, mB.sourceToModel),
+      JSON.stringify({ intakes: f.mech!.intakes, wheels: f.setup.wheels }),
+    );
+    check('placements follow the frame: the frame they are already in returns the same document', em.followFrame(f, mB.sourceToModel) === f);
+    const turned = [...mB.sourceToModel];
+    turned[0] = -turned[0];
+    const t = em.followFrame(f, turned);
+    check('placements follow the frame: a frame turned or scaled (cleared by `frameMoved`) is only recorded, nothing is carried', t.mech === f.mech && em.sameFrame(t.mechAt, turned));
+    check(
+      'placements follow the frame: an older draft with no frame recorded is taken to be in the frame it opens in',
+      (() => {
+        const r = em.followFrame({ ...doc, mechAt: undefined }, mB.sourceToModel);
+        return r.mech === doc.mech && em.sameFrame(r.mechAt, mB.sourceToModel);
+      })(),
+    );
+    // undo puts the placements back WITH the frame they are written in
+    const { restoreDoc } = await import('../src/robotImport/ui/editorHistory');
+    const back = restoreDoc(doc, f);
+    check('placements follow the frame: undo restores the frame with the placements (else the next measurement would move them twice)', back.mech === doc.mech && back.cadMech === doc.cadMech && em.sameFrame(back.mechAt, mA.sourceToModel));
+    // the launcher onto the measured ring: once per ring, a later drag kept
+    const off = { ...f, mech: { ...f.mech!, shooter: { x: ringB!.x - 2.6, y: 0.4, z: 9 } } } as Doc;
+    const on = em.turretOnRing(off, ringB);
+    const dragged = em.turretOnRing({ ...on, mech: { ...on.mech!, shooter: { ...on.mech!.shooter!, x: on.mech!.shooter!.x + 1 } } }, ringB);
+    const again = em.turretOnRing(dragged, { x: ringB!.x + 0.5, y: ringB!.y });
+    check(
+      'turret on its ring: a launcher placed off the measured ring goes onto it (its height kept); a later drag stays until the ring itself moves, then it goes onto the new one',
+      on.mech!.shooter!.x === ringB!.x && on.mech!.shooter!.y === ringB!.y && on.mech!.shooter!.z === 9 &&
+        dragged.mech!.shooter!.x === ringB!.x + 1 &&
+        again.mech!.shooter!.x === ringB!.x + 0.5,
+      JSON.stringify({ on: on.mech!.shooter, dragged: dragged.mech!.shooter, again: again.mech!.shooter }),
+    );
+    const two = { motion: [...(mB.motion ?? []), ...(mB.motion ?? []).filter((p) => p.role === 'turret')] };
+    check('turret on its ring: two turret parts name no one ring', em.measuredTurretRing(two) === null && em.measuredTurretRing(mB) !== null);
+  }
+
+  // ---- the intake's later stages inside the robot: compliant wheels on plain shafts (`findStageRollers`;
+  // owner, 2026-11-06: "You still missed part of the intake/transfer rollers further inside the robot") ----
+  {
+    type V3 = import('./robot-import/synthRobot').V3;
+    // a cylinder along x: `cylY` with x and y swapped (the base reversed to stay CCW about its extrusion)
+    const cylX = (name: string, color: V3, cy: number, cz: number, r: number, x0: number, x1: number, n = 16): import('./robot-import/synthRobot').Prism => {
+      const p = synth.cylY(name, color, cy, cz, r, x0, x1, n);
+      return { ...p, base: p.base.map(([x, y, z]) => [y, x, z] as V3).reverse(), extrude: [p.extrude[1], p.extrude[0], p.extrude[2]] };
+    };
+    const prisms = [
+      // the intake roller across the front edge, a bar on its shaft
+      synth.cylY('intake_roller', [1, 0.5, 0], 6.8, 1.6, 1, -6, 6, 20),
+      synth.cylY('intake_shaft', [0.7, 0.7, 0.7], 6.8, 1.6, 0.2, -7, 7, 12),
+      // the first stage 3.3 in behind it, deeper than an edge roller sits: a compliant wheel on a plain shaft
+      synth.cylY('stage1_wheel', [0.2, 0.7, 0.3], 3.5, 2.2, 1, -1, 1, 20),
+      synth.cylY('stage1_shaft', [0.7, 0.7, 0.7], 3.5, 2.2, 0.2, -5, 5, 12),
+      // the next stage runs ACROSS the robot past the first one's end, 2 in above it: its shaft along x
+      cylX('stage2_wheel', [0.2, 0.7, 0.3], 2, 4.2, 0.9, 0.5, 1.5, 20),
+      cylX('stage2_shaft', [0.7, 0.7, 0.7], 2, 4.2, 0.2, -2, 4, 12),
+      // a wheel on a shaft 4.9 in from the nearest stage: handed nothing
+      synth.cylY('far_wheel', [0.2, 0.2, 0.9], -6.5, 2.2, 1, -1, 1, 20),
+      synth.cylY('far_shaft', [0.7, 0.7, 0.7], -6.5, 2.2, 0.2, -4, 4, 12),
+      // a wheel on an upright shaft beside the first stage: not level, not a stage
+      synth.cylZ('up_wheel', [0.9, 0.2, 0.2], 3.5, -3, 1, 4, 4.6, 20),
+      synth.cylZ('up_shaft', [0.7, 0.7, 0.7], 3.5, -3, 0.2, 3, 6, 12),
+      // a spool on a servo's 0.6-in screw beside the first stage, 2.6 in from it and 2.2 in off the path: no shaft of its own
+      synth.cylY('spool', [0.9, 0.6, 0.2], 3, 4.8, 1, -3, -2, 20),
+      synth.cylY('spool_screw', [0.6, 0.6, 0.6], 3, 4.8, 0.1, -3.5, -2.9, 12),
+      // a wheel on a long shaft running beside the first stage's end, 6.5 in off the path to the launcher
+      cylX('side_wheel', [0.9, 0.2, 0.9], -6.5, 4, 0.8, 1, 2, 20),
+      cylX('side_shaft', [0.7, 0.7, 0.7], -6.5, 4, 0.2, 0, 5, 12),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const edge = motion.findRollerGroups(parts, [{ edge: 'front', from: -6, to: 6 }], new Set());
+    const taken = new Set(edge.flatMap((g) => g.bodies));
+    // the launcher above the middle of the robot
+    const launcher: [number, number, number] = [0, 0, 9];
+    const stages = motion.findStageRollers(parts, edge, taken, 2.8, launcher);
+    const named = (g: { bodies: number[] }): string => sorted(g.bodies);
+    check(
+      'intake stages: the edge finder takes the intake roller and nothing deeper (else the next check finds nothing new)',
+      edge.length === 1 && named(edge[0]) === sorted([id('intake_roller'), id('intake_shaft')]),
+      JSON.stringify(edge.map((g) => g.bodies)),
+    );
+    check(
+      'intake stages: a compliant wheel on a plain shaft 3.3 in behind the intake roller is its next stage, and the stage running across the robot past that one’s end is the one after; a wheel 4.9 in from every stage, one on an upright shaft, a spool on a servo’s screw and a wheel 6.5 in off the path to the launcher are not',
+      stages.length === 2 &&
+        stages.every((g) => g.role === 'roller' && g.found) &&
+        named(stages[0]) === sorted([id('stage1_wheel'), id('stage1_shaft')]) &&
+        named(stages[1]) === sorted([id('stage2_wheel'), id('stage2_shaft')]),
+      JSON.stringify(stages.map((g) => g.bodies.map((b) => prisms[b].name))),
+    );
+    check(
+      'intake stages: with no roller to start from, or no launcher to carry an element to, nothing is a stage',
+      motion.findStageRollers(parts, [], new Set(), 2.8, launcher).length === 0 && motion.findStageRollers(parts, edge, taken, 2.8, null).length === 0,
+    );
+    // ...and each rule is what keeps its part out: a long shaft under the spool, the path past the side wheel
+    {
+      const withShaft = withBodies([...prisms, synth.cylY('spool_shaft', [0.6, 0.6, 0.6], 3, 4.8, 0.2, -4, -1.5, 12)]);
+      const st2 = motion.findStageRollers(withShaft, motion.findRollerGroups(withShaft, [{ edge: 'front', from: -6, to: 6 }], new Set()), taken, 2.8, launcher);
+      const sideOn = motion.findStageRollers(parts, edge, taken, 2.8, [0, -6.5, 9]);
+      check(
+        'intake stages: the spool on a shaft of its own is a stage, and the side wheel is one when the launcher stands over it (else the two refusals above test nothing)',
+        st2.some((g) => g.bodies.includes(id('spool'))) && sideOn.some((g) => g.bodies.includes(id('side_wheel'))),
+        JSON.stringify({ spool: st2.map((g) => g.bodies.map((b) => b < prisms.length ? prisms[b].name : 'spool_shaft')), side: sideOn.map((g) => g.bodies.map((b) => prisms[b].name)) }),
+      );
+    }
+    check('intake stages: the finders’ version moved, so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 6);
+  }
 }
 
 /**
@@ -40341,10 +40498,11 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // the wiring: the editor's own edits are auto, a new file starts the history empty, and it is never written
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
   const autoSites = [
-    /update\(\(d\) => \(\{ \.\.\.d, mech: next \}\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => \(sameFrame\(d\.mechAt, m\.sourceToModel\) \? \{ \.\.\.d, mech: want\.mech, turretRing: want\.turretRing \} : d\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => followFrame\(d, frameNow\), 'auto'\)/, // the placements following the model frame
     /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
     /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
-    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\) \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\), mechAt: \[\.\.\.frame\] \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
     /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*'auto',/, // ...and read again after a turn
     /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
     /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
@@ -42448,7 +42606,7 @@ function fxImportFixed(): RobotSpec {
     'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
     /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
       /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
-      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
+      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech, mechAt: keepAt \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
       /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
       /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
       /disabled=\{doc\.savedModel\}/.test(ms) &&

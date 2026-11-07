@@ -3,13 +3,18 @@ import { bbCoerce, cmd, mkWorld3dPair, setup } from './harness';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { chassis3dReachShapes, import3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
+import { chassis3dReachShapes, chassis3dSkirtShapes, import3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
+import { engineFor, robotBodyOf } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { createLightPredictor, probeFullReconcileMs } from '../../src/games/biobuzz/sim3d/predict';
 import { bbAimHeading, bbMouths, bbPlacePointLocal, bbTurretRelease, bbTurretSolution, mouthAxes } from '../../src/games/biobuzz/robot';
 import { bbAimTarget, bbCellSideOf, bbDumpShotEnters, bbPretendHive, bbTurretShotEnters } from '../../src/games/biobuzz/play';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
+  BB3_IMPORT_SKIRT_Z0,
+  BB3_MOUTH_SLOT_Z,
   BB_FLOWERS,
+  BB_HALF_X,
+  BB_NECTAR_R,
   BB_PLACE_REACH,
   BB_POLLEN_R,
   BB_SIDE_ROLLER_OUT,
@@ -37,7 +42,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { biobuzzZenithRobot } from '../../src/games/biobuzz/auto';
 import { robotSchema } from '@horizon36596/zenith-schema';
 import { WITHOUT_ZENITH, skippedWithoutZenith } from './zenith';
-import { SIM_DT } from '../../src/config';
+import { INTAKE_RAIL_T, SIM_DT } from '../../src/config';
 import { rot } from '../../src/math';
 import type { ImportedRobot, RobotSpec, RobotState, Vec2, World } from '../../src/types';
 
@@ -279,6 +284,7 @@ export function importedChecks(check: Check): void {
 
   importedSideRollerChecks(check);
   importedFlowerPlateChecks(check);
+  importedSkirtChecks(check);
 
   // ---- launchers and the Box Tube work from where they were placed ---------------------------
   {
@@ -554,6 +560,152 @@ function importedFlowerPlateChecks(check: Check): void {
     const bad = Object.keys(PRE7).filter((k) => old[k] !== PRE7[k]);
     check('SIM_PATCH 7: a replay recorded under patch 6 meets a FLOWER exactly as the code before the change did (an import and a standard robot, at a plate corner and square)', bad.length === 0, bad.map((k) => `${k}: ${old[k]}`).join(' | '));
     check('SIM_PATCH 7: ...and live, every one of those scenes meets the measured plate outline (none lands on its old pin)', Object.keys(PRE7).every((k) => live[k] !== PRE7[k]), JSON.stringify(live));
+  }
+}
+
+/**
+ * AN IMPORT PUSHES A NECTAR AWAY INSTEAD OF CLIMBING IT (`SIM_PATCH` 14; owner, 2026-11-06: "The robot
+ * should not be able to get stuck on top of a nectar. It should just push it away because it has that
+ * barrier that makes it so only pollen can get in"). The robot here is the common FTC layout: a frame
+ * 2.25 in off the tiles over drive pods inset 2 in, a POLLEN-only sweeper across the front. Before the
+ * patch the frame band's lower edge met a NECTAR above its centre and the robot rode up onto it and
+ * stayed there; a NECTAR met at the mouth rolled in under the lintel to the face.
+ */
+function importedSkirtChecks(check: Check): void {
+  const rect = (x: number, y: number): Vec2[] => [{ x: -x, y: -y }, { x, y: -y }, { x, y }, { x: -x, y }];
+  const pods = (frameZ: number): ImportedRobot => ({
+    v: 1,
+    id: 'c3c3c3c3c3c3c3c3',
+    hull: rect(9, 8),
+    heightIn: 14,
+    mech: { intakes: [{ edge: 'front', from: -5, to: 5 }] },
+    bands: [{ z0: 0, z1: frameZ, hull: rect(7, 6.5) }, { z0: frameZ, z1: 14, hull: rect(9, 8) }],
+  });
+  const spec = (frameZ: number, feed?: 'mixed'): RobotSpec =>
+    bbCoerce({ ...SWEEP, bbMech: { ...SWEEP.bbMech!, intake: { kind: 'sweeper', ...(feed ? { feed } : {}) } }, imported: pods(frameZ) });
+  const zOf = (s: { cz: number; hz: number }, h: number): [number, number] => [s.cz + h / 2 - s.hz, s.cz + h / 2 + s.hz];
+  const zText = (s: { cz: number; hz: number }, h: number): string => zOf(s, h).map((z) => z.toFixed(2)).join('-');
+  {
+    const sp = spec(2.25);
+    const h = sp.heightIn!;
+    const m = bbImportMouths(sp)[0];
+    const sk = import3dShapes(sp, h).skirt;
+    const under = sk.filter((s) => s.meets === 'elements');
+    const gate = sk.filter((s) => s.meets === 'nectar');
+    const xMax = (s: { cx: number; pts?: Vec2[] }): number => Math.max(...(s.pts ?? []).map((p) => s.cx + p.x));
+    const inSpan = (s: { cy: number; pts?: Vec2[] }, inset = 0): boolean => (s.pts ?? []).every((p) => Math.abs(s.cy + p.y - m.vc) <= m.half - inset + 1e-6);
+    check(
+      'import skirt 3D: under a frame band 2.25 in up (over an element centre, under a POLLEN top) a skirt meets elements from BB3_IMPORT_SKIRT_Z0 to the band, and none of it stands in the open mouth between the plates in front of the face',
+      under.length > 0 &&
+        under.every((s) => Math.abs(zOf(s, h)[0] - BB3_IMPORT_SKIRT_Z0) < 1e-6 && Math.abs(zOf(s, h)[1] - 2.25) < 1e-6) &&
+        under.every((s) => !(inSpan(s, INTAKE_RAIL_T) && xMax(s) > m.face + 1e-6)),
+      under.map((s) => `${zText(s, h)} x≤${xMax(s).toFixed(2)}`).join(' | '),
+    );
+    check(
+      'import skirt 3D: a POLLEN-only mouth gets a NECTAR-only gate in its open strip, from the skirt bottom up to the slot, out to the roller line',
+      gate.length > 0 &&
+        gate.every((s) => inSpan(s)) &&
+        Math.abs(Math.max(...gate.map(xMax)) - m.uOut) < 1e-6 &&
+        gate.some((s) => Math.abs(zOf(s, h)[1] - BB3_MOUTH_SLOT_Z) < 1e-6) &&
+        gate.every((s) => Math.abs(zOf(s, h)[0] - BB3_IMPORT_SKIRT_Z0) < 1e-6),
+      gate.map((s) => `${zText(s, h)} x≤${xMax(s).toFixed(2)}`).join(' | '),
+    );
+    const mixed = import3dShapes(spec(2.25, 'mixed'), h).skirt;
+    check(
+      'import skirt 3D: a POLLEN + NECTAR feed takes NECTAR through its mouth, so it gets the skirt and no gate',
+      mixed.length === under.length && mixed.every((s) => s.meets === 'elements'),
+      `${mixed.length} pieces, ${mixed.filter((s) => s.meets === 'nectar').length} gate`,
+    );
+    const at = (z: number) => import3dShapes(spec(z), h).skirt;
+    const high = at(3);
+    const clear = at(2 * BB_NECTAR_R + 0.2);
+    const low = at(1.2);
+    check(
+      'import skirt 3D: a band a POLLEN fits under skirts for a NECTAR alone; one a NECTAR fits under, or one below a POLLEN centre, gets no skirt (only the mouth gate)',
+      high.some((s) => s.meets === 'nectar' && xMax(s) <= m.face + 1e-6 && Math.abs(zOf(s, h)[1] - 3) < 1e-6) &&
+        high.every((s) => s.meets === 'nectar') &&
+        clear.every((s) => s.meets === 'nectar' && inSpan(s)) &&
+        low.every((s) => s.meets === 'nectar' && inSpan(s)),
+      `3.0: ${high.length}, ${(2 * BB_NECTAR_R + 0.2).toFixed(1)}: ${clear.length}, 1.2: ${low.length}`,
+    );
+    check('import skirt 3D: a standard robot has no skirt', chassis3dSkirtShapes(bbCoerce(SWEEP), 14).length === 0);
+    // the authority builds them only from patch 14: a replay recorded before builds none
+    const count = (patch?: number): number => {
+      const w = createBiobuzzWorld('free', 25, [setup(0, 'blue', sp)], undefined, '3d');
+      if (patch !== undefined) w.simPatch = patch;
+      return robotBodyOf(engineFor(w), 0)!.numColliders();
+    };
+    const live = count();
+    const was = count(13);
+    check(
+      "import skirt 3D: the live body carries the skirt and gate colliders, a patch-13 replay's does not",
+      live - was === sk.length && sk.length > 0,
+      `live ${live}, patch 13 ${was}, skirt ${sk.length}`,
+    );
+  }
+  // REAL DRIVES: a NECTAR (or a POLLEN) met by the back (the frame over the pods) or the front (the
+  // POLLEN-only mouth), always travelling +x, in a world built live and as a patch-13 replay. In the
+  // open a pushed element just rolls ahead under both; the climb came when it could not move, so the
+  // back is driven at one PINNED against the field wall. Rammed there at full speed the import still
+  // hops up to 0.05 in for a tick or two (the band's own lower edge, reached through the impact's deep
+  // penetration) where the standard box does not, and it always comes back down to the tiles.
+  const drive = (patch: number | undefined, nectar: boolean, end: 'front' | 'back', pinned: boolean, y: number, deg: number, stick: number, ticks: number) => {
+    const w = createBiobuzzWorld('free', 25, [setup(0, 'blue', spec(2.25))], undefined, '3d');
+    if (patch !== undefined) w.simPatch = patch;
+    const r = w.robots[0];
+    for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'ground' };
+    r.hopper = [];
+    const t = w.balls.find((b) => b.state.kind === 'ground')!;
+    for (const b of w.balls) if (b !== t && b.state.kind === 'ground') b.pos = { x: 60, y: -60 };
+    const rad = nectar ? BB_NECTAR_R : BB_POLLEN_R;
+    const at = pinned ? { x: BB_HALF_X - rad - 0.1, y: -40 } : { x: 0, y: 0 };
+    Object.assign(t, { color: nectar ? 'blue' : 'yellow', r: rad, pos: at, vel: { x: 0, y: 0 }, z: 0, vz: 0, state: { kind: 'ground' } });
+    const dir = end === 'front' ? 1 : -1;
+    const a = (deg * Math.PI) / 180;
+    r.heading = (end === 'front' ? 0 : Math.PI) + a;
+    r.pos = { x: at.x - Math.cos(a) * (9 + rad + 6), y: at.y - y - Math.sin(a) * (9 + rad + 6) };
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    const m = new Map([[0, cmd({ driveY: dir * stick, leftDrive: dir * stick, rightDrive: dir * stick })]]);
+    let zMax = 0;
+    let near = Infinity;
+    for (let i = 0; i < ticks; i++) {
+      biobuzzStep(w, SIM_DT, m);
+      zMax = Math.max(zMax, r.z ?? 0);
+      near = Math.min(near, t.pos.x - r.pos.x);
+    }
+    return { zMax, zEnd: r.z ?? 0, near };
+  };
+  {
+    const rows: string[] = [];
+    let liveWorst = 0;
+    let liveEnd = 0;
+    let wasEnd = 0;
+    for (const nectar of [true, false]) {
+      for (const y of [0, 3, 6]) {
+        for (const stick of [0.6, 1]) {
+          const live = drive(undefined, nectar, 'back', true, y, 20, stick, 120);
+          liveWorst = Math.max(liveWorst, live.zMax);
+          liveEnd = Math.max(liveEnd, live.zEnd);
+          if (nectar) wasEnd = Math.max(wasEnd, drive(13, nectar, 'back', true, y, 20, stick, 120).zEnd);
+          rows.push(`${nectar ? 'N' : 'P'} y${y} s${stick} ${live.zMax.toFixed(2)}`);
+        }
+      }
+    }
+    check(
+      'import skirt 3D: backed at 20° into a NECTAR or a POLLEN pinned against the wall, the frame-over-pods import stays on the tiles; a patch-13 replay ends up on top of the NECTAR',
+      liveWorst < 0.1 && liveEnd < 0.01 && wasEnd > 0.3,
+      `live worst ${liveWorst.toFixed(3)} in, resting ${liveEnd.toFixed(3)}; patch 13 resting ${wasEnd.toFixed(2)} · ${rows.join(' ')}`,
+    );
+  }
+  {
+    const live = drive(undefined, true, 'front', false, 0, 0, 0.6, 30);
+    const was = drive(13, true, 'front', false, 0, 0, 0.6, 30);
+    check(
+      "import skirt 3D: a NECTAR met by the POLLEN-only mouth is pushed from the roller line (9 in), within the impact's own 0.4-in give, and never rolls in; a patch-13 replay lets it in under the lintel",
+      live.near > 9 + BB_NECTAR_R - 0.4 && live.zMax < 0.05 && was.near < 9,
+      `nearest centre ${live.near.toFixed(2)} in ahead (patch 13 ${was.near.toFixed(2)})`,
+    );
   }
 }
 

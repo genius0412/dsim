@@ -34,9 +34,10 @@ const norm = (a: V3): V3 => {
  * them, a turret's plates by their own reach, a deployed part at whichever end sticks out, a wheel only
  * where something comes down to the floor (2026-10-04). 5: a deployed part's members by contact, not
  * by its box; rings of rollers round a turning hub; rollers at every edge, not only the intake's
- * (2026-11-06).
+ * (2026-11-06). 6: the intake's later stages inside the robot, compliant wheels on plain shafts as well
+ * as spoked ones (`findStageRollers`, 2026-11-06).
  */
-export const MOTION_FINDER = 5;
+export const MOTION_FINDER = 6;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -1825,6 +1826,196 @@ export function findSpokedRollers(parts: readonly MeshPart[], taken: ReadonlySet
       if (!g || !star.spokes.every((x) => g.bodies.includes(x))) continue;
       for (const x of g.bodies) used.add(x);
       out.push({ role: 'roller', bodies: g.bodies, found: true });
+    }
+  }
+  return out;
+}
+
+/** an axle as a segment: through `p`, along a model axis `k`, from `lo` to `hi` along it */
+interface AxleSeg {
+  k: 0 | 1;
+  p: V3;
+  lo: number;
+  hi: number;
+}
+
+/** the closest two points of segments [p1, q1] and [p2, q2], apart (Ericson, Real-Time Collision Detection 5.1.9) */
+function segDist(p1: V3, q1: V3, p2: V3, q2: V3): number {
+  const d1 = sub(q1, p1);
+  const d2 = sub(q2, p2);
+  const r = sub(p1, p2);
+  const a = dot(d1, d1);
+  const e = dot(d2, d2);
+  const f = dot(d2, r);
+  const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
+  let s: number;
+  let t: number;
+  if (a <= 1e-12 && e <= 1e-12) return Math.hypot(...r);
+  if (a <= 1e-12) {
+    s = 0;
+    t = clamp01(f / e);
+  } else {
+    const c = dot(d1, r);
+    if (e <= 1e-12) {
+      t = 0;
+      s = clamp01(-c / a);
+    } else {
+      const b = dot(d1, d2);
+      const den = a * e - b * b;
+      s = den > 1e-12 ? clamp01((b * f - c * e) / den) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp01(-c / a);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp01((b - c) / a);
+      }
+    }
+  }
+  return Math.hypot(...sub(add(p1, scale(d1, s)), add(p2, scale(d2, t))));
+}
+
+const segEnds = (g: AxleSeg): [V3, V3] => {
+  const a: V3 = [...g.p];
+  const b: V3 = [...g.p];
+  a[g.k] = g.lo;
+  b[g.k] = g.hi;
+  return [a, b];
+};
+
+/** a stage's own shaft is at least this long, inches: it spans the bearings either side of what it
+ *  carries (a servo-driven spool turns on the servo's screw, 0.66 in; an odometry pod on a pin, 0.61) */
+const STAGE_SHAFT_MIN_IN = 1.5;
+/** a stage's rim is at least this far from its axle, inches: something to grip an element with (a
+ *  slide's belt spool is 0.55 in, a pulley 0.41; Offset's transfer rollers 0.94) */
+const STAGE_R_MIN_IN = 0.6;
+/** how far off the path from an intake roller to the launcher a stage may stand, in element diameters */
+const STAGE_PATH_SHARE = 1.25;
+
+/** the longest SHAFT among `bodies`: a thin body on the axle through `pivot`, as `onShaft` reads one */
+function shaftLength(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], axis: V3, pivot: V3): number {
+  let best = 0;
+  for (const f of axleFits(parts, st, new Set(bodies), pivot, axis).values()) {
+    if (f.off <= ON_AXLE_IN && f.rMax <= SHAFT_R_IN) best = Math.max(best, f.hi - f.lo);
+  }
+  return best;
+}
+
+/** a roller group's axle as a segment, when it runs level along x or y (else null) */
+function axleSegOf(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[]): AxleSeg | null {
+  const fit = fitRound(parts, bodies);
+  if (!fit) return null;
+  const k: 0 | 1 | null = Math.abs(fit.axis[0]) >= AXLE_PARALLEL ? 0 : Math.abs(fit.axis[1]) >= AXLE_PARALLEL ? 1 : null;
+  if (k === null) return null;
+  const mo = setMoments(st, bodies);
+  return { k, p: fit.pivot, lo: mo.min[k], hi: mo.max[k] };
+}
+
+/**
+ * THE INTAKE'S LATER STAGES (owner, 2026-11-06: "You still missed part of the intake/transfer rollers
+ * further inside the robot"). A roller deeper than `ROLLER_DEPTH_IN` from its edge was found only as a
+ * spoked axle chained to one on that edge, so a transfer of compliant wheels on plain shafts, inside
+ * the frame, was found nowhere. Here a LEVEL axle (along x or y) is seeded by a round body exactly as
+ * `findRollerGroups` seeds one, under `ROLLER_TOP_IN`, and is a roller when it comes within
+ * `ROLLER_STAGE_IN` of a roller already found: axle to axle, each a segment over its bodies' length,
+ * so a stage square to the one before it (an element turned to run across the robot) counts as well
+ * as one beside it. Each stage taken can hand on to the next, so a transfer is followed from the mouth
+ * inward however it turns. `rollers`: the rollers found so far (the intake's). Bodies in `taken` (every
+ * part already moving: wheels, a turret, a slide) are never used, and an axle that reaches one is not
+ * a stage.
+ *
+ * ⚠️ **NEAR A ROLLER IS NOT ENOUGH.** Near-and-round alone, on a dense robot (Offset Robotics' concept
+ * robot), took its two transfer rollers and twelve things that are not stages: odometry pods, servo-
+ * driven spools, a slide's belt spools, a pulley, a gear blank. A stage is also:
+ *  · ON THE ELEMENT'S PATH: within `STAGE_PATH_SHARE` element diameters (`elementD`) of the line from
+ *    an intake roller's middle to the `launcher` (no launcher, no stages). A transfer carries an
+ *    element from the mouth to the launcher; a spool on the side plate or a pod under the frame stands
+ *    off that path (on Offset: pods and side spools 4.1–5.3 in, its transfer rollers 0.1–0.5);
+ *  · ON A SHAFT of its own at least `STAGE_SHAFT_MIN_IN` long (`shaftLength`): it spans bearings either
+ *    side. A servo-driven spool turns on the servo's screw and a pod on a pin, both under 0.7 in;
+ *  · something to grip with: its rim at least `STAGE_R_MIN_IN` from its axle (a belt spool, a pulley).
+ * Tried and dropped: an element-sized ball clear of structure beside each stage (a real transfer's
+ * timing belts and guide plates stand within half an inch of its wheels), and a drive link to the
+ * intake (a transfer is often driven apart from it, and contact over a few thousand bodies takes
+ * minutes).
+ */
+export function findStageRollers(parts: readonly MeshPart[], rollers: readonly MotionGroup[], taken: ReadonlySet<number>, elementD: number, launcher: V3 | null): MotionGroup[] {
+  if (!launcher) return [];
+  const st = bodyStats(parts);
+  const lines: AxleSeg[] = [];
+  for (const g of rollers) {
+    const s = g.bodies.length ? axleSegOf(parts, st, g.bodies) : null;
+    if (s) lines.push(s);
+  }
+  if (!lines.length) return [];
+  // the paths an element takes: from each intake roller's middle to the launcher
+  const paths = lines.map((l): [V3, V3] => {
+    const [a, b] = segEnds(l);
+    return [scale(add(a, b), 0.5), launcher];
+  });
+  const onPath = (seg: AxleSeg): boolean => {
+    const [a, b] = segEnds(seg);
+    return paths.some(([p, q]) => segDist(a, b, p, q) <= STAGE_PATH_SHARE * elementD);
+  };
+  // the seeds, as `findRollerGroups` takes them: round about a level axle, big enough to grip with
+  type Seed = { b: number; c: V3; size: number; axis: V3; k: 0 | 1 };
+  const seeds: Seed[] = [];
+  for (const k of [0, 1] as const) {
+    const d1 = k === 0 ? 1 : 0;
+    const cand = new Map<number, { c: V3; h1: number; h2: number; r: number }>();
+    for (const b of st.ids) {
+      if (taken.has(b)) continue;
+      const c: V3 = [0, 1, 2].map((j) => (st.min[3 * b + j] + st.max[3 * b + j]) / 2) as V3;
+      if (c[2] > ROLLER_TOP_IN) continue;
+      const h1 = (st.max[3 * b + d1] - st.min[3 * b + d1]) / 2;
+      const h2 = (st.max[3 * b + 2] - st.min[3 * b + 2]) / 2;
+      if (h1 < 0.05 || h2 < 0.05 || h1 / h2 < 0.85 || h1 / h2 > 1.18 || Math.max(h1, h2) < ROLLER_SEED_R_IN) continue;
+      cand.set(b, { c, h1, h2, r: 0 });
+    }
+    eachVertex(parts, new Set(cand.keys()), (x, y, z, b) => {
+      const q = cand.get(b)!;
+      const p = [x, y, z];
+      const d = Math.hypot(p[d1] - q.c[d1], p[2] - q.c[2]);
+      if (d > q.r) q.r = d;
+    });
+    const axis: V3 = k === 0 ? [1, 0, 0] : [0, 1, 0];
+    for (const [b, q] of cand) {
+      if (q.r > 1.12 * Math.max(q.h1, q.h2)) continue;
+      if (st.max[3 * b + k] - st.min[3 * b + k] < 0.1) continue;
+      seeds.push({ b, c: q.c, size: seedSize(Math.max(q.h1, q.h2)), axis, k });
+    }
+  }
+  // the biggest first (a wheel seeds its axle before the hub on it does), the same order on any mesh
+  seeds.sort((a, b) => b.size - a.size || a.b - b.b || a.k - b.k);
+  const used = new Set(taken);
+  const out: MotionGroup[] = [];
+  // an axle measured once per seed, again only when a body of it has been used since
+  const axleOf = new Map<Seed, { bodies: number[]; seg: AxleSeg } | null>();
+  const near = (c: V3): boolean =>
+    lines.some((l) => {
+      const [a, b] = segEnds(l);
+      return segDist(c, c, a, b) <= ROLLER_STAGE_IN + ROLLER_R_MAX_IN;
+    });
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const s of seeds) {
+      if (used.has(s.b) || !near(s.c)) continue;
+      let got = axleOf.get(s);
+      if (got === undefined || (got && got.bodies.some((x) => used.has(x)))) {
+        const g = rollerOn(parts, s.b, s.axis, taken, used);
+        const fit = g ? fitRound(parts, g.bodies, s.axis) : null;
+        const seg = g && fit && fit.radius >= STAGE_R_MIN_IN && shaftLength(parts, st, g.bodies, s.axis, g.pivot) >= STAGE_SHAFT_MIN_IN ? axleSegOf(parts, st, g.bodies) : null;
+        got = g && seg && seg.k === s.k && onPath(seg) ? { bodies: g.bodies, seg } : null;
+        axleOf.set(s, got);
+      }
+      if (!got) continue;
+      const [a, b] = segEnds(got.seg);
+      if (!lines.some((l) => segDist(a, b, ...segEnds(l)) <= ROLLER_STAGE_IN)) continue;
+      for (const x of got.bodies) used.add(x);
+      lines.push(got.seg);
+      out.push({ role: 'roller', bodies: got.bodies, found: true });
+      grew = true;
     }
   }
   return out;
