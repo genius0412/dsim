@@ -283,7 +283,7 @@ export interface StoredMotion {
   follow?: { id: number; ratio: number };
 }
 
-const MOTION_ROLES: readonly MotionRole[] = ['wheel', 'roller', 'flywheel', 'turret', 'ramp', 'fold', 'spin', 'swing', 'slide'];
+export const MOTION_ROLES: readonly MotionRole[] = ['wheel', 'roller', 'flywheel', 'turret', 'ramp', 'fold', 'spin', 'swing', 'slide'];
 /** a generic joint's amount, at most: 50 turns a second, two full turns of swing, 60 in of slide */
 const AMOUNT_MAX: Readonly<Record<'spin' | 'swing' | 'slide', number>> = { spin: 50, swing: 4 * Math.PI, slide: 60 };
 
@@ -416,9 +416,11 @@ export interface ImportMeasurement {
   /** which way the geometry says the robot faces (measured in this orientation, given as a yaw) */
   front: FrontDetection;
   /** wheels in force: the override, else detected (lined up into a rectangle when the layout asks
-   *  for one, `squareWheels`), else null */
+   *  for one, `squareWheels`), else the guess inside the drive base (`wheelsGuessed`), else null */
   wheelsUsed: Vec2[] | null;
   wheelSource: 'manual' | 'detected' | 'none';
+  /** none were found or placed, and `wheelsUsed` is the guess inside the drive base (`wheelGuess`) */
+  wheelsGuessed?: true;
   /** the detected wheels were moved to line them up into a rectangle (absent when they were not,
    *  an exact rectangle included) */
   wheelsSquared?: true;

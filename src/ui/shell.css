@@ -770,6 +770,14 @@
   display: flex;
   flex-direction: column;
 }
+/* THE ROBOT IMPORTER'S PAGE IS THE COLUMN PLUS THE MENU (owner, 2026-11-05: "make SURE the window of 3d
+   thing didn't go smaller"). The editor puts its menu in a column BESIDE the 3D view, so on the usual
+   1080px column the view lost that column's width (1036 → 636). The page grows by exactly the menu
+   (`.ds-import-in`'s 24rem column plus its gap), so the view keeps the old width wherever the window has
+   the room, and shrinks only by what the window lacks. */
+.ds-main:has(.ds-import) {
+  max-width: calc(1080px + 24rem + var(--ds-s-4));
+}
 /* SOLO SETUP: the two cards sit side by side on a wide window and stack on a narrow one. The way in
    (Start / Free drive) is a bar pinned to the bottom of the scroll container, so it is on screen
    whatever the page height, and it is the only thing that follows the player down the page. */
@@ -1142,15 +1150,19 @@
   min-height: 0;
 }
 /* THE ROOM'S BAR OWNS THE BOTTOM EDGE (READY / START, `room.css`), so a pinned notification (a
-   ranked search, a competition call) stands on it rather than over the two buttons */
+   ranked search, a competition call) and the friend toasts stand on it rather than over it.
+   `--rm-bar-clear` is the bar's top measured from the window's bottom (`RoomScreen`), because on a
+   narrow window the Friends strip sits under the bar and a fixed offset covered its first line.
+   80px is the wide bar, for the frame before the room has measured. */
 body:has(.rm-screen) .ds-queuebar {
-  bottom: calc(var(--ds-s-7) * 2);
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4));
 }
-@media (max-width: 759px) {
-  /* the narrow bar is two rows: its line, then the buttons */
-  body:has(.rm-screen) .ds-queuebar {
-    bottom: calc(var(--ds-s-7) * 3);
-  }
+body:has(.rm-screen) .fr-toasts:not(.in-match) {
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4));
+}
+/* ...and above the notice when there is one (the same one-line offset as off the room, below) */
+body:has(.rm-screen):has(.ds-queuebar:not(.over)) .fr-toasts:not(.in-match) {
+  bottom: calc(var(--rm-bar-clear, 80px) + var(--ds-s-4) + 44px + var(--ds-s-2));
 }
 .ds-room-layout > .ds-friends {
   top: 0;
@@ -1158,6 +1170,26 @@ body:has(.rm-screen) .ds-queuebar {
 }
 .ds-room-layout > .ds-friends.collapsed {
   top: var(--ds-s-4);
+}
+/* THE ROOM RUNS TO THE WINDOW'S RIGHT EDGE. As a flex column, the collapsed Friends card (one
+   64px button) cut the room's pinned READY / START bar 80px short of the edge, leaving a hole
+   under the card (2026-11-05). Where it is a side column (wide), it floats over the room's top
+   corner instead. The room's head keeps clear of it, the Setup drawer covers it (`room.css`),
+   and expanded it is a full-height column again that the room makes way for. Narrow, it is a
+   strip under the room and this does not apply. */
+@media (min-width: 901px) {
+  .ds-room-layout:has(> .rm-screen) {
+    position: relative;
+  }
+  .ds-room-layout:has(> .rm-screen) > .ds-friends.collapsed {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    right: 0;
+  }
+  .ds-room-layout:has(> .ds-friends.collapsed) .rm-head {
+    padding-right: calc(64px + var(--ds-s-4) * 2);
+  }
 }
 /* the whole collapsed rail IS the button — glyph over label, so the hit area is the
    width of the strip rather than a 38px square adrift in it */
@@ -5156,48 +5188,14 @@ tr.lb-detail td {
   background: color-mix(in srgb, var(--ds-red) 14%, transparent);
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }
-/* per-card EDIT (✎, the delete's twin): the top-right corner when it is the card's only button, one
-   button's width left of the ✕ when both are there (`.beside`, the slot is `.two`, which gives the
-   card's text the room for both). Its hover is the accent, the delete's is red; neither moves. */
-.ds-opt-edit {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--ds-round-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ds-mut);
-  cursor: pointer;
-  transition: color var(--ds-dur-fade), background var(--ds-dur-fade), border-color var(--ds-dur-fade);
-}
-.ds-opt-edit.beside {
-  right: calc(var(--ds-s-2) + 24px + var(--ds-s-1));
-}
-.ds-opt-edit:hover {
-  color: var(--ds-ink);
-  background: color-mix(in srgb, var(--ds-accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
-}
-.ds-opt-slot.two > .ds-opt {
-  padding-right: calc(var(--ds-s-7) + var(--ds-s-4));
-}
+/* NO per-card edit (a ✎ that renamed in a dialog, gone 2026-11-06): a robot card picks, and the
+   page's Edit or the panel under the list edits, name and team included. See `RobotCard`. */
 @media (max-width: 640px) {
-  .ds-opt-del,
-  .ds-opt-edit {
+  .ds-opt-del {
     width: 32px;
     height: 32px;
     top: 4px;
     right: 4px;
-  }
-  .ds-opt-edit.beside {
-    right: calc(var(--ds-s-1) + 32px + var(--ds-s-1));
-  }
-  .ds-opt-slot.two > .ds-opt {
-    padding-right: calc(var(--ds-s-7) + var(--ds-s-6));
   }
 }
 /* A LIST OF OPTIONS AT ROW HEIGHT: one column, the name left and its state right, for a set that

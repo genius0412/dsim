@@ -20,13 +20,12 @@ export type ImportErrorCode =
   | 'zip';
 
 /**
- * Where a player goes when a file cannot be read: a mesh export, menu by menu. Every format the
- * four CAD tools FTC teams use can write one the importer reads (menu names checked against each
- * vendor's help, 2026-10: Onshape's tab Export lists GLB, SolidWorks' Save As lists Extended Reality
- * Binary, Fusion's and Inventor's export dialogs list STL).
+ * Where a player goes when a STEP file cannot be read: a fresh STEP export, menu by menu, for the
+ * four CAD tools FTC teams use. The editor takes STEP only (and a zip of it, and DSIM's own share
+ * file), so this was a GLB or STL export until 2026-11-05 and is not one now: the drop box refuses both.
  */
 export const EXPORT_HINT =
-  'Export it as a GLB or STL instead. Onshape: right-click the assembly tab, Export, GLB. Fusion: File › Export, STL. SolidWorks: File › Save As, Extended Reality Binary (*.glb). Inventor: File › Export › CAD Format, STL.';
+  'Export it again as STEP AP214 or AP242. Onshape: right-click the assembly tab, Export, STEP. Fusion: File › Export, STEP. SolidWorks: File › Save As, STEP AP214. Inventor: File › Export › CAD Format, STEP.';
 
 /** a load failure with a sentence the UI can show as is (copy: docs/area/ui.md) */
 export class ImportError extends Error {
@@ -52,7 +51,7 @@ export const stepCutOff = (name: string): ImportError =>
 
 /** a file named .step or .stp that does not open as one */
 export const notStep = (name: string): ImportError =>
-  new ImportError('corrupt', `Couldn’t read ${name}: it isn’t a STEP file (it doesn’t start with ISO-10303-21). Export the robot again as STEP AP214 or AP242. ${EXPORT_HINT}`);
+  new ImportError('corrupt', `Couldn’t read ${name}: it isn’t a STEP file (it doesn’t start with ISO-10303-21). ${EXPORT_HINT}`);
 
 /** the error a cancelled import rejects with (`err.name === 'AbortError'`) */
 export function abortError(): Error {

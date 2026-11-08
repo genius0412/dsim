@@ -47,9 +47,12 @@ import {
   BB3_CHASSIS_TOP_Z,
   BB3_LIFT_EDGE_R,
   BB3_INTAKE_CORNER_CLAMP,
+  BB3_IMPORT_SKIRT_Z0,
   BB3_INTAKE_CORNER_R,
   BB3_MOUTH_SLOT_Z,
   BB_DECK_Z,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
   bbIntakeReach,
   bbMechEnvelopes,
 } from '../config';
@@ -57,11 +60,11 @@ import { bbMouths, mouthAxes } from '../robot';
 import { bbImportClipReach, bbImportMouths, bbSideRollerOffsets } from '../importMech';
 import { carveImportPlates, clipHalf } from '../../../sim/importedMech';
 import { polyArea, polyBounds, polyGrow } from '../../../sim/imported';
-import { bbIntakeKindOf } from '../mechs';
+import { bbIntakeFeedOf, bbIntakeKindOf, bbRampOnEdge } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
-import { GROUP_CHASSIS, GROUP_ELEMENT_BIT, GROUP_RING_BIT, GROUP_NECTAR_BIT, GROUP_RAMP } from './groups';
+import { GROUP_CHASSIS, GROUP_ELEMENT_BIT, GROUP_RING_BIT, GROUP_NECTAR_BIT, GROUP_RAMP, GROUP_SKIRT, GROUP_SKIRT_NECTAR } from './groups';
 import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
 
 /**
@@ -924,13 +927,35 @@ function prismShape(poly: readonly Vec2[], z0: number, z1: number, half: number)
  * a FLOWER's plates held the wheels 0.85 in short of the bottom POLLEN. `pre6` (a replay recorded
  * before the patch) keeps the old prisms. Inside the span each band is also cut back to the
  * model's own edge (`SIM_PATCH` 7, `ImportedBand.cuts`), unless `pre7`.
+ *
+ * ⚠️ **A BAND THAT MEETS AN ELEMENT ON ITS UPPER HALF LIFTS THE ROBOT ONTO IT** (`skirt`,
+ * `SIM_PATCH` 14; owner, 2026-11-06: "The robot should not be able to get stuck on top of a
+ * nectar"). An FTC frame often clears the tiles by a couple of inches, with only the drive pods
+ * below, so a band over the pods starts above a NECTAR's centre and below its top. Its lower edge
+ * met the NECTAR on the upper half, the contact pushed the chassis up, and a robot driven at one
+ * rose and sat on it (0.67 in on the IMPORT lane's frame-over-pods robot), where the standard box (floor to top) never rose at all. A real
+ * NECTAR there rolls away. Under every such band the skirt fills from `BB3_IMPORT_SKIRT_Z0` (below
+ * a POLLEN's centre) up to the band, carved at the mouths like the band, so an element meets a face
+ * at its own centre height. It is solid to elements only (`GROUP_SKIRT`): to the HIVE, a FLOWER's
+ * plates and a ramp the robot is what it was. A band a POLLEN fits under (from `2·BB_POLLEN_R`)
+ * skirts for a NECTAR alone (`GROUP_SKIRT_NECTAR`).
+ *
+ * ⚠️ **A POLLEN-ONLY MOUTH KEEPS A NECTAR OUT** (the same report: "it has that barrier that makes
+ * it so only pollen can get in"). The slot is a NECTAR tall, so a NECTAR rolled in under the
+ * lintel to the face and rode there, pushed and held, though the intake would never take it. On a
+ * `pollen` feed each band's open strip below the slot also gets a NECTAR-only prism from the skirt's
+ * bottom up, so a NECTAR stops at the mouth's outer line, as at any other part of the hull. A
+ * POLLEN + NECTAR feed takes NECTAR through its mouth and gets no gate.
+ *
+ * Both are `skirt`, built after the pocket filler (`addChassis3dColliders`) and only from patch
+ * 14; a replay recorded before it builds none.
  */
 export function import3dShapes(
   spec: RobotSpec,
   heightIn: number,
   pre6 = false,
   pre7 = false,
-): { chassis: Chassis3dShape[]; pocket: Chassis3dShape[]; remote: Chassis3dShape[] } {
+): { chassis: Chassis3dShape[]; pocket: Chassis3dShape[]; remote: Chassis3dShape[]; skirt: Chassis3dShape[] } {
   const imp = spec.imported!;
   const half = heightIn / 2;
   const mouths = bbImportMouths(spec);
@@ -951,12 +976,22 @@ export function import3dShapes(
   const chassis: Chassis3dShape[] = [];
   const pocket: Chassis3dShape[] = [];
   const remote: Chassis3dShape[] = [];
+  const skirt: Chassis3dShape[] = [];
+  const nectarGate = mouths.length > 0 && bbIntakeFeedOf(spec) === 'pollen';
+  const skirtOf = (poly: readonly Vec2[], z0: number, z1: number, meets: 'elements' | 'nectar'): void => {
+    const from = skirt.length;
+    prisms(skirt, poly, z0, z1);
+    for (let k = from; k < skirt.length; k++) skirt[k].meets = meets;
+  };
   for (const band of bands) {
     const z0 = band.z0 === lowest ? 0 : band.z0;
     const z1 = Math.min(band.z1, heightIn);
     if (!(z1 > z0 + 1e-3) || band.hull.length < 3) continue;
     cuts = (!pre7 && band.cuts) || [];
     prisms(remote, band.hull, z0, z1);
+    // the skirt under a band whose underside an element meets above its own centre
+    const skirted = z0 > BB_POLLEN_R && z0 < 2 * BB_NECTAR_R;
+    const meets = z0 < 2 * BB_POLLEN_R ? 'elements' : 'nectar';
     // a band wholly under the slot is carved top to bottom. Before patch 7 its top 0.1 in was kept
     // whole: a 0.1-in bar across the mouth that a band ending at 1 in put at the POLLEN's own height
     const slot = Math.min(BB3_MOUTH_SLOT_Z, pre7 ? z1 - 0.1 : z1);
@@ -964,19 +999,27 @@ export function import3dShapes(
       const carve = carveImportPlates(band.hull, mouths, INTAKE_RAIL_T);
       prisms(chassis, carve.chassis, z0, slot);
       for (const piece of carve.structure) prisms(chassis, piece, z0, slot);
+      if (skirted) {
+        skirtOf(carve.chassis, BB3_IMPORT_SKIRT_Z0, z0, meets);
+        for (const piece of carve.structure) skirtOf(piece, BB3_IMPORT_SKIRT_Z0, z0, meets);
+      }
       for (const m of mouths) {
         // the open strip in front of the face: vc ± half along p, beyond the face along n
         let strip = clipHalf(band.hull, -m.n.x, -m.n.y, -m.face);
         strip = clipHalf(strip, m.p.x, m.p.y, m.vc + m.half);
         strip = clipHalf(strip, -m.p.x, -m.p.y, -(m.vc - m.half));
-        if (strip.length >= 3 && polyArea(strip) >= 0.05) prisms(pocket, strip, z0, slot);
+        if (strip.length >= 3 && polyArea(strip) >= 0.05) {
+          prisms(pocket, strip, z0, slot);
+          if (nectarGate && slot > BB3_IMPORT_SKIRT_Z0 + 1e-3) skirtOf(strip, BB3_IMPORT_SKIRT_Z0, slot, 'nectar');
+        }
       }
       if (z1 > slot + 1e-3) prisms(chassis, band.hull, slot, z1);
     } else {
       prisms(chassis, band.hull, z0, z1);
+      if (skirted) skirtOf(band.hull, BB3_IMPORT_SKIRT_Z0, z0, meets);
     }
   }
-  return { chassis, pocket, remote };
+  return { chassis, pocket, remote, skirt };
 }
 
 /**
@@ -1049,6 +1092,9 @@ export interface Chassis3dShape {
   /** a deployed RAMP's blade or rail: built in `GROUP_RAMP`, so it meets everything EXCEPT a
    * FLOWER's ring plates (`groups.ts` — the speculative-contact hop). */
   ramp?: boolean;
+  /** an import's SKIRT or NECTAR gate (`import3dShapes`): built in `GROUP_SKIRT` (`elements`) or
+   * `GROUP_SKIRT_NECTAR` (`nectar`) by `skirtColliderDesc` */
+  meets?: 'elements' | 'nectar';
   /**
    * ⚠️ **A SIDE ROLLER IS A CYLINDER, EVERYTHING ELSE IS A BOX** (owner ruling 2026-09-20: "it
    * should be a collider... colliding with everything"). Absent (or `'box'`) means the existing
@@ -1446,7 +1492,7 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
           elementSolid: true,
         });
       }
-    } else if (kind === 'ramp' && rampReady) {
+    } else if (kind === 'ramp' && rampReady && bbRampOnEdge(spec, m.edge)) {
       const railY = rampRailY(axes.half);
       // the PLOW: three boxes, rail-to-rail wide (`railY`) — the LIP→CREST rise, the CREST→DROP
       // fall, and the level DECK that carries a lifted POLLEN the rest of the way to the mouth.
@@ -1536,6 +1582,7 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
   const wedgeZHi = BB_RAMP_DECK_Z;
   const wedgeZOffset = (wedgeZLo + wedgeZHi) / 2 - BB_RAMP_DECK_Z;
   for (const m of bbMouths(spec)) {
+    if (!bbRampOnEdge(spec, m.edge)) continue;
     const axes = mouthAxes(m, hl, hw);
     const { n, p, uOut } = axes;
     const place = (u: number, v: number): { cx: number; cy: number } => ({ cx: u * n.x + (v + axes.vc) * p.x, cy: u * n.y + (v + axes.vc) * p.y });
@@ -1663,8 +1710,8 @@ export function rampSwingBlocked(
  *
  * `rampReady` is `bbRampSettled(r, world.time)` — SEE `chassis3dReachShapes`'s own header for
  * the archetype reach hardware this now adds, in `GROUP_POCKET` alongside the pocket filler.
- * `pre6`/`pre7` are a replay recorded before `SIM_PATCH` 6/7 (`importSideRollersPre6`,
- * `importBandCutsPre7`).
+ * `pre6`/`pre7`/`pre14` are a replay recorded before `SIM_PATCH` 6/7/14 (`importSideRollersPre6`,
+ * `importBandCutsPre7`, `importSkirtsPre14`).
  */
 export function addChassis3dColliders(
   RAPIER: Rapier3d,
@@ -1675,6 +1722,7 @@ export function addChassis3dColliders(
   rampReady: boolean,
   pre6 = false,
   pre7 = false,
+  pre14 = false,
 ): void {
   for (const s of chassis3dShapes(spec, heightIn, pre6, pre7)) {
     // a MECHANISM shape may be a CYLINDER (a turret sweeps a disc — `bbMechEnvelopes`); every
@@ -1707,6 +1755,8 @@ export function addChassis3dColliders(
       body,
     );
   }
+  // ...and an import's SKIRT and NECTAR gate, solid to elements alone (`import3dShapes`)
+  if (!pre14) for (const s of chassis3dSkirtShapes(spec, heightIn, pre6, pre7)) world3d.createCollider(skirtColliderDesc(RAPIER, s), body);
   // ...and the ARCHETYPE REACH HARDWARE (side rollers / a settled ramp) — solid now, and (owner
   // ruling 2026-09-20) an ELEMENT meets both: a POLLEN is pushed/deflected off a side roller's
   // cylinder or a ramp's bar, never tunnels through either.
@@ -1867,8 +1917,24 @@ export function swapChassis3dReachColliders(
 
 /** how many colliders of the authority's compound are the chassis itself (`addChassis3dColliders`
  * builds them FIRST, the reach hardware after) — `swapChassis3dReachColliders`'s `keep`. */
-export function chassis3dBaseColliderCount(spec: RobotSpec, heightIn: number, pre6 = false, pre7 = false): number {
-  return chassis3dShapes(spec, heightIn, pre6, pre7).length + chassis3dPocketShapes(spec, heightIn, pre6, pre7).length;
+export function chassis3dBaseColliderCount(spec: RobotSpec, heightIn: number, pre6 = false, pre7 = false, pre14 = false): number {
+  const skirts = pre14 ? 0 : chassis3dSkirtShapes(spec, heightIn, pre6, pre7).length;
+  return chassis3dShapes(spec, heightIn, pre6, pre7).length + chassis3dPocketShapes(spec, heightIn, pre6, pre7).length + skirts;
+}
+
+/** an import's SKIRT and NECTAR gate (`import3dShapes`); a standard robot has none */
+export function chassis3dSkirtShapes(spec: RobotSpec, heightIn: number, pre6 = false, pre7 = false): Chassis3dShape[] {
+  return spec.imported ? import3dShapes(spec, heightIn, pre6, pre7).skirt : [];
+}
+
+/** one skirt or gate collider, for the authority (`addChassis3dColliders`) and the FULL predictor */
+export function skirtColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): InstanceType<Rapier3d['ColliderDesc']> {
+  return chassisMechDesc(RAPIER, s)
+    .setTranslation(s.cx, s.cy, s.cz)
+    .setDensity(0)
+    .setFriction(PHYS_FRICTION)
+    .setRestitution(0)
+    .setCollisionGroups(s.meets === 'nectar' ? GROUP_SKIRT_NECTAR : GROUP_SKIRT);
 }
 
 // ---- ELEMENTS -----------------------------------------------------------------

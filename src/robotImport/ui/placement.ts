@@ -69,7 +69,7 @@ export function mechRobotToModel(mech: ImportedMech, origin: Vec2): ImportedMech
   if (mech.intakes) {
     out.intakes = mech.intakes.map((m) => {
       const lateral = m.edge === 'front' || m.edge === 'back' ? origin.y : origin.x;
-      return { edge: m.edge, from: m.from + lateral, to: m.to + lateral };
+      return { edge: m.edge, from: m.from + lateral, to: m.to + lateral, ...(m.ramp ? { ramp: true } : {}) };
     });
   }
   return out;

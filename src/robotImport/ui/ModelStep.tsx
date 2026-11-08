@@ -1,11 +1,12 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { Vec2 } from '../../types';
 import { OptRow } from '../../ui/OptRow';
 import { FULL_DETAIL, isFullDetail, isRectangle, LIGHT_TRI_BUDGET, WHEEL_SQUARE_TOL_IN } from '../geometry';
 import type { ImportMeasurement, ImportSetup, LengthUnit, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { LENGTH_UNITS, UP_AXES } from '../types';
 import { COPY, FORMAT_LABEL, UNIT_LABEL, sizeLabel, upLabel } from './copy';
-import { ACCEPT, DropZone, type DropError, type Phase } from './DropZone';
+import { DropZone, type DropError, type Phase } from './DropZone';
+import { ACCEPT } from './fileSelection';
 import { rectNumbers, snapWheel, WHEEL_MIN_SPAN_IN, wheelHomes, type EditorDoc, type RectNumber } from './editorModel';
 import { NumberField } from './NumberField';
 import { TopDownMap, type MapHandle } from './TopDownMap';
@@ -55,6 +56,10 @@ export function ModelStep({
   onLayout,
   onDetail,
   canReread,
+  pendingFiles,
+  onStartPending,
+  onKeepPending,
+  checkFiles,
   parts,
 }: {
   doc: EditorDoc;
@@ -66,7 +71,8 @@ export function ModelStep({
   selectedWheel: number;
   /** how the wheels move (`wheelLayoutOf`) */
   layout: WheelLayout;
-  onFiles: (files: File[]) => void;
+  /** read these files, at `budget` when the drop box chose one (`ImportSetup.triBudget`) */
+  onFiles: (files: File[], budget?: number) => void;
   onCancel: () => void;
   onSetup: (patch: Partial<ImportSetup>) => void;
   onWheel: (i: number, p: Vec2, final: boolean) => void;
@@ -74,18 +80,63 @@ export function ModelStep({
   onRect: (key: RectNumber, v: number) => void;
   onSelectWheel: (i: number) => void;
   onLayout: (layout: WheelLayout) => void;
-  /** the triangle budget the file is read at (`ImportSetup.triBudget`) */
+  /** a new detail for the model already read (`ImportSetup.triBudget`): it re-reads the file */
   onDetail: (budget: number) => void;
   /** the dropped files are still in memory, so a new detail can re-read them */
   canReread: boolean;
+  /** files handed from the robot page, waiting for Detail before they are read */
+  pendingFiles: File[] | null;
+  /** read the handed files at `budget` */
+  onStartPending: (budget: number) => void;
+  /** put the handed files down (the model already loaded stays) */
+  onKeepPending: () => void;
+  /** may these files be imported (`checkImportFiles`)? null, or the sentence that refuses them */
+  checkFiles: (files: File[]) => Promise<string | null>;
   /** deleting parts (`PartsControls`) */
   parts: PartsControls;
 }) {
   const replace = useRef<HTMLInputElement>(null);
-  if (!m || phase || error) {
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  const [replaceFiles, setReplaceFiles] = useState<File[] | null>(null);
+  // THE DETAIL CHOSEN IN THE DROP BOX is this step's own until a read starts, and goes to the read as
+  // its budget. Written into the document, a Replace staged at Full and then put down left a Light
+  // model reading Full, and the next Light click re-read the old file and lost its deleted parts.
+  const [stagedDetail, setStagedDetail] = useState<number | null>(null);
+  const detail = stagedDetail ?? doc.setup.triBudget;
+  const stagedFiles = pendingFiles ?? replaceFiles;
+  const readFiles = (files: File[]): void => {
+    setReplaceFiles(null);
+    setStagedDetail(null);
+    onFiles(files, detail);
+  };
+  const startStagedFiles = (): void => {
+    if (pendingFiles) {
+      setStagedDetail(null);
+      onStartPending(detail);
+      return;
+    }
+    if (replaceFiles) readFiles(replaceFiles);
+  };
+  const keepCurrent = (): void => {
+    setReplaceFiles(null);
+    setStagedDetail(null);
+    if (pendingFiles) onKeepPending();
+  };
+  if (!m || phase || error || stagedFiles) {
     return (
       <>
-        <DropZone phase={phase} error={error} onFiles={onFiles} onCancel={onCancel} />
+        <DropZone
+          phase={phase}
+          error={error}
+          onFiles={readFiles}
+          onCancel={onCancel}
+          detail={detail}
+          onDetail={setStagedDetail}
+          pendingFiles={stagedFiles}
+          onStartPending={startStagedFiles}
+          onKeepCurrent={m ? keepCurrent : undefined}
+          detailDisabled={!!phase}
+        />
         {!phase ? <p className="ds-hint">{COPY.sidecarHint}</p> : null}
       </>
     );
@@ -106,6 +157,8 @@ export function ModelStep({
   const wheelFact =
     m.wheelSource === 'manual'
       ? COPY.wheelsManual
+      : m.wheelsGuessed
+        ? COPY.wheelsGuessed
       : m.wheelSource === 'none' || !det
         ? COPY.wheelsNone
         : m.wheelsSquared
@@ -158,10 +211,17 @@ export function ModelStep({
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
               e.target.value = '';
-              if (files.length) onFiles(files);
+              if (!files.length) return;
+              void checkFiles(files).then((refused) => {
+                setReplaceError(refused);
+                if (refused) return;
+                setStagedDetail(null);
+                setReplaceFiles(files);
+              });
             }}
           />
         </div>
+        {replaceError ? <span className="od err" role="alert">{replaceError}</span> : null}
       </div>
 
       <dl className="ds-facts">

@@ -32,9 +32,17 @@ const norm = (a: V3): V3 => {
  * (2026-10-04, Offset Robotics' concept robot). 3: a flywheel's thickness read along its own axle, a turret
  * ring reaching its launcher, box tubes (2026-10-04). 4: flywheels found before the turret that carries
  * them, a turret's plates by their own reach, a deployed part at whichever end sticks out, a wheel only
- * where something comes down to the floor (2026-10-04).
+ * where something comes down to the floor (2026-10-04). 5: a deployed part's members by contact, not
+ * by its box; rings of rollers round a turning hub; rollers at every edge, not only the intake's
+ * (2026-11-06). 6: the intake's later stages inside the robot, compliant wheels on plain shafts as well
+ * as spoked ones (`findStageRollers`, 2026-11-06). 7: what a turret, ramp or slide carries that its own
+ * rule missed (`ridersOf`), a hinged part on its rod (`hingeRod`), both ends of a two-ended intake
+ * (2026-11-06). 8: what a lift's stage carries up and the rollers riding it (`liftPayload`), a turret's
+ * parts only where they stand on its ring (`onTheRing`), a box tube's last insert on its own stage
+ * (2026-11-07). 9: an intake arm the file shows tucked in is the ramp (`findIntakeArm`), swinging on
+ * the shaft it names (2026-11-08).
  */
-export const MOTION_FINDER = 4;
+export const MOTION_FINDER = 9;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -366,6 +374,75 @@ export function fitRound(parts: readonly MeshPart[], bodies: readonly number[], 
   return { axis, pivot, radius };
 }
 
+/** a shaft carrying a spinning part: across its axle no wider than this, inches */
+const OWN_SHAFT_ACROSS_IN = 0.7;
+/** ...at least this long */
+const OWN_SHAFT_MIN_IN = 1;
+/** ...its centreline within this of the fitted axle (a box-middle fit is off by a fraction of the part) */
+const OWN_SHAFT_NEAR_IN = 0.6;
+
+/**
+ * ⚠️ **A SPINNING PART TURNS ABOUT ITS SHAFT, NOT ABOUT THE MIDDLE OF ITS BOX** (owner, 2026-11-06:
+ * "One of the intake rollers are also spinning around the wrong axis"). `fitRound`'s centre is the
+ * middle of the box the part spans across its axle, and a part that is not centrally symmetric has
+ * its box off its axle: three paddles 120° apart put a roller's box off its shaft, and it
+ * orbited instead of spinning in place (an odd-count mecanum wheel does the same, by less). A shaft is
+ * centrally symmetric (round, hex, REX), so when the group carries one, a slender body along the
+ * axle (no wider than `OWN_SHAFT_ACROSS_IN`, at least `OWN_SHAFT_MIN_IN` long, within
+ * `OWN_SHAFT_NEAR_IN` of the fit), the axle runs down its centreline, and the radius is measured
+ * from there. Without one, the fit stands.
+ */
+function onOwnShaft(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], fit: { axis: V3; pivot: V3; radius: number }): { pivot: V3; radius: number } {
+  const a = fit.axis;
+  const e1 = norm(Math.abs(a[2]) < 0.9 ? cross(a, [0, 0, 1]) : cross(a, [1, 0, 0]));
+  const e2 = cross(a, e1);
+  // the box of each body in the axle's own frame, from its vertices (a box in the model's axes is not
+  // one in the axle's when the axle is skewed)
+  const set = new Set(bodies);
+  const lo = new Map<number, V3>();
+  const hi = new Map<number, V3>();
+  eachVertex(parts, set, (x, y, z, b) => {
+    const p: V3 = [x, y, z];
+    const d: V3 = [dot(p, a), dot(p, e1), dot(p, e2)];
+    const l = lo.get(b);
+    const h = hi.get(b);
+    if (!l || !h) {
+      lo.set(b, [...d]);
+      hi.set(b, [...d]);
+      return;
+    }
+    for (let k = 0; k < 3; k++) {
+      if (d[k] < l[k]) l[k] = d[k];
+      if (d[k] > h[k]) h[k] = d[k];
+    }
+  });
+  const c1 = dot(fit.pivot, e1);
+  const c2 = dot(fit.pivot, e2);
+  let best: { len: number; m1: number; m2: number } | null = null;
+  for (const b of bodies) {
+    const l = lo.get(b);
+    const h = hi.get(b);
+    if (!l || !h) continue;
+    const len = h[0] - l[0];
+    if (h[1] - l[1] > OWN_SHAFT_ACROSS_IN || h[2] - l[2] > OWN_SHAFT_ACROSS_IN || len < OWN_SHAFT_MIN_IN) continue;
+    const m1 = (l[1] + h[1]) / 2;
+    const m2 = (l[2] + h[2]) / 2;
+    if (Math.hypot(m1 - c1, m2 - c2) > OWN_SHAFT_NEAR_IN) continue;
+    if (!best || len > best.len) best = { len, m1, m2 };
+  }
+  void st;
+  if (!best) return { pivot: fit.pivot, radius: fit.radius };
+  const pivot = add(add(scale(a, dot(fit.pivot, a)), scale(e1, best.m1)), scale(e2, best.m2));
+  let radius = 0;
+  eachVertex(parts, set, (x, y, z) => {
+    const r = sub([x, y, z], pivot);
+    const along = dot(r, a);
+    const rr = Math.hypot(r[0] - a[0] * along, r[1] - a[1] * along, r[2] - a[2] * along);
+    if (rr > radius) radius = rr;
+  });
+  return { pivot, radius };
+}
+
 // ---- picking: a click on one body → everything on its axle ---------------------------------------
 
 /** how far a body's centre may sit off the seed's axle and still be on it, inches */
@@ -572,7 +649,100 @@ export function spinAxle(parts: readonly MeshPart[], seed: number, line?: { axis
   const hi = Math.max(...turning.map((f) => f.hi));
   const rAt = (al: number): number => Math.max(SHAFT_R_IN, ...turning.filter((f) => al >= f.lo - 0.1 && al <= f.hi + 0.1).map((f) => f.rMax));
   for (const b of spokesAbout(parts, st, axis, pivot, lo, hi, rAt, (x) => res.has(x) || out.has(x) || fits.has(x))) res.add(b);
+  // and the RINGS round it: the rollers of a mecanum or omni wheel on the shaft
+  for (const b of ringsAbout(parts, st, [...res], fits, pivot, axis, (x) => res.has(x) || out.has(x) || fits.has(x))) res.add(b);
   return { bodies: [...res].sort((a, b) => a - b), motor: false };
+}
+
+/** a ring member reaches at most this past the radius of what turns where it is, inches */
+const RING_REACH_IN = 0.35;
+/** ring members are alike about the axle to this, inches (their reach in and out, their span along it) */
+const RING_TOL_IN = 0.03;
+/** a ring member is at least this big, inches: a screw head's knurl, modelled ridge by ridge, is not */
+const RING_MIN_IN = 0.15;
+
+/**
+ * RINGS ROUND A TURNING PART: three or more bodies ALIKE about the axle (the same reach in and out from
+ * it and the same span along it) that go round it (`goesRound`), within the span of the round parts
+ * that turn (`turning`), reaching into their radius and at most `RING_REACH_IN` past it. The rollers
+ * of a mecanum or omni wheel on an intake shaft are bodies of their own at 45° or tangent, standing
+ * past the hub, so neither the axle (`spinAxle`) nor the cylinder (`insideRotors`) takes them, and the
+ * hubs turned while their rollers stood still (2026-11-06). Rotational symmetry is what says they turn
+ * together, as for a star of spokes. And a ring TOUCHES what turns (its hub, or a ring that does,
+ * `touchingPairs`): a motor's face screws round the shaft of the gear on it are alike and go round it,
+ * and touch only the motor and its mount (AndyMark's RoBits bots, ridge by ridge of their knurled heads).
+ */
+function ringsAbout(parts: readonly MeshPart[], st: BodyStats, turningIds: readonly number[], fits: ReadonlyMap<number, AxleFit>, pivot: V3, axis: V3, skip: (b: number) => boolean): number[] {
+  const turning = turningIds.map((x) => fits.get(x)).filter((f): f is AxleFit => !!f);
+  const rotors = turning.filter((f) => f.rMax > SHAFT_R_IN);
+  if (!rotors.length) return [];
+  const top = Math.max(...rotors.map((f) => f.rMax));
+  const lo = Math.min(...rotors.map((f) => f.lo));
+  const hi = Math.max(...rotors.map((f) => f.hi));
+  const near = new Set<number>();
+  for (const b of st.ids) {
+    if (skip(b)) continue;
+    const ext = Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]);
+    if (ext < RING_MIN_IN || ext > 2 * (top + RING_REACH_IN)) continue;
+    const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    const al = dot(d, axis);
+    if (al < lo - 0.05 || al > hi + 0.05) continue;
+    const rc = Math.hypot(d[0] - axis[0] * al, d[1] - axis[1] * al, d[2] - axis[2] * al);
+    if (rc >= 0.05 && rc <= top + RING_REACH_IN) near.add(b);
+  }
+  if (near.size < STAR_MIN) return [];
+  const e1 = norm(Math.abs(axis[2]) < 0.9 ? cross(axis, [0, 0, 1]) : cross(axis, [1, 0, 0]));
+  const e2 = cross(axis, e1);
+  // the STACKS of rotors: rotors that touch along the axle are one (a mecanum wheel's hub plates; a
+  // roller spans two of them), each with its largest radius. A gap is a bearing or a spacer, where
+  // what is round the axle is the frame's (the screws of a bearing's retainer, 2026-11-06)
+  const stacks: { lo: number; hi: number; r: number }[] = [];
+  for (const f of [...rotors].sort((a, b) => a.lo - b.lo)) {
+    const last = stacks[stacks.length - 1];
+    if (last && f.lo <= last.hi + 0.05) {
+      last.hi = Math.max(last.hi, f.hi);
+      last.r = Math.max(last.r, f.rMax);
+    } else stacks.push({ lo: f.lo, hi: f.hi, r: f.rMax });
+  }
+  // each candidate's fit about the axle: it lies within a stack's span and reaches into its radius
+  const cand: { b: number; f: AxleFit; ang: number }[] = [];
+  for (const [b, f] of axleFits(parts, st, near, pivot, axis)) {
+    if (!stacks.some((s) => f.lo >= s.lo - 0.05 && f.hi <= s.hi + 0.05 && f.rMin < s.r && f.rMax <= s.r + RING_REACH_IN)) continue;
+    const d = sub([(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2], pivot);
+    cand.push({ b, f, ang: Math.atan2(dot(d, e2), dot(d, e1)) });
+  }
+  // alike: the same span along the axle and the same reach in and out, each to `RING_TOL_IN`
+  cand.sort((x, y) => x.f.lo - y.f.lo || x.f.rMin - y.f.rMin || x.b - y.b);
+  const alike = (x: AxleFit, y: AxleFit): boolean =>
+    Math.abs(x.lo - y.lo) <= RING_TOL_IN && Math.abs(x.hi - y.hi) <= RING_TOL_IN && Math.abs(x.rMin - y.rMin) <= RING_TOL_IN && Math.abs(x.rMax - y.rMax) <= RING_TOL_IN;
+  const used = new Set<number>();
+  const rings: number[][] = [];
+  for (const c of cand) {
+    if (used.has(c.b)) continue;
+    const ring = cand.filter((o) => !used.has(o.b) && alike(c.f, o.f));
+    if (ring.length < STAR_MIN || !goesRound(ring.map((o) => o.ang))) continue;
+    for (const o of ring) used.add(o.b);
+    rings.push(ring.map((o) => o.b));
+  }
+  if (!rings.length) return [];
+  // each ring touches what turns, or a ring that does: the turning bodies near the rings, by box
+  const members = rings.flat();
+  const lo3 = [0, 1, 2].map((k) => Math.min(...members.map((b) => st.min[3 * b + k])) - CONTACT_IN);
+  const hi3 = [0, 1, 2].map((k) => Math.max(...members.map((b) => st.max[3 * b + k])) + CONTACT_IN);
+  const nearTurning = turningIds.filter((b) => b < st.n.length && [0, 1, 2].every((k) => st.min[3 * b + k] <= hi3[k] && st.max[3 * b + k] >= lo3[k]));
+  const touch = touchingPairs(parts, new Set([...members, ...nearTurning]), CONTACT_IN);
+  const held = new Set(nearTurning);
+  const out: number[] = [];
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const ring of rings) {
+      if (held.has(ring[0]) || !ring.some((b) => [...(touch.get(b) ?? [])].some((x) => held.has(x)))) continue;
+      for (const b of ring) held.add(b);
+      out.push(...ring);
+      grew = true;
+    }
+  }
+  return out;
 }
 
 /**
@@ -1537,6 +1707,48 @@ function onShaft(parts: readonly MeshPart[], bodies: readonly number[], axis: V3
  * (`coaxialBodies`). Bodies in `taken` (the wheels) are never used. A suggestion: the player removes
  * what is not a roller.
  */
+/** a roller at an edge the intake is not placed at spans at least this share of the robot along it */
+const EDGE_ROLLER_SPAN = 0.5;
+
+/**
+ * ROLLERS AT THE OTHER EDGES (2026-11-06): the edges `intakes` does not name, searched as
+ * `findRollerGroups` does, keeping only a group as long along its edge as an intake's roller is (at
+ * least `EDGE_ROLLER_SPAN` of the robot): a robot that takes in at both ends turns both, whichever end
+ * the build places its intake at, and a slide's belt spools near an edge (Offset Robotics' concept
+ * robot) are not offered as intake rollers.
+ */
+export function findEdgeRollers(
+  parts: readonly MeshPart[],
+  intakes: readonly { edge: Edge }[],
+  taken: ReadonlySet<number>,
+  outside: ReadonlySet<number> = new Set(),
+): MotionGroup[] {
+  const st = bodyStats(parts);
+  if (!st.ids.length) return [];
+  const lo = [Infinity, Infinity];
+  const hi = [-Infinity, -Infinity];
+  for (const b of st.ids) {
+    if (outside.has(b)) continue;
+    for (let k = 0; k < 2; k++) {
+      lo[k] = Math.min(lo[k], st.min[3 * b + k]);
+      hi[k] = Math.max(hi[k], st.max[3 * b + k]);
+    }
+  }
+  const out: MotionGroup[] = [];
+  const used = new Set(taken);
+  for (const edge of ['front', 'back', 'left', 'right'] as const) {
+    if (intakes.some((i) => i.edge === edge)) continue;
+    const along = edge === 'front' || edge === 'back' ? 1 : 0;
+    for (const g of findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used, outside)) {
+      const mo = setMoments(st, g.bodies);
+      if (mo.max[along] - mo.min[along] < EDGE_ROLLER_SPAN * (hi[along] - lo[along])) continue;
+      out.push(g);
+      for (const b of g.bodies) used.add(b);
+    }
+  }
+  return out;
+}
+
 export function findRollerGroups(
   parts: readonly MeshPart[],
   intakes: readonly { edge: 'front' | 'back' | 'left' | 'right'; from: number; to: number }[],
@@ -1693,6 +1905,240 @@ export function findSpokedRollers(parts: readonly MeshPart[], taken: ReadonlySet
   return out;
 }
 
+/** an axle as a segment: through `p`, along a model axis `k`, from `lo` to `hi` along it */
+interface AxleSeg {
+  k: 0 | 1;
+  p: V3;
+  lo: number;
+  hi: number;
+}
+
+/** the closest two points of segments [p1, q1] and [p2, q2], apart (Ericson, Real-Time Collision Detection 5.1.9) */
+function segDist(p1: V3, q1: V3, p2: V3, q2: V3): number {
+  const d1 = sub(q1, p1);
+  const d2 = sub(q2, p2);
+  const r = sub(p1, p2);
+  const a = dot(d1, d1);
+  const e = dot(d2, d2);
+  const f = dot(d2, r);
+  const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
+  let s: number;
+  let t: number;
+  if (a <= 1e-12 && e <= 1e-12) return Math.hypot(...r);
+  if (a <= 1e-12) {
+    s = 0;
+    t = clamp01(f / e);
+  } else {
+    const c = dot(d1, r);
+    if (e <= 1e-12) {
+      t = 0;
+      s = clamp01(-c / a);
+    } else {
+      const b = dot(d1, d2);
+      const den = a * e - b * b;
+      s = den > 1e-12 ? clamp01((b * f - c * e) / den) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp01(-c / a);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp01((b - c) / a);
+      }
+    }
+  }
+  return Math.hypot(...sub(add(p1, scale(d1, s)), add(p2, scale(d2, t))));
+}
+
+const segEnds = (g: AxleSeg): [V3, V3] => {
+  const a: V3 = [...g.p];
+  const b: V3 = [...g.p];
+  a[g.k] = g.lo;
+  b[g.k] = g.hi;
+  return [a, b];
+};
+
+/** a stage's own shaft is at least this long, inches: it spans the bearings either side of what it
+ *  carries (a servo-driven spool turns on the servo's screw, 0.66 in; an odometry pod on a pin, 0.61) */
+const STAGE_SHAFT_MIN_IN = 1.5;
+/** a stage's rim is at least this far from its axle, inches: something to grip an element with (a
+ *  slide's belt spool is 0.55 in, a pulley 0.41; Offset's transfer rollers 0.94) */
+const STAGE_R_MIN_IN = 0.6;
+/** how far off the path from an intake roller to the launcher a stage may stand, in element diameters */
+const STAGE_PATH_SHARE = 1.25;
+
+/** the longest SHAFT among `bodies`: a thin body on the axle through `pivot`, as `onShaft` reads one */
+function shaftLength(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], axis: V3, pivot: V3): number {
+  let best = 0;
+  for (const f of axleFits(parts, st, new Set(bodies), pivot, axis).values()) {
+    if (f.off <= ON_AXLE_IN && f.rMax <= SHAFT_R_IN) best = Math.max(best, f.hi - f.lo);
+  }
+  return best;
+}
+
+/** a roller group's axle as a segment, when it runs level along x or y (else null) */
+function axleSegOf(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[]): AxleSeg | null {
+  const fit = fitRound(parts, bodies);
+  if (!fit) return null;
+  const k: 0 | 1 | null = Math.abs(fit.axis[0]) >= AXLE_PARALLEL ? 0 : Math.abs(fit.axis[1]) >= AXLE_PARALLEL ? 1 : null;
+  if (k === null) return null;
+  const mo = setMoments(st, bodies);
+  return { k, p: fit.pivot, lo: mo.min[k], hi: mo.max[k] };
+}
+
+/**
+ * THE INTAKE'S LATER STAGES (owner, 2026-11-06: "You still missed part of the intake/transfer rollers
+ * further inside the robot"). A roller deeper than `ROLLER_DEPTH_IN` from its edge was found only as a
+ * spoked axle chained to one on that edge, so a transfer of compliant wheels on plain shafts, inside
+ * the frame, was found nowhere. Here a LEVEL axle (along x or y) is seeded by a round body exactly as
+ * `findRollerGroups` seeds one, under `ROLLER_TOP_IN`, and is a roller when it comes within
+ * `ROLLER_STAGE_IN` of a roller already found: axle to axle, each a segment over its bodies' length,
+ * so a stage square to the one before it (an element turned to run across the robot) counts as well
+ * as one beside it. Each stage taken can hand on to the next, so a transfer is followed from the mouth
+ * inward however it turns. `rollers`: the rollers found so far (the intake's). Bodies in `taken` (every
+ * part already moving: wheels, a turret, a slide) are never used, and an axle that reaches one is not
+ * a stage.
+ *
+ * ⚠️ **NEAR A ROLLER IS NOT ENOUGH.** Near-and-round alone, on a dense robot (Offset Robotics' concept
+ * robot), took its two transfer rollers and twelve things that are not stages: odometry pods, servo-
+ * driven spools, a slide's belt spools, a pulley, a gear blank. A stage is also:
+ *  · ON THE ELEMENT'S PATH: within `STAGE_PATH_SHARE` element diameters (`elementD`) of the line from
+ *    an intake roller's middle to the `launcher` (no launcher, no stages). A transfer carries an
+ *    element from the mouth to the launcher; a spool on the side plate or a pod under the frame stands
+ *    off that path (on Offset: pods and side spools 4.1–5.3 in, its transfer rollers 0.1–0.5);
+ *  · ON A SHAFT of its own at least `STAGE_SHAFT_MIN_IN` long (`shaftLength`): it spans bearings either
+ *    side. A servo-driven spool turns on the servo's screw and a pod on a pin, both under 0.7 in;
+ *  · something to grip with: its rim at least `STAGE_R_MIN_IN` from its axle (a belt spool, a pulley).
+ * Tried and dropped: an element-sized ball clear of structure beside each stage (a real transfer's
+ * timing belts and guide plates stand within half an inch of its wheels), and a drive link to the
+ * intake (a transfer is often driven apart from it, and contact over a few thousand bodies takes
+ * minutes).
+ */
+export function findStageRollers(parts: readonly MeshPart[], rollers: readonly MotionGroup[], taken: ReadonlySet<number>, elementD: number, launcher: V3 | null): MotionGroup[] {
+  if (!launcher) return [];
+  const st = bodyStats(parts);
+  const lines: AxleSeg[] = [];
+  for (const g of rollers) {
+    const s = g.bodies.length ? axleSegOf(parts, st, g.bodies) : null;
+    if (s) lines.push(s);
+  }
+  if (!lines.length) return [];
+  // the paths an element takes: from each intake roller's middle to the launcher
+  const paths = lines.map((l): [V3, V3] => {
+    const [a, b] = segEnds(l);
+    return [scale(add(a, b), 0.5), launcher];
+  });
+  const onPath = (seg: AxleSeg): boolean => {
+    const [a, b] = segEnds(seg);
+    return paths.some(([p, q]) => segDist(a, b, p, q) <= STAGE_PATH_SHARE * elementD);
+  };
+  // the seeds, as `findRollerGroups` takes them: round about a level axle, big enough to grip with
+  type Seed = { b: number; c: V3; size: number; axis: V3; k: 0 | 1 };
+  const seeds: Seed[] = [];
+  for (const k of [0, 1] as const) {
+    const d1 = k === 0 ? 1 : 0;
+    const cand = new Map<number, { c: V3; h1: number; h2: number; r: number }>();
+    for (const b of st.ids) {
+      if (taken.has(b)) continue;
+      const c: V3 = [0, 1, 2].map((j) => (st.min[3 * b + j] + st.max[3 * b + j]) / 2) as V3;
+      if (c[2] > ROLLER_TOP_IN) continue;
+      const h1 = (st.max[3 * b + d1] - st.min[3 * b + d1]) / 2;
+      const h2 = (st.max[3 * b + 2] - st.min[3 * b + 2]) / 2;
+      if (h1 < 0.05 || h2 < 0.05 || h1 / h2 < 0.85 || h1 / h2 > 1.18 || Math.max(h1, h2) < ROLLER_SEED_R_IN) continue;
+      cand.set(b, { c, h1, h2, r: 0 });
+    }
+    eachVertex(parts, new Set(cand.keys()), (x, y, z, b) => {
+      const q = cand.get(b)!;
+      const p = [x, y, z];
+      const d = Math.hypot(p[d1] - q.c[d1], p[2] - q.c[2]);
+      if (d > q.r) q.r = d;
+    });
+    const axis: V3 = k === 0 ? [1, 0, 0] : [0, 1, 0];
+    for (const [b, q] of cand) {
+      if (q.r > 1.12 * Math.max(q.h1, q.h2)) continue;
+      if (st.max[3 * b + k] - st.min[3 * b + k] < 0.1) continue;
+      seeds.push({ b, c: q.c, size: seedSize(Math.max(q.h1, q.h2)), axis, k });
+    }
+  }
+  // the biggest first (a wheel seeds its axle before the hub on it does), the same order on any mesh
+  seeds.sort((a, b) => b.size - a.size || a.b - b.b || a.k - b.k);
+  const used = new Set(taken);
+  const out: MotionGroup[] = [];
+  // an axle measured once per seed, again only when a body of it has been used since
+  const axleOf = new Map<Seed, { bodies: number[]; seg: AxleSeg } | null>();
+  const near = (c: V3): boolean =>
+    lines.some((l) => {
+      const [a, b] = segEnds(l);
+      return segDist(c, c, a, b) <= ROLLER_STAGE_IN + ROLLER_R_MAX_IN;
+    });
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const s of seeds) {
+      if (used.has(s.b) || !near(s.c)) continue;
+      let got = axleOf.get(s);
+      if (got === undefined || (got && got.bodies.some((x) => used.has(x)))) {
+        const g = rollerOn(parts, s.b, s.axis, taken, used);
+        const fit = g ? fitRound(parts, g.bodies, s.axis) : null;
+        const seg = g && fit && fit.radius >= STAGE_R_MIN_IN && shaftLength(parts, st, g.bodies, s.axis, g.pivot) >= STAGE_SHAFT_MIN_IN ? axleSegOf(parts, st, g.bodies) : null;
+        got = g && seg && seg.k === s.k && onPath(seg) ? { bodies: g.bodies, seg } : null;
+        axleOf.set(s, got);
+      }
+      if (!got) continue;
+      const [a, b] = segEnds(got.seg);
+      if (!lines.some((l) => segDist(a, b, ...segEnds(l)) <= ROLLER_STAGE_IN)) continue;
+      for (const x of got.bodies) used.add(x);
+      lines.push(got.seg);
+      out.push({ role: 'roller', bodies: got.bodies, found: true });
+      grew = true;
+    }
+  }
+  return out;
+}
+
+/**
+ * THE LAUNCHER'S FEED, INSIDE ITS TURRET (owner, 2026-11-06: "Mechanism detection isnt even detecting
+ * everything properly"). The flywheel finder takes at most two discs within \`FLYWHEEL_REACH_IN\` of the
+ * launcher, and the turret then takes everything else that stands on its ring, so the rollers that hand
+ * an element on to the flywheel inside a turret turned with it and never spun.
+ * Here, among \`carrier\`'s bodies (a turret group), an axle PARALLEL to the flywheel's (a feed turns the
+ * way the flywheel does) is a roller when it is seeded by a round body at least \`ROLLER_SEED_R_IN\`
+ * across, is no motor's (\`spinAxle\`), lies wholly inside the carrier, has a roller's radius and turns
+ * on a shaft of its own at least \`STAGE_SHAFT_MIN_IN\` long (a screw holding a round part is not one).
+ * Role \`roller\`; it rides the turret (\`deriveMotion\`). Bodies in \`taken\` are never used. The
+ * groups found; the caller takes their bodies out of the carrier.
+ */
+export function findLauncherFeed(parts: readonly MeshPart[], carrier: readonly number[], flywheels: readonly MotionGroup[], taken: ReadonlySet<number>): MotionGroup[] {
+  const fly = flywheels.find((g) => g.bodies.length);
+  if (!fly || !carrier.length) return [];
+  const fit = fitRound(parts, fly.bodies);
+  if (!fit) return [];
+  const axis = fit.axis;
+  const st = bodyStats(parts);
+  const inside = new Set(carrier);
+  const seeds: { b: number; size: number }[] = [];
+  for (const b of carrier) {
+    if (taken.has(b)) continue;
+    const f = fitRound(parts, [b]);
+    if (!f || f.radius < ROLLER_SEED_R_IN || f.radius > ROLLER_R_MAX_IN) continue;
+    if (Math.abs(dot(f.axis, axis)) < AXLE_PARALLEL) continue;
+    seeds.push({ b, size: seedSize(f.radius) });
+  }
+  seeds.sort((a, b) => b.size - a.size || a.b - b.b);
+  const used = new Set(taken);
+  const out: MotionGroup[] = [];
+  for (const { b } of seeds) {
+    if (used.has(b)) continue;
+    const g = spinAxle(parts, b);
+    if (g.motor || g.bodies.some((x) => !inside.has(x) || used.has(x))) continue;
+    const whole = fitRound(parts, g.bodies, axis);
+    if (!whole || whole.radius < ROLLER_R_MIN_IN || whole.radius > ROLLER_R_MAX_IN) continue;
+    if (shaftLength(parts, st, g.bodies, axis, whole.pivot) < STAGE_SHAFT_MIN_IN) continue;
+    for (const x of g.bodies) used.add(x);
+    out.push({ role: 'roller', bodies: [...g.bodies].sort((p, q) => p - q), found: true });
+  }
+  return out;
+}
+
 // ---- flywheels, a turret and a deployed ramp, from the placements ---------------------------------
 
 /** a flywheel's centre is within this of the launcher's placed point, inches */
@@ -1804,7 +2250,51 @@ function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<numbe
     if (d > (out.get(b) ?? 0)) out.set(b, d);
   });
   for (const b of check) if ((out.get(b) ?? Infinity) <= reach) bodies.push(b);
-  return bodies.length ? { group: { role: 'turret', bodies: bodies.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
+  const kept = onTheRing(parts, st, bodies, ring.b, taken);
+  return kept.length ? { group: { role: 'turret', bodies: kept.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
+}
+
+/**
+ * WHAT STANDS ON THE RING, of what stands within its reach (owner, 2026-11-07, Offset's robot: the
+ * turret took the top frame of the Box Tube's carriage beside it, which is above the ring and inside
+ * its reach). The candidates fall into pieces that touch one another; a piece is kept when it holds
+ * the ring, or touches nothing else (a loose screw rides with what it sits in). A piece that touches
+ * a body outside the turret, and not the ring's piece, is bolted to something else.
+ */
+function onTheRing(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], ring: number, taken: ReadonlySet<number>): number[] {
+  const set = new Set(bodies);
+  if (!set.has(ring) || set.size < 2) return [...bodies];
+  const mo = setMoments(st, bodies);
+  const near = new Set(bodies);
+  for (const b of st.ids) {
+    if (set.has(b) || taken.has(b)) continue;
+    if ([0, 1, 2].every((k) => st.min[3 * b + k] <= mo.max[k] + CONTACT_IN && st.max[3 * b + k] >= mo.min[k] - CONTACT_IN)) near.add(b);
+  }
+  const touch = touchingPairs(parts, near, CONTACT_IN);
+  const seen = new Set<number>();
+  const kept: number[] = [];
+  for (const start of bodies) {
+    if (seen.has(start)) continue;
+    const piece: number[] = [];
+    let holdsRing = false;
+    let bolted = false;
+    const queue = [start];
+    seen.add(start);
+    while (queue.length) {
+      const b = queue.pop()!;
+      piece.push(b);
+      if (b === ring) holdsRing = true;
+      for (const o of touch.get(b) ?? []) {
+        if (!set.has(o)) bolted = true;
+        else if (!seen.has(o)) {
+          seen.add(o);
+          queue.push(o);
+        }
+      }
+    }
+    if (holdsRing || !bolted) kept.push(...piece);
+  }
+  return kept;
 }
 
 /** a turret ring's shape: an upright round body 1.5 to 6 in across its radius, no taller than that */
@@ -2091,9 +2581,21 @@ export function readShot(parts: readonly MeshPart[], disc: number, elementD: num
 export interface CadBuild {
   /**
    * the edge with the most intake rollers, whether one of them stands upright (side rollers), and
-   * whether the file shows a ramp deployed past them (`findOverhang` at that edge, down to the floor)
+   * whether there is a ramp: one the file shows deployed past them (`findOverhang` at that edge, down to
+   * the floor), or an arm it shows tucked in that swings on one roller's shaft carrying another
+   * (`findIntakeArm`)
    */
-  intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean; ramp?: boolean } | null;
+  intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean; ramp?: boolean; rampEdge?: 'front' | 'back' | 'left' | 'right'; both?: boolean } | null;
+  /**
+   * each edge's rollers, as the span along that edge they cover (MODEL frame: y for the front and
+   * back, x for the sides), where it has any. `intake.both`: the edge opposite the intake's has an
+   * intake roller too (at least `EDGE_ROLLER_SPAN` of the robot along it, as the intake's is), so the
+   * robot takes in at both ends (owner, 2026-11-06: "There are also two intakes: front and back")
+   */
+  spans?: Partial<Record<'front' | 'back' | 'left' | 'right', [number, number]>>;
+  /** each edge's score in that search: its roller groups, and half a point more at the edge a part the
+   *  file shows deployed sticks out of (`intake` is the best one; the others say how clear it is) */
+  edges?: Record<'front' | 'back' | 'left' | 'right', number>;
   /**
    * the launcher's largest flywheel (its centre, MODEL frame), whether a turret ring is under it and
    * where that ring's axis is (MODEL frame, at the ring), and the shot its hood gives (`readShot`)
@@ -2126,8 +2628,9 @@ const TUBE_NEST_OVERLAP_IN = 2;
 /** a body inside a stage's box, grown by this, rides on it, inches */
 const TUBE_RIDE_PAD_IN = 0.25;
 /** ...and the box reaches this far past the stage's base end: its bottom insert stands below the tube
- *  (Offset's middle and final inserts, 2026-10-04), inches */
-const TUBE_BASE_END_IN = 0.6;
+ *  (Offset's middle and final inserts, 2026-10-04; the final one stands 0.600 in below, so 0.6 left it
+ *  to the middle stage by a rounding, 2026-11-07), inches */
+const TUBE_BASE_END_IN = 0.65;
 
 /** one telescoping slide (`findBoxTubes`) */
 export interface BoxTube {
@@ -2259,26 +2762,68 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   // a part the file shows deployed is not where the edges are, and the edge it sticks out of wins a tie
   const over = findOverhang(parts, used);
   const outside = new Set(over?.bodies ?? []);
+  const edges = { front: 0, back: 0, left: 0, right: 0 };
+  const spans: NonNullable<CadBuild['spans']> = {};
+  const longest = { front: 0, back: 0, left: 0, right: 0 };
+  const byEdge: Partial<Record<Edge, MotionGroup[]>> = {};
+  const stB = bodyStats(parts);
   for (const edge of ['front', 'back', 'left', 'right'] as const) {
     const groups = findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used, outside);
+    byEdge[edge] = groups;
     let upright = false;
+    const k = edge === 'front' || edge === 'back' ? 1 : 0;
     for (const g of groups) {
       for (const b of g.bodies) used.add(b);
       const f = fitRound(parts, g.bodies);
       if (f && Math.abs(f.axis[2]) > AXLE_PARALLEL) upright = true;
+      const mo = setMoments(stB, g.bodies);
+      const prev = spans[edge];
+      spans[edge] = prev ? [Math.min(prev[0], mo.min[k]), Math.max(prev[1], mo.max[k])] : [mo.min[k], mo.max[k]];
+      longest[edge] = Math.max(longest[edge], mo.max[k] - mo.min[k]);
     }
     const score = groups.length + (groups.length && over?.edge === edge ? 0.5 : 0);
+    edges[edge] = score;
     if (score > most) {
       most = score;
       intake = { edge, upright };
     }
   }
-  // a ramp: the deployed part sticks out past the intake's rollers and comes down to the floor
-  if (intake && over && over.edge === intake.edge) {
+  // both ends: the opposite edge has a roller as long along it as an intake roller is, and so has the
+  // intake's own (the robot's extent left out of what the file shows deployed)
+  if (intake) {
+    const opposite = ({ front: 'back', back: 'front', left: 'right', right: 'left' } as const)[intake.edge];
+    const k = intake.edge === 'front' || intake.edge === 'back' ? 1 : 0;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const b of stB.ids) {
+      if (outside.has(b)) continue;
+      lo = Math.min(lo, stB.min[3 * b + k]);
+      hi = Math.max(hi, stB.max[3 * b + k]);
+    }
+    const need = EDGE_ROLLER_SPAN * (hi - lo);
+    if (longest[intake.edge] >= need && longest[opposite] >= need) intake.both = true;
+  }
+  // a ramp: the deployed part sticks out past an intake's rollers and comes down to the floor (either
+  // end of a two-ended intake: `rampEdge` says which)
+  const opposite = intake ? ({ front: 'back', back: 'front', left: 'right', right: 'left' } as const)[intake.edge] : null;
+  if (intake && over && (over.edge === intake.edge || (intake.both && over.edge === opposite))) {
     const st0 = bodyStats(parts);
     let floor = Infinity;
     for (const b of st0.ids) floor = Math.min(floor, st0.min[3 * b + 2]);
-    if (Math.min(...over.bodies.map((b) => st0.min[3 * b + 2])) - floor <= RAMP_FLOOR_IN) intake.ramp = true;
+    if (Math.min(...over.bodies.map((b) => st0.min[3 * b + 2])) - floor <= RAMP_FLOOR_IN) {
+      intake.ramp = true;
+      intake.rampEdge = over.edge;
+    }
+  }
+  // ...or one the file shows tucked in: an arm swinging on an intake roller's shaft, carrying the roller
+  // outside it (`findIntakeArm`; owner, 2026-11-08, Offset's front arms)
+  if (intake && !intake.ramp && !intake.upright) {
+    for (const edge of intake.both && opposite ? [intake.edge, opposite] : [intake.edge]) {
+      if (!findIntakeArm(parts, byEdge[edge] ?? [], edge, used)) continue;
+      intake.ramp = true;
+      intake.rampEdge = edge;
+      break;
+    }
   }
   let launcher: CadBuild['launcher'] = null;
   const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
@@ -2299,7 +2844,7 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   const cx = st.ids.map((b) => (st.min[3 * b] + st.max[3 * b]) / 2).sort((a, b) => a - b);
   const cy = st.ids.map((b) => (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2).sort((a, b) => a - b);
   const pc = (a: number[], f: number): number => (a.length ? a[Math.min(a.length - 1, Math.floor(f * a.length))] : 0);
-  return { intake, launcher, lift, box: [pc(cx, 0.02), pc(cy, 0.02), pc(cx, 0.98), pc(cy, 0.98)] };
+  return { intake, edges, spans, launcher, lift, box: [pc(cx, 0.02), pc(cy, 0.02), pc(cx, 0.98), pc(cy, 0.98)] };
 }
 
 /** a deployed part that comes down to within this of the model's lowest point is a ramp, inches */
@@ -2349,8 +2894,7 @@ export function findOverhang(parts: readonly MeshPart[], taken: ReadonlySet<numb
     ends.sort((a, b) => rank(a) - rank(b) || (prefer.includes(a.edge) ? 0 : 1) - (prefer.includes(b.edge) ? 0 : 1));
     const end = ends[0];
     if (!end.past.length || end.past.length >= OVERHANG_MAX_SHARE * free.length) continue;
-    const bodies = new Set(end.past);
-    for (const b of end.past) for (const x of mountedBodies(parts, b)) if (!taken.has(x)) bodies.add(x);
+    const bodies = new Set(mountedOn(parts, end.past, taken));
     const gap = (a: number, b: number): number => {
       let g = 0;
       for (let i = 0; i < 3; i++) g = Math.max(g, st.min[3 * a + i] - st.max[3 * b + i], st.min[3 * b + i] - st.max[3 * a + i]);
@@ -2359,6 +2903,161 @@ export function findOverhang(parts: readonly MeshPart[], taken: ReadonlySet<numb
     const rest = free.filter((b) => !bodies.has(b));
     if (![...bodies].some((a) => rest.some((b) => gap(a, b) <= OVERHANG_ATTACH_IN))) continue;
     return { edge: end.edge, bodies: [...bodies].sort((a, b) => a - b) };
+  }
+  return null;
+}
+
+/** an intake arm's pivot roller stands at most this far inside its outer roller, inches */
+const ARM_PIVOT_MAX_IN = 8;
+/** ...and the arm reaches no further inside its pivot than this: more is the chassis, inches */
+const ARM_BEHIND_IN = 1.5;
+/** an arm is at most this many bodies (more is the robot, reached through a contact) */
+const ARM_MAX_BODIES = 600;
+/** a body stops an arm swinging when at least this many contact points stand across the swing */
+const ARM_STOP_POINTS = 3;
+/** a stowed arm deploys until its outer roller's bottom is this high off the floor, inches */
+const ARM_DEPLOY_CLEAR_IN = 1;
+/** ...turning at least this far (less: the file shows it down already) and at most this far, degrees */
+const ARM_DEPLOY_MIN_DEG = 10;
+const ARM_DEPLOY_MAX_DEG = 75;
+
+/** a stowed intake arm (`findIntakeArm`) */
+export interface IntakeArm {
+  /** the arm's bodies: what swings on the pivot roller's shaft, with the outer roller's supports */
+  bodies: number[];
+  /** the pivot: a point on the shaft it swings on, MODEL frame */
+  pivot: V3;
+  /** the shaft (its body: the hinge `planFolds` turns it on, as the group's `axisBody`), or -1 */
+  shaft: number;
+  /** degrees it swings down to deploy */
+  deployDeg: number;
+}
+
+/**
+ * ⚠️ **A STOWED INTAKE ARM: A FLOWER RAMP THE FILE SHOWS TUCKED IN** (owner, 2026-11-08, Offset's
+ * robot: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride arms that
+ * a pair of servos swing on the inner roller's shaft, with a wedge on a second pair of arms on the same
+ * shaft, and the file shows them raised inside 18 in, so `findOverhang` (a part shown deployed past the
+ * frame) never saw a ramp and the intake read as a Ground intake, which takes nothing from a FLOWER.
+ *
+ * At `edge`, among its intake `rollers` (axles along the edge), the OUTER roller rides an arm when what
+ * holds it, followed through contacts that would stop the arm swinging on an INNER roller's shaft (up
+ * to `ARM_PIVOT_MAX_IN` inside), stays a part of its own: it never reaches a body that runs out of the
+ * front of the robot (`ARM_BEHIND_IN` behind the pivot), and stays under `ARM_MAX_BODIES`. A contact
+ * across faces square to the shaft (an arm plate flat against the frame beside it) only slides as it
+ * swings, so it does not join the frame to the arm. Anything else swinging on that shaft and standing
+ * alone the same way (the wedge's arms) is the arm too. It deploys until the outer roller's bottom is
+ * `ARM_DEPLOY_CLEAR_IN` off the floor; one shown down already (under `ARM_DEPLOY_MIN_DEG`) is not
+ * stowed. Null when no roller rides such an arm. `taken`: bodies of other moving parts, left out.
+ */
+export function findIntakeArm(parts: readonly MeshPart[], rollers: readonly MotionGroup[], edge: Edge, taken: ReadonlySet<number>): IntakeArm | null {
+  const st = bodyStats(parts);
+  const along: 0 | 1 = edge === 'front' || edge === 'back' ? 1 : 0;
+  const across: 0 | 1 = along === 1 ? 0 : 1;
+  const outward = edge === 'front' || edge === 'left' ? 1 : -1;
+  // the rollers with an axle along the edge: long along it, outermost first
+  const rows = rollers
+    .filter((g) => g.bodies.length)
+    .map((g) => {
+      const mo = setMoments(st, g.bodies);
+      const ext = [0, 1, 2].map((k) => mo.max[k] - mo.min[k]);
+      return { g, mo, c: boxCentre(mo), ok: ext[along] >= 2 * Math.max(ext[across], ext[2]) };
+    })
+    .filter((r) => r.ok)
+    .sort((p, q) => outward * (q.c[across] - p.c[across]));
+  if (rows.length < 2) return null;
+  const floor = Math.min(...st.ids.map((b) => st.min[3 * b + 2]));
+  const outer = rows[0];
+  const moving = new Set(taken);
+  for (const r of rows) for (const b of r.g.bodies) moving.add(b);
+  for (const inner of rows.slice(1)) {
+    const gap = outward * (outer.c[across] - inner.c[across]);
+    if (gap < 1 || gap > ARM_PIVOT_MAX_IN) continue;
+    // the pivot: the inner roller's own shaft, the thinnest body in it running its whole length
+    let shaft = -1;
+    let thin = Infinity;
+    for (const b of inner.g.bodies) {
+      const len = st.max[3 * b + along] - st.min[3 * b + along];
+      const w = Math.max(st.max[3 * b + across] - st.min[3 * b + across], st.max[3 * b + 2] - st.min[3 * b + 2]);
+      if (len >= 0.6 * (inner.mo.max[along] - inner.mo.min[along]) && w < thin) (thin = w), (shaft = b);
+    }
+    const pivot: V3 = shaft >= 0 ? boxCentre(setMoments(st, [shaft])) : inner.c;
+    const axis: V3 = along === 1 ? [0, 1, 0] : [1, 0, 0];
+    const sPivot = outward * pivot[across];
+    // the parts round the edge, and what runs on from them into the robot
+    const lo = sPivot - ARM_BEHIND_IN;
+    const near = new Set<number>();
+    const beyond = new Set<number>();
+    for (const b of st.ids) {
+      if (moving.has(b) && !outer.g.bodies.includes(b) && !inner.g.bodies.includes(b)) continue;
+      const smax = Math.max(outward * st.min[3 * b + across], outward * st.max[3 * b + across]);
+      const smin = Math.min(outward * st.min[3 * b + across], outward * st.max[3 * b + across]);
+      if (smax < lo - 0.5) continue;
+      near.add(b);
+      if (smin < lo) beyond.add(b);
+    }
+    // a point's motion as the arm swings on the shaft: round it, in the plane square to it
+    const c = lazyContacts(parts, near, CONTACT_IN, (x, y, z) => {
+      const p: V3 = [x - pivot[0], y - pivot[1], z - pivot[2]];
+      const v = cross(axis, p);
+      const len = Math.hypot(v[0], v[1], v[2]);
+      return len < 0.1 ? [0, 0, 0] : [v[0] / len, v[1] / len, v[2] / len];
+    });
+    // ...stopped by a body only where points of it stand on faces across the swing alone (a plate flat
+    // on another touches the other's edge faces too, at its own edge: that slides)
+    const stops = (a: number, o: number): boolean => (c.along(a, o)?.[2] ?? 0) + (c.along(o, a)?.[2] ?? 0) >= ARM_STOP_POINTS;
+    const touches = (a: number, o: number): boolean => !!c.along(a, o) || !!c.along(o, a);
+    // a part standing alone from a seed: everything that would stop it swinging comes with it; it may
+    // not reach the robot behind the pivot
+    const claimed = new Set<number>();
+    const alone = (seed: number): number[] | null => {
+      const part = new Set([seed]);
+      const queue = [seed];
+      while (queue.length) {
+        const a = queue.pop()!;
+        if (beyond.has(a) || part.size > ARM_MAX_BODIES) return null;
+        for (const o of c.near(a)) {
+          if (part.has(o) || moving.has(o) || !near.has(o) || !stops(a, o)) continue;
+          part.add(o);
+          queue.push(o);
+        }
+      }
+      return [...part];
+    };
+    const seedsOf = (g: MotionGroup): number[] => {
+      const out = new Set<number>();
+      for (const b of g.bodies) for (const o of c.near(b)) if (!moving.has(o) && near.has(o) && touches(b, o)) out.add(o);
+      return [...out].sort((a, b) => a - b);
+    };
+    // the outer roller's arm first: without one there is nothing here
+    const arm = new Set<number>();
+    for (const seed of seedsOf(outer.g)) {
+      if (arm.has(seed)) continue;
+      const part = alone(seed);
+      if (!part) {
+        arm.clear();
+        break;
+      }
+      for (const b of part) arm.add(b);
+    }
+    if (!arm.size || !inner.g.bodies.some((b) => c.near(b).some((o) => arm.has(o) && touches(b, o)))) continue;
+    for (const b of arm) claimed.add(b);
+    // ...then whatever else swings on the same shaft standing alone (a wedge on its own arms)
+    for (const seed of seedsOf(inner.g)) {
+      if (claimed.has(seed)) continue;
+      const part = alone(seed);
+      if (!part) continue;
+      for (const b of part) (arm.add(b), claimed.add(b));
+    }
+    // how far it swings down: the outer roller's bottom to `ARM_DEPLOY_CLEAR_IN` off the floor
+    const du = outward * (outer.c[across] - pivot[across]);
+    const dz = outer.c[2] - pivot[2];
+    const r = Math.hypot(du, dz);
+    const want = floor + ARM_DEPLOY_CLEAR_IN + (outer.c[2] - outer.mo.min[2]) - pivot[2];
+    if (r < 1e-6 || Math.abs(want / r) > 1) continue;
+    const deployDeg = ((Math.atan2(dz, du) - Math.asin(want / r)) * 180) / Math.PI;
+    if (deployDeg < ARM_DEPLOY_MIN_DEG) continue;
+    return { bodies: [...arm].sort((a, b) => a - b), pivot, shaft, deployDeg: Math.min(ARM_DEPLOY_MAX_DEG, Math.round(deployDeg)) };
   }
   return null;
 }
@@ -2405,8 +3104,65 @@ export interface FoldPlan {
 
 /** how far past a hinged part's innermost point the hinge's height is read from, inches */
 const HINGE_BAND_IN = 0.75;
+/** a hinge rod (a bolt, a shoulder screw, a standoff) is no wider across than this, inches */
+const HINGE_ROD_ACROSS_IN = 0.8;
+/** ...at least this long along the hinge */
+const HINGE_ROD_MIN_IN = 0.2;
+/** the part's bore round a rod: its rim within this of the rod's own radius, inches (less for a tight fit) */
+const HINGE_BORE_OVER_IN = 0.12;
+const HINGE_BORE_UNDER_IN = 0.03;
+/** ...with at least this many rim vertices in each quarter round the rod */
+const HINGE_BORE_MIN = 4;
+
+/**
+ * ⚠️ **A HINGED PART TURNS ON ITS ROD, NOT ON ITS INNERMOST POINT** (owner, 2026-11-06: "The flower
+ * ramp's pivot is incorrect"). The rule below takes the part's innermost point at its mean height
+ * there, and a ramp's arms reach back past their bolt as a lever: the hinge came out off the
+ * shoulder bolts the arms turn on, so the folded ramp swung out of its own bolt holes. The rod is a
+ * slender body along the hinge (no wider than `HINGE_ROD_ACROSS_IN`) in no moving part, inside the
+ * part's box, that the part is BORED round: its own vertices stand in a ring just outside the rod's
+ * radius in all four quarters (`HINGE_BORE_MIN` each). Two such rods: the innermost along `u`, where
+ * a deployed part's pivot is (the other is a crossbar that belongs to the part; `ridersOf` adds it).
+ * Its position along `u` and its height, or null.
+ */
+function hingeRod(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], u: V3, axis: V3, moving: ReadonlySet<number>): { s: number; z: number } | null {
+  const mo = setMoments(st, bodies);
+  const k = Math.abs(axis[0]) > 0.5 ? 0 : 1; // the hinge runs along x or y
+  const ku = k === 0 ? 1 : 0;
+  const cands: { s: number; z: number; r: number }[] = [];
+  for (const b of st.ids) {
+    if (moving.has(b)) continue;
+    const across = st.max[3 * b + ku] - st.min[3 * b + ku];
+    const up = st.max[3 * b + 2] - st.min[3 * b + 2];
+    if (across > HINGE_ROD_ACROSS_IN || up > HINGE_ROD_ACROSS_IN || st.max[3 * b + k] - st.min[3 * b + k] < HINGE_ROD_MIN_IN) continue;
+    if (![0, 1, 2].every((j) => st.min[3 * b + j] <= mo.max[j] && st.max[3 * b + j] >= mo.min[j])) continue;
+    const cu = (st.min[3 * b + ku] + st.max[3 * b + ku]) / 2;
+    cands.push({ s: cu * u[ku], z: (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2, r: Math.max(across, up) / 2 });
+  }
+  if (!cands.length) return null;
+  const quads = cands.map(() => [0, 0, 0, 0]);
+  eachVertex(parts, new Set(bodies), (x, y, z) => {
+    const s = (k === 0 ? y : x) * u[ku];
+    cands.forEach((c, i) => {
+      const ds = s - c.s;
+      const dz = z - c.z;
+      const d = Math.hypot(ds, dz);
+      if (d < c.r - HINGE_BORE_UNDER_IN || d > c.r + HINGE_BORE_OVER_IN) return;
+      quads[i][(dz >= 0 ? 0 : 2) + (ds >= 0 ? 0 : 1)]++;
+    });
+  });
+  let best: { s: number; z: number } | null = null;
+  cands.forEach((c, i) => {
+    if (quads[i].some((q) => q < HINGE_BORE_MIN)) return;
+    if (!best || c.s < best.s) best = { s: c.s, z: c.z };
+  });
+  return best;
+}
 /** a spinning part whose centre is within this of a hinged part's box rides on it, inches */
 const RIDE_PAD_IN = 0.75;
+/** ...when it touches the part within this, inches: the fold is planned on the MEASURED copy, whose
+ *  simplified surfaces sit up to a few hundredths off the full mesh's */
+const RIDE_CONTACT_IN = 0.08;
 
 /**
  * THE FOLD of every hinged group (`ramp`, `fold`) in `motion`, planned on `parts` (rotated frame).
@@ -2428,6 +3184,7 @@ export function planFolds(parts: readonly MeshPart[], motion: readonly MotionGro
   });
   const rest = st.ids.filter((b) => !hinged.has(b));
   const restC = setMoments(st, rest).c;
+  const inAnyGroup = new Set(motion.flatMap((g) => g.bodies));
   const plans: FoldPlan[] = [];
   motion.forEach((g, gi) => {
     if (!isHinge(g.role) || !g.bodies.length) return;
@@ -2436,18 +3193,27 @@ export function planFolds(parts: readonly MeshPart[], motion: readonly MotionGro
     const d = sub(mo.c, restC);
     const u: V3 = Math.abs(d[0]) >= Math.abs(d[1]) ? [Math.sign(d[0]) || 1, 0, 0] : [0, Math.sign(d[1]) || 1, 0];
     const axis: V3 = [-u[1], u[0], 0]; // ẑ × u: a positive turn takes u toward −ẑ
-    // riders: spinning groups whose centre is inside this part's box
+    // riders: spinning groups whose centre is inside this part's box and that TOUCH it (its bearings
+    // in the part's plates). The box alone took an intake roller held by the chassis between a ramp's
+    // arms, and folded it up with the ramp (2026-11-06)
     const riders: number[] = [];
     const bodies = [...g.bodies];
-    motion.forEach((o, oi) => {
-      if (oi === gi || !isSpin(o.role) || !o.bodies.length) return;
-      const c = boxCentre(setMoments(st, o.bodies));
-      const inside = [0, 1, 2].every((k) => c[k] >= mo.min[k] - RIDE_PAD_IN && c[k] <= mo.max[k] + RIDE_PAD_IN);
-      if (inside) {
+    const inBox = motion
+      .map((o, oi) => ({ o, oi }))
+      .filter(({ o, oi }) => {
+        if (oi === gi || !isSpin(o.role) || !o.bodies.length) return false;
+        const c = boxCentre(setMoments(st, o.bodies));
+        return [0, 1, 2].every((k) => c[k] >= mo.min[k] - RIDE_PAD_IN && c[k] <= mo.max[k] + RIDE_PAD_IN);
+      });
+    if (inBox.length) {
+      const own = new Set(g.bodies);
+      const touch = touchingPairs(parts, new Set([...g.bodies, ...inBox.flatMap(({ o }) => o.bodies)]), RIDE_CONTACT_IN);
+      for (const { o, oi } of inBox) {
+        if (!o.bodies.some((b) => [...(touch.get(b) ?? [])].some((x) => own.has(x)))) continue;
         riders.push(oi);
         bodies.push(...o.bodies);
       }
-    });
+    }
     // the hinge. Deployed: at the part's innermost point along u, at the height of what is there.
     // Folded (standing up): at its foot, where the lowest band of it is.
     const own = new Set(g.bodies);
@@ -2472,7 +3238,14 @@ export function planFolds(parts: readonly MeshPart[], motion: readonly MotionGro
     });
     const lateral = sub(mo.c, scale(u, dot(mo.c, u)));
     const sHinge = folded && n ? sSum / n : sMin;
-    const hinge: V3 = [lateral[0] + u[0] * sHinge, lateral[1] + u[1] * sHinge, n ? zSum / n : mo.min[2]];
+    // the rod it turns on, where the model shows one; else its innermost point
+    // a shaft named for it (`axisBody`: an intake arm on its inner roller's shaft, `findIntakeArm`),
+    // else the rod it is bored round
+    const pin = g.axisBody !== undefined && g.axisBody < st.n.length && st.n[g.axisBody] > 0 ? boxCentre(setMoments(st, [g.axisBody])) : null;
+    const rod = pin ? { s: pin[0] * u[0] + pin[1] * u[1], z: pin[2] } : hingeRod(parts, st, g.bodies, u, axis, inAnyGroup);
+    const hinge: V3 = rod
+      ? [lateral[0] + u[0] * rod.s, lateral[1] + u[1] * rod.s, rod.z]
+      : [lateral[0] + u[0] * sHinge, lateral[1] + u[1] * sHinge, n ? zSum / n : mo.min[2]];
     // the lever: from the hinge to the part's farthest point, in the vertical plane through u
     let far = -1;
     let phi = 0;
@@ -2571,30 +3344,556 @@ export function motionAsStored(motion: readonly MotionGroup[] | undefined, measu
 const MOUNT_PAD_IN = 0.4;
 
 /**
- * `seed` and the bodies MOUNTED ON it: every smaller body whose box lies inside the seed's, padded by
- * `MOUNT_PAD_IN` (a plate's screws, standoffs and brackets). A click on a ramp's side plate takes its
- * hardware with it.
+ * `seed` and the bodies MOUNTED ON it (`mountedOn`): a plate's screws, standoffs and brackets. A click
+ * on a ramp's side plate takes its hardware with it.
  */
 export function mountedBodies(parts: readonly MeshPart[], seed: number): number[] {
+  return mountedOn(parts, [seed], new Set());
+}
+
+/**
+ * `seeds` and the bodies MOUNTED ON them: a body smaller than a seed whose box lies inside that seed's,
+ * padded by `MOUNT_PAD_IN`, and that TOUCHES a seed or another such body (`touchingPairs`: a nut on a
+ * screw through the plate). `skip`: bodies that are never taken (another row's).
+ *
+ * ⚠️ BY CONTACT, NOT BY THE BOX ALONE (2026-11-06). A deployed ramp's arm can be a diagonal truss whose
+ * box holds the chassis under it, and the box rule took chassis plates and the rollers of an intake
+ * shaft beside the arm, which then folded up with the ramp. None of them touches the arm.
+ */
+export function mountedOn(parts: readonly MeshPart[], seeds: readonly number[], skip: ReadonlySet<number>): number[] {
   const st = bodyStats(parts);
-  if (seed >= st.n.length || !st.n[seed]) return [seed];
-  const lo = [0, 1, 2].map((k) => st.min[3 * seed + k] - MOUNT_PAD_IN);
-  const hi = [0, 1, 2].map((k) => st.max[3 * seed + k] + MOUNT_PAD_IN);
+  const live = seeds.filter((s) => s < st.n.length && st.n[s] > 0);
+  if (!live.length) return [...seeds].sort((a, b) => a - b);
   const ext = (b: number): number => Math.max(st.max[3 * b] - st.min[3 * b], st.max[3 * b + 1] - st.min[3 * b + 1], st.max[3 * b + 2] - st.min[3 * b + 2]);
-  const own = ext(seed);
-  const out = [seed];
-  for (const b of st.ids) {
-    if (b === seed || ext(b) >= own) continue;
-    if ([0, 1, 2].every((k) => st.min[3 * b + k] >= lo[k] && st.max[3 * b + k] <= hi[k])) out.push(b);
+  const seedSet = new Set(live);
+  const cand = new Set<number>();
+  for (const s of live) {
+    const own = ext(s);
+    const lo = [0, 1, 2].map((k) => st.min[3 * s + k] - MOUNT_PAD_IN);
+    const hi = [0, 1, 2].map((k) => st.max[3 * s + k] + MOUNT_PAD_IN);
+    for (const b of st.ids) {
+      if (seedSet.has(b) || skip.has(b) || cand.has(b) || ext(b) >= own) continue;
+      if ([0, 1, 2].every((k) => st.min[3 * b + k] >= lo[k] && st.max[3 * b + k] <= hi[k])) cand.add(b);
+    }
   }
-  return out.sort((a, b) => a - b);
+  const out = new Set(live);
+  if (cand.size) {
+    const touch = touchingPairs(parts, new Set([...live, ...cand]), CONTACT_IN);
+    const queue = [...live];
+    while (queue.length) {
+      const b = queue.pop()!;
+      for (const o of touch.get(b) ?? []) {
+        if (out.has(o) || !cand.has(o)) continue;
+        out.add(o);
+        queue.push(o);
+      }
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+// ---- what a lift's stage carries ----------------------------------------------------------------
+
+/** a lift's payload is looked for this far round its tubes, inches */
+const LIFT_REACH_IN = 4;
+/** a face pushes along the lift when its outward normal is within this (a cosine) of the lift's axis */
+const LIFT_PUSH_COS = 0.8;
+/** a tube's column is its outer stage's box grown this much across and past its ends, inches */
+const LIFT_COLUMN_PAD_IN = 0.3;
+const LIFT_COLUMN_END_IN = 1.2;
+
+/**
+ * Contact between bodies of `bodies`, worked out only for the pairs asked about (a lift's flood
+ * reaches a few hundred of the thousands round it). `along(a, o)`: a vertex of `a` lies within `eps`
+ * of a triangle of `o`; the least and the most of those triangles' outward normals along `d` (a unit
+ * direction, or one per point: a hinge's motion is round its axis), and how many of those vertices
+ * stand only on faces across it (|normal · d| over `LIFT_PUSH_COS`), or null.
+ * A body's triangles are turned outward by its own signed volume: a mirrored instance in a STEP file
+ * winds the other way round. `near(b)`: the bodies whose boxes come within `eps` of `b`'s.
+ */
+function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, eps: number, d: V3 | ((x: number, y: number, z: number) => V3)) {
+  const dirAt = typeof d === 'function' ? d : (): V3 => d;
+  const st = bodyStats(parts);
+  const want = new Uint8Array(st.n.length);
+  for (const b of bodies) if (b < st.n.length) want[b] = 1;
+  // each body's triangles: part, three vertices
+  const tris = new Map<number, number[]>();
+  const vol = new Map<number, number>();
+  const corner = (pi: number, v: number): V3 => {
+    const a = parts[pi].positions;
+    return [a[3 * v], a[3 * v + 1], a[3 * v + 2]];
+  };
+  parts.forEach((p, pi) => {
+    if (!p.body) return;
+    const ix = p.indices;
+    const n = ix ? ix.length : p.positions.length / 3;
+    for (let t = 0; t + 2 < n; t += 3) {
+      const v0 = ix ? ix[t] : t;
+      const b = p.body[v0];
+      if (!want[b]) continue;
+      const v1 = ix ? ix[t + 1] : t + 1;
+      const v2 = ix ? ix[t + 2] : t + 2;
+      let l = tris.get(b);
+      if (!l) tris.set(b, (l = []));
+      l.push(pi, v0, v1, v2);
+      vol.set(b, (vol.get(b) ?? 0) + dot(corner(pi, v0), cross(corner(pi, v1), corner(pi, v2))) / 6);
+    }
+  });
+  // the bodies' boxes in a coarse grid, for `near`
+  const BOX_CELL = 1;
+  const key = (i: number, j: number, k: number): number => ((i & 2047) * 2048 + (j & 2047)) * 2048 + (k & 2047);
+  const boxGrid = new Map<number, number[]>();
+  const cellsOf = (b: number, pad: number, cell: number, f: (kk: number) => void): void => {
+    const lo = [0, 1, 2].map((k) => Math.floor((st.min[3 * b + k] - pad) / cell));
+    const hi = [0, 1, 2].map((k) => Math.floor((st.max[3 * b + k] + pad) / cell));
+    for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) f(key(i, j, k));
+  };
+  for (const b of bodies)
+    cellsOf(b, 0, BOX_CELL, (kk) => {
+      const l = boxGrid.get(kk);
+      if (l) l.push(b);
+      else boxGrid.set(kk, [b]);
+    });
+  const nearCache = new Map<number, number[]>();
+  const near = (b: number): number[] => {
+    let out = nearCache.get(b);
+    if (out) return out;
+    const s = new Set<number>();
+    cellsOf(b, eps, BOX_CELL, (kk) => {
+      for (const o of boxGrid.get(kk) ?? [])
+        if (o !== b && [0, 1, 2].every((k) => st.min[3 * o + k] <= st.max[3 * b + k] + eps && st.min[3 * b + k] <= st.max[3 * o + k] + eps)) s.add(o);
+    });
+    out = [...s];
+    nearCache.set(b, out);
+    return out;
+  };
+  // a body's triangles in a fine grid, built when first asked for
+  const cell = Math.max(CONTACT_CELL_IN, 2 * eps);
+  const triGrids = new Map<number, Map<number, number[]>>();
+  const triGrid = (o: number): Map<number, number[]> => {
+    let g = triGrids.get(o);
+    if (g) return g;
+    g = new Map();
+    const l = tris.get(o) ?? [];
+    for (let t = 0; t < l.length; t += 4) {
+      const A = corner(l[t], l[t + 1]);
+      const B = corner(l[t], l[t + 2]);
+      const C = corner(l[t], l[t + 3]);
+      const lo = [0, 1, 2].map((k) => Math.floor((Math.min(A[k], B[k], C[k]) - eps) / cell));
+      const hi = [0, 1, 2].map((k) => Math.floor((Math.max(A[k], B[k], C[k]) + eps) / cell));
+      for (let i = lo[0]; i <= hi[0]; i++)
+        for (let j = lo[1]; j <= hi[1]; j++)
+          for (let k = lo[2]; k <= hi[2]; k++) {
+            const kk = key(i, j, k);
+            const c = g.get(kk);
+            if (c) c.push(t);
+            else g.set(kk, [t]);
+          }
+    }
+    triGrids.set(o, g);
+    return g;
+  };
+  const alongCache = new Map<string, [number, number, number] | null>();
+  const along = (a: number, o: number): [number, number, number] | null => {
+    const ck = `${a},${o}`;
+    if (alongCache.has(ck)) return alongCache.get(ck)!;
+    let r: [number, number, number] | null = null;
+    const l = tris.get(o);
+    if (l && want[a]) {
+      const g = triGrid(o);
+      const sign = (vol.get(o) ?? 0) < 0 ? -1 : 1;
+      // the box test first: a vertex of `a` further than eps from `o`'s box touches nothing
+      const lo = [0, 1, 2].map((k) => st.min[3 * o + k] - eps);
+      const hi = [0, 1, 2].map((k) => st.max[3 * o + k] + eps);
+      eachVertex(parts, new Set([a]), (x, y, z) => {
+        if (x < lo[0] || y < lo[1] || z < lo[2] || x > hi[0] || y > hi[1] || z > hi[2]) return;
+        // the vertex stands ACROSS the motion only when every face of `o` it is on does: one on a
+        // plate's face and on the edge beside it (two plates lying flat on each other) slides
+        let on = false;
+        let across = true;
+        for (const t of g.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell))) ?? []) {
+          const A = corner(l[t], l[t + 1]);
+          const B = corner(l[t], l[t + 2]);
+          const C = corner(l[t], l[t + 3]);
+          if (pointTriangle(x, y, z, A, B, C) > eps) continue;
+          const n = cross(sub(B, A), sub(C, A));
+          const len = Math.hypot(n[0], n[1], n[2]);
+          if (len < 1e-12) continue;
+          const al = (sign * dot(n, dirAt(x, y, z))) / len;
+          on = true;
+          if (Math.abs(al) <= LIFT_PUSH_COS) across = false;
+          if (!r) r = [al, al, 0];
+          else {
+            if (al < r[0]) r[0] = al;
+            if (al > r[1]) r[1] = al;
+          }
+        }
+        if (on && across && r) r[2]++;
+      });
+    }
+    alongCache.set(ck, r);
+    return r;
+  };
+  return { near, along };
+}
+
+/**
+ * ⚠️ **WHAT A LIFT'S STAGE CARRIES: WHAT IT WOULD PUSH UP** (owner, 2026-11-07, Offset's robot: "Does
+ * the Offset robot work FULLY?" — its FLOWER box, a 15-in chute of rollers hung from the tops of the
+ * Box Tube's last stages, stayed on the floor while the tubes rose out of it). The chute reaches from
+ * its brackets at the top of the tubes down to the floor, so it is not inside any stage's box, and it
+ * rests on the chassis at its foot, so it does not hang in the air either (`ridersOf`).
+ *
+ * The rule is the motion itself. A stage moving up runs into what is above it: a body it touches
+ * through a face looking DOWN at it (a bracket over the tube's end, a part on a ledge of the next), and
+ * a body resting on one of its faces looking UP. Those come along, and so does everything they in turn
+ * push. What it only slides past (faces looking sideways) or sits on (the chute's foot on the chassis
+ * plate under it) stays. Never pushed: another moving part; any stage of any tube, or anything inside
+ * a tube's column (a stage's own top plate and guide bearings are that stage's, by `findBoxTubes`); and a
+ * body held, across faces looking up or down, by the FIXED stage (a belt clamped to the outer tube) or by
+ * one reaching out of the lift's surroundings (the tubes' box grown by `LIFT_REACH_IN`): a linear guide's
+ * block on a rail that runs on under the robot. Faces looking sideways only slide past (the chute's front
+ * plate beside the chassis's transfer plates). A stage whose push takes half of those surroundings is
+ * given nothing: that is the robot, not a payload. Upright lifts only; the innermost stage first, and a
+ * body goes to the first stage that pushes it.
+ *
+ * Measured on Offset's model: the chute, its rollers' plates, its two servos and the belts they drive,
+ * and the brackets to the tubes ride the last stage; the plate under the chute and the guided ramp on
+ * it, the stages' own top plates and the chassis do not.
+ *
+ * A spinning part RIDES a payload when most of what it touches outside itself (other moving parts
+ * aside) is that payload — a roller's bearings sit in the chute's plates — and what only those parts
+ * and the payload hold (the belt round a column's pulleys) rides with them.
+ */
+export function liftPayload(parts: readonly MeshPart[], groups: readonly MotionGroup[], tubes: readonly BoxTube[]): LiftPayload {
+  const out: LiftPayload = { carried: new Map(), riders: new Map() };
+  const up = tubes.filter((t) => t.k === 2 && t.stages.length >= 2);
+  if (!up.length) return out;
+  const st = bodyStats(parts);
+  // each slide group's stage, by the tube body its axis is read off
+  const stageOf = new Map<number, { t: BoxTube; s: number }>();
+  for (const t of up) t.tubes.forEach((b, s) => stageOf.set(b, { t, s }));
+  const lifts = groups
+    .map((g, gi) => ({ g, gi, at: g.role === 'slide' && g.axisBody !== undefined ? stageOf.get(g.axisBody) : undefined }))
+    .filter((x): x is { g: MotionGroup; gi: number; at: { t: BoxTube; s: number } } => !!x.at && x.at.s > 0 && x.g.bodies.length > 0)
+    .sort((p, q) => q.at.s - p.at.s || p.gi - q.gi);
+  if (!lifts.length) return out;
+  const tubeBodies = up.flatMap((t) => t.stages.flat());
+  const mo = setMoments(st, tubeBodies);
+  const lo: V3 = [mo.min[0] - LIFT_REACH_IN, mo.min[1] - LIFT_REACH_IN, mo.min[2] - LIFT_REACH_IN];
+  const hi: V3 = [mo.max[0] + LIFT_REACH_IN, mo.max[1] + LIFT_REACH_IN, mo.max[2] + LIFT_REACH_IN];
+  const inside = (b: number): boolean => [0, 1, 2].every((k) => st.min[3 * b + k] >= lo[k] && st.max[3 * b + k] <= hi[k]);
+  const overlaps = (b: number): boolean => [0, 1, 2].every((k) => st.min[3 * b + k] <= hi[k] && st.max[3 * b + k] >= lo[k]);
+  // what a payload could be: inside the surroundings and in no other moving part (a wheel's rollers are
+  // most of a chassis corner's triangles, and no payload is one); and what reaches out of them (the
+  // chassis), whose contacts are read too: a body touching one is bolted to the robot (a linear guide's
+  // block on its rail, which runs on under the robot)
+  const own = new Set(lifts.flatMap((l) => l.g.bodies));
+  const moving = new Set(groups.flatMap((g) => g.bodies));
+  // the spinning parts that could ride a payload: inside the surroundings, not a wheel
+  const spins = groups.map((g, gi) => ({ g, gi })).filter(({ g }) => isSpin(g.role) && g.role !== 'wheel' && g.rideOn === undefined && g.bodies.length > 0 && g.bodies.every(inside));
+  const spinBodies = new Set(spins.flatMap(({ g }) => g.bodies));
+  const within = new Set<number>();
+  const beyond = new Set<number>();
+  for (const b of st.ids) {
+    if (moving.has(b) && !own.has(b)) continue;
+    if (!overlaps(b)) continue;
+    if (inside(b)) within.add(b);
+    else beyond.add(b);
+  }
+  const c = lazyContacts(parts, new Set([...within, ...beyond, ...spinBodies]), CONTACT_IN, [0, 0, 1]);
+  const touches = (a: number, o: number): boolean => !!c.along(a, o) || !!c.along(o, a);
+  // the tubes' own columns: their fittings (a stage's top plate, its guide bearings, an idler) are the
+  // stages' by their boxes (`findBoxTubes`), and a payload stands beside them
+  const columns = up.map((t) => {
+    const m = setMoments(st, t.stages[0]);
+    return { min: [m.min[0] - LIFT_COLUMN_PAD_IN, m.min[1] - LIFT_COLUMN_PAD_IN, m.min[2] - LIFT_COLUMN_END_IN], max: [m.max[0] + LIFT_COLUMN_PAD_IN, m.max[1] + LIFT_COLUMN_PAD_IN, m.max[2] + LIFT_COLUMN_END_IN] };
+  });
+  const inColumn = (b: number): boolean => columns.some((m) => [0, 1, 2].every((k) => st.min[3 * b + k] >= m.min[k] && st.max[3 * b + k] <= m.max[k]));
+  const pushes = (a: number, o: number): boolean => {
+    const ao = c.along(a, o);
+    if (ao && ao[0] < -LIFT_PUSH_COS) return true;
+    const oa = c.along(o, a);
+    return !!oa && oa[1] > LIFT_PUSH_COS;
+  };
+  const fixed = new Set(up.flatMap((t) => t.stages[0]));
+  const staged = new Set(tubeBodies);
+  // held up or down by a fixed body: a contact across faces looking up or down (a block on its rail, a
+  // belt clamped to the outer tube). Faces looking sideways only slide past each other as it rises.
+  const across = (r: readonly number[] | null): boolean => !!r && (r[0] < -LIFT_PUSH_COS || r[1] > LIFT_PUSH_COS);
+  const bolted = (o: number): boolean => c.near(o).some((f) => (fixed.has(f) || beyond.has(f)) && (across(c.along(o, f)) || across(c.along(f, o))));
+  const claimed = new Set<number>();
+  for (const { g, gi } of lifts) {
+    const mine = new Set(g.bodies);
+    const carried = new Set<number>();
+    const queue = [...g.bodies];
+    let robot = false;
+    while (queue.length && !robot) {
+      const a = queue.pop()!;
+      for (const o of c.near(a)) {
+        if (mine.has(o) || carried.has(o) || claimed.has(o) || moving.has(o) || staged.has(o) || !within.has(o) || inColumn(o)) continue;
+        if (!pushes(a, o) || bolted(o)) continue;
+        carried.add(o);
+        queue.push(o);
+        // half the lift's surroundings is the robot, not a payload
+        if (2 * carried.size > within.size) {
+          robot = true;
+          break;
+        }
+      }
+    }
+    if (robot || !carried.size) continue;
+    for (const b of carried) claimed.add(b);
+    out.carried.set(gi, carried);
+  }
+  if (!out.carried.size) return out;
+  // the spinning parts on a payload: most of what they touch outside themselves (other moving parts
+  // aside) is that payload — a roller's bearings sit in the chute's plates, and the belt that drives the
+  // column touches only its pulleys
+  const owner = new Map<number, number>();
+  for (const [gi, bodies] of out.carried) for (const b of bodies) owner.set(b, gi);
+  const riding = new Set<number>();
+  for (const { g, gi } of spins) {
+    const mine = new Set(g.bodies);
+    const votes = new Map<number, number>();
+    let other = 0;
+    const seen = new Set<number>();
+    for (const b of g.bodies)
+      for (const o of c.near(b)) {
+        if (mine.has(o) || seen.has(o) || spinBodies.has(o) || !touches(b, o)) continue;
+        seen.add(o);
+        const at = owner.get(o);
+        if (at !== undefined) votes.set(at, (votes.get(at) ?? 0) + 1);
+        else if (!moving.has(o)) other++;
+      }
+    let best = -1;
+    let most = 0;
+    for (const [at, n] of votes) if (n > most) (best = at), (most = n);
+    if (best >= 0 && most > other) {
+      out.riders.set(gi, best);
+      for (const b of g.bodies) riding.add(b);
+    }
+  }
+  // ...and what only those parts and the payload hold (the belt round a column's pulleys): it rides
+  // the same stage, unless it is bolted to the robot
+  for (const { g, gi } of spins) {
+    const at = out.riders.get(gi);
+    if (at === undefined) continue;
+    const add = out.carried.get(at)!;
+    for (const b of g.bodies)
+      for (const o of c.near(b)) {
+        if (moving.has(o) || claimed.has(o) || !within.has(o) || inColumn(o) || bolted(o) || !touches(b, o)) continue;
+        const holds = c.near(o).filter((x) => x !== o && touches(o, x));
+        if (holds.every((x) => riding.has(x) || owner.has(x) || own.has(x))) {
+          add.add(o);
+          claimed.add(o);
+          owner.set(o, at);
+        }
+      }
+  }
+  return out;
+}
+
+/** what `liftPayload` finds: the bodies each lift stage carries (by group index), and the spinning
+ *  groups that ride one (group index → the stage's group index) */
+export interface LiftPayload {
+  carried: Map<number, Set<number>>;
+  riders: Map<number, number>;
+}
+
+/** a moving group's riders are looked for this far round its box, inches */
+const RIDER_PAD_IN = 1.5;
+/** the roles whose groups carry what is bolted to them (a spinning part's own hardware is its axle's) */
+const CARRIER_ROLES: readonly MotionRole[] = ['turret', 'ramp', 'fold', 'swing', 'slide'];
+
+/**
+ * ⚠️ **WHAT A MOVING PART CARRIES THAT ITS GROUP DOES NOT HOLD** (owner, 2026-11-06: "there are
+ * floating parts"). Each finder picks its members its own way (a turret by reach above its ring, a
+ * deployed part by contact inside one member's box), and what those rules miss stays put when the
+ * part moves, hanging in the air: screws hanging under a turret's ring, or a ramp's crossbar, which runs
+ * between its two arms and so lies in neither arm's box. Here, round each group of a \`CARRIER_ROLES\`
+ * role (its box grown by \`RIDER_PAD_IN\`), the bodies in no moving group are split into clusters by
+ * contact (\`touchingPairs\`). A cluster with a member that reaches out of that box is the robot,
+ * bolted elsewhere; a cluster wholly inside it that touches the group is carried by it, and joins it.
+ * One that touches nothing is a floating part, which \`findFloatingParts\` reports. \`only\` limits it
+ * to those groups (the found ones: a row the player edited is theirs). The bodies to add, per group.
+ */
+export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGroup[], only?: ReadonlySet<number>): Map<number, number[]> {
+  const st = bodyStats(parts);
+  const moving = new Set(groups.flatMap((g) => g.bodies));
+  const out = new Map<number, number[]>();
+  groups.forEach((g, gi) => {
+    if ((only && !only.has(gi)) || !CARRIER_ROLES.includes(g.role) || !g.bodies.length) return;
+    const mo = setMoments(st, g.bodies);
+    const lo = [0, 1, 2].map((k) => mo.min[k] - RIDER_PAD_IN);
+    const hi = [0, 1, 2].map((k) => mo.max[k] + RIDER_PAD_IN);
+    const mine = new Set(g.bodies);
+    const near: number[] = [];
+    for (const b of st.ids) {
+      if (moving.has(b)) continue;
+      if ([0, 1, 2].every((k) => st.min[3 * b + k] <= hi[k] && st.max[3 * b + k] >= lo[k])) near.push(b);
+    }
+    if (!near.length) return;
+    const inside = (b: number): boolean => [0, 1, 2].every((k) => st.min[3 * b + k] >= lo[k] && st.max[3 * b + k] <= hi[k]);
+    const touch = touchingPairs(parts, new Set([...near, ...g.bodies]), CONTACT_IN);
+    const seen = new Set<number>();
+    const add: number[] = [];
+    for (const start of near) {
+      if (seen.has(start)) continue;
+      const cluster: number[] = [];
+      const queue = [start];
+      seen.add(start);
+      let bolted = false;
+      let carried = false;
+      while (queue.length) {
+        const b = queue.pop()!;
+        cluster.push(b);
+        if (!inside(b)) bolted = true;
+        for (const o of touch.get(b) ?? []) {
+          if (mine.has(o)) carried = true;
+          else if (!moving.has(o) && !seen.has(o)) {
+            seen.add(o);
+            queue.push(o);
+          }
+        }
+      }
+      if (carried && !bolted) add.push(...cluster);
+    }
+    if (add.length) out.set(gi, add.sort((a, b) => a - b));
+  });
+  return out;
+}
+
+// ---- contact: which bodies touch -------------------------------------------------------------------
+
+/**
+ * Two bodies TOUCH when a vertex of one is within this of a triangle of the other, inches. A CAD
+ * assembly's mated faces coincide (a screw head on a plate, a bearing in its bore: thousandths of an
+ * inch apart in the occt mesh); a part that turns has clearance. The tessellation (0.5 mm chords) and
+ * the Light simplification move a surface by a few hundredths.
+ */
+export const CONTACT_IN = 0.04;
+/** the contact grid's cell, inches */
+const CONTACT_CELL_IN = 0.3;
+
+/** the distance from (px, py, pz) to the triangle a, b, c (closest point, Ericson's regions) */
+function pointTriangle(px: number, py: number, pz: number, a: V3, b: V3, c: V3): number {
+  const ab = sub(b, a);
+  const ac = sub(c, a);
+  const ap: V3 = [px - a[0], py - a[1], pz - a[2]];
+  const d1 = dot(ab, ap);
+  const d2 = dot(ac, ap);
+  if (d1 <= 0 && d2 <= 0) return Math.hypot(ap[0], ap[1], ap[2]);
+  const bp: V3 = [px - b[0], py - b[1], pz - b[2]];
+  const d3 = dot(ab, bp);
+  const d4 = dot(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return Math.hypot(bp[0], bp[1], bp[2]);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    return Math.hypot(ap[0] - v * ab[0], ap[1] - v * ab[1], ap[2] - v * ab[2]);
+  }
+  const cp: V3 = [px - c[0], py - c[1], pz - c[2]];
+  const d5 = dot(ab, cp);
+  const d6 = dot(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return Math.hypot(cp[0], cp[1], cp[2]);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    return Math.hypot(ap[0] - w * ac[0], ap[1] - w * ac[1], ap[2] - w * ac[2]);
+  }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return Math.hypot(bp[0] - w * (c[0] - b[0]), bp[1] - w * (c[1] - b[1]), bp[2] - w * (c[2] - b[2]));
+  }
+  const den = 1 / (va + vb + vc);
+  const v = vb * den;
+  const w = vc * den;
+  return Math.hypot(ap[0] - ab[0] * v - ac[0] * w, ap[1] - ab[1] * v - ac[1] * w, ap[2] - ab[2] * v - ac[2] * w);
+}
+
+/**
+ * Which of `bodies` TOUCH each other (`eps`, both ways: a vertex of either within `eps` of a triangle
+ * of the other), as each body's set of the others. One pass over the triangles collects those of
+ * `bodies`; they go into a grid, and each body's vertices are tested against the triangles of the
+ * others in their cell. Bodies whose boxes are further apart than `eps` are never compared.
+ */
+export function touchingPairs(parts: readonly MeshPart[], bodies: ReadonlySet<number>, eps: number): Map<number, Set<number>> {
+  const st = bodyStats(parts);
+  const out = new Map<number, Set<number>>();
+  if (bodies.size < 2) return out;
+  const want = new Uint8Array(st.n.length);
+  for (const b of bodies) if (b < st.n.length) want[b] = 1;
+  // the triangles of `bodies`: part, its three vertices (an unindexed part's are 3t, 3t+1, 3t+2)
+  const triPart: number[] = [];
+  const triV: number[] = [];
+  const triBody: number[] = [];
+  parts.forEach((p, pi) => {
+    if (!p.body) return;
+    const ix = p.indices;
+    const n = ix ? ix.length : p.positions.length / 3;
+    for (let t = 0; t + 2 < n; t += 3) {
+      const v0 = ix ? ix[t] : t;
+      const b = p.body[v0];
+      if (want[b]) {
+        triPart.push(pi);
+        triV.push(v0, ix ? ix[t + 1] : t + 1, ix ? ix[t + 2] : t + 2);
+        triBody.push(b);
+      }
+    }
+  });
+  const cell = Math.max(CONTACT_CELL_IN, 2 * eps);
+  // a number per cell (a model far out of range only shares cells, and every pair is still measured)
+  const key = (i: number, j: number, k: number): number => ((i & 2047) * 2048 + (j & 2047)) * 2048 + (k & 2047);
+  const grid = new Map<number, number[]>();
+  const corner = (pi: number, v: number): V3 => {
+    const a = parts[pi].positions;
+    return [a[3 * v], a[3 * v + 1], a[3 * v + 2]];
+  };
+  for (let t = 0; t < triPart.length; t++) {
+    const A = corner(triPart[t], triV[3 * t]);
+    const B = corner(triPart[t], triV[3 * t + 1]);
+    const C = corner(triPart[t], triV[3 * t + 2]);
+    const lo = [0, 1, 2].map((k) => Math.floor((Math.min(A[k], B[k], C[k]) - eps) / cell));
+    const hi = [0, 1, 2].map((k) => Math.floor((Math.max(A[k], B[k], C[k]) + eps) / cell));
+    for (let i = lo[0]; i <= hi[0]; i++)
+      for (let j = lo[1]; j <= hi[1]; j++)
+        for (let k = lo[2]; k <= hi[2]; k++) {
+          const kk = key(i, j, k);
+          const l = grid.get(kk);
+          if (l) l.push(t);
+          else grid.set(kk, [t]);
+        }
+  }
+  const near = (a: number, b: number): boolean => [0, 1, 2].every((k) => st.min[3 * a + k] <= st.max[3 * b + k] + eps && st.min[3 * b + k] <= st.max[3 * a + k] + eps);
+  const link = (a: number, b: number): void => {
+    let s = out.get(a);
+    if (!s) out.set(a, (s = new Set()));
+    s.add(b);
+    let r = out.get(b);
+    if (!r) out.set(b, (r = new Set()));
+    r.add(a);
+  };
+  eachVertex(parts, bodies, (x, y, z, b) => {
+    const l = grid.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell)));
+    if (!l) return;
+    const mine = out.get(b);
+    for (const t of l) {
+      const o = triBody[t];
+      if (o === b || mine?.has(o) || !near(b, o)) continue;
+      const pi = triPart[t];
+      if (pointTriangle(x, y, z, corner(pi, triV[3 * t]), corner(pi, triV[3 * t + 1]), corner(pi, triV[3 * t + 2])) <= eps) link(b, o);
+    }
+  });
+  return out;
 }
 
 /** the setup keys a fold depends on: what `orientKey` adds so a new fold re-measures */
 export function foldKey(motion: readonly MotionGroup[] | undefined): string {
   if (!motion || !motion.some((g) => isHinge(g.role) && g.bodies.length)) return '';
   return JSON.stringify(
-    motion.map((g) => (isHinge(g.role) ? [g.role, g.bodies, g.filePose ?? 'deployed', g.foldDeg ?? null, g.deployDeg ?? null] : isSpin(g.role) ? [g.bodies] : [])),
+    motion.map((g) => (isHinge(g.role) ? [g.role, g.bodies, g.filePose ?? 'deployed', g.foldDeg ?? null, g.deployDeg ?? null, ...(g.axisBody !== undefined ? [g.axisBody] : [])] : isSpin(g.role) ? [g.bodies] : [])),
   );
 }
 
@@ -2653,7 +3952,8 @@ export function deriveMotion(modelParts: readonly MeshPart[], motion: readonly M
       else if (g.role === 'roller') sense = Math.abs(axis[2]) > 0.7 ? 1 : t3[0] * fit.pivot[0] + t3[1] * fit.pivot[1] >= 0 ? 1 : -1;
       else if (g.role === 'flywheel') sense = Math.abs(axis[2]) > 0.7 ? 1 : t3[0] >= 0 ? 1 : -1;
       axis = scale(axis, sense);
-      part = { role: g.role, bodies, pivot: fit.pivot, axis, radius: fit.radius, deploy: 0, parent: -1, group: gi };
+      const on = onOwnShaft(modelParts, st, bodies, fit);
+      part = { role: g.role, bodies, pivot: on.pivot, axis, radius: on.radius, deploy: 0, parent: -1, group: gi };
     }
     if (g.flip) part.axis = scale(part.axis, -1);
     if (g.corner !== undefined) part.corner = g.corner;

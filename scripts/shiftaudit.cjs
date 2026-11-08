@@ -102,7 +102,7 @@ const PAGES = process.env.DSIM_PAGES
 // WITH AN IMPORTED ROBOT. The importer above is audited empty; a user who has imported a robot
 // sees other surfaces: the robot page with its Imported robot panel and library card, and the
 // editor reopened by Edit, on each of its four steps. The run makes one the way a user does
-// (the STL fixture through the drop card's file input, straight to Review, Save) and audits
+// (the STEP fixture through the drop card's file input, straight to Review, Save) and audits
 // those. Off with DSIM_SEED=0; a DSIM_PAGES run includes it only when the list names `seeded`.
 const SEED = process.env.DSIM_SEED !== '0' && (!process.env.DSIM_PAGES || PAGES.includes('seeded'));
 // THE CROSS-ROUTE NAV COMPARISON (see the header). One route of each kind the bar is drawn over:
@@ -165,7 +165,8 @@ const SCROLL_STAY = [
 ];
 // a DEEP LINK to an anchor, loaded cold
 const SCROLL_DEEP = [{ url: '/decode/privacy#your-data', anchor: 'your-data' }];
-const STL = path.join(__dirname, 'fixtures', 'robot-import', 'robot.stl');
+// the importer takes STEP CAD (or a zip of it) and a DSIM share file, nothing else
+const STEP_FIXTURE = path.join(__dirname, 'fixtures', 'robot-import', 'robot.step');
 // PAGE selectors — the controls that differ from route to route.
 const SELECTORS = [
   '.ds-btn', '.ds-cta', '.ds-tile', '.ds-opt', '.ds-opt-add', '.ds-opt-del',
@@ -386,7 +387,7 @@ app.whenReady().then(async () => {
   const IMPORTED_PANEL = `[...document.querySelectorAll('.ds-panel-title')].some((h) => h.textContent.trim() === 'Imported robot')`;
   /** make the imported robot: the fixture through the drop card, straight to Review, Save */
   const seedImport = async () => {
-    const b64 = fs.readFileSync(STL).toString('base64');
+    const b64 = fs.readFileSync(STEP_FIXTURE).toString('base64');
     await win.loadURL(BASE + '/decode/configure/robot/import');
     await sleep(1500);
     const got = await js(`(async () => {
@@ -397,10 +398,11 @@ app.whenReady().then(async () => {
       const input = document.querySelector('.ds-import-drop input[type=file]');
       if (!input) return 'no drop card';
       const dt = new DataTransfer();
-      dt.items.add(new File([bytes], 'robot.stl'));
+      dt.items.add(new File([bytes], 'robot.step'));
       input.files = dt.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      for (let i = 0; i < 100 && !document.querySelector('.ds-import-filerow'); i++) await wait(200);
+      // a STEP read loads the occt reader (7.6 MB of wasm) first
+      for (let i = 0; i < 300 && !document.querySelector('.ds-import-filerow'); i++) await wait(200);
       if (!document.querySelector('.ds-import-filerow')) return 'the file was not read';
       { const tabs = document.querySelectorAll('.ds-import-steps .ds-tab'); tabs[tabs.length - 1]?.click(); }
       await wait(600);

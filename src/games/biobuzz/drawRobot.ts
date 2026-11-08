@@ -62,7 +62,7 @@ import {
   bbBoxTubeStages,
   type BbBoxTubeFrame,
 } from './config';
-import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf } from './mechs';
+import { type BbLauncherSpec, type BbLiftSpec, bbHasHead, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbNectarRejectOf, bbRampOnEdge } from './mechs';
 import {
   EDGE_ANGLE,
   type BbMountPos,
@@ -528,6 +528,8 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
   if (kind !== 'ramp' && bbNectarRejectOf(r.spec) === 'bar') drawNectarBar(ctx, r, world);
   if (kind === 'sweeper') return;
   for (const m of bbMouths(r.spec)) {
+    // a ramp is drawn at the mouth that carries it, and nowhere else (`bbRampOnEdge`)
+    if (kind === 'ramp' && !bbRampOnEdge(r.spec, m.edge)) continue;
     const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
     const tip = f.depth;
     ctx.save();

@@ -7,6 +7,7 @@ import { getViewPref } from '../games/biobuzz/graphics/store';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
 import { POSES, SHOW, STAGE_SEED, type StageView } from './menuStagePoses';
 import { afterBootLeave, bootCovering, holdBoot } from './screenFade';
+import { flyStep } from './stageFly';
 
 /**
  * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to MoSim's) — the field
@@ -335,7 +336,8 @@ function Stage3d({
     let fly: {
       from: ScenePose;
       fromIns: SceneInsets;
-      t0: number;
+      /** progress 0..1, advanced by frame time (`flyStep`), never the wall clock */
+      p: number;
       ms: number;
     } | null = null;
     let orbit = { yaw: 0, pitch: 0, held: false };
@@ -396,7 +398,11 @@ function Stage3d({
       }
       let moving = false;
       if (fly) {
-        const t = fly.ms > 0 ? Math.min(1, (now - fly.t0) / fly.ms) : 1;
+        // ON FRAME TIME: a long frame inside the fly (the click's commit, the robot built on the first
+        // fly frame) advances it at most `FLY_STEP_MAX_S`, and the first frame not at all (`dt` is 0
+        // there, `lastT` being 0), so a stall holds the camera instead of skipping part of the path
+        fly.p = flyStep(fly.p, dt, fly.ms);
+        const t = fly.p;
         const k = ease(t);
         pose = {
           eye: mix3(fly.from.eye, target.eye, k),
@@ -575,9 +581,11 @@ function Stage3d({
         fly = {
           from: pose,
           fromIns: ins,
-          t0: performance.now(),
+          p: 0,
           ms: reducedMotion() ? 0 : FLY_MS,
         };
+        // the fly's first frame moves nothing, even when an orbit drift was still drawing frames
+        lastT = 0;
         // only a fly that is drawn holds back the work waiting for it (`stageAtRest`)
         if (scene && fly.ms > 0) setFlying(true);
         kick();

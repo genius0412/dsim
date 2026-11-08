@@ -10,7 +10,7 @@
  * lengths; every chunk after it is copied byte for byte, which keeps their alignment.
  */
 import type { GameId, RobotSpec } from '../types';
-import type { ImportSetup } from './types';
+import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionRole } from './types';
 
 const MAGIC = 0x46546c67; // 'glTF'
 const CHUNK_JSON = 0x4e4f534a; // 'JSON'
@@ -94,6 +94,48 @@ function parseGlb(bytes: Uint8Array): Parsed | { ok: false; error: ShareReadErro
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** a body id: what `MeshPart.body` numbers */
+const isBody = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0;
+/** a list of body ids, ascending with no repeats (how the editor writes `apart`) */
+export const isBodyList = (v: unknown): boolean => Array.isArray(v) && v.every((b, i) => isBody(b) && (!i || b > v[i - 1]));
+/** absent, or one of `of` */
+const oneOf = (v: unknown, of: readonly unknown[]): boolean => v === undefined || of.includes(v);
+const num = (v: unknown): boolean => v === undefined || Number.isFinite(v);
+
+/**
+ * Is `v` a setup's moving parts as the editor writes them (`MotionGroup[]`)? A share file is another
+ * player's, and these index each other (`follows`, `rideOn`) and name bodies, so a damaged one is
+ * refused rather than read: every role and choice known, every number finite, every body an id, every
+ * index another row's, and at most 64 rows (the stored mesh numbers its moving parts below 64).
+ * Fields the editor does not write are not looked at.
+ */
+export function isMotionList(v: unknown): boolean {
+  const row = (r: unknown, self: number): boolean => Number.isInteger(r) && (r as number) >= 0 && (r as number) < (v as unknown[]).length && r !== self;
+  return (
+    Array.isArray(v) &&
+    v.length <= 64 &&
+    v.every(
+      (g, i) =>
+        isObj(g) &&
+        MOTION_ROLES.includes(g.role as MotionRole) &&
+        Array.isArray(g.bodies) &&
+        g.bodies.every(isBody) &&
+        oneOf(g.flip, [true, false]) &&
+        oneOf(g.found, [true, false]) &&
+        oneOf(g.corner, [0, 1, 2, 3]) &&
+        oneOf(g.filePose, ['deployed', 'folded']) &&
+        oneOf(g.drive, MOTION_DRIVES) &&
+        oneOf(g.axis, ['forward', 'left', 'up', 'part']) &&
+        (g.axisBody === undefined || isBody(g.axisBody)) &&
+        num(g.foldDeg) &&
+        num(g.deployDeg) &&
+        num(g.amount) &&
+        (g.follows === undefined || (isObj(g.follows) && row(g.follows.group, i) && Number.isFinite(g.follows.ratio))) &&
+        (g.rideOn === undefined || row(g.rideOn, i)),
+    )
+  );
+}
+
 /** the `asset.extras.dsim` block of a GLB, validated for shape (the spec is coerced by the caller) */
 export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -113,6 +155,9 @@ export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult 
   }
   if (!isObj(dsim.spec) || !isObj(dsim.setup)) return fail('bad-payload', 'Couldn’t read this robot’s setup: the robot or its setup is missing.');
   if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', 'Couldn’t read this robot’s setup: its name is missing or too long.');
+  if ((dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) || (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion))) {
+    return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts is damaged.');
+  }
   return {
     ok: true,
     json: parsed.json,

@@ -13,11 +13,11 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
-import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type WheelLayout } from '../types';
+import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type QuarterTurns, type WheelLayout } from '../types';
 import { defaultMechFor, mechHandlesFor, mechRobotToModel, validateMechFor } from './placement';
 import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAssets } from '../../render/importedAssets';
 import { COPY } from './copy';
@@ -30,6 +30,7 @@ import {
   buildSpec,
   draftKey,
   frontAssumed,
+  frontFromBuild,
   driveNumbers,
   layoutPatch,
   motionNames,
@@ -43,7 +44,13 @@ import {
   includeAllBodies,
   launchElementD,
   leaveOutBodies,
+  followFrame,
   keepEditedMotion,
+  measuredTurretRing,
+  sameFrame,
+  turretOnRing,
+  withoutDefaults,
+  defaultsIn,
   restoreBodies,
   reviewItems,
   reviewSummary,
@@ -53,6 +60,9 @@ import {
   wheelLayoutOf,
   type EditorDoc,
   type RectNumber,
+  readKeepsBuild,
+  readSetup,
+  type ReadOpts,
   type ReviewItem,
   type StepIndex,
 } from './editorModel';
@@ -72,6 +82,7 @@ import {
   type EditHow,
 } from './editorHistory';
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
+import { checkImportFiles } from './fileSelection';
 import { libraryChanged, postRobotNotice, takeHandedFiles } from './handoff';
 import { ConfirmDialog, DuplicateDialog } from './LibraryDialogs';
 import { MechanismsStep } from './MechanismsStep';
@@ -80,6 +91,7 @@ import { MotionPanel, type PickTarget } from './MotionPanel';
 import { TunePanel } from './TunePanel';
 import { driveTuneFields, mechTuneFields } from './tuneFields';
 import { PreviewPane } from './PreviewPane';
+import { AIM, buildHandles, firstHandle, moveHandle, splitKey } from './mechMove';
 import { ReviewStep } from './ReviewStep';
 import { TopDownMap } from './TopDownMap';
 import './../../ui/importer.css';
@@ -119,6 +131,13 @@ const STAGE_LABEL = (stage: LoadStage, file: string): string => {
   const p = COPY.phase[stage];
   return typeof p === 'function' ? p(file) : p;
 };
+
+/** is this build's launcher ONE turret (its placement is the turret's centre, `turretOnRing`)? */
+function singleTurret(game: GameId, spec: RobotSpec): boolean {
+  if (game === 'biobuzz') return bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG).kind === 'turret';
+  if (game === 'chain') return spec.scoreMode === 'turret';
+  return !decodeFixedLauncher(spec);
+}
 
 /** does this build's launcher sit on a turret (so a turret is worth looking for in the model)? */
 function turretBuild(game: GameId, spec: RobotSpec): boolean {
@@ -176,6 +195,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const [restoring, setRestoring] = useState(false);
   const [phase, setPhase] = useState<Phase | null>(null);
   const [error, setError] = useState<DropError | null>(null);
+  /** files handed from the robot page; kept here until Detail is chosen in the editor */
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
   const [wheelDrag, setWheelDrag] = useState<Vec2[] | null>(null);
   const [selWheel, setSelWheel] = useState(0);
   const [selHandle, setSelHandle] = useState<string | null>(null);
@@ -238,7 +259,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const readModel = useCallback(
     async (
       files: File[],
-      opts: { setup?: Partial<ImportSetup>; savedModel?: boolean; spec?: RobotSpec; keepSource?: EditorDoc['source']; keepHistory?: boolean } = {},
+      opts: ReadOpts & { spec?: RobotSpec; keepSource?: EditorDoc['source'] } = {},
     ) => {
       const my = ++gen.current;
       // one import at a time: a new drop stops the last one's workers
@@ -267,6 +288,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const full = isFullDetail(budget);
         const prepared = await e.importModel(files, {
           budget,
+          // a zip is a CAD import for its STEP (`fileSelection.ts`), whatever else is in it
+          zipFormats: ['step'],
           signal: abort.signal,
           onProgress: (p) => {
             if (my !== gen.current) return;
@@ -283,24 +306,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const cur = draftRef.current;
         const baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
         // a new file is a new robot: everything about how it stands, where its wheels are and what
-        // moves is found again (the wheel layout too: its wheels decide it; the moving parts and the
-        // deleted parts too: the bodies are numbered per file), unless the caller says otherwise
-        let setup: ImportSetup = {
-          ...baseDoc.setup,
-          units: 'auto',
-          up: 'auto',
-          yaw: 0,
-          wheels: null,
-          wheelLayout: undefined,
-          motion: undefined,
-          removed: undefined,
-          apart: undefined,
-          keepFloating: undefined,
-          ...opts.setup,
-        };
-        // a saved robot's stored mesh is made without its deleted parts, and its body ids are not the
-        // file's: nothing is deleted from it
-        if (opts.savedModel) setup = savedSetup(setup);
+        // moves is found again (`readSetup`), unless the caller says otherwise. A saved robot's stored
+        // mesh is made without its deleted parts, and its body ids are not the file's
+        let setup = readSetup(baseDoc.setup, opts);
         // the first measurement in the measure worker; `normalise` then answers from its cache
         await e.prepareMeasure(prepared, setup);
         if (my !== gen.current) {
@@ -347,7 +355,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           sourceName: model.name,
           savedModel: !!opts.savedModel,
           // a new file's mechanisms are read from it again; a re-read of the same one keeps what was set
-          cadBuild: opts.setup || opts.savedModel ? baseDoc.cadBuild : undefined,
+          cadBuild: readKeepsBuild(opts) ? baseDoc.cadBuild : undefined,
           notes: model.notes.length ? model.notes : undefined,
           updated: Date.now(),
         };
@@ -385,7 +393,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           text: COPY.wrongGame(payload.name, season, seasonFor(payload.game).name),
           extra: {
             label: COPY.setUpFor(season),
-            run: () => void readModel([file], { setup: { units: 'm', up: '+y', yaw: 0, drive: payload.setup.drive }, savedModel: true }),
+            // the parts left out of the footprint are the stored mesh's own bodies, so they carry over
+            run: () => void readModel([file], { setup: { units: 'm', up: '+y', yaw: 0, drive: payload.setup.drive, apart: payload.setup.apart }, savedModel: true }),
           },
         });
         return;
@@ -469,10 +478,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     [game, ensureEngine, readModel, onSaved],
   );
 
-  /** files from the drop box, the picker, Replace, or the robot page's add card */
+  /** may these files be imported (`fileSelection.ts`)? A zip's directory is read by the engine */
+  const checkFiles = useCallback(
+    (files: readonly File[]) => checkImportFiles(files, async (zip) => (await ensureEngine()).zipFileNames(zip)),
+    [ensureEngine],
+  );
+
+  /** CAD imports are STEP, or a zip holding one. A GLB is accepted only when it is a valid DSIM share
+   *  file. `budget` is the Detail the drop box chose (absent: the document's) */
   const onFiles = useCallback(
-    async (files: File[]) => {
-      if (files.length === 1 && /\.glb$/i.test(files[0].name)) {
+    async (files: File[], budget?: number) => {
+      if (!files.length) return;
+      const sel = await checkFiles(files);
+      if (!sel.ok) {
+        setError({ text: sel.text });
+        return;
+      }
+      if (sel.kind === 'share') {
         try {
           const res = readShareFile(await files[0].arrayBuffer());
           if (res.ok) return void addShared(files[0], res.payload);
@@ -482,11 +504,34 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           }
         } catch (err) {
           console.warn('[import] share check failed', err);
+          setError({ text: COPY.notStep(files[0].name) });
+          return;
         }
+        setError({ text: COPY.notStep(files[0].name) });
+        return;
       }
-      void readModel(files);
+      void readModel(files, budget === undefined ? {} : { setup: { triBudget: budget } });
     },
-    [addShared, readModel],
+    [addShared, readModel, checkFiles],
+  );
+
+  const startPendingFiles = useCallback(
+    (budget: number): void => {
+      const files = pendingFiles;
+      if (!files) return;
+      setPendingFiles(null);
+      void onFiles(files, budget);
+    },
+    [pendingFiles, onFiles],
+  );
+
+  const stageHandedFiles = useCallback(
+    async (files: File[]): Promise<void> => {
+      const sel = await checkFiles(files);
+      if (sel.ok) setPendingFiles(files);
+      else setError({ text: sel.text });
+    },
+    [checkFiles],
   );
 
   // ---- boot: a handed file, the live draft, the stored draft, a library robot, or empty ----
@@ -502,9 +547,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         setRestoring(false);
       }
       if (d) {
-        setDraft(d);
-        if (d.model) void ensureEngine().catch(() => setError({ text: COPY.engineFailed }));
-        if (files) void onFiles(files);
+        const staged = files ? { ...d, doc: { ...d.doc, step: 0 as StepIndex } } : d;
+        setDraft(staged);
+        if (staged.model) void ensureEngine().catch(() => setError({ text: COPY.engineFailed }));
+        if (files) void stageHandedFiles(files);
         if (focusOnReturn) {
           pendingFocus.current = focusOnReturn;
           focusOnReturn = null;
@@ -535,12 +581,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         const imp = rec.spec.imported;
         if (cur?.model && imp?.mech && engRef.current) {
           const n = engRef.current.normalise(cur.model, cur.doc.setup);
-          setDraft({ ...cur, doc: { ...cur.doc, mech: mechRobotToModel(imp.mech, n.measurement.origin) } });
+          setDraft({ ...cur, doc: { ...cur.doc, mech: mechRobotToModel(imp.mech, n.measurement.origin), mechAt: [...n.measurement.sourceToModel] } });
         }
         return;
       }
       setDraft({ doc: freshDoc(settings, key, null), model: null, modelStored: false, baked: null });
-      if (files) void onFiles(files);
+      if (files) void stageHandedFiles(files);
     })();
     return () => {
       dead = true;
@@ -595,21 +641,66 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     return () => window.clearTimeout(t);
   }, [measuring]);
   const m = normalised?.measurement ?? null;
-  const built = useMemo(() => (doc && m ? buildSpec(doc, m) : null), [doc, m]);
+  // what Save, Test drive, Export and Review read: the placements already in this measurement's frame
+  // and a single turret's launcher on its ring, the same rules the effects below write into the
+  // document a render later, so nothing read in between sees them where they were
+  const built = useMemo(() => {
+    if (!doc || !m) return null;
+    let d = followFrame(doc, m.sourceToModel);
+    if (d.mech) d = turretOnRing(d, singleTurret(game, d.spec) ? measuredTurretRing(m) : null);
+    return buildSpec(d, m);
+  }, [doc, m, game]);
   const defs = useMemo(() => (built ? mechHandlesFor(game, built.spec) : []), [built, game]);
   const assumedFront = frontAssumed(doc);
   const readNotes = doc?.notes;
-  const items = useMemo(() => reviewItems(m, built, game, assumedFront, readNotes ?? []), [m, built, game, assumedFront, readNotes]);
+  const apartCount = doc?.setup.apart?.length ?? 0;
+  const items = useMemo(
+    () => reviewItems(m, built, game, assumedFront, readNotes ?? [], apartCount),
+    [m, built, game, assumedFront, readNotes, apartCount],
+  );
   const mechChecks = useMemo(() => (built ? validateMechFor(built.spec, game) : []), [built, game]);
   const numbers = useMemo(() => (built ? driveNumbers(built, game) : null), [built, game]);
+
+  // arriving on Mechanisms with nothing picked, the launcher (else the first placement) is picked ONCE,
+  // so the 3D view opens with a gizmo on something instead of an empty scene. Not again while the step
+  // stays: Esc in the view clears the pick, and a pick that came straight back made Esc jump there.
+  const hasMech = !!doc?.mech;
+  const autoPicked = useRef(false);
+  useEffect(() => {
+    if (doc?.step !== 2) {
+      autoPicked.current = false;
+      return;
+    }
+    if (autoPicked.current || !hasMech || !defs.length) return;
+    autoPicked.current = true;
+    if (!selHandle) setSelHandle(firstHandle(defs));
+  }, [doc?.step, hasMech, selHandle, defs]);
+
+  // the placements follow the model frame (`followFrame`): a fold found among the moving parts moves
+  // it. Declared before every effect that reads them, which wait for it (`sameFrame`)
+  const frameNow = m?.sourceToModel;
+  const mechAt = doc?.mechAt;
+  useEffect(() => {
+    if (!frameNow || measuring || sameFrame(mechAt, frameNow)) return;
+    update((d) => followFrame(d, frameNow), 'auto');
+  }, [frameNow, mechAt, measuring, update]);
 
   // placements default in once there is a footprint, and again when a mechanism appears
   // (never from a measurement of the orientation being replaced: the placements would land on it)
   useEffect(() => {
-    if (!doc || !m || !built || m.hull.length < 3 || measuring) return;
-    // the game's defaults round what the player placed, else what the model showed (`cadMech`)
-    const next = defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null);
-    if (JSON.stringify(next) !== JSON.stringify(doc.mech)) update((d) => ({ ...d, mech: next }), 'auto');
+    if (!doc || !m || !built || m.hull.length < 3 || measuring || !sameFrame(doc.mechAt, m.sourceToModel)) return;
+    // the game's defaults round what the player placed, else what the model showed (`cadMech`), a
+    // default nobody moved placed again on the model as it is now (`withoutDefaults`); a single
+    // turret's launcher on the ring the model turns it about (`turretOnRing`)
+    const base = doc.mech ?? doc.cadMech ?? null;
+    const have = base ? withoutDefaults(base, doc.mechAuto) : null;
+    const next = defaultMechFor(game, built.spec, m.origin, have);
+    const auto = defaultsIn(next, have);
+    const ring = singleTurret(game, built.spec) ? measuredTurretRing(m) : null;
+    const want = turretOnRing({ ...doc, mech: next }, ring);
+    if (JSON.stringify(want.mech) !== JSON.stringify(doc.mech) || want.turretRing !== doc.turretRing || JSON.stringify(auto) !== JSON.stringify(doc.mechAuto)) {
+      update((d) => (sameFrame(d.mechAt, m.sourceToModel) ? { ...d, mech: want.mech, turretRing: want.turretRing, mechAuto: auto } : d), 'auto');
+    }
   }, [doc, m, built, game, update, measuring]);
 
   // focus after a "Fix", a step change, or a return from the test drive
@@ -628,6 +719,22 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   // ---- actions -------------------------------------------------------------------------------
   const step = doc?.step ?? 0;
+  // the placements as 3D handles, made again only when they change: the preview compares `gizmo` by
+  // identity, and a new object every render rebuilt every handle mesh on every render and drag frame
+  const mechNow = doc?.mech ?? null;
+  const hullNow = m?.hull;
+  const gizmoState = useMemo(
+    () =>
+      step === 2 && mechNow && hullNow
+        ? {
+            handles: buildHandles(defs, mechNow, hullNow, mechChecks).handles.flatMap((h) =>
+              h.shape === 'wheel' ? [] : [{ ...h, z: h.z ?? 0, shape: h.shape }],
+            ),
+            selected: selHandle,
+          }
+        : null,
+    [step, mechNow, hullNow, defs, mechChecks, selHandle],
+  );
   // A STEP REPLACES THE EDITOR'S CONTENT: the page goes to its top and focus to the step's title
   // (`pageScroll.ts`); a Fix's own focus target, set in the effect above, lands after it
   const bodyRef = useRef<HTMLElement>(null);
@@ -787,6 +894,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // the new model is measured. Without the files (a reload, a saved robot) it applies next read.
   // NOT AN UNDO STEP: the re-read can take minutes and the model is not in the document, so the
   // history keeps the detail the model was read at and goes on across the change (`restoreDoc`).
+  // A file not read yet takes its detail from the drop box (`ModelStep`'s own state, passed to the
+  // read), never through here: this changes the detail of the model the document HAS.
   const onDetail = (budget: number): void => {
     if (!doc || doc.savedModel || budget === doc.setup.triBudget) return;
     const files = sourceFiles.current;
@@ -797,11 +906,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // offered again once it is read.
     const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
     const keepMech = doc.mech;
+    const keepAt = doc.mechAt;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
     // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
     const keepFront = doc.detected ? { yaw: doc.detected.yaw, front: doc.detected.front, cue: doc.detected.cue } : null;
     void readModel(files, { setup, spec: doc.spec, keepHistory: true }).then(() => {
-      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
+      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech, mechAt: keepAt } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
     });
   };
 
@@ -840,18 +950,26 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     out.push(...findDriveGears(parts, [...have, ...out], taken()));
     // box tubes before the rollers: a slide's pulleys and bearings ride on its stages
     // (their moving stages, numbered where they land in the setup's motion)
-    if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
+    const tubes = have.some((g) => g.role === 'slide') ? [] : findBoxTubes(parts, taken());
+    out.push(...boxTubeGroups(tubes, have.length + out.length));
     const intakes = doc.mech?.intakes ?? [];
     // the edges the rollers are looked for at are the robot's own, not a ramp's the file shows down
     const over = findOverhang(parts, taken(), 18, intakes.map((i) => i.edge));
-    if (intakes.length) out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+    if (intakes.length) {
+      out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+      // and the intake-sized rollers at the other edges (a robot that takes in at both ends)
+      out.push(...findEdgeRollers(parts, intakes, taken(), new Set(over?.bodies ?? [])));
+    }
     // spoked axles anywhere else (a transfer column of surgical tubing)
     out.push(...findSpokedRollers(parts, taken()));
     const shooter = doc.mech?.shooter;
+    // where an element is carried to: the flywheel the model shows, where there is one; else the
+    // launcher's placed point
+    let launcherAt: [number, number, number] | null = null;
     if (shooter && built) {
-      // the flywheel the model shows, where there is one; else the launcher's placed point
       const cad = readBuild(parts, taken()).launcher;
       const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
+      launcherAt = at;
       // the flywheels before the turret: they stand on it, and it would take them (Offset's transfer
       // roller under the ring was offered as its flywheel, 2026-10-04); on a turret, none below its ring
       const turret = turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret');
@@ -867,13 +985,58 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
       if (dep) out.push(dep);
+      else if (ramp) {
+        // a ramp the file shows tucked in: an arm swinging on an intake roller's shaft (Offset's front)
+        const rollers = [...have, ...out].filter((g) => g.role === 'roller');
+        const flagged = intakes.filter((i) => i.ramp);
+        for (const i of flagged.length ? flagged : intakes) {
+          const arm = findIntakeArm(parts, rollers, i.edge, taken());
+          if (!arm) continue;
+          out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });
+          break;
+        }
+      }
     }
+    // what a lift's stages push up as they rise: the payload hung from them (a chute on a Box Tube),
+    // and the rollers it holds ride with it
+    const payload = liftPayload(parts, [...have, ...out], tubes);
+    for (const [gi, add] of payload.carried) {
+      if (gi < have.length) continue;
+      const g = out[gi - have.length];
+      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
+    }
+    for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };
+    // what a turret, a ramp or a slide carries that its finder missed (it would stay put as it moved)
+    const rows = [...have, ...out];
+    const foundAt = new Set(out.map((_, i) => have.length + i));
+    for (const [gi, add] of ridersOf(parts, rows, foundAt)) {
+      const g = out[gi - have.length];
+      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
+    }
+    // the rollers that feed the flywheel inside a found turret: out of the turret, riding it
+    const ti = out.findIndex((g) => g.role === 'turret');
+    if (ti >= 0) {
+      const turretRow = out[ti];
+      const others = new Set([...have, ...out].filter((g) => g !== turretRow).flatMap((g) => g.bodies));
+      const feed = findLauncherFeed(parts, turretRow.bodies, [...have, ...out].filter((g) => g.role === 'flywheel'), others);
+      if (feed.length) {
+        const gone = new Set(feed.flatMap((g) => g.bodies));
+        out[ti] = { ...turretRow, bodies: turretRow.bodies.filter((b) => !gone.has(b)) };
+        out.push(...feed);
+      }
+    }
+    // the intake's later stages inside the robot, on the way from a roller found to the launcher; last,
+    // so a turret, a flywheel, a slide and a ramp have their parts first
+    if (intakes.length) out.push(...findStageRollers(parts, [...have, ...out].filter((g) => g.role === 'roller'), taken(), launchElementD(game), launcherAt));
     return out;
   };
   // the moving parts are looked for once, on a setup that has never had any, once the placements are
   // in (rollers, flywheels and a turret are looked for by the intake spans and the launcher)
   useEffect(() => {
     if (!doc || !normalised || measuring || !baseWheels || !doc.mech) return;
+    // the placements are in this measurement's frame first (`followFrame`)
+    const frame = normalised.measurement.sourceToModel;
+    if (!sameFrame(doc.mechAt, frame)) return;
     // the model turned before the player changed the build: the build is read again in the new frame
     if (doc.cadReread) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
@@ -882,7 +1045,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         (d) =>
           !d.cadReread
             ? d
-            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) },
+            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) },
         'auto',
       );
       return;
@@ -900,8 +1063,27 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // default in for that build, and this runs again to find the moving parts from them
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
       const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec) } : {}) }), 'auto');
+      const cad = readBuild(detectParts(), wheels, launchElementD(game));
+      // a front the geometry left ASSUMED turns to a clear intake (`frontFromBuild`), once; after a
+      // turn the build is read again in the new frame
+      if (frontAssumed(doc)) {
+        const axles = m?.wheelSource === 'detected' && baseWheels ? wheelAxleVotes(detectParts(), baseWheels) : { x: 0, y: 0 };
+        const turn = frontFromBuild(cad, axles);
+        if (turn !== null) {
+          const yaw = ((doc.setup.yaw + turn) % 4) as QuarterTurns;
+          update(
+            (d) => ({
+              ...d,
+              setup: turn ? { ...d.setup, yaw, wheels: null } : d.setup,
+              detected: d.detected ? { ...d.detected, yaw, front: 'detected', cue: 'intake' } : d.detected,
+            }),
+            'auto',
+          );
+          if (turn) return;
+        }
+      }
+      const r = buildFromCad(game, doc.spec, cad);
+      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) }), 'auto');
       return;
     }
     // the placements default in first (the effect above, a render later): the build just read placed
@@ -1114,7 +1296,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         wheels: step === 0 || step === 1 || step === REVIEW_STEP ? shownWheels : null,
         contacts: step === 0 ? m.wheels.contacts : null,
         origin: step === 0 ? m.origin : null,
-        mech: step === 2 || step === REVIEW_STEP ? doc.mech : null,
+        // the Mechanisms step draws its placements as handles to drag (`gizmo`), Review as plain marks
+        mech: step === REVIEW_STEP ? doc.mech : null,
+        gizmo: gizmoState,
         size: m.size,
         showCube: true,
         motion: m.motion ?? null,
@@ -1123,6 +1307,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         picking: picking || deletePicking,
       }
     : null;
+  /** a placement handle dragged in the 3D view: one undo step per handle, the way the map's drag is */
+  const gizmo = {
+    select: setSelHandle,
+    move: (key: string, p: { x: number; y: number; z: number }): void => {
+      if (!m) return;
+      const aim = key.endsWith(AIM);
+      const base = aim ? key.slice(0, -AIM.length) : splitKey(key)[0];
+      const name = lowerFirst(defs.find((d) => d.key === base)?.label ?? '');
+      update(
+        (d) => {
+          const next = d.mech ? moveHandle(d.mech, defs, m.hull, key, p, m.heightIn) : null;
+          return next ? { ...d, mech: next } : d;
+        },
+        aim ? { label: COPY.edits.aim(name), key: `mech:${base}:aim` } : { label: COPY.edits.move(name), key: `mech:${base}` },
+      );
+    },
+  };
   const legend = !m
     ? null
     : step === 0
@@ -1136,7 +1337,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       : step === 1
         ? COPY.legend.drive
         : step === 2
-          ? COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
+          ? defs.length && doc.mech
+            ? COPY.legend.mechEdit
+            : COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
           : step === MOVING_STEP
             ? motion?.length
               ? COPY.legend.moving
@@ -1198,6 +1401,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     ) : null;
 
   const why = blocked ? COPY.fixFirst : undefined;
+  // what the editor reads by itself has landed: a new file's build, then its moving parts (each an
+  // effect a render after the last), so a save from the header never stores a robot half-read
+  const autoDone = !!doc && (doc.savedModel || !!doc.editId || (doc.cadBuild !== undefined && doc.setup.motion !== undefined));
   return (
     <>
       <div className="ds-head">
@@ -1243,6 +1449,23 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             </button>
           </div>
         ) : null}
+        {/* SAVE FROM ANY STEP (2026-11-06, "as streamlined as possible"): a model the importer read right
+            needs no step walked through. Review keeps its own, with Test drive and Export. Not
+            `primary`: the step's own action (Next) stays the pad's Y, which presses the first
+            `.ds-btn.primary` on the page (`PadNavLayer`). Its own item, so a phone puts it beside Back
+            instead of alone on a line under the group (`.ds-import-headsave`) */}
+        {hasModel && step < REVIEW_STEP ? (
+          <button
+            type="button"
+            id="ri-save-head"
+            className="ds-btn small ds-import-headsave"
+            disabled={blocked || busy || measuring || !autoDone}
+            title={why}
+            onClick={save}
+          >
+            {doc.editId ? COPY.saveEdit : COPY.saveNew}
+          </button>
+        ) : null}
       </div>
       <h1 className="ds-h1">{title}</h1>
 
@@ -1276,6 +1499,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           state={previewState}
           legend={legend}
           onPickBody={onPickBody}
+          gizmo={gizmo}
           empty={<p className="ds-hint ds-import-preview-empty">{COPY.previewEmpty}</p>}
           fallback={
             m ? (
@@ -1292,6 +1516,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           }
         />
 
+        <div className="ds-import-dock">
         <section ref={bodyRef} className="ds-panel ds-import-body">
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
@@ -1317,7 +1542,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                 wheels={shownWheels}
                 selectedWheel={selWheel}
                 layout={layout}
-                onFiles={(f) => void onFiles(f)}
+                onFiles={(f, budget) => {
+                  setPendingFiles(null);
+                  void onFiles(f, budget);
+                }}
+                pendingFiles={pendingFiles}
+                onStartPending={startPendingFiles}
+                onKeepPending={() => setPendingFiles(null)}
+                checkFiles={async (f) => {
+                  const sel = await checkFiles(f);
+                  return sel.ok ? null : sel.text;
+                }}
                 onCancel={() => {
                   gen.current++;
                   // terminates the import's workers: the CPU stops with the bar
@@ -1443,6 +1678,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               ) : null}
             </>
           )}
+        </div>
         </div>
         </div>
       </div>

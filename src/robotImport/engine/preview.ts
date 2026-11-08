@@ -12,7 +12,29 @@ import type { ImportedMech, Vec2 } from '../../types';
 import { bbox, triangleBody, type MeshPart } from '../geometry';
 import type { MotionPart } from '../types';
 import { splitMoving } from './bakeScene';
+import type { GizmoLayer } from './gizmo';
 import { buildMeshGroup, creaseParts, disposeTree } from './meshGroup';
+
+/** one placement the player can drag in the 3D view (MODEL frame, inches; `ui/mechMove.ts` writes it back) */
+export interface GizmoHandle {
+  /** `shooter`, `place`, `intake:front:from` ... (the editor's own key) */
+  key: string;
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  /** a point (a launcher, where it places), a span's end or middle, or a fixed launcher's FACING tip */
+  shape: 'point' | 'end' | 'mid' | 'aim';
+  /** a span's handles slide along one model axis only */
+  axis?: 'x' | 'y';
+  bad?: boolean;
+}
+
+/** what the view tells the editor when a handle is picked or moved */
+export interface GizmoCallbacks {
+  select(key: string | null): void;
+  move(key: string, p: { x: number; y: number; z: number }): void;
+}
 
 export interface PreviewState {
   /** the normalised model, MODEL frame (compared by identity): what a click picks, and what is drawn
@@ -42,6 +64,8 @@ export interface PreviewState {
   highlight: { active: number[]; others: number[] } | null;
   /** clicking a part reports its body (`onPickBody`); hovering tints it */
   picking: boolean;
+  /** the placements to edit in 3D, with the selected one under the move gizmo; null = none */
+  gizmo: { handles: GizmoHandle[]; selected: string | null } | null;
 }
 
 /** the editor's camera presets (lane 4) */
@@ -56,6 +80,8 @@ export interface PreviewController {
   setView(view: PreviewView): void;
   /** called with the body under a click while `picking` (`shift`: the one body, not its axle) */
   onPickBody(cb: ((body: number, shift: boolean) => void) | null): void;
+  /** called when a placement handle is picked or dragged while `gizmo` is set */
+  onGizmo(cb: GizmoCallbacks | null): void;
   dispose(): void;
 }
 
@@ -156,6 +182,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     playing: false,
     highlight: null,
     picking: false,
+    gizmo: null,
   };
   /** the moving parts' nodes, posed by the play loop */
   let moving: { node: THREE.Object3D; part: MotionPart; turret: number; angle: number; rest: THREE.Vector3 }[] = [];
@@ -185,7 +212,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       camera.up.set(1, 0, 0);
     } else if (view === 'front') camera.position.set(62, 0, h / 2 + 4);
     else if (view === 'side') camera.position.set(0, 62, h / 2 + 4);
-    else camera.position.set(42, 34, 30 + h / 2);
+    else camera.position.set(36, 30, 26 + h / 2);
     camera.lookAt(controls.target);
     controls.update();
     camera.up.set(0, 0, 1);
@@ -339,9 +366,43 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     for (const m of [others, active, hov]) if (m) tints.add(m);
   };
 
-  // ---- picking: a click (not a drag) on a part reports its body ---------------------------------
+  // ---- placement handles: drawn, picked and moved in 3D by `gizmo.ts` -----------------------------
+  // LAZY (bundleaudit's `gizmo` route): the layer and three's TransformControls are fetched the first
+  // time a state carries `gizmo`, so the engine chunk carries neither for the steps that do not edit a
+  // placement. Until the layer lands the view shows no handles; the map and the fields still move them.
+  let layer: GizmoLayer | null = null;
+  let layerLoad: Promise<void> | null = null;
+  let disposed = false;
+  let gizmoCb: GizmoCallbacks | null = null;
+  const loadLayer = (): void => {
+    if (layerLoad) return;
+    layerLoad = import('./gizmo').then(
+      ({ createGizmoLayer }) => {
+        if (disposed) return;
+        layer = createGizmoLayer({
+          scene,
+          camera,
+          canvas,
+          controls,
+          render,
+          state,
+          callbacks: () => gizmoCb,
+          colors: { intake: COLORS.intake, shooter: COLORS.shooter, place: COLORS.place },
+        });
+        layer.update(null);
+        render();
+      },
+      (err) => {
+        // offline, or a deploy replaced the chunk: the map and the fields still move the placements
+        console.warn('[import] the 3D handles did not load', err);
+        layerLoad = null;
+      },
+    );
+  };
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
+
+  // ---- picking: a click (not a drag) on a part reports its body ---------------------------------
   const bodyAt = (clientX: number, clientY: number): number => {
     const target = pickModel ?? model;
     if (!target) return -1;
@@ -358,17 +419,25 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   let down: { x: number; y: number; t: number } | null = null;
   let hoverAt = 0;
   const onDown = (e: PointerEvent): void => {
+    // a click that confirms a G-grab is the grab's alone
+    if (layer?.down(e.clientX, e.clientY)) return;
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
   };
   const onUp = (e: PointerEvent): void => {
     const d = down;
     down = null;
-    if (!d || !state.picking || !pickCb || e.button !== 0) return;
+    if (!d || e.button !== 0) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5 || performance.now() - d.t > 600) return;
+    if (state.gizmo) {
+      layer?.click(e.clientX, e.clientY);
+      return;
+    }
+    if (!state.picking || !pickCb) return;
     const b = bodyAt(e.clientX, e.clientY);
     if (b >= 0) pickCb(b, e.shiftKey);
   };
   const onMove = (e: PointerEvent): void => {
+    if (layer?.move(e.clientX, e.clientY, down !== null)) return;
     if (!state.picking || down) return;
     const now = performance.now();
     if (now - hoverAt < 70) return;
@@ -463,8 +532,14 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       (next.parts !== undefined && next.parts !== state.parts) ||
       (next.shown !== undefined && next.shown !== state.shown) ||
       (next.motion !== undefined && next.motion !== state.motion);
+    const gizmoChanged = next.gizmo !== undefined && next.gizmo !== state.gizmo;
     const tintChanged = modelChanged || (next.highlight !== undefined && next.highlight !== state.highlight) || (next.picking !== undefined && next.picking !== state.picking);
+    const was = state.gizmo?.selected ?? null;
     Object.assign(state, next);
+    if (gizmoChanged) {
+      if (state.gizmo) loadLayer();
+      layer?.update(was);
+    }
     if (!state.picking && hover >= 0) {
       hover = -1;
       canvas.style.cursor = '';
@@ -495,6 +570,9 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     onPickBody(cb): void {
       pickCb = cb;
     },
+    onGizmo(cb): void {
+      gizmoCb = cb;
+    },
     dispose(): void {
       if (frame) cancelAnimationFrame(frame);
       if (playFrame) cancelAnimationFrame(playFrame);
@@ -503,6 +581,8 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
       controls.removeEventListener('change', render);
+      disposed = true;
+      layer?.dispose();
       controls.dispose();
       disposeTree(scene);
       if (pickModel) disposeTree(pickModel);

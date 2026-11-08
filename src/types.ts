@@ -471,8 +471,10 @@ export interface ImportedMech {
   shooter2?: { x: number; y: number; z: number };
   /** intake mouths: which bounding-box edge, and the span along it (lateral coordinate for
    *  front/back, longitudinal for left/right), `from < to`. At most one per edge, ordered
-   *  front, back, left, right. */
-  intakes?: { edge: ImportedEdge; from: number; to: number }[];
+   *  front, back, left, right. `ramp` (BIOBUZZ): this mouth carries the build's ramp. When any span
+   *  says so, only those do; when none does, every mouth of a `ramp` build has one (a robot that takes
+   *  in at both ends with its FLOWER ramp at one of them). */
+  intakes?: { edge: ImportedEdge; from: number; to: number; ramp?: boolean }[];
   /** the BASE of the placer (BIOBUZZ Box Tube, Chain Reaction catalyst): it reaches out of the
    *  hull from here along its mount's direction. `z` is for drawing only. */
   place?: { x: number; y: number; z: number };

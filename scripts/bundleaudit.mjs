@@ -89,6 +89,10 @@
  *                `WebGLRenderer` marker and is billed to `scene` below — a 3D player downloads it
  *                either way — which is why `renderScene-*.js` is routed by FILENAME too: without
  *                three inside it, its own bytes carry no `scene` marker.
+ *   gizmo      — the importer's 3D PLACEMENT HANDLES (`gizmo-*.js`: `engine/gizmo.ts` with three's
+ *                TransformControls), reached only through `preview.ts`'s `import('./gizmo')` the first
+ *                time the Mechanisms step shows placements to drag. Matched by FILENAME: it imports
+ *                three from the shared chunk, so it carries no `scene` marker.
  *   step       — STEP support: `stepWorker-*.js` (the worker, with occt-import-js's 97 KB glue
  *                inlined) and `occt-import-js-*.wasm` (OpenCascade, ~7.6 MB raw). Fetched only when
  *                a STEP file is dropped. Matched by FILENAME.
@@ -230,6 +234,8 @@ function routeFor(file, buf) {
   // `fflate.module-*.js` is three's fflate, split out because the engine (the zip reader) and the
   // main build's lazy `threeMf-*.js` share it: fetched with the engine
   if (/^(importerEngine|engineLoader|geometry|fflate\.module)-[^/]*\.js$/.test(base)) return 'importer';
+  // the placement handles and their move gizmo, fetched when the Mechanisms step first shows them
+  if (/^gizmo-[^/]*\.js$/.test(base)) return 'gizmo';
   // `occtWorker-*.js` is the occt instance the STEP worker spawns (one per piece reader): Vite
   // builds a worker made inside a worker as its own bundle too
   if (/^(stepWorker|stepReader|occtWorker)-[^/]*\.js$/.test(base) || /^occt-import-js[^/]*\.wasm$/.test(base)) return 'step';
@@ -792,7 +798,20 @@ const BASELINE = {
   // (+4.1: `motion.ts`'s surgical-tubing spokes and stars, the staged and transfer rollers, what a
   // wheel's shaft carries, the gears a wheel drives, the wheel click's own wheel; `geometry.ts`'s
   // thin floor slab).
-  importer: { gzip: 95.54 * 1000 },
+  // 2026-11-06 (moving parts by contact, rings, edge rollers, the wheel guess): 95.54 -> 101.74,
+  // raised on purpose. HEAD before it (e91f917c) already measured 99.62, over the line: the 2026-11-05
+  // STEP-only and placement work grew it without a raise. This change is +2.12: `motion.ts`'s
+  // `touchingPairs` and the contact rules built on it, `ringsAbout`, `findEdgeRollers`, and
+  // `geometry.ts`'s `wheelGuessIn` (`geometry-*.js` 29.76 -> 31.87).
+  // 2026-11-08 (Offset's FLOWER box): 101.74 -> 106.20, raised on purpose: `motion.ts`'s `liftPayload`
+  // (what a lift's stage pushes up, the rollers riding it) with the lazy contact pass it needs, the
+  // turret's `onTheRing`, and the 11-07 riders, launcher feed and shaft pivots that came in under the
+  // tolerance.
+  importer: { gzip: 106.2 * 1000 },
+  // 2026-11-05: NEW. `gizmo-*.js` 7.78: the placement handles drawn, picked and G-grabbed in the 3D
+  // preview (`engine/gizmo.ts`) and three's TransformControls (~5.6 of it). Statically in the engine it
+  // put `importer` at 105.4; lazy, the engine keeps 98.7 and only the Mechanisms step fetches this.
+  gizmo: { gzip: 7.78 * 1000 },
   // 2026-10-01: NEW (lane 9). `importWorker-*.js` 104.06 (three.js core, the GLB/glTF, STL, OBJ+MTL
   // and PLY loaders, meshopt's simplifier, the weld and the crease: the parse-to-prepared pipeline
   // that used to block the main thread for seconds; and GLTFExporter for the bake's mesh half),
@@ -852,7 +871,13 @@ const BASELINE = {
   // 2026-10-04: 33.14 -> 36.06, raised on purpose. The base (alpha 7fb1d7ba) measured 34.06 inside the
   // tolerance; +2.00 is undo and redo in the editor (`editorHistory.ts`, the edit names in `copy.ts`,
   // the header buttons and the keys).
-  importerui: { gzip: 36.06 * 1000 },
+  // 2026-11-05: 36.06 -> 40.82, raised on purpose and measured. The base (alpha 0e504e80) already
+  // measures 38.88 (+2.82 of drift since the last raise, inside the tolerance, not attributed here).
+  // PR #126 adds +1.16 (Detail on the drop box before the read, the staged tile, leave parts out of
+  // the footprint), and its review +0.78: a zip that holds a STEP (`fileSelection.ts`), the staged
+  // Detail kept on the tile with Keep current model, the Review warning for left-out parts, and the
+  // share file's `apart`/`motion` validation (`shareFile-*.js` 1.38 -> 1.81).
+  importerui: { gzip: 40.82 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

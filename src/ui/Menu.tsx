@@ -1,5 +1,4 @@
-import { Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { GameSettings } from '../types';
 import type { DrivetrainType, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS, chassisFill } from '../config';
@@ -37,8 +36,7 @@ import { BuiltinMechRows } from './builderMechs';
 import { useLibrary } from '../robotImport/ui/useLibrary';
 import { importerEnabled } from '../seasonVisibility';
 import { answersFor, libraryEntryFor, sameImportedRobot } from '../robotImport/libraryIds';
-import { IdentityDialog, ImportedPanel, ImportedRow, useImportedActions, useRobotNotice } from '../robotImport/ui/ImportedRobots';
-import { identityOf, withIdentityAt, type RobotIdentity } from '../robotImport/identity';
+import { ImportedPanel, ImportedRow, useImportedActions, useRobotNotice } from '../robotImport/ui/ImportedRobots';
 import { removeSavedRobot } from './savedRobots';
 import { defaultSpecFor } from '../settings';
 import { FootprintSvg } from './FootprintSvg';
@@ -74,29 +72,6 @@ function specMatches(a: RobotSpec, b: RobotSpec): boolean {
 /** a saved slot is the active one when the whole robot matches (identity + build) */
 function sameRobot(a: RobotSpec, b: RobotSpec): boolean {
   return specMatches(a, b) && a.name === b.name && a.teamName === b.teamName && a.teamNumber === b.teamNumber;
-}
-
-/**
- * A SAVED ROBOT'S NEW NAME AND TEAM, from its card (the builder's list and Play's strip): the slot,
- * and the robot being driven too when it is that slot, so the card stays the one that is on and the
- * hero says the same thing. Settings only, so it persists and syncs where every other edit does.
- */
-function withSavedIdentity(settings: GameSettings, i: number, next: RobotIdentity): GameSettings {
-  const was = settings.savedRobots[i];
-  if (!was) return settings;
-  const savedRobots = withIdentityAt(settings.savedRobots, i, next);
-  const on = !settings.spec.imported && sameRobot(settings.spec, was);
-  return { ...settings, savedRobots, ...(on ? { spec: { ...settings.spec, ...identityOf(savedRobots[i]) } } : {}) };
-}
-
-/** the Edit-details dialog of a saved robot, over the page (a portal: Play's panel is a floating surface) */
-function SavedIdentityDialog({ spec, onSave, onClose }: { spec: RobotSpec; onSave: (next: RobotIdentity) => void; onClose: () => void }) {
-  return createPortal(
-    <Suspense fallback={null}>
-      <IdentityDialog identity={identityOf(spec)} onSave={onSave} onClose={onClose} />
-    </Suspense>,
-    document.body,
-  );
 }
 
 /** Chain Reaction preset match: the shared drivetrain/size/mass/rpm build PLUS the
@@ -617,8 +592,6 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
     if (editIdx < 0) return;
     set({ savedRobots: savedRobots.map((r, j) => (j === editIdx ? { ...spec } : r)) });
   };
-  /** the saved robot whose details are being edited from its card (an index into `savedRobots`) */
-  const [editingDetails, setEditingDetails] = useState<number | null>(null);
   const deleteSavedRobot = (i: number): void => {
     const gone = savedRobots[i];
     // THE ROBOT BEING DRIVEN MOVES OFF IT: the next saved robot, else the default preset's build under
@@ -759,8 +732,8 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                           <span className="ds-robot-card-thumb">{preview2d(r, 88)}</span>
                         )
                       }
+                      // a pick loads it into Build below, whose first fields are its name and team
                       onPick={() => applySpec({ ...r })}
-                      onEdit={() => setEditingDetails(i)}
                       onDelete={() => deleteSavedRobot(i)}
                     />
                   ))}
@@ -781,7 +754,6 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
                   editingSaved.delete(settings.game);
                   applySpec({ ...e.spec });
                 }}
-                onEdit={importActions.requestEdit}
                 onDelete={importActions.requestDelete}
                 onImport={() => onImport?.()}
                 onDropFiles={(files) => {
@@ -846,7 +818,7 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
             stale={importedStale}
             error={importActions.error}
             onEdit={() => importedEntry && onImport?.(importedEntry.id)}
-            onEditDetails={() => importedEntry && importActions.requestEdit(importedEntry)}
+            onIdentity={(next) => importedEntry && importActions.rename(importedEntry, next)}
             onDuplicate={() => importedEntry && importActions.duplicate(importedEntry)}
             onExport={() => importedEntry && importActions.exportIt(importedEntry)}
             onDelete={() => importedEntry && importActions.requestDelete(importedEntry)}
@@ -1119,16 +1091,6 @@ export function Menu({ settings, onChange, onImport, onPlay }: Props) {
           </div>
         </section>
         {importActions.dialogs}
-        {editingDetails !== null && savedRobots[editingDetails] ? (
-          <SavedIdentityDialog
-            spec={savedRobots[editingDetails]}
-            onSave={(next) => {
-              onChange(withSavedIdentity(settings, editingDetails, next));
-              setEditingDetails(null);
-            }}
-            onClose={() => setEditingDetails(null)}
-          />
-        ) : null}
       </div>
     </>
   );
@@ -1180,21 +1142,24 @@ function presetBuildFor(settings: GameSettings, who: RobotSpec = settings.spec):
  * the last preset build driven, the saved robots and this device's imports, each the builder's own
  * `RobotCard`. PRESETS ARE NOT LISTED (owner, 2026-11-01): with them the row was up to 24 cards;
  * they are the builder's "Start from". Picking a card is the builder's own pick (the same `applySpec`
- * and the same match rules); picking the card that is ALREADY on opens the builder, and the panel's
+ * and the same match rules); picking the card that is ALREADY on opens the robot page, and the panel's
  * Edit button says so.
+ *
+ * ⚠️ ONE EDIT (owner, 2026-11-06: "kinda weird to have the pencil on each robot be robot name edit
+ * but also have a separate edit button to go into the actual edit menu"). A card PICKS; Edit (the
+ * panel head) and a second click on the card that is on open the robot page for it, an import
+ * included, where the name, team name and team number are fields beside everything else about the
+ * robot (Build, or the Imported robot panel). The cards carried a ✎ that renamed in a dialog.
  */
 export function RobotStrip({
   settings,
   onChange,
   onEdit,
-  onImport,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
-  /** open the builder on the active robot */
+  /** open the robot page on the active robot */
   onEdit: () => void;
-  /** open the importer: `id` edits a library robot */
-  onImport: (id?: string) => void;
 }) {
   const spec = settings.spec;
   const applySpec = (next: RobotSpec) => onChange({ ...settings, spec: next, assists: coerceAssists(next.assists, PLAYER_ASSISTS) });
@@ -1216,10 +1181,6 @@ export function RobotStrip({
   const presetMatches = mod.presets ? mod.presets.matches : isDecode ? specMatches : chainSpecMatches;
   const importerOn = importerEnabled();
   const library = useLibrary(settings.game, importerOn);
-  // an import's details are edited from its card here, the way the builder's row does
-  const importActions = useImportedActions({ settings, applySpec, entries: library.entries });
-  /** the saved robot whose details are being edited from its card (an index into `savedRobots`) */
-  const [editingDetails, setEditingDetails] = useState<number | null>(null);
   const importedId = spec.imported?.id ?? null;
   const entries = library.entries ?? [];
   const savedOn = settings.savedRobots.map((r) => !spec.imported && sameRobot(spec, r));
@@ -1240,8 +1201,8 @@ export function RobotStrip({
   // ON IS THE BUILD ITSELF: the slot just filled holds this very object, the other an older one
   const unsavedOn = loose && unsaved === spec;
   const presetBuildOn = loose && !unsavedOn && !!preset && (preset === spec || sameRobot(spec, preset));
-  /** a card's pick: the one already on opens its editor, any other becomes the robot */
-  const pick = (on: boolean, apply: () => void, edit: () => void = onEdit) => (on ? edit() : apply());
+  /** a card's pick: the one already on opens the robot page (Edit's), any other becomes the robot */
+  const pick = (on: boolean, apply: () => void) => (on ? onEdit() : apply());
   // A PLAIN WHEEL SCROLLS THE ROW (owner, 2026-10-24: not only Shift+wheel). Native and non-passive:
   // React's wheel listener is passive, so it cannot stop the page scrolling too.
   const stripRef = useRef<HTMLDivElement>(null);
@@ -1297,7 +1258,6 @@ export function RobotStrip({
           on={savedOn[i]}
           team={teamLine(r)}
           thumb={thumbOf(r)}
-          onEdit={() => setEditingDetails(i)}
           onPick={() =>
             pick(savedOn[i], () => {
               editingSaved.set(settings.game, i);
@@ -1323,31 +1283,14 @@ export function RobotStrip({
               ) : null}
             </span>
           }
-          onEdit={() => importActions.requestEdit(e)}
           onPick={() =>
-            pick(
-              importOn[i],
-              () => {
-                editingSaved.delete(settings.game);
-                applySpec({ ...e.spec });
-              },
-              () => onImport(e.id),
-            )
+            pick(importOn[i], () => {
+              editingSaved.delete(settings.game);
+              applySpec({ ...e.spec });
+            })
           }
         />
       ))}
-      {/* the dialogs open over the page, not inside the panel (a portal: Play's panel is a floating surface) */}
-      {importActions.dialogs ? createPortal(importActions.dialogs, document.body) : null}
-      {editingDetails !== null && settings.savedRobots[editingDetails] ? (
-        <SavedIdentityDialog
-          spec={settings.savedRobots[editingDetails]}
-          onSave={(next) => {
-            onChange(withSavedIdentity(settings, editingDetails, next));
-            setEditingDetails(null);
-          }}
-          onClose={() => setEditingDetails(null)}
-        />
-      ) : null}
     </div>
   );
 }

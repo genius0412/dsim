@@ -21,7 +21,7 @@ import type { ImportSetup } from '../types';
 import { measurerFor, releaseMeasurer, type NormalisedModel } from './measureSession';
 import type { PreparedModel } from './prepare';
 
-export { loadModel, pickModelFile, ImportError, MAX_FILE_BYTES } from './load';
+export { loadModel, pickModelFile, zipFileNames, ImportError, MAX_FILE_BYTES } from './load';
 export type { LoadedModel, LoadProgress, LoadStage, ImportErrorCode } from './load';
 export { importModel } from './importSession';
 export type { ImportOptions } from './importSession';

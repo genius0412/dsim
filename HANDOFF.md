@@ -1,3 +1,221 @@
+# HANDOFF — 2026-11-08b (A flower ramp the file shows tucked in: Offset's front arms)
+
+**State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 9. `npm test` (shared 5162, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner: "do they not have a flower ramp? I thought they did".** They do: Offset's front rollers ride
+  arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft
+  (the CAD calls them "flower arm" and "Flower intake wedge"). The file shows them raised inside 18 in.
+  The importer only read a ramp shown deployed past the frame, so the intake was a Ground intake, which
+  takes nothing from a FLOWER: 0 of 36 drive-ins, against 36 of 36 as a ramp (2D and 3D, deployed).
+- **Fixed (rules in `docs/area/robot-import.md`):** `findIntakeArm` finds an outer intake roller riding
+  an arm that swings on an inner roller's shaft and never reaches back into the chassis; `readBuild`
+  then reads a ramp at that edge, and the editor makes the arm the ramp part (`filePose: 'folded'`,
+  `deployDeg` until the roller is 1 in off the floor: 43° on Offset, `axisBody` the shaft, which
+  `planFolds` now hinges on). Contacts count per point, so an arm plate lying flat on the frame beside
+  it slides instead of joining the frame.
+- **Verified:** Offset reads "a ramp at the front for POLLEN and NECTAR"; the ramp part is both arm
+  pairs and the wedge (33 bodies) on the inner roller's shaft, with the front roller riding it. Loose
+  POLLEN pickup is the same folded or deployed. In the client, on Offset's STEP in the real editor: Moving parts lists "Ramp, 33 parts, deploys 43°", Play swings the front assembly down on the rear roller's shaft, and in the game's 3D view, with the ramp deployed (Z) and driven into a FLOWER, it took all four POLLEN (FLOWER 4 → 0). Nine vendor STEPs: only Offset changes (its intake and the new ramp part); three plain ground intakes stay Ground intakes.
+- **Not covered:** a robot saved before keeps the intake it was read with (pick Ramp in Mechanisms, or
+  import again). The deploy angle ignores a hard stop on the frame.
+
+# HANDOFF — 2026-11-08 (Offset's FLOWER box: what a lift carries, a turret on its ring, Box Tube builds take NECTAR)
+
+**State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 8, so a draft found by the old finders is looked for again when opened. `npm test` (shared 5157, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass (the importer chunk baseline raised to 106.20 KB for the new finder code); `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner: "Does the Offset robot work FULLY? like all the flower features".** It did not. What
+  Offset's CAD shows, read from its parts:
+  - **The back is a FLOWER box on the Box Tube.** A 15-in chute (two side plates, a frame of rods, six
+    surgical-tubing rollers in two columns, two servos driving them by belts) hangs from brackets on the
+    two last stages' tops and reaches the floor. Under it, on the chassis, a plate pitched by a servo and
+    a curved ramp on two linear rails that run on under the robot.
+  - **The front intake** is tubing rollers on counter-sprung arms with a "flower intake wedge" at the tip.
+  - **The turret** shoots through a 3.5-in ring bore; a NECTAR (3.6 in) cannot go up it, so NECTAR goes
+    to the box.
+- **Fixed (rules in `docs/area/robot-import.md`):**
+  - **The chute stayed on the floor while the tubes rose.** `liftPayload`: a stage carries what it would
+    push up (faces looking down at it, or bodies resting on it), never the tube columns' own fittings,
+    a body touching the fixed stage, or one touching a part that reaches out of the lift's surroundings.
+    On Offset: the chute, roller plates, servos, belts and brackets ride the last stage; its six rollers
+    ride it (`rideOn`). 4–5 s at Full detail (contacts only for what the flood reaches).
+  - **The turret carried the chute's top** (two corner blocks, their 12 screws, a rod): its reach covered
+    them. `onTheRing` keeps only the pieces that hold the ring or touch nothing else.
+  - **The final stage's bottom insert rode the middle stage** (0.600 in under its tube, the pad 0.6):
+    `TUBE_BASE_END_IN` 0.65.
+  - **The robot could never place a NECTAR**: a single turret's default feed is POLLEN only and the
+    importer has no feed choice. A build read with box tubes now takes NECTAR (`feed: 'mixed'`; the found
+    line says "for POLLEN and NECTAR").
+- **Verified:** headless, Offset backed into each of the four FLOWERS, 2D and 3D, places a POLLEN then
+  its own NECTAR (POLLEN only, before the feed fix). In the client, on Offset's STEP in the real editor: Moving parts lists the last stage at 286 parts and the turret at 96; Play raises the whole chute with its rollers; in the game's 3D view, backed onto a FLOWER, the Box Tube rises with the chute above the ring, and C places a POLLEN (4 → 5). Nine vendor STEPs through the editor's
+  pipeline: only Offset changes.
+- **Not done, for the owner:**
+  - **FLOWER retrieval from Offset's front intake.** The sim's Ground intake has no FLOWER reach by design;
+    only a ramp or side rollers do. Offset's arms and wedge look built to duck under the FLOWER's middle
+    plate, but the CAD shows the roller at mid-plate height (centre 4.35 in, plate 3.90–5.25), so whether
+    it reaches is a guess. A ramp-like reach for such an import would be a new sim rule.
+  - **A single turret with a mixed feed launches a NECTAR** on top of the hopper. Offset's turret could
+    not; its NECTAR is for the box (place buttons).
+  - **The middle stages' top plates and idlers stay with the outer column** when the tubes rise
+    (their boxes stand 0.27 in past the middle tube's sides).
+  - Floating parts: Offset reads 25.7 in wide until its five stray parts are deleted (the editor offers
+    it, and Save is blocked until then); a harness that skips that saves it at 70%.
+- **Gotcha, offscreen Electron captures of 3D:** with hardware acceleration off and SwiftShader on,
+  `capturePage` freezes a WebGL canvas after its first frame, and the game refuses a software
+  renderer (falls back to 2D). Keep the GPU on (no `disableHardwareAcceleration`), call
+  `setFrameRate`, and save frames from the `paint` event (as `scripts/firstload.cjs` does).
+
+# HANDOFF — 2026-11-07 (Importer: two-ended intakes, roller-width mouths, ramp on its rod, riders, the launcher's feed, shaft pivots)
+
+**State: on `alpha`, client and sim, no `SIM_PATCH`; the dsim-alpha server is redeployed** (an import with the flag plays online, so the server builds its ramp per mouth too). The per-mouth ramp changes physics only for an import whose spans carry the new flag; every standard robot and saved robot steps bit-identically (the determinism pins hold). `MOTION_FINDER` 7. `npm test` (shared 5151, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).
+
+- **Owner's reports on the private team CAD (nothing from it is in the repo):**
+  - The ball "does not even go under the wheel" at the vector wheel on a roller's end. Cause: the
+    default mouth was filled in on the unfolded hull (tapering to the deployed ramp), then kept as if
+    placed. Mouths now span the model's own rollers (`buildFromCad`), and a default nobody moved is
+    recomputed (`withoutDefaults`, `EditorDoc.mechAuto`).
+  - "The back intake isnt even intaking anything". `readBuild` kept only the best edge. It now records
+    every edge's roller span and `intake.both`; the build is `frontback` (or `side`). The ramp is the
+    end that shows it deployed (`ImportedMech.intakes[].ramp`, `bbRampOnEdge` in the sim: colliders,
+    swing guards, pull reach, FLOWER retrieval, 2D drawing).
+  - "The flower ramp's pivot is incorrect". The hinge was the innermost point; it is now the rod the
+    part is bored round (`hingeRod`).
+  - "There are floating parts". Parts a turret or ramp carries that its finder missed are added
+    (`ridersOf`: clusters of bodies that touch only the group and stay inside its padded box).
+  - "One of the intake rollers are also spinning around the wrong axis". A three-paddle roller's box
+    was off its shaft; a spinning part's axle is now its own shaft's centreline (`onOwnShaft`).
+  - Found in the audit: the shooter's feed rollers inside the turret never spun
+    (`findLauncherFeed`).
+- **Intake, measured on the saved robot (scratch sweeps, not committed):**
+  - 2D and 3D, front and back; 9 offsets, 3 angles, 3 speeds; ball loose, against a wall, in a corner.
+  - Every ball under the roller is taken: 480/480 up to 7 in off centre.
+  - At the roller's extreme ends (7.5–8 in), an approach into a wall at 15° can sweep the ball away
+    along the wall: the far corner meets the wall first and the robot squares up.
+  - FLOWER retrieval with the front ramp is 36/36; NECTAR is pushed away at both ends.
+- **Vendor regression** (nine STEPs, the editor's own pipeline): only the private CAD (its new groups)
+  and Offset (its transfer stages, from 11-06c) change.
+- **Smoke:** the old check "a ramp down in front ... builds the ramp intake on the front edge" was
+  updated. Its robot has a roller at each end, which now correctly reads as a two-ended intake.
+
+# HANDOFF — 2026-11-06c (Imports push NECTAR away; the turret on its ring; the intake's later stages)
+
+**State: on `alpha`. `SIM_PATCH` 14 (3D physics for imports), so the dsim-alpha server is redeployed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 6. `npm test` (shared 5139, BIOBUZZ 6330), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).
+
+- **Owner, three reports on the private team CAD (nothing from it is in the repo):**
+  - "The robot should not be able to get stuck on top of a nectar."
+  - "The turret is not turning around the correct point."
+  - "You still missed part of the intake/transfer rollers further inside the robot."
+  - Also "The intake does not actually work" (loose POLLEN): not reproduced in the client or headless.
+    Every robot starts with 4 preloaded POLLEN, which is the hopper's cap, so nothing is taken until it
+    shoots. The NECTAR that used to roll into the mouth and ride there is now kept out (below).
+- **NECTAR, `SIM_PATCH` 14** (`sim3d/bodies.ts` `import3dShapes`, rules in `docs/area/biobuzz.md`):
+  - **The bug.** A frame band starting above an element's centre (a frame a couple of inches up over
+    drive pods) met a NECTAR on its upper half and lifted the robot onto it, and it stayed there
+    (0.67 in on the IMPORT lane's synthetic frame-over-pods robot).
+  - **The skirt.** Under every such band, element-only colliders (`GROUP_SKIRT`, `GROUP_SKIRT_NECTAR`)
+    from `BB3_IMPORT_SKIRT_Z0` up to the band.
+  - **The NECTAR gate.** On a POLLEN-only feed, the mouth's open strip is solid to a NECTAR.
+  - **Effect.** The robot always ends on the tiles; at most a hop of a few hundredths for a tick when
+    rammed into a pinned NECTAR. POLLEN pickup and FLOWER retrieval are unchanged.
+  - **Scope.** Standard robots step bit-identically; a replay recorded before patch 14 builds none of
+    it (`importSkirtsPre14`).
+- **Turret** (`editorModel.ts` `followFrame`, `turretOnRing`; rules in `docs/area/robot-import.md`):
+  - **The bug.** Folding a part the file shows deployed (a ramp) moves the model frame. Placements read
+    before the fold stayed where they were, so the saved turret centre was inches off its ring.
+  - **Placements follow the frame.** They carry the frame they are written in (`EditorDoc.mechAt`) and
+    move with it. Undo restores the frame with them, and the built spec (Save, Test drive, Export,
+    Review) always uses the settled placements.
+  - **Turret on its ring.** A single turret's launcher goes onto the ring the model measured whenever
+    that ring is new to the document. This also repairs a robot saved before the fix: open it in the
+    importer and save.
+- **The intake's later stages** (`motion.ts` `findStageRollers`, last in `findAll`): level axles chained
+  within 4 in of a roller already found, each one:
+  - on the path from an intake roller to the launcher (1.25 element diameters);
+  - on a shaft of its own of at least 1.5 in;
+  - with a rim of at least 0.6 in.
+
+  Measured on the nine STEPs, old finders against new (Node, the editor's own pipeline; scratch probes,
+  not committed):
+  - The private CAD gains its transfer stages and nothing else.
+  - Offset gains its two silicone transfer rollers and two belt-driven shafts of the intake's drive
+    (one holds five bodies an encoder board's CAD put on its axle).
+  - goBILDA DECODE/BIOBUZZ, REV, AndyMark ×3: unchanged.
+  - First cut (near a roller and round, nothing else) took twelve non-stages on Offset: odometry pods,
+    servo spools, a slide's belt spools, a pulley, a gear blank. The path, shaft and rim rules are
+    what removed them, each measured.
+- **Real client, offscreen** (the private STEP, `dist-import` preview):
+  - Import, then Save from the header: the saved turret centre is on the measured ring.
+  - Its transfer stages are in the saved moving parts.
+  - Test drive: four preloaded POLLEN fired, then a loose POLLEN taken.
+- **Open:** a deployed ramp still folds about its innermost point; an assumed front with a front/back
+  roller tie stays assumed (both from 11-06b).
+
+# HANDOFF — 2026-11-06b (Importer accuracy: moving parts by contact, rings, a wheel guess, the front from the intake; Save from any step)
+
+**State: on `alpha`, client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 5, so a draft's found moving parts are looked for again when it is opened. `npm test` (shared 5125, BIOBUZZ 6322), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner:** "Make the robot import feature as streamlined and accurate as possible." Validated on a private team CAD; nothing from it is in the repo.
+- **Accuracy** (rules in `docs/area/robot-import.md`, synthetic checks in smoke's `MOVING PARTS BY CONTACT` block):
+  - Mounted means touching (`mountedOn`, `touchingPairs`). A deployed part's members, and a click on a plate, take only the smaller bodies in its box that touch it. The box alone took chassis plates and intake rollers under a diagonal ramp arm.
+  - A roller rides a folding part only when it touches it (`planFolds`).
+  - Rings round a turning hub turn with it (`ringsAbout`): a mecanum or omni wheel's rollers on an intake shaft. A ring must touch what turns. Without that, a motor's face screws round a gear's long hub came in, 248 knurl slivers a gear on AndyMark's bots.
+  - Rollers at the other edges, intake-length only (`findEdgeRollers`): a robot that takes in at both ends turns both. Offset's slide spools stay out.
+  - No wheels found: a guess inside the drive base (`wheelGuessIn`), stored in the descriptor. The old default sat under anything that overhangs the base.
+  - An assumed front turns to a clear intake that `readBuild` found (`frontFromBuild`, `CadBuild.edges`).
+- **Streamlining:** Save robot in the editor header on every step but Review (`#ri-save-head`). It waits for no block and for the editor's own reading (`autoDone`). It is a plain button, so the pad's Y still presses Next. Under 560 px it sits beside Back (`.ds-import-headsave`).
+- **Measured** on the eight vendor and public STEPs (Node, the editor's own pipeline; scratch probes, not committed), old code against new:
+  - No bot lost a group or a body.
+  - Added: goBILDA DECODE's four flywheel screws and Offset's four flywheel through-bolts (both touch the wheel), and eight lock nuts on an AndyMark roller.
+  - goBILDA's BIOBUZZ mecanum front: now detected from its side rollers.
+  - AndyMark: front and back tie on rollers, so the front stays assumed, as before.
+- **Bundle:** `importer` baseline raised 95.54 → 101.74 KB. HEAD before this already measured 99.62 (over the line, from the 11-05 work); this change is +2.12.
+- **Smoke fix:** the `builder:` rename check counted `<IdentityField\n` and failed on a CRLF checkout (alpha HEAD too); it reads the file as LF now.
+- **Open:**
+  - A deployed ramp still folds about its innermost point, not the axle it may pivot on.
+  - An assumed front with a front/back roller tie stays assumed: `detectFront` does not report which way its weak vote pointed.
+
+# HANDOFF — 2026-11-06 (Robot cards: one edit)
+
+**State: on `alpha` (d30f8882), client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On d30f8882: `npm test` (shared 5106, BIOBUZZ 6322), `build`, `bundleaudit`, `uiaudit`, `docaudit`, `contrast` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **One edit (owner: "kinda weird to have the pencil on each robot be robot name edit but also have a separate edit button").**
+  - A robot card only picks. The ✎ (`ds-opt-edit`) and both rename dialogs (`SavedIdentityDialog`, `IdentityDialog`) are deleted; the builder lists keep their ✕.
+  - Play's **Edit** and a second click on the card that is on open the robot page. For an import that click used to open the importer; now it matches Edit.
+  - Name, team name and team number are fields on the robot page: Build's first row (saved by Save changes, like any build edit), and the same three at the top of the Imported robot panel (`IdentityField`), written to the library and the active spec on Enter or blur. `identityPatch` (`src/robotImport/identity.ts`) decides what a field writes; an empty name reverts.
+  - Rules: `docs/area/ui.md` "ONE EDIT, AND A CARD ONLY PICKS", `docs/area/robot-import.md` rule 3.
+- **`importpad` had been stale since 95358e3c (Oct 4):** two RBs from Drivetrain land on Moving parts, so Y pressed "Next: Review" and every robot-page check after it failed. It presses RB three times now. Run it after importer UI changes; it was not run when #126/#129 landed.
+- **Open:** a renamed saved robot shows as "Unsaved" on Play until Save changes, as any build edit does. If the owner wants a rename to save on its own, that is a Build-panel change.
+- **Still open from 11-05:** the contributor's CLA sentence (asked on #126); a failed staged read has no "Keep current model"; shiftaudit's "(could not reach Free drive)"; supporter plate-font tiers; the claim-less token log line on dsim-alpha; `sync:alpha` after the next promotion; Records Auto/TeleOp split.
+
+# HANDOFF — 2026-11-05 (Room lobby polish; contributor PRs #125/#126/#128/#129 landed)
+
+**State: on `alpha` (0e504e80..179a621d), all client-only, no deploy needed.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 179a621d: `npm test` (shared 5102, BIOBUZZ 6322), `build`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass.
+
+- **Room lobby polish (0e504e80).**
+  - A reaction bubble sits at the free end of a card's actions row; over the top corner it covered READY.
+  - When wide (>900 px), the collapsed Friends card floats over the room's corner. As a flex column it cut the READY/START bar 80 px short.
+  - The pinned notice and the friend toasts stand on the bar's measured top: `--rm-bar-clear`, from `RoomScreen`'s `useBarClearance`. A fixed offset covered "n of m ready" on phones, where the Friends strip sits under the room.
+  - `DSIM_ROOM` shiftaudit: 0 shifts.
+- **Contributor PRs, squashed onto alpha with fixes.** Pushing to the fork was blocked, so the PRs are closed with comments naming the commits.
+  - **#126 STEP-only importer (9dbb344d, by Ethan Zhang @aevalmere; #128 is its second commit).** CAD is STEP (.step/.stp), with Detail chosen before the read; a DSIM share .glb restores a robot; GLB/STL/OBJ/3MF/PLY CAD imports are gone. Parts can be left out of the footprint. Fixes:
+    - 77e40c4b: every importer probe seeds the STEP fixture (shiftaudit had been skipping the editor).
+    - ac83ab82:
+      - A zip holding a STEP still imports (`ui/fileSelection.ts`, engine `zipFileNames`), for the vendor kits.
+      - The staged Detail stays local until Start, and the tile has "Keep current model".
+      - The Review step warns about left-out parts (no collision, not in the 18 in check, still drawn).
+      - `apart`/`motion` are validated in share files.
+    - 16855170: `importerui` baseline raised 36.06 → 40.82. Alpha already measured 38.88.
+  - **#129 menu column + 3D handles (68453418, by the same contributor).**
+    - **Layout:** the 3D view goes 435 → 1061 px at 1920, and the page max width 1080 → 1480. Owner approved.
+    - **Fixes:**
+      - 68603011: the gizmo, handles and TransformControls are a lazy `engine/gizmo.ts` chunk (the new `gizmo` bundle route, 7.78 KB). Esc after an axis switch returns to the G point.
+      - e18a0dd8: Esc deselects. A drag shares the slider's `zRange`. Handles are memoized. Adds `mechMove` smoke checks.
+  - **#125 first-Play fly:** superseded by a1155882. Its one missing piece landed as 179a621d: the fly advances on frame time (`src/ui/stageFly.ts`, ≤50 ms a frame).
+  - **Open:**
+    - The contributor's PR descriptions lack the CLA sentence `CONTRIBUTING.md` requires (the CONTRIBUTORS.md line says "signed CLA 2026-11-04"). Asked on #126.
+    - With a model loaded, a failed read of a staged file lands on the error tile, which has no "Keep current model" button.
+    - shiftaudit's HUD pass logs "(could not reach Free drive)". Not investigated.
+- **Still open from 11-04e:** supporter plate-font tiers; the claim-less token log line on dsim-alpha; `sync:alpha` after the next promotion; Records Auto/TeleOp split.
+
 # HANDOFF — 2026-11-04e (Custom rooms redesign; text-field focus ring)
 
 **State: on `alpha` (be019570..4215cb42). SERVER CHANGE (the `seat` and `react` messages, named watchers, the room's own return), DEPLOYED: `dsim-alpha` on image `deployment-01M6MQJAQX8FT26PT99YH2SYTV` (4215cb42), /health ok.** No `SIM_VERSION`/`BALANCE_VERSION` change. On 4215cb42: `npm test` (shared 5075, BIOBUZZ 6322, no skips), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `contrast` (451), `test:mm` (234), `test:workers` (188), `dbtest` pass.

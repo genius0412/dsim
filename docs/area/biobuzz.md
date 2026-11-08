@@ -3063,6 +3063,51 @@ positions.
   `groundRoll3d`, so a POLLEN that lands on an import's top rolls off. The FULL predictor gives the
   LOCAL import the authority's compound and a REMOTE one the uncarved bands; the PERF lane holds a
   heavy import (16-vertex hull, four bands, side sweepers) to the standard budgets.
+- **A RAMP ON ONE MOUTH OF TWO** (`bbRampOnEdge`, `ImportedMech.intakes[].ramp`; owner, 2026-11-06:
+  "There are also two intakes: front and back"). A `ramp` build put the ramp on every mouth, so an
+  import with plain rollers at one end and a FLOWER ramp at the other could be modelled only by giving
+  the roller end a ramp it does not have. When any of an import's spans carries `ramp`, only those
+  mouths have one, in every place a ramp is used:
+  - the settled ramp's colliders and the 3D swing guard (`chassis3dReachShapes`, `bbRampSwingShapes`);
+  - the 2D swing guard;
+  - the roller pull's extra reach (`bbIntakeAct`'s `reachOf`; a side roller's reach still applies to
+    every mouth);
+  - FLOWER retrieval (`bbFlowerAtIntakeMouth`);
+  - the 2D drawing.
+
+  No span carrying it means every mouth, as before, so a standard robot and every saved robot step
+  bit-identically and no `SIM_PATCH` is needed. Coercion keeps the flag. The IMPORT lane drives a
+  synthetic two-ended import: a POLLEN is taken at both ends in 2D and 3D, and the ramp is built at the
+  front alone.
+- ⚠️ **AN IMPORT PUSHES A NECTAR AWAY, IT DOES NOT CLIMB IT, `SIM_PATCH` 14** (owner, 2026-11-06: "The
+  robot should not be able to get stuck on top of a nectar. It should just push it away because it
+  has that barrier that makes it so only pollen can get in").
+  - **Why it climbed.** An FTC frame often clears the tiles by a couple of inches with only the
+    drive pods below, so the band over the pods starts above a NECTAR's centre and below its top.
+    Its lower edge met a NECTAR on the upper half, and the contact pushed the chassis up. The standard
+    box runs from the floor to the top, so it never meets an element there and never rose. Measured on
+    the IMPORT lane's synthetic robot (a frame 2.25 in up over pods inset 2 in): backed at 20° into a
+    NECTAR pinned against the wall, it stopped 0.67 in in the air and stayed there.
+  - **The skirt.** Under every band whose underside is above a POLLEN's centre and below a NECTAR's
+    top, a prism fills from `BB3_IMPORT_SKIRT_Z0` (1 in) up to the band, carved at the mouths as the
+    band is. An element now meets a face at its own centre height. It is solid to ELEMENTS ONLY
+    (`GROUP_SKIRT`, `groups.ts`), so the HIVE, a FLOWER's plates, a ramp and every pocket filler see the
+    robot exactly as before. The tiles, the walls, a FLOWER's supports and another robot still meet it,
+    but the band above stops each of those at the same plan distance first. A band a POLLEN fits under
+    (from `2·BB_POLLEN_R`) skirts for a NECTAR alone (`GROUP_SKIRT_NECTAR`).
+  - **The NECTAR gate.** The mouth slot is a NECTAR tall, so a NECTAR rolled in under the lintel to the
+    face and rode there, pushed and held, though a POLLEN-only intake would never take it. On a `pollen`
+    feed each band's open strip in front of the face also gets a NECTAR-only prism from the skirt's
+    bottom to the slot, so a NECTAR stops at the roller line as it would at any other part of the
+    hull. A POLLEN + NECTAR feed takes NECTAR through the mouth and gets no gate.
+  - **Measured.** Final lift 0.000 on every pinned and free drive (the patch-13 replay reads 0.67), a
+    hop of at most 0.05 in for a tick or two when rammed at full speed into a pinned NECTAR (the
+    band's own edge, reached through the impact's deep penetration; the standard box shows none).
+    Loose-POLLEN pickup and FLOWER retrieval are unchanged (one extra miss in fifteen at the mouth's
+    edge with the ramp out: the plate beside the mouth now deflects a POLLEN that used to squeeze
+    under it). Built by the authority and the FULL predictor's local import; a replay before patch 14
+    builds none (`importSkirtsPre14`). The IMPORT lane holds all of it on a synthetic frame-over-pods
+    robot.
 - **The LIGHT predictor** clamps an import to the walls by its hull turned to the heading and
   separates any pair with an import by `polySatGap` on the two footprint polygons. `robotExtents`
   is a box with a SYMMETRIC flank, so an asymmetric import was drawn 5 in off a wall it was

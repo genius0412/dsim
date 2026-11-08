@@ -95,6 +95,12 @@ export function importBandCutsPre7(world: { simPatch?: number }): boolean {
   return !simPatchAtLeast(world, 7);
 }
 
+/** does `world` build an import's 3D body without its skirt and NECTAR gate (`import3dShapes`), as
+ *  before `SIM_PATCH` 14? Only a replay recorded then. */
+export function importSkirtsPre14(world: { simPatch?: number }): boolean {
+  return !simPatchAtLeast(world, 14);
+}
+
 /** the mouth frame a side roller is placed in: `mouthAxes`' fields, or an `ImportMouth`'s */
 export interface BbSideRollerFrame {
   n: Vec2;

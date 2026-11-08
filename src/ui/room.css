@@ -207,10 +207,12 @@
   padding-block: 0;
   font-size: var(--ds-t-sm);
 }
-/* a reaction: over the card's corner, out of the layout, gone after three seconds */
+/* A REACTION: out of the layout, gone after three seconds. It sits at the free end of the card's
+   actions row (the buttons there start from the left). Over the top corner it covered the READY
+   chip, the one thing on the card everyone is reading while reactions fly (2026-11-05). */
 .rm-bubble {
   position: absolute;
-  top: calc(-1 * var(--ds-s-2));
+  bottom: var(--ds-s-2);
   right: var(--ds-s-3);
   padding: var(--ds-s-0) var(--ds-s-2);
   border-radius: var(--ds-round-full);
@@ -334,6 +336,7 @@
 }
 .rm-watcher .rm-bubble {
   top: calc(-1 * var(--ds-s-4));
+  bottom: auto;
   right: 0;
 }
 .rm-empty {
@@ -387,14 +390,17 @@
 }
 
 /* ---- the Setup drawer ----------------------------------------------------- */
+/* both above the collapsed Friends card, which floats over the room's corner (`shell.css`) */
 .rm-scrim {
   position: absolute;
+  z-index: 2;
   inset: 0;
   background: var(--ds-scrim);
   animation: rm-in var(--ds-dur-screen) var(--ds-ease);
 }
 .rm-drawer {
   position: absolute;
+  z-index: 2;
   top: 0;
   right: 0;
   bottom: 0;

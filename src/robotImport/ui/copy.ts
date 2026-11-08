@@ -94,9 +94,18 @@ export const COPY = {
   // ---- Model ----
   dropTitle: 'Choose a file or drop it here',
   choose: 'Choose a file',
-  dropFormats: 'GLB, glTF, STEP, STL, OBJ, 3MF or PLY, or a zip of one',
-  sidecarHint: 'A glTF or OBJ comes with a .bin or .mtl file. Drop them together.',
+  dropFormats: 'STEP CAD (.step or .stp) or a zip of it, or a DSIM robot share (.glb)',
+  notStep: (names: string) => `Couldn’t import ${names}. Choose a STEP CAD file (.step or .stp), a zip with one in it, or a DSIM robot share (.glb).`,
+  zipNoStep: (zip: string, inside: string) =>
+    `Couldn’t import ${zip}: ${inside ? `it holds ${inside} but no STEP file` : 'it is empty'}. Choose a zip with a .step or .stp file in it, or the STEP file itself.`,
+  sidecarHint: 'Export the robot from your CAD program as a STEP file.',
   dropNow: 'Drop to import',
+  detailBefore: 'Before the file is read',
+  pendingTitle: 'File ready to import',
+  pendingFiles: (names: string) => `${names} · choose Detail, then start the import.`,
+  pendingShare: (name: string) => `${name} · start to restore this DSIM robot.`,
+  startImport: 'Start import',
+  keepCurrent: 'Keep current model',
   phase: {
     read: (file: string) => `Reading ${file}…`,
     unzip: (file: string) => `Unzipping ${file}…`,
@@ -135,6 +144,7 @@ export const COPY = {
   wheelsUneven: '4 found, not a rectangle',
   wheelsManual: 'Placed by hand',
   wheelsNone: 'None found. Drag all four into place.',
+  wheelsGuessed: 'None found. Placed at the drive base’s corners: drag them onto the wheels.',
   units: 'Units',
   up: 'Up axis',
   detected: (v: string) => `Detected: ${v}`,
@@ -195,7 +205,6 @@ export const COPY = {
   tryAgain: 'Try again',
   previewOff: 'Couldn’t start the 3D preview on this device. Showing the footprint.',
   bakeFailed: 'Couldn’t prepare the model. Try again, or reload the page.',
-  storageBlocked: 'Saving needs site storage, which this browser is blocking.',
 
   // ---- preview ----
   cameras: [
@@ -212,12 +221,12 @@ export const COPY = {
     drive: 'Arrow: the front. Green discs: the wheels.',
     mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
       ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
+    mechEdit: 'Click the green bar or the orange and purple marks to pick one. Drag an arrow to move it. G grabs, then X, Y or Z locks an axis. Esc puts it back.',
     moving: 'Blue: the selected part. Orange: the other moving parts.',
     deleting: 'Blue: the selected parts. Orange: the parts left out of the footprint.',
     apart: 'Orange: the parts left out of the footprint.',
     floating: 'Blue: the parts that float apart from the robot.',
   },
-  resetView: 'Reset view',
 
   // ---- Drivetrain ----
   drivetrain: 'Drivetrain',
@@ -232,19 +241,16 @@ export const COPY = {
   gearbox: 'Gearbox',
   freeSpeed: 'Free speed',
   extRatio: 'External ratio',
-  extRatioHint: 'motor turns per wheel turn',
   tankRatio: 'Traction ratio',
   zeroPower: ZERO_POWER_LABEL,
   wheel: 'Wheel',
   custom: 'Custom',
   diameter: 'Diameter',
   weight: 'Weight',
-  weightHint: 'with the battery in',
   statRpm: 'Drive rpm',
   statSpeed: 'Top speed',
   statAccel: 'Accel',
   statPush: 'Push',
-  limitsTitle: 'How the sim reads it',
   rpmOk: (dt: string, min: number, max: number) => `The sim drives ${dt} from ${min} to ${max} rpm.`,
   rpmHigh: (dt: string, max: number) => `Over the sim’s ${max} rpm for ${dt}. It drives at ${max}.`,
   rpmLow: (dt: string, min: number) => `Under the sim’s ${min} rpm for ${dt}. It drives at ${min}.`,
@@ -256,7 +262,6 @@ export const COPY = {
   pushLine: 'Grows with weight and traction, and with gearing down.',
 
   // ---- Mechanisms ----
-  mechanisms: 'Mechanisms',
   placement: 'Placement',
   mechAria: 'Mechanisms, seen from above, front up',
   height: 'Height',
@@ -274,11 +279,21 @@ export const COPY = {
   cadFixed: 'a fixed shooter',
   cadFixedAt: (edge: string, deg: number) => `a fixed shooter facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge} at ${deg}°`,
   cadFixedFacing: (edge: string) => `a fixed launcher facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge}`,
-  cadIntake: (kind: string, mount: string) => `${kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a ground intake'} at the ${mount === 'side' ? 'side' : mount}`,
+  /** what the model's intake was read as; `nectar`: it takes NECTAR as well (a build with a Box Tube) */
+  cadIntake: (kind: string, mount: string, rampEdge?: string, nectar = false) => {
+    const what = kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a ground intake';
+    const takes = nectar ? ' for POLLEN and NECTAR' : '';
+    if (mount === 'frontback' || mount === 'side') {
+      const [a, b] = mount === 'side' ? ['left', 'right'] : ['front', 'back'];
+      // a ramp at one end of a two-ended intake: the other end takes in with its rollers alone
+      if (kind === 'ramp' && rampEdge) return `a ramp at the ${rampEdge} and rollers at the ${rampEdge === a ? b : a}${takes}`;
+      return `${what} at the ${a} and the ${b}${takes}`;
+    }
+    return `${what} at the ${mount}${takes}`;
+  },
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,
   cadHandLoaded: 'no intake (loaded by hand)',
-  moving: 'Moving parts',
   movingHint: 'Select a part to see it in the preview and change it.',
   movingNone: 'Nothing moves yet. Find moving parts looks for the wheels, rollers, flywheels and a turret.',
   motionRole: (role: MotionRole, corner?: number) =>
@@ -354,11 +369,11 @@ export const COPY = {
   },
 
   // ---- Review ----
-  checks: 'Checks',
   allPass: 'All checks pass',
   toFix: (n: number) => `${n} to fix before saving`,
   notes: (n: number) => `Ready, with ${n} ${n === 1 ? 'note' : 'notes'}`,
   passFits: 'Fits the 18 in cube',
+  apartWarn: (n: number) => `${n} ${n === 1 ? 'part' : 'parts'} left out of the footprint: drawn, but no collision and not counted in the 18 in cube.`,
   tooSmall: (side: number, min: number) =>
     `The footprint is only ${side.toFixed(1)} in across. The sim needs ${min} in a side, so check the units.`,
   passWheels: 'Four wheels on the footprint',
@@ -377,8 +392,6 @@ export const COPY = {
   levelNames: { block: 'must fix', warn: 'note', info: 'note', ok: 'passes' } as const,
 
   // ---- test drive (the HUD's own ALL CAPS voice) ----
-  hudBack: 'EDITOR',
-  hudBackTitle: 'Back to the importer (Esc)',
 } as const;
 
 /** "4.5 in forward, 5.3 in right, 12.0 in high": signs as words, from the footprint's centre */

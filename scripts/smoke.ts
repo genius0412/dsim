@@ -19723,7 +19723,22 @@ const recordDrive: CommandSource = (tick) => {
   check('rooms3: every seat card is one fixed height, and the alliance stripe is a shadow, not a border',
     /\.rm-seat \{[\s\S]*?height: 112px;[\s\S]*?box-shadow: inset 4px 0 0 var\(--rm-side\);/.test(css) && !/\.rm-seat[^{]*\{[^}]*border-left/.test(css));
   check('rooms3: the bar is the screen’s last row, so READY and START never scroll away',
-    /\.rm-screen \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;[\s\S]*?height: 100dvh;/.test(css) && /<footer className="rm-bar">/.test(screenSrc));
+    /\.rm-screen \{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\) auto;[\s\S]*?height: 100dvh;/.test(css) && /<footer className="rm-bar"[ >]/.test(screenSrc));
+  {
+    // 2026-11-05: three things that sat ON the room. A reaction covered the READY chip; the collapsed
+    // Friends card was a flex column that cut the bar 80px short of the edge; a pinned notice used a
+    // fixed offset and covered "n of m ready" where the Friends strip sits under a narrow room.
+    const shellCss = src('src/ui/shell.css');
+    check('rooms3: a reaction sits at the free end of the actions row, not over the top-right chips',
+      /\.rm-bubble \{[^}]*bottom: var\(--ds-s-2\);[^}]*right: var\(--ds-s-3\);/.test(css) && !/^\.rm-bubble \{[^}]*top:/m.test(css));
+    check('rooms3: wide, the collapsed Friends card floats over the room (the bar runs to the edge), under the Setup drawer',
+      /@media \(min-width: 901px\) \{[\s\S]*?\.ds-room-layout:has\(> \.rm-screen\) > \.ds-friends\.collapsed \{[^}]*position: absolute;[^}]*z-index: 1;/.test(shellCss) &&
+        /\.rm-drawer \{[^}]*z-index: 2;/.test(css) && /\.rm-scrim \{[^}]*z-index: 2;/.test(css));
+    check('rooms3: the pinned notice and the toasts stand on the MEASURED bar, which the room publishes as --rm-bar-clear',
+      /body:has\(\.rm-screen\) \.ds-queuebar \{\s*bottom: calc\(var\(--rm-bar-clear/.test(shellCss) &&
+        /body:has\(\.rm-screen\) \.fr-toasts:not\(\.in-match\) \{\s*bottom: calc\(var\(--rm-bar-clear/.test(shellCss) &&
+        /setProperty\('--rm-bar-clear'/.test(screenSrc) && /removeProperty\('--rm-bar-clear'\)/.test(screenSrc) && /ResizeObserver/.test(screenSrc));
+  }
 
   // ---- the room: names, sides, watchers --------------------------------------------------------
   {
@@ -20248,15 +20263,30 @@ const recordDrive: CommandSource = (tick) => {
       check('play: the strip and the builder list the same saved robots, from settings.savedRobots, and one sameRobot decides which is on',
         /settings\.savedRobots\.map\(\(r, i\) => \(/.test(row2) && /savedRobots\.map\(\(r, i\) => \(/.test(menuSrc) &&
           (menuSrc.match(/function sameRobot\(/g) ?? []).length === 1 && !/const sameRobot =/.test(menuSrc));
-      // EDIT DETAILS FROM THE CARD: a saved robot's and an import's name, team name and team number, on Play
-      // and in the builder, with the limits every other door has
-      check('cards: saved and imported robots carry an edit button on Play and in the builder, over one dialog',
-        (menuSrc.match(/onEdit=\{/g) ?? []).length >= 4 && menuSrc.includes('importActions.requestEdit') &&
-          menuSrc.includes('withSavedIdentity(settings, editingDetails, next)') &&
-          readFileSync('src/robotImport/ui/LibraryDialogs.tsx', 'utf8').includes('export function IdentityDialog('));
+      // ONE EDIT (owner, 2026-11-06: "kinda weird to have the pencil on each robot be robot name edit but
+      // also have a separate edit button to go into the actual edit menu"). A card picks; Play's Edit and a
+      // second click on the card that is on open the robot page, where the name and team are fields.
+      const cardSrc = readFileSync('src/ui/RobotCard.tsx', 'utf8');
+      const modeSrc = readFileSync('src/ui/ModeSelect.tsx', 'utf8');
+      // LF whatever the checkout: the `<IdentityField\n` count below fails on a CRLF one
+      const impSrc = readFileSync('src/robotImport/ui/ImportedRobots.tsx', 'utf8').replace(/\r\n/g, '\n');
+      check('cards: a robot card has no ✎ (RobotCard takes no onEdit, the class and its CSS are gone), only a delete ✕',
+        !/onEdit/.test(cardSrc) && !cardSrc.includes('ds-opt-edit') && !css.includes('.ds-opt-edit') && !css.includes('.ds-opt-slot.two') &&
+          cardSrc.includes('className="ds-opt-del"'));
+      check('cards: nothing renames a robot in a dialog any more (the saved-robot and import dialogs are deleted)',
+        !menuSrc.includes('SavedIdentityDialog') && !menuSrc.includes('withSavedIdentity') && !menuSrc.includes('editingDetails') &&
+          !readFileSync('src/robotImport/ui/LibraryDialogs.tsx', 'utf8').includes('IdentityDialog') && !impSrc.includes('requestEdit'));
+      check('play: Edit in the robot panel head is the one edit, and a second click on the card that is on (an import too) does what it does',
+        />\s*Edit\s*<\/button>/.test(modeSrc) && modeSrc.includes('<RobotStrip settings={settings} onChange={onChange} onEdit={onEditRobot} />') &&
+          row2.includes('const pick = (on: boolean, apply: () => void) => (on ? onEdit() : apply());') && !row2.includes('onImport'));
+      check('builder: a saved robot is renamed in Build (its first fields), an import in the Imported robot panel, which has no Edit details',
+        />\s*Robot name\s*<\/span>/.test(menuSrc) && impSrc.includes('function IdentityField(') &&
+          (impSrc.match(/<IdentityField\n/g) ?? []).length === 3 && impSrc.includes('onBlur={(e) => commit(e.currentTarget.value)}') &&
+          impSrc.includes("onCommit={write('name')}") && !impSrc.includes('editDetails') &&
+          menuSrc.includes('onIdentity={(next) => importedEntry && importActions.rename(importedEntry, next)}'));
     }
     {
-      const { cleanIdentity, teamNumberFrom, withIdentityAt, identityOf, ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX } = await import('../src/robotImport/identity');
+      const { cleanIdentity, teamNumberFrom, identityPatch, identityOf, ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX } = await import('../src/robotImport/identity');
       const c = cleanIdentity({ name: '  Bugger II  ', teamName: '  Iron Works ', teamNumber: 18754.4 });
       check('identity: a name and team are trimmed, a team number is a whole number', c?.name === 'Bugger II' && c.teamName === 'Iron Works' && c.teamNumber === 18754);
       check('identity: an empty name is refused, whole (not half-applied)', cleanIdentity({ name: '   ', teamName: 'x' }) === null);
@@ -20266,16 +20296,22 @@ const recordDrive: CommandSource = (tick) => {
           cleanIdentity({ teamName: 't'.repeat(80) })?.teamName?.length === 48 &&
           teamNumberFrom('123456') === 99999 && teamNumberFrom('-5') === 5 && teamNumberFrom('') === 0 && teamNumberFrom('abc') === 0);
       check('identity: a rename leaves the team alone (only the fields given come back)', JSON.stringify(cleanIdentity({ name: 'A' })) === '{"name":"A"}');
-      const base = coerceSpec({ ...DEFAULT_SPEC, name: 'A', teamName: 'T', teamNumber: 1 }, undefined, 'biobuzz');
-      const list = [base, { ...base, name: 'B' }, { ...base, name: 'C' }];
-      const after = withIdentityAt(list, 1, { name: 'B2', teamNumber: 77 });
-      check('identity: withIdentityAt edits one slot and leaves the others and the list as they were',
-        after[1].name === 'B2' && after[1].teamNumber === 77 && after[1].teamName === 'T' && after[0] === list[0] && after[2] === list[2] && list[1].name === 'B' &&
-          withIdentityAt(list, 1, { name: ' ' })[1] === list[1] && withIdentityAt(list, 9, { name: 'Z' }).length === 3);
-      check('identity: identityOf reads the three fields', JSON.stringify(identityOf(after[1])) === '{"name":"B2","teamName":"T","teamNumber":77}');
-      // what the stored robot comes back as through the sim's own validator: nothing the dialog stores is changed by it
-      const back = coerceSpec(after[1], undefined, 'biobuzz');
-      check('identity: coerceSpec keeps what the dialog stored', back.name === 'B2' && back.teamName === 'T' && back.teamNumber === 77);
+      const base = coerceSpec({ ...DEFAULT_SPEC, name: 'Bugger', teamName: 'Iron Works', teamNumber: 123 }, undefined, 'biobuzz');
+      const now = identityOf(base);
+      check('identity: identityOf reads the three fields', JSON.stringify(now) === '{"name":"Bugger","teamName":"Iron Works","teamNumber":123}');
+      // THE IMPORTED ROBOT PANEL'S FIELDS write on blur, so tabbing through one, or typing what cleans back
+      // to the stored value, must write nothing
+      check('identity: a field writes only a real change, cleaned, and only its own field',
+        JSON.stringify(identityPatch('name', '  Bugger II ', now)) === '{"name":"Bugger II"}' &&
+          JSON.stringify(identityPatch('teamNumber', '18754', now)) === '{"teamNumber":18754}' &&
+          JSON.stringify(identityPatch('teamName', '', now)) === '{"teamName":""}' &&
+          JSON.stringify(identityPatch('teamNumber', '', now)) === '{"teamNumber":0}');
+      check('identity: a field that cleans back to what is stored, or an empty name, writes nothing',
+        identityPatch('name', ' Bugger ', now) === null && identityPatch('name', '   ', now) === null &&
+          identityPatch('teamName', 'Iron Works  ', now) === null && identityPatch('teamNumber', '00123', now) === null);
+      // what the stored robot comes back as through the sim's own validator: nothing a field stores is changed by it
+      const back = coerceSpec({ ...base, ...identityPatch('name', 'n'.repeat(40), now), ...identityPatch('teamNumber', '777', now) }, undefined, 'biobuzz');
+      check('identity: coerceSpec keeps what a field stored', back.name === 'n'.repeat(24) && back.teamName === 'Iron Works' && back.teamNumber === 777);
     }
     // DELETING A SAVED ROBOT (owner, 2026-11-04: the builder's list and Play's strip disagreed): the robot
     // being driven moves to the next saved robot, else the default preset's build, and no copy of the deleted
@@ -35028,7 +35064,7 @@ function impPlayCheck(g: GameId): void {
   const motion = await import('../src/robotImport/motion');
   const em = await import('../src/robotImport/ui/editorModel');
   const { BB_PRESETS } = await import('../src/games/biobuzz/config');
-  const { bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
+  const { bbIntakeFeedOf, bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
   const { decodeFixedLauncher } = await import('../src/sim/fixedShot');
   const { DEFAULT_SPEC } = await import('../src/sim/spawn');
   type P = import('../src/robotImport/geometry').MeshPart;
@@ -35150,6 +35186,70 @@ function impPlayCheck(g: GameId): void {
       J(bt && { lift: bbLiftOf(bt.spec), place: bt.mech?.place, set: bt.set }));
     const none = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { intake: null, launcher: null, lift: null });
     check('box tubes: with none in the model there is no Box Tube', !!none && bbLiftOf(none.spec) === null);
+    // A BOX TUBE MEANS THE INTAKE TAKES NECTAR (owner, 2026-11-07, Offset's robot): a single turret's
+    // default feed is POLLEN only, and the importer has no feed choice, so its lift could never place one
+    const withIntake = { ...cadTubes, intake: { edge: 'front' as const, upright: false } };
+    const fed = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, withIntake);
+    const fedNone = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { ...withIntake, lift: null });
+    check(
+      'box tubes: a build read with a Box Tube takes NECTAR as well as POLLEN, and says so; one without keeps its launcher\'s feed',
+      !!fed && bbIntakeFeedOf(fed.spec) === 'mixed' && fed.set.some((x) => x.includes('for POLLEN and NECTAR')) && !!fedNone && bbIntakeFeedOf(fedNone.spec) === 'pollen' && !fedNone.set.some((x) => x.includes('NECTAR')),
+      J({ fed: fed && bbIntakeFeedOf(fed.spec), set: fed?.set, none: fedNone && bbIntakeFeedOf(fedNone.spec) }),
+    );
+  }
+  // WHAT A LIFT CARRIES (`liftPayload`; owner, 2026-11-07, Offset's robot: its FLOWER chute, hung from
+  // the tops of the Box Tube's last stages, stayed on the floor while the tubes rose): two upright
+  // three-stage slides, a bracket lying across the final stages' tops, a chute of two side plates hung on
+  // it through a notch in each, a roller on a shaft between them, the floor plate the chute stands on, and
+  // a cap resting on the bracket that is also bolted to a rail running on under the robot
+  {
+    const slide = (y: number): import('./robot-import/synthRobot').Prism[] => [
+      synth.box('outer', G, -7.6, -6.0, y - 0.8, y + 0.8, 3.5, 15.3),
+      synth.box('middle', G, -7.4, -6.2, y - 0.6, y + 0.6, 4.0, 16.0),
+      synth.box('final', G, -7.2, -6.4, y - 0.4, y + 0.4, 4.9, 17.5),
+    ];
+    // a side plate in the x-z plane, extruded along y, with a notch for the bracket at z 17.5..17.8
+    const plate = (name: string, y0: number, y1: number): import('./robot-import/synthRobot').Prism => ({
+      name,
+      color: G,
+      base: [[-7.6, y0, 1], [-6.0, y0, 1], [-6.0, y0, 17.5], [-7.25, y0, 17.5], [-7.25, y0, 17.8], [-6.0, y0, 17.8], [-6.0, y0, 18.2], [-7.6, y0, 18.2]].reverse() as import('./robot-import/synthRobot').V3[],
+      extrude: [0, y1 - y0, 0],
+    });
+    const robot = [
+      synth.box('frame', G, -8, 8, -8, 8, 0, 0.5),
+      synth.box('floor', G, -7.8, -5.8, -2.4, 2.4, 0.5, 1),
+      ...slide(5),
+      ...slide(-5),
+      synth.box('bracket', G, -7.25, -6.35, -5.4, 5.4, 17.5, 17.8),
+      plate('plate_l', 1.8, 2.0),
+      plate('plate_r', -2.0, -1.8),
+      synth.cylY('roller', G, -6.8, 9, 0.8, -1.5, 1.5, 20),
+      synth.cylY('shaft', G, -6.8, 9, 0.2, -1.8, 1.8, 12),
+      synth.box('cap', G, -7.1, -6.6, 3.0, 3.5, 17.8, 18.0),
+      synth.box('rail', G, -6.9, 6, 3.0, 3.5, 18.0, 18.2),
+    ];
+    const parts = mk(robot);
+    const names = robot.map((p) => p.name);
+    const id = (n: string): number => names.indexOf(n);
+    const tubes = motion.findBoxTubes(parts, new Set());
+    const groups = [...motion.boxTubeGroups(tubes, 0), { role: 'roller' as const, bodies: [id('roller'), id('shaft')].sort((a, b) => a - b) }];
+    const pay = motion.liftPayload(parts, groups, tubes);
+    const finals = groups.map((g, gi) => ({ g, gi })).filter(({ g }) => g.role === 'slide' && g.follows?.ratio === 2);
+    const [lead] = finals;
+    const carried = [...(pay.carried.get(lead?.gi ?? -1) ?? [])].map((b) => names[b]).sort();
+    check(
+      'lift payload: the bracket on the final stages\' tops and the chute hung on it ride the first final stage; the floor it stands on, the frame and a cap bolted to a rail beyond do not',
+      tubes.length === 2 && finals.length === 2 && pay.carried.size === 1 && J(carried) === J(['bracket', 'plate_l', 'plate_r']),
+      J({ carried, all: [...pay.carried].map(([g, s]) => [g, [...s].map((b) => names[b])]) }),
+    );
+    check('lift payload: the roller between the chute\'s plates rides that stage', pay.riders.get(groups.length - 1) === lead?.gi, J([...pay.riders]));
+    // the same chute standing on the floor with no bracket: nothing to push it, so it stays
+    const bare = mk(robot.filter((p) => p.name !== 'bracket'));
+    const bareNames = robot.filter((p) => p.name !== 'bracket').map((p) => p.name);
+    const bareTubes = motion.findBoxTubes(bare, new Set());
+    const bareGroups = [...motion.boxTubeGroups(bareTubes, 0), { role: 'roller' as const, bodies: [bareNames.indexOf('roller'), bareNames.indexOf('shaft')].sort((a, b) => a - b) }];
+    const barePay = motion.liftPayload(bare, bareGroups, bareTubes);
+    check('lift payload: a chute standing beside the tubes with nothing hanging it from them stays, and so does its roller', barePay.carried.size === 0 && barePay.riders.size === 0, J([...barePay.carried].map(([g, s]) => [g, [...s].map((b) => bareNames[b])])));
   }
   // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
   // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
@@ -36200,6 +36300,36 @@ function impPlayCheck(g: GameId): void {
       JSON.stringify(errs) === JSON.stringify(['not-dsim', 'bad-length', 'not-glb', 'too-short']) && !r3.ok && r3.error === 'newer-version' && !r4.ok && r4.error === 'bad-payload',
       JSON.stringify(errs),
     );
+    const withSetup = (s: object): string => {
+      const r = share.readShareFile(share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'biobuzz', spec: {}, setup: s, name: 'x' } } } }));
+      return r.ok ? 'ok' : r.error;
+    };
+    const goodMotion = [
+      { role: 'wheel', bodies: [3, 1], corner: 0, found: true },
+      { role: 'spin', bodies: [7], drive: 'intake', axis: 'part', axisBody: 7, amount: 2, follows: { group: 0, ratio: -0.5 } },
+      { role: 'fold', bodies: [9], filePose: 'folded', deployDeg: 90, rideOn: 1, flip: false },
+    ];
+    const badApart = ['3', [5, 2], [2, 2], [-1], [1.5], [null], ['3']].map((a) => withSetup({ apart: a }));
+    const badMotion = [
+      {},
+      [{ role: 'laser', bodies: [] }],
+      [{ role: 'wheel' }],
+      [{ role: 'wheel', bodies: [-1] }],
+      [{ role: 'wheel', bodies: [], corner: 4 }],
+      [{ role: 'spin', bodies: [], drive: 'warp' }],
+      [{ role: 'spin', bodies: [], axis: 'sideways' }],
+      [{ role: 'swing', bodies: [], amount: '90' }],
+      [{ role: 'spin', bodies: [], follows: { group: 0, ratio: 1 } }],
+      [{ role: 'spin', bodies: [], rideOn: 3 }],
+      [{ role: 'fold', bodies: [], filePose: 'sideways' }],
+      Array.from({ length: 65 }, () => ({ role: 'roller', bodies: [] })),
+    ].map((m) => withSetup({ motion: m }));
+    check(
+      'robot import: a share file’s left-out parts must be ascending body ids, and its moving parts known roles and choices, finite numbers, body ids and other rows’ indices, or it is refused',
+      withSetup({}) === 'ok' && withSetup({ apart: [2, 5, 9] }) === 'ok' && withSetup({ motion: goodMotion }) === 'ok' &&
+        badApart.every((e) => e === 'bad-payload') && badMotion.every((e) => e === 'bad-payload'),
+      JSON.stringify({ badApart, badMotion }),
+    );
   }
 
   // ---- the boundaries the main chunk relies on --------------------------------------------
@@ -36667,7 +36797,9 @@ function impPlayCheck(g: GameId): void {
   const said = [errs.EXPORT_HINT, errs.stepCutOff('bot.step').message, errs.notStep('bot.step').message, noModel];
   check(
     'robot import (real CAD): the STEP failures say Couldn’t …, name the exact export menus in Onshape, Fusion, SolidWorks and Inventor, and keep the copy rules',
-    said.every((s) => !/'|\.\.\.|\s-\s|"/.test(s)) && /^Couldn’t read bot\.step: the file is cut off\./.test(said[1]) && ['Onshape', 'Fusion', 'SolidWorks', 'Inventor', 'GLB', 'STL'].every((w) => errs.EXPORT_HINT.includes(w)),
+    said.every((s) => !/'|\.\.\.|\s-\s|"/.test(s)) && /^Couldn’t read bot\.step: the file is cut off\./.test(said[1]) && ['Onshape', 'Fusion', 'SolidWorks', 'Inventor', 'STEP'].every((w) => errs.EXPORT_HINT.includes(w)) &&
+      // the editor takes STEP only: a hint to export a mesh would send the player to a refusal
+      !/GLB|STL/.test(errs.EXPORT_HINT),
   );
 
   // ---- 3MF off the main thread ----
@@ -37346,6 +37478,66 @@ function l2DecodeScene(spec: RobotSpec, local: Vec2): { w: World; ball: Artifact
   check('imported mechanisms: BIOBUZZ — two turret heads closer than 6 in block Save', validateImportedMech(twin, 'biobuzz').some((i) => i.code === 'twin-too-close' && i.level === 'block'));
   check('imported mechanisms: BIOBUZZ — a double turret offers both heads', mechHandles('biobuzz', twin).filter((h) => h.key === 'shooter' || h.key === 'shooter2').length === 2);
   check('imported mechanisms: a STANDARD spec has nothing to place and nothing to check', mechHandles('decode', DEFAULT_SPEC).length === 0 && validateImportedMech(DEFAULT_SPEC, 'decode').length === 0 && isDeepStrictEqual(defaultImportedMech('decode', DEFAULT_SPEC), {}));
+}
+
+/**
+ * THE PLACEMENT HANDLES' ONE WRITER (`ui/mechMove.ts`): the top-down map and the 3D view move a
+ * placement through the same function, so the same limits hold for both: a point stays within 12 in
+ * of the footprint's centre, and its height inside the game's window and under the top of the robot
+ * (the height slider's own `zRange`).
+ */
+{
+  const mm = await import('../src/robotImport/ui/mechMove');
+  const hull = [{ x: -8, y: -7 }, { x: 8, y: -7 }, { x: 8, y: 7 }, { x: -8, y: 7 }];
+  const defs = [
+    { key: 'intake:front', kind: 'span', label: 'Intake', field: 'intake', edge: 'front' },
+    { key: 'shooter', kind: 'point', label: 'Launcher', field: 'shooter', zMin: 4, zMax: 18 },
+    { key: 'place', kind: 'point', label: 'Place', field: 'place' },
+  ] as Parameters<typeof mm.moveHandle>[1];
+  const mech = { shooter: { x: 0, y: 0, z: 10 }, place: { x: 1, y: 1, z: 2 }, intakes: [{ edge: 'front' as const, from: -3, to: 3 }] };
+  const at = (key: string, p: { x: number; y: number; z?: number }, top = 15) => mm.moveHandle(mech, defs, hull, key, p, top);
+  const far = at('shooter', { x: 30, y: -30, z: 10 });
+  const high = at('shooter', { x: 1, y: 2, z: 40 });
+  const low = at('shooter', { x: 1, y: 2, z: -5 });
+  const placeHigh = at('place', { x: 1, y: 1, z: 99 }, 12.3);
+  const flat = at('shooter', { x: 2.5, y: -3.25 });
+  check(
+    'mechMove: a point dragged past 12 in from the centre stops at ±12 in x and y; its height stays in the game window and under the robot’s top (quarter inch); the map, with no z, keeps the height',
+    far?.shooter?.x === 12 && far.shooter.y === -12 && far.shooter.z === 10 &&
+      high?.shooter?.z === 15 && low?.shooter?.z === 4 && placeHigh?.place?.z === 12.25 &&
+      flat?.shooter?.x === 2.5 && flat.shooter.y === -3.25 && flat.shooter.z === 10,
+    JSON.stringify({ far: far?.shooter, high: high?.shooter, low: low?.shooter, placeHigh: placeHigh?.place, flat: flat?.shooter }),
+  );
+  check(
+    'mechMove: zRange is the height slider’s range: the game window inside the floor and the robot’s top, never under a quarter inch tall; no height cap without a robot top (the map)',
+    JSON.stringify(mm.zRange({ zMin: 4, zMax: 18 }, 15)) === JSON.stringify({ lo: 4, hi: 15 }) &&
+      JSON.stringify(mm.zRange({}, 12.3)) === JSON.stringify({ lo: 0, hi: 12.25 }) &&
+      JSON.stringify(mm.zRange({ zMin: 4, zMax: 18 }, 3)) === JSON.stringify({ lo: 4, hi: 4.25 }) &&
+      mm.moveHandle(mech, defs, hull, 'shooter', { x: 0, y: 0, z: 17 })?.shooter?.z === 17,
+  );
+  check(
+    'mechMove: the 3D view opens on the launcher, else the first point, else the first span’s middle; nothing to place, nothing picked',
+    mm.firstHandle(defs) === 'shooter' && mm.firstHandle([defs[0], defs[2]]) === 'place' && mm.firstHandle([defs[0]]) === 'intake:front:mid' && mm.firstHandle([]) === null,
+  );
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const ms = readFileSync('src/robotImport/ui/MechanismsStep.tsx', 'utf8').replace(/\r\n/g, '\n');
+  const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8').replace(/\r\n/g, '\n');
+  const gz = readFileSync('src/robotImport/engine/gizmo.ts', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'mechanisms in 3D: the default pick happens once on entering the step (Esc clears it for good), the handles are made again only when they change, a drag in 3D is capped at the robot’s top, and the slider reads the same zRange (source pins)',
+    /if \(autoPicked\.current \|\| !hasMech \|\| !defs\.length\) return;\s*autoPicked\.current = true;\s*if \(!selHandle\) setSelHandle\(firstHandle\(defs\)\);/.test(ed) &&
+      /const gizmoState = useMemo\(/.test(ed) &&
+      /gizmo: gizmoState,/.test(ed) &&
+      /moveHandle\(d\.mech, defs, m\.hull, key, p, m\.heightIn\)/.test(ed) &&
+      /const \{ lo: zLo, hi: top \} = zRange\(selDef, heightIn\);/.test(ms),
+  );
+  check(
+    'mechanisms in 3D: the handles and TransformControls are a lazy chunk the preview fetches when a state carries them; Esc after an X/Y/Z mid-grab still puts the handle back where G was pressed (source pins)',
+    /import\('\.\/gizmo'\)/.test(pv) && !/from 'three\/examples\/jsm\/controls\/TransformControls\.js'/.test(pv) && !/setInset/.test(pv) &&
+      /const origin = grab\.origin;\s*endGrab\(true\);\s*startGrab\(origin\);/.test(gz) &&
+      /if \(!keep\) emitMove\(g\.key, g\.origin\);/.test(gz) &&
+      /origin: origin \?\? start,/.test(gz),
+  );
 }
 
 /** two runs of an import scene, every game, end on one hash (determinism) */
@@ -39617,6 +39809,595 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
 }
 
 /**
+ * MOVING PARTS BY CONTACT, RINGS, AND A CAD WITHOUT WHEELS (`docs/area/robot-import.md`, 2026-11-06).
+ * Synthetic solids in the robot-local frame, a body each: a diagonal ramp arm whose box holds a foot it
+ * never touches, a ramp with a roller standing on it and one only near it, an intake shaft with a hub
+ * whose rollers are bodies of their own beside a plate's bolt circle, and a robot on drive pods with no
+ * wheels in the file under a top that overhangs them.
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const synth = await import('./robot-import/synthRobot');
+  const motion = await import('../src/robotImport/motion');
+  const em = await import('../src/robotImport/ui/editorModel');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  const withBodies = (prisms: import('./robot-import/synthRobot').Prism[], map?: (v: import('./robot-import/synthRobot').V3) => import('./robot-import/synthRobot').V3): P[] =>
+    synth.synthParts(prisms, map).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const sorted = (a: readonly number[]): string => JSON.stringify([...a].sort((x, y) => x - y));
+
+  // ---- a diagonal arm's box holds the chassis under it: only what TOUCHES the arm is mounted on it ----
+  {
+    // the arm: a 0.75 in plate slanting from (0, 7) down to (14, 1), 0.25 in thick along y
+    const arm: import('./robot-import/synthRobot').Prism = { name: 'arm', color: [0.8, 0.2, 0.6], base: [[0, 4, 7], [14, 4, 1], [14, 4, 1.75], [0, 4, 7.75]], extrude: [0, 0.25, 0] };
+    const prisms = [
+      arm,
+      // a bolt on the arm's end face, and a nut on the bolt (it touches the bolt, not the arm)
+      synth.box('bolt', [0.6, 0.6, 0.6], 14, 14.25, 4.05, 4.2, 1.2, 1.5),
+      synth.box('nut', [0.6, 0.6, 0.6], 14.25, 14.3, 4.07, 4.18, 1.25, 1.45),
+      // a part of the chassis under the arm, inside its box, 2.7 in below it
+      synth.box('foot', [0.2, 0.2, 0.2], 3, 5, 4, 4.25, 1, 3),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const took = motion.mountedBodies(parts, id('arm'));
+    check(
+      'moving parts by contact: a click on a diagonal arm takes the bolt on it and the nut on the bolt, never the foot inside its box that it does not touch',
+      sorted(took) === sorted([id('arm'), id('bolt'), id('nut')]),
+      JSON.stringify(took),
+    );
+    const pairs = motion.touchingPairs(parts, new Set(prisms.map((_, i) => i)), motion.CONTACT_IN);
+    check(
+      'moving parts by contact: touchingPairs finds the bolt on the arm and the nut on the bolt, both ways, and nothing for the foot',
+      !!pairs.get(id('arm'))?.has(id('bolt')) && !!pairs.get(id('bolt'))?.has(id('arm')) && !!pairs.get(id('nut'))?.has(id('bolt')) && !pairs.get(id('foot')) && !pairs.get(id('nut'))?.has(id('arm')),
+      JSON.stringify([...pairs].map(([k, v]) => [k, [...v]])),
+    );
+  }
+
+  // ---- a roller rides a folding part only when it touches it --------------------------------------
+  {
+    const prisms = [
+      synth.box('chassis', [0.5, 0.5, 0.5], -8, 8, -7, 7, 1, 4),
+      // the ramp the file shows deployed, flat out in front
+      synth.box('ramp', [0.9, 0.8, 0.2], 8, 18, -6, 6, 0.2, 0.45),
+      // a roller just over the ramp's root, centred inside its box, 0.15 in clear of it
+      synth.cylY('near_roller', [0.2, 0.7, 0.3], 8.6, 1.1, 0.5, -5, 5, 16),
+      // a roller standing on the ramp's far end
+      synth.cylY('ramp_roller', [0.2, 0.7, 0.3], 17, 0.85, 0.4, -5, 5, 16),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const plans = motion.planFolds(parts, [
+      { role: 'ramp', bodies: [id('ramp')] },
+      { role: 'roller', bodies: [id('near_roller')] },
+      { role: 'roller', bodies: [id('ramp_roller')] },
+    ]);
+    check(
+      'moving parts by contact: the roller standing on the ramp rides it; the one only near it (centre inside the ramp’s box, 0.15 in clear) stays on the robot',
+      plans.length === 1 && JSON.stringify(plans[0].riders) === '[2]' && plans[0].bodies.includes(id('ramp_roller')) && !plans[0].bodies.includes(id('near_roller')),
+      JSON.stringify(plans.map((p) => p.riders)),
+    );
+  }
+
+  // ---- a hub's rollers, bodies of their own, turn with it; a plate's bolt circle beside it does not ----
+  {
+    // rollers seated in the hub's rim (each its own body, standing 0.25 in past it)
+    const ring = [0, 1, 2, 3, 4, 5].map((k) => {
+      const a = (k * Math.PI) / 3;
+      return synth.cylY(`roller_${k}`, [0.1, 0.1, 0.1], 1.05 * Math.cos(a), 3 + 1.05 * Math.sin(a), 0.2, 4.1, 4.9, 16);
+    });
+    // a plate's bolt circle beside the hub, outside what turns
+    const bolts = [0, 1, 2, 3].map((k) => {
+      const a = (k * Math.PI) / 2 + 0.3;
+      return synth.cylY(`bolt_${k}`, [0.6, 0.6, 0.6], 0.7 * Math.cos(a), 3 + 0.7 * Math.sin(a), 0.08, 5.5, 5.8, 12);
+    });
+    // a motor face's screws round the hub's long sleeve, within the turning stack's span, touching nothing that turns
+    const screws = [0, 1, 2, 3].map((k) => {
+      const a = (k * Math.PI) / 2 + 0.7;
+      return synth.cylY(`screw_${k}`, [0.5, 0.5, 0.5], 0.75 * Math.cos(a), 3 + 0.75 * Math.sin(a), 0.1, 3.0, 3.6, 12);
+    });
+    const prisms = [
+      synth.cylY('shaft', [0.7, 0.7, 0.7], 0, 3, 0.15, -6, 6, 12),
+      synth.cylY('hub', [0.9, 0.5, 0.1], 0, 3, 1, 4, 5, 32),
+      synth.cylY('sleeve', [0.9, 0.5, 0.1], 0, 3, 0.45, 2.8, 4, 24),
+      synth.box('plate', [0.4, 0.4, 0.4], -2, 2, 5.5, 5.7, 1, 5),
+      ...ring,
+      ...bolts,
+      ...screws,
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const got = motion.coaxialBodies(parts, id('hub'), 'roller');
+    const rollers = ring.map((p) => id(p.name));
+    const boltIds = bolts.map((p) => id(p.name));
+    const screwIds = screws.map((p) => id(p.name));
+    check(
+      'moving parts: a ring of rollers round a hub (each its own body, 0.25 in past the hub) turns with it; the shaft too; not the plate or its bolt circle',
+      rollers.every((b) => got.includes(b)) && got.includes(id('shaft')) && !got.includes(id('plate')) && boltIds.every((b) => !got.includes(b)),
+      JSON.stringify(got),
+    );
+    check('moving parts: screws round the hub’s sleeve, inside what turns but touching none of it, are no ring of it', got.includes(id('sleeve')) && screwIds.every((b) => !got.includes(b)), JSON.stringify(got));
+    const fewer = withBodies(prisms.filter((p) => !/^roller_[2-5]$/.test(p.name)));
+    const two = motion.coaxialBodies(fewer, 1, 'roller');
+    const twoIds = [fewer.findIndex((p) => p.name === 'roller_0'), fewer.findIndex((p) => p.name === 'roller_1')];
+    check('moving parts: two alike bodies are no ring (rotational symmetry needs three that go round)', twoIds.every((b) => !two.includes(b)), JSON.stringify(two));
+  }
+
+  // ---- rollers at the edges the intake is not placed at: intake-sized ones only ----
+  {
+    const prisms = [...synth.synthRobot(), synth.cylY('spool', [0.3, 0.3, 0.3], -6.5, 3, 0.5, 3.5, 6, 16)];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const back = motion.findEdgeRollers(parts, [{ edge: 'back' }], new Set());
+    check('edge rollers: with the intake placed at the back, the front roller (the robot’s width) is still found', back.some((g) => g.bodies.includes(id('intake'))), JSON.stringify(back));
+    const front = motion.findEdgeRollers(parts, [{ edge: 'front' }], new Set());
+    const plain = motion.findRollerGroups(parts, [{ edge: 'back', from: -1e3, to: 1e3 }], new Set());
+    check(
+      'edge rollers: a short spool by the back edge is a roller to the plain search but not an intake roller at an edge the intake is not placed at',
+      plain.some((g) => g.bodies.includes(id('spool'))) && !front.some((g) => g.bodies.includes(id('spool'))),
+      JSON.stringify({ plain, front }),
+    );
+  }
+
+  // ---- no wheels in the file: they are guessed inside the DRIVE BASE, not at the whole box's corners ----
+  {
+    const pods = [
+      // two drive pods and a belly plate hanging 0.05 in off the floor, feet at the pods' ends: three
+      // long floor contacts, the feet joined to their pods
+      synth.box('pod_left', [0.2, 0.2, 0.2], -5, 5, 4.5, 6.5, 0.05, 4),
+      synth.box('pod_right', [0.2, 0.2, 0.2], -5, 5, -6.5, -4.5, 0.05, 4),
+      synth.box('belly', [0.6, 0.6, 0.6], -5, 5, -3, 3, 0.05, 0.2),
+      synth.box('foot_fl', [0.1, 0.1, 0.3], 5, 5.8, 4.5, 6.5, 0, 2),
+      synth.box('foot_fr', [0.1, 0.1, 0.3], 5, 5.8, -6.5, -4.5, 0, 2),
+      synth.box('foot_bl', [0.1, 0.1, 0.3], -5.8, -5, 4.5, 6.5, 0, 2),
+      synth.box('foot_br', [0.1, 0.1, 0.3], -5.8, -5, -6.5, -4.5, 0, 2),
+      // a top that overhangs the base at the back and the front
+      synth.box('top', [0.9, 0.5, 0.1], -8, 9, -5, 5, 9, 10),
+      synth.box('post', [0.5, 0.5, 0.5], -1, 1, -1, 1, 4, 9),
+    ];
+    const parts = withBodies(pods, synth.FRAMES.cadMm);
+    const setup = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+    const m = geo.measureParts(parts, setup, { format: 'stl' }).measurement;
+    const w = m.wheelsUsed ?? [];
+    const o = m.origin;
+    const xs = w.map((p) => p.x - o.x);
+    const ys = w.map((p) => p.y - o.y);
+    check(
+      'no wheels in the file: none detected, and the wheels in force are the guess 2 in inside the drive base’s ends and 1.5 in inside its sides (±3.8, ±5), not the whole box’s corners',
+      m.wheelSource === 'none' && m.wheelsGuessed === true && w.length === 4 && xs.every((x) => Math.abs(Math.abs(x) - 3.8) < 0.02) && ys.every((y) => Math.abs(Math.abs(y) - 5) < 0.02),
+      JSON.stringify({ src: m.wheelSource, w, o }),
+    );
+    check(
+      'no wheels in the file: Review says where they stand and to drag them onto the wheels (a note, not a block)',
+      m.checks.some((c) => c.code === 'few-wheels' && c.level === 'warn' && /corners of the drive base/.test(c.message)) && !m.checks.some((c) => c.level === 'block'),
+      JSON.stringify(m.checks),
+    );
+    const imp = geo.buildDescriptor({ id: 'guess', measurement: m });
+    check('no wheels in the file: the saved robot carries the guessed wheels (the sim would otherwise use the whole box’s corners)', imp.wheels?.length === 4 && imp.wheels.every((p) => Math.abs(Math.abs(p.x) - 3.8) < 0.02), JSON.stringify(imp.wheels));
+    check('no wheels in the file: Home puts them back at the guess', JSON.stringify(em.wheelHomes(m, 'rect')) === JSON.stringify(m.wheelsUsed));
+    const placed = geo.measureParts(parts, { ...setup, wheels: [{ x: 3, y: 5 }, { x: 3, y: -5 }, { x: -3, y: 5 }, { x: -3, y: -5 }] }, { format: 'stl' }).measurement;
+    check('no wheels in the file: wheels placed by hand stand, and nothing says they were guessed', placed.wheelSource === 'manual' && !placed.wheelsGuessed && placed.wheelsUsed?.[0].x === 3);
+  }
+
+  // ---- the front from the build, when the geometry left it assumed (`frontFromBuild`) ----
+  {
+    const e = (f: number, b: number, l: number, r: number) => ({ front: f, back: b, left: l, right: r });
+    const none = { x: 0, y: 0 };
+    check('front from the build: a ramp the file shows deployed at the front is the front (no turn)', em.frontFromBuild({ intake: { edge: 'front', upright: false, ramp: true }, edges: e(2.5, 2, 0, 0) }, none) === 0);
+    check('front from the build: a ramp at the back turns the robot half round', em.frontFromBuild({ intake: { edge: 'back', upright: false, ramp: true }, edges: e(1, 1.5, 0, 0) }, none) === 2);
+    check('front from the build: rollers only at the left turn it a quarter (left to front)', em.frontFromBuild({ intake: { edge: 'left', upright: false }, edges: e(0, 0, 2, 0) }, none) === 3);
+    check('front from the build: ...but not when its wheels roll along x (an axle about y)', em.frontFromBuild({ intake: { edge: 'left', upright: false }, edges: e(0, 0, 2, 0) }, { x: 0, y: 4 }) === null);
+    check('front from the build: a tie between two edges with no ramp says nothing', em.frontFromBuild({ intake: { edge: 'front', upright: false }, edges: e(2, 2, 0, 0) }, none) === null);
+    check('front from the build: no intake, or no roller, says nothing', em.frontFromBuild({ intake: null, edges: e(0, 0, 0, 0) }, none) === null);
+  }
+
+  // ---- the placements follow the model frame when a fold moves it (`followFrame`), and a single
+  // turret's launcher sits on the ring the model turns it about (`turretOnRing`; owner, 2026-11-06:
+  // "The turret is not turning around the correct point") ----
+  {
+    const prisms = [
+      synth.cylY('wheel_l_f', [0.1, 0.1, 0.1], 5, 2, 2, 5.5, 6.5, 24),
+      synth.cylY('wheel_r_f', [0.1, 0.1, 0.1], 5, 2, 2, -6.5, -5.5, 24),
+      synth.cylY('wheel_l_b', [0.1, 0.1, 0.1], -5, 2, 2, 5.5, 6.5, 24),
+      synth.cylY('wheel_r_b', [0.1, 0.1, 0.1], -5, 2, 2, -6.5, -5.5, 24),
+      synth.box('chassis', [0.5, 0.5, 0.5], -7, 7, -5.5, 5.5, 1, 4),
+      // the turret: a ring off the middle, and a head standing on it
+      synth.cylZ('turret_ring', [0.8, 0.6, 0.2], 1.5, 0, 3, 4, 4.5, 32),
+      synth.box('turret_head', [0.8, 0.6, 0.2], -0.5, 3.5, -1.5, 1.5, 4.5, 9),
+      // the ramp the file shows deployed, lying out in front
+      synth.box('ramp', [0.9, 0.8, 0.2], 7, 17, -5, 5, 0.1, 0.35),
+    ];
+    const parts = withBodies(prisms, synth.FRAMES.cadMm);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const setup = { ...geo.defaultImportSetup(), units: 'mm' as const, up: '+z' as const, yaw: 0 as const };
+    const turret = { role: 'turret' as const, bodies: [id('turret_ring'), id('turret_head')] };
+    const mA = geo.measureParts(parts, { ...setup, motion: [turret] }, { format: 'stl' }).measurement;
+    const mB = geo.measureParts(parts, { ...setup, motion: [turret, { role: 'ramp', bodies: [id('ramp')] }] }, { format: 'stl' }).measurement;
+    const ringA = em.measuredTurretRing(mA);
+    const ringB = em.measuredTurretRing(mB);
+    type Doc = import('../src/robotImport/ui/editorModel').EditorDoc;
+    const doc = {
+      setup: { ...setup, wheels: [{ x: 4, y: 5 }, { x: 4, y: -5 }, { x: -6, y: 5 }, { x: -6, y: -5 }] },
+      mech: { shooter: { x: ringA!.x, y: ringA!.y, z: 9 }, intakes: [{ edge: 'front' as const, from: -4, to: 4 }, { edge: 'left' as const, from: -3, to: 1 }] },
+      cadMech: { shooter: { x: ringA!.x, y: ringA!.y, z: 9 } },
+      mechAt: [...mA.sourceToModel],
+    } as unknown as Doc;
+    const moved = mB.sourceToModel[12] - mA.sourceToModel[12];
+    const f = em.followFrame(doc, mB.sourceToModel);
+    const s = f.mech!.shooter!;
+    check(
+      'placements follow the frame: folding the ramp moves the model frame (the box loses the ramp), and the launcher placed on the turret ring before the fold is on it after',
+      !!ringA && !!ringB && Math.abs(moved) > 2 && Math.abs(ringB.x - ringA.x - moved) < 1e-3 && Math.abs(s.x - ringB.x) < 1e-3 && Math.abs(s.y - ringB.y) < 1e-3 && s.z === 9,
+      JSON.stringify({ moved, ringA, ringB, s }),
+    );
+    const robot = geo.mechModelToRobot(f.mech!, mB.origin).shooter!;
+    check(
+      'placements follow the frame: ...so the saved turret centre is the ring’s, robot-local (1.5 in ahead of the drive base’s middle)',
+      Math.abs(robot.x - (ringB!.x - mB.origin.x)) < 0.02 && Math.abs(robot.x - 1.5) < 0.05 && Math.abs(robot.y) < 0.02,
+      JSON.stringify(robot),
+    );
+    check(
+      'placements follow the frame: a span moves along its own edge (a front span by the y move, a left span by the x move), the home placements and placed wheels move too, and the frame is recorded',
+      f.mech!.intakes![0].from === -4 + (mB.sourceToModel[13] - mA.sourceToModel[13]) &&
+        f.mech!.intakes![1].from === -3 + moved &&
+        Math.abs(f.cadMech!.shooter!.x - ringB!.x) < 1e-3 &&
+        f.setup.wheels![0].x === 4 + moved &&
+        em.sameFrame(f.mechAt, mB.sourceToModel),
+      JSON.stringify({ intakes: f.mech!.intakes, wheels: f.setup.wheels }),
+    );
+    check('placements follow the frame: the frame they are already in returns the same document', em.followFrame(f, mB.sourceToModel) === f);
+    const turned = [...mB.sourceToModel];
+    turned[0] = -turned[0];
+    const t = em.followFrame(f, turned);
+    check('placements follow the frame: a frame turned or scaled (cleared by `frameMoved`) is only recorded, nothing is carried', t.mech === f.mech && em.sameFrame(t.mechAt, turned));
+    check(
+      'placements follow the frame: an older draft with no frame recorded is taken to be in the frame it opens in',
+      (() => {
+        const r = em.followFrame({ ...doc, mechAt: undefined }, mB.sourceToModel);
+        return r.mech === doc.mech && em.sameFrame(r.mechAt, mB.sourceToModel);
+      })(),
+    );
+    // undo puts the placements back WITH the frame they are written in
+    const { restoreDoc } = await import('../src/robotImport/ui/editorHistory');
+    const back = restoreDoc(doc, f);
+    check('placements follow the frame: undo restores the frame with the placements (else the next measurement would move them twice)', back.mech === doc.mech && back.cadMech === doc.cadMech && em.sameFrame(back.mechAt, mA.sourceToModel));
+    // the launcher onto the measured ring: once per ring, a later drag kept
+    const off = { ...f, mech: { ...f.mech!, shooter: { x: ringB!.x - 2.6, y: 0.4, z: 9 } } } as Doc;
+    const on = em.turretOnRing(off, ringB);
+    const dragged = em.turretOnRing({ ...on, mech: { ...on.mech!, shooter: { ...on.mech!.shooter!, x: on.mech!.shooter!.x + 1 } } }, ringB);
+    const again = em.turretOnRing(dragged, { x: ringB!.x + 0.5, y: ringB!.y });
+    check(
+      'turret on its ring: a launcher placed off the measured ring goes onto it (its height kept); a later drag stays until the ring itself moves, then it goes onto the new one',
+      on.mech!.shooter!.x === ringB!.x && on.mech!.shooter!.y === ringB!.y && on.mech!.shooter!.z === 9 &&
+        dragged.mech!.shooter!.x === ringB!.x + 1 &&
+        again.mech!.shooter!.x === ringB!.x + 0.5,
+      JSON.stringify({ on: on.mech!.shooter, dragged: dragged.mech!.shooter, again: again.mech!.shooter }),
+    );
+    const two = { motion: [...(mB.motion ?? []), ...(mB.motion ?? []).filter((p) => p.role === 'turret')] };
+    check('turret on its ring: two turret parts name no one ring', em.measuredTurretRing(two) === null && em.measuredTurretRing(mB) !== null);
+  }
+
+  // ---- the intake's later stages inside the robot: compliant wheels on plain shafts (`findStageRollers`;
+  // owner, 2026-11-06: "You still missed part of the intake/transfer rollers further inside the robot") ----
+  {
+    type V3 = import('./robot-import/synthRobot').V3;
+    // a cylinder along x: `cylY` with x and y swapped (the base reversed to stay CCW about its extrusion)
+    const cylX = (name: string, color: V3, cy: number, cz: number, r: number, x0: number, x1: number, n = 16): import('./robot-import/synthRobot').Prism => {
+      const p = synth.cylY(name, color, cy, cz, r, x0, x1, n);
+      return { ...p, base: p.base.map(([x, y, z]) => [y, x, z] as V3).reverse(), extrude: [p.extrude[1], p.extrude[0], p.extrude[2]] };
+    };
+    const prisms = [
+      // the intake roller across the front edge, a bar on its shaft
+      synth.cylY('intake_roller', [1, 0.5, 0], 6.8, 1.6, 1, -6, 6, 20),
+      synth.cylY('intake_shaft', [0.7, 0.7, 0.7], 6.8, 1.6, 0.2, -7, 7, 12),
+      // the first stage 3.3 in behind it, deeper than an edge roller sits: a compliant wheel on a plain shaft
+      synth.cylY('stage1_wheel', [0.2, 0.7, 0.3], 3.5, 2.2, 1, -1, 1, 20),
+      synth.cylY('stage1_shaft', [0.7, 0.7, 0.7], 3.5, 2.2, 0.2, -5, 5, 12),
+      // the next stage runs ACROSS the robot past the first one's end, 2 in above it: its shaft along x
+      cylX('stage2_wheel', [0.2, 0.7, 0.3], 2, 4.2, 0.9, 0.5, 1.5, 20),
+      cylX('stage2_shaft', [0.7, 0.7, 0.7], 2, 4.2, 0.2, -2, 4, 12),
+      // a wheel on a shaft 4.9 in from the nearest stage: handed nothing
+      synth.cylY('far_wheel', [0.2, 0.2, 0.9], -6.5, 2.2, 1, -1, 1, 20),
+      synth.cylY('far_shaft', [0.7, 0.7, 0.7], -6.5, 2.2, 0.2, -4, 4, 12),
+      // a wheel on an upright shaft beside the first stage: not level, not a stage
+      synth.cylZ('up_wheel', [0.9, 0.2, 0.2], 3.5, -3, 1, 4, 4.6, 20),
+      synth.cylZ('up_shaft', [0.7, 0.7, 0.7], 3.5, -3, 0.2, 3, 6, 12),
+      // a spool on a servo's 0.6-in screw beside the first stage, 2.6 in from it and 2.2 in off the path: no shaft of its own
+      synth.cylY('spool', [0.9, 0.6, 0.2], 3, 4.8, 1, -3, -2, 20),
+      synth.cylY('spool_screw', [0.6, 0.6, 0.6], 3, 4.8, 0.1, -3.5, -2.9, 12),
+      // a wheel on a long shaft running beside the first stage's end, 6.5 in off the path to the launcher
+      cylX('side_wheel', [0.9, 0.2, 0.9], -6.5, 4, 0.8, 1, 2, 20),
+      cylX('side_shaft', [0.7, 0.7, 0.7], -6.5, 4, 0.2, 0, 5, 12),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const edge = motion.findRollerGroups(parts, [{ edge: 'front', from: -6, to: 6 }], new Set());
+    const taken = new Set(edge.flatMap((g) => g.bodies));
+    // the launcher above the middle of the robot
+    const launcher: [number, number, number] = [0, 0, 9];
+    const stages = motion.findStageRollers(parts, edge, taken, 2.8, launcher);
+    const named = (g: { bodies: number[] }): string => sorted(g.bodies);
+    check(
+      'intake stages: the edge finder takes the intake roller and nothing deeper (else the next check finds nothing new)',
+      edge.length === 1 && named(edge[0]) === sorted([id('intake_roller'), id('intake_shaft')]),
+      JSON.stringify(edge.map((g) => g.bodies)),
+    );
+    check(
+      'intake stages: a compliant wheel on a plain shaft 3.3 in behind the intake roller is its next stage, and the stage running across the robot past that one’s end is the one after; a wheel 4.9 in from every stage, one on an upright shaft, a spool on a servo’s screw and a wheel 6.5 in off the path to the launcher are not',
+      stages.length === 2 &&
+        stages.every((g) => g.role === 'roller' && g.found) &&
+        named(stages[0]) === sorted([id('stage1_wheel'), id('stage1_shaft')]) &&
+        named(stages[1]) === sorted([id('stage2_wheel'), id('stage2_shaft')]),
+      JSON.stringify(stages.map((g) => g.bodies.map((b) => prisms[b].name))),
+    );
+    check(
+      'intake stages: with no roller to start from, or no launcher to carry an element to, nothing is a stage',
+      motion.findStageRollers(parts, [], new Set(), 2.8, launcher).length === 0 && motion.findStageRollers(parts, edge, taken, 2.8, null).length === 0,
+    );
+    // ...and each rule is what keeps its part out: a long shaft under the spool, the path past the side wheel
+    {
+      const withShaft = withBodies([...prisms, synth.cylY('spool_shaft', [0.6, 0.6, 0.6], 3, 4.8, 0.2, -4, -1.5, 12)]);
+      const st2 = motion.findStageRollers(withShaft, motion.findRollerGroups(withShaft, [{ edge: 'front', from: -6, to: 6 }], new Set()), taken, 2.8, launcher);
+      const sideOn = motion.findStageRollers(parts, edge, taken, 2.8, [0, -6.5, 9]);
+      check(
+        'intake stages: the spool on a shaft of its own is a stage, and the side wheel is one when the launcher stands over it (else the two refusals above test nothing)',
+        st2.some((g) => g.bodies.includes(id('spool'))) && sideOn.some((g) => g.bodies.includes(id('side_wheel'))),
+        JSON.stringify({ spool: st2.map((g) => g.bodies.map((b) => b < prisms.length ? prisms[b].name : 'spool_shaft')), side: sideOn.map((g) => g.bodies.map((b) => prisms[b].name)) }),
+      );
+    }
+    check('the finders’ version moved (stowed intake arms), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 9);
+  }
+
+  // ---- a spinning part turns about its own shaft, not the middle of its box (`onOwnShaft`; owner,
+  // 2026-11-06: "One of the intake rollers are also spinning around the wrong axis") ----
+  {
+    type V3 = import('./robot-import/synthRobot').V3;
+    // three paddles 120° apart on a hub, on a shaft along y at (x 0, z 3): the paddles' box is off the shaft
+    const paddle = (k: number): import('./robot-import/synthRobot').Prism => {
+      const a = (k * 2 * Math.PI) / 3;
+      const c = Math.cos(a);
+      const sn = Math.sin(a);
+      const pt = (r: number, w: number, y: number): V3 => [r * c - w * sn, y, 3 + r * sn + w * c];
+      return { name: `paddle_${k}`, color: [0.9, 0.5, 0.1], base: [pt(0.3, -0.12, -1), pt(1.5, -0.12, -1), pt(1.5, 0.12, -1), pt(0.3, 0.12, -1)], extrude: [0, 2, 0] };
+    };
+    const prisms = [synth.cylY('shaft', [0.7, 0.7, 0.7], 0, 3, 0.16, -4, 4, 12), synth.cylY('hub', [0.4, 0.4, 0.4], 0, 3, 0.4, -1, 1, 16), paddle(0), paddle(1), paddle(2)];
+    const parts = withBodies(prisms);
+    const bodies = prisms.map((_, i) => i);
+    const fit = motion.fitRound(parts, bodies)!;
+    const [part] = motion.deriveMotion(parts, [{ role: 'roller', bodies }], [], [0, 0, 0]);
+    const offFit = Math.hypot(fit.pivot[0], fit.pivot[2] - 3);
+    const offPart = Math.hypot(part.pivot[0], part.pivot[2] - 3);
+    check(
+      'roller on its shaft: three paddles put the box middle off the shaft (else this tests nothing), and the derived axle runs down the shaft',
+      offFit > 0.1 && offPart < 1e-3 && Math.abs(part.radius - 1.5) < 0.05,
+      `box middle ${offFit.toFixed(3)} in off, derived ${offPart.toFixed(4)} in off, r ${part.radius.toFixed(3)}`,
+    );
+  }
+
+  // ---- a hinged part turns on the rod it is bored round, and carries what it alone holds (`hingeRod`,
+  // `ridersOf`; owner, 2026-11-06: "The flower ramp's pivot is incorrect, there are floating parts") ----
+  {
+    type V3x = import('./robot-import/synthRobot').V3;
+    // a cylinder along x: `cylY` with x and y swapped (the base reversed to stay CCW about its extrusion)
+    const cylX2 = (name: string, color: V3x, cy: number, cz: number, r: number, x0: number, x1: number, n = 16): import('./robot-import/synthRobot').Prism => {
+      const p = synth.cylY(name, color, cy, cz, r, x0, x1, n);
+      return { ...p, base: p.base.map(([x, y, z]) => [y, x, z] as V3x).reverse(), extrude: [p.extrude[1], p.extrude[0], p.extrude[2]] };
+    };
+    const prisms = [
+      synth.box('chassis', [0.5, 0.5, 0.5], -8, 3, -5, 5, 1, 6),
+      // the two side plates the pivot bolts stand off, reaching past the ramp's box (the robot)
+      synth.box('plate_l', [0.5, 0.5, 0.5], -8, 4, 5, 5.3, 0, 7),
+      synth.box('plate_r', [0.5, 0.5, 0.5], -8, 4, -5.3, -5, 0, 7),
+      // the ramp: two arms from x 2 (a lever behind the bolt) out to x 12, and a deck at the tips
+      synth.box('arm_l', [0.9, 0.2, 0.7], 2, 12, 5.3, 5.6, 0.3, 5),
+      synth.box('arm_r', [0.9, 0.2, 0.7], 2, 12, -5.6, -5.3, 0.3, 5),
+      synth.box('deck', [0.9, 0.2, 0.7], 9, 12, -5.3, 5.3, 0.3, 0.6),
+      // each arm's bushing round its pivot bolt at (x 3, z 4) and round the crossbar at (x 6, z 3.5)
+      synth.cylY('bush_l', [0.9, 0.2, 0.7], 3, 4, 0.26, 5.3, 5.6, 16),
+      synth.cylY('bush_r', [0.9, 0.2, 0.7], 3, 4, 0.26, -5.6, -5.3, 16),
+      synth.cylY('xbush_l', [0.9, 0.2, 0.7], 6, 3.5, 0.26, 5.3, 5.6, 16),
+      synth.cylY('xbush_r', [0.9, 0.2, 0.7], 6, 3.5, 0.26, -5.6, -5.3, 16),
+      // the pivot bolts, from each side plate out through its arm (static: they touch the plates)
+      synth.cylY('bolt_l', [0.6, 0.6, 0.6], 3, 4, 0.2, 5.0, 5.8, 12),
+      synth.cylY('bolt_r', [0.6, 0.6, 0.6], 3, 4, 0.2, -5.8, -5.0, 12),
+      // the crossbar between the arms: it touches the arms and nothing else
+      synth.cylY('crossbar', [0.6, 0.6, 0.6], 6, 3.5, 0.2, -5.3, 5.3, 12),
+    ];
+    const parts = withBodies(prisms);
+    const id = (n: string): number => prisms.findIndex((p) => p.name === n);
+    const ramp = { role: 'ramp' as const, bodies: ['arm_l', 'arm_r', 'deck', 'bush_l', 'bush_r', 'xbush_l', 'xbush_r'].map(id) };
+    const [plan] = motion.planFolds(parts, [ramp]);
+    check(
+      'ramp hinge: on the bolts it is bored round at (x 3, z 4), not its innermost point (x 2) or the crossbar it is also bored round (x 6, further out)',
+      !!plan && Math.abs(plan.hinge[0] - 3) < 0.02 && Math.abs(plan.hinge[2] - 4) < 0.02,
+      JSON.stringify(plan?.hinge),
+    );
+    const add = motion.ridersOf(parts, [ramp]).get(0) ?? [];
+    check(
+      'ramp riders: the crossbar between the arms (in neither arm’s box) folds with them; the pivot bolts and the side plates, which reach the robot, do not',
+      JSON.stringify(add) === JSON.stringify([id('crossbar')]),
+      JSON.stringify(add.map((b) => prisms[b].name)),
+    );
+    const [plan2] = motion.planFolds(parts, [{ ...ramp, bodies: [...ramp.bodies, id('crossbar')].sort((a, b) => a - b) }]);
+    check('ramp hinge: ...and with the crossbar in the ramp, still on the bolts', !!plan2 && Math.abs(plan2.hinge[0] - 3) < 0.02, JSON.stringify(plan2?.hinge));
+    // a turret, and two screws under its ring that touch only it
+    const tPrisms = [
+      synth.box('frame', [0.5, 0.5, 0.5], -9, 9, -7, 7, 1, 3),
+      synth.cylZ('ring', [0.2, 0.6, 1], 0, 0, 3, 4, 4.4, 24),
+      synth.box('head', [0.2, 0.6, 1], -2, 2, -1.5, 1.5, 4.4, 9),
+      // two screws hanging from the ring, clear of the frame below it
+      synth.cylZ('screw_a', [0.6, 0.6, 0.6], 1.5, 1.5, 0.1, 3.4, 4.0, 8),
+      synth.cylZ('screw_b', [0.6, 0.6, 0.6], -1.5, -1.5, 0.1, 3.4, 4.0, 8),
+      // a bracket on the frame that stands under the ring without touching it
+      synth.box('bracket', [0.5, 0.5, 0.5], 2.4, 2.8, -0.2, 0.2, 3, 3.9),
+    ];
+    const tParts = withBodies(tPrisms);
+    const tid = (n: string): number => tPrisms.findIndex((p) => p.name === n);
+    const tAdd = motion.ridersOf(tParts, [{ role: 'turret', bodies: [tid('ring'), tid('head')] }]).get(0) ?? [];
+    // ...and what feeds its flywheel inside it (`findLauncherFeed`)
+    const fPrisms = [
+      synth.cylZ('ring', [0.2, 0.6, 1], 0, 0, 3, 4, 4.4, 24),
+      synth.box('plate', [0.2, 0.6, 1], -3, 3, -2, 2, 4.4, 4.6),
+      // the flywheel, a disc on a shaft along y at (x 1.5, z 7)
+      synth.cylY('flywheel', [0.1, 0.8, 0.2], 1.5, 7, 1.4, -0.4, 0.4, 32),
+      synth.cylY('fly_shaft', [0.7, 0.7, 0.7], 1.5, 7, 0.16, -1.5, 1.5, 12),
+      // a feed roller on its own shaft, parallel, 2.5 in back
+      synth.cylY('feed_roller', [1, 0.5, 0], -1, 6, 0.55, -1, 1, 20),
+      synth.cylY('feed_shaft', [0.7, 0.7, 0.7], -1, 6, 0.16, -1.6, 1.6, 12),
+      // a round knob on a short screw, parallel: no shaft of its own
+      synth.cylY('knob', [0.6, 0.6, 0.6], -2.4, 5.4, 0.5, 1.2, 1.6, 16),
+      synth.cylY('knob_screw', [0.6, 0.6, 0.6], -2.4, 5.4, 0.1, 1.2, 1.9, 8),
+      // a wheel across the flywheel's axle (along x): not a feed
+      cylX2('cross_wheel', [0.6, 0.6, 0.6], 0, 5.2, 0.5, -0.4, 0.4, 16),
+      cylX2('cross_shaft', [0.6, 0.6, 0.6], 0, 5.2, 0.16, -1.5, 1.5, 8),
+    ];
+    const fParts = withBodies(fPrisms);
+    const fid = (n: string): number => fPrisms.findIndex((p) => p.name === n);
+    const flyRow = { role: 'flywheel' as const, bodies: [fid('flywheel'), fid('fly_shaft')] };
+    const turretBodies = fPrisms.map((_, i) => i).filter((i) => !flyRow.bodies.includes(i));
+    const feed = motion.findLauncherFeed(fParts, turretBodies, [flyRow], new Set(flyRow.bodies));
+    check(
+      'launcher feed: a roller on its own shaft inside the turret, parallel to the flywheel, spins; a knob on a short screw and a wheel across the flywheel’s axle do not',
+      feed.length === 1 && feed[0].role === 'roller' && JSON.stringify(feed[0].bodies) === JSON.stringify([fid('feed_roller'), fid('feed_shaft')].sort((a, b) => a - b)),
+      JSON.stringify(feed.map((g) => g.bodies.map((b) => fPrisms[b].name))),
+    );
+    check(
+      'turret riders: two screws under the ring that touch only it turn with it; a bracket on the frame below does not',
+      JSON.stringify(tAdd) === JSON.stringify([tid('screw_a'), tid('screw_b')].sort((a, b) => a - b)),
+      JSON.stringify(tAdd.map((b) => tPrisms[b].name)),
+    );
+    // what stands within the turret's reach above its ring but is bolted to something else (owner,
+    // 2026-11-07, Offset's robot: the turret took the top of the Box Tube's carriage beside it)
+    const rPrisms = [
+      synth.box('frame', [0.5, 0.5, 0.5], -9, 9, -7, 7, 1, 3),
+      synth.cylZ('ring', [0.2, 0.6, 1], 0, 0, 3, 4, 4.4, 24),
+      synth.box('head', [0.2, 0.6, 1], -2, 2, -1.5, 1.5, 4.4, 9),
+      // a screw in the head's top, touching only the head
+      synth.cylZ('head_screw', [0.6, 0.6, 0.6], 0, 0, 0.1, 9, 9.4, 8),
+      // a post from the frame up beside the turret, and the cap on its top: inside the turret's reach
+      // (ring radius + 3) and above its ring, bolted to the post, which starts below the ring
+      synth.box('post', [0.5, 0.5, 0.5], 4.2, 4.8, -0.3, 0.3, 3, 10),
+      synth.box('cap', [0.5, 0.5, 0.5], 3.9, 5.1, -0.6, 0.6, 10, 10.4),
+    ];
+    const rParts = withBodies(rPrisms);
+    const rid = (n: string): number => rPrisms.findIndex((p) => p.name === n);
+    const rTur = motion.findTurretGroup(rParts, [0, 0, 8], new Set());
+    check(
+      'turret: the cap of a post beside it, within its reach above the ring but bolted to the post, does not turn with it; the head and a screw in it do',
+      !!rTur && rTur.bodies.includes(rid('ring')) && rTur.bodies.includes(rid('head')) && rTur.bodies.includes(rid('head_screw')) && !rTur.bodies.includes(rid('cap')),
+      JSON.stringify(rTur?.bodies.map((b) => rPrisms[b].name)),
+    );
+  }
+
+  // ---- a robot that takes in at both ends (`readBuild` spans and `both`, `buildFromCad`; owner,
+  // 2026-11-06: "There are also two intakes: front and back, but the back intake isnt even intaking") ----
+  {
+    const prisms = [
+      synth.box('chassis', [0.5, 0.5, 0.5], -7, 7, -7, 7, 1, 6),
+      // a full-width roller at each end, on its shaft
+      synth.cylY('front_roller', [1, 0.5, 0], 7.6, 2, 0.9, -6.5, 6.5, 20),
+      synth.cylY('front_shaft', [0.7, 0.7, 0.7], 7.6, 2, 0.2, -7, 7, 12),
+      synth.cylY('back_roller', [1, 0.5, 0], -7.6, 2, 0.9, -6.5, 6.5, 20),
+      synth.cylY('back_shaft', [0.7, 0.7, 0.7], -7.6, 2, 0.2, -7, 7, 12),
+    ];
+    const parts = withBodies(prisms);
+    const cad = motion.readBuild(parts, new Set());
+    check(
+      'two intakes: rollers at both ends read as both, each end’s span the roller’s own',
+      !!cad.intake?.both && !!cad.spans?.front && !!cad.spans?.back && Math.abs(cad.spans.front[0] + 7) < 0.01 && Math.abs(cad.spans.back[1] - 7) < 0.01,
+      JSON.stringify({ intake: cad.intake, spans: cad.spans }),
+    );
+    const base = coerceSpec({ ...DEFAULT_SPEC }, undefined, 'biobuzz');
+    const r = em.buildFromCad('biobuzz', base, { ...cad, intake: { ...cad.intake!, ramp: true, rampEdge: 'front' } });
+    const ints = r?.mech?.intakes ?? [];
+    check(
+      'two intakes: the build takes in front and back, each mouth spans its roller, and the ramp is the front’s alone',
+      r?.spec.intakeMount === 'frontback' &&
+        ints.length === 2 &&
+        ints.find((i) => i.edge === 'front')?.ramp === true &&
+        !ints.find((i) => i.edge === 'back')?.ramp &&
+        r.set[0] === 'a ramp at the front and rollers at the back',
+      JSON.stringify({ mount: r?.spec.intakeMount, ints, set: r?.set }),
+    );
+    // A STOWED INTAKE ARM (`findIntakeArm`; owner, 2026-11-08, Offset's front arms: "do they not have a
+    // flower ramp? I thought they did"): the outer roller rides two plates that swing on the inner
+    // roller's shaft, each lying flat against a frame plate beside it, raised inside the frame
+    {
+      const G2: [number, number, number] = [0.6, 0.6, 0.6];
+      const armBot = (held: 'arm' | 'frame') => [
+        synth.box('frame', G2, -8, 4, -5.5, 5.5, 1, 3),
+        // the frame's side plates, to just past the pivot (the arm plates lie flat against them there)
+        synth.box('side_l', G2, -8, held === 'frame' ? 8.6 : 5, 5.8, 6.0, 0, 4.5),
+        synth.box('side_r', G2, -8, held === 'frame' ? 8.6 : 5, -6.0, -5.8, 0, 4.5),
+        synth.cylY('inner_roller', G2, 5, 4, 1.0, -5, 5, 20),
+        synth.cylY('inner_shaft', G2, 5, 4, 0.2, held === 'frame' ? -5.8 : -5.6, held === 'frame' ? 5.8 : 5.6, 12),
+        synth.cylY('outer_roller', G2, 8, 4, 0.9, -5, 5, 20),
+        synth.cylY('outer_shaft', G2, 8, 4, 0.2, held === 'frame' ? -5.8 : -5.6, held === 'frame' ? 5.8 : 5.6, 12),
+        ...(held === 'arm' ? [synth.box('arm_l', G2, 4.6, 8.6, 5.6, 5.8, 3.5, 4.5), synth.box('arm_r', G2, 4.6, 8.6, -5.8, -5.6, 3.5, 4.5)] : []),
+      ];
+      const armPrisms = armBot('arm');
+      const ap = withBodies(armPrisms);
+      const an = (n: string): number => armPrisms.findIndex((p) => p.name === n);
+      const rollers = [
+        { role: 'roller' as const, bodies: [an('inner_roller'), an('inner_shaft')] },
+        { role: 'roller' as const, bodies: [an('outer_roller'), an('outer_shaft')] },
+      ];
+      const arm = motion.findIntakeArm(ap, rollers, 'front', new Set());
+      check(
+        'stowed arm: the outer roller rides two plates swinging on the inner roller\'s shaft (flat against the frame plates, which only slide past), deploying until the roller is 1 in off the floor',
+        !!arm && JSON.stringify(arm.bodies) === JSON.stringify([an('arm_l'), an('arm_r')].sort((a, b) => a - b)) && arm.shaft === an('inner_shaft') && Math.abs(arm.pivot[0] - 5) < 0.01 && Math.abs(arm.pivot[2] - 4) < 0.01 && arm.deployDeg === 44,
+        JSON.stringify(arm && { bodies: arm.bodies.map((b) => armPrisms[b].name), shaft: arm.shaft, pivot: arm.pivot, deploy: arm.deployDeg }),
+      );
+      const fixedPrisms = armBot('frame');
+      const fp = withBodies(fixedPrisms);
+      const fn = (n: string): number => fixedPrisms.findIndex((p) => p.name === n);
+      const fixedArm = motion.findIntakeArm(
+        fp,
+        [
+          { role: 'roller', bodies: [fn('inner_roller'), fn('inner_shaft')] },
+          { role: 'roller', bodies: [fn('outer_roller'), fn('outer_shaft')] },
+        ],
+        'front',
+        new Set(),
+      );
+      check('stowed arm: the same rollers held by the frame\'s own side plates ride no arm', fixedArm === null, JSON.stringify(fixedArm));
+      const armRead = motion.readBuild(ap, new Set());
+      const fixedRead = motion.readBuild(fp, new Set());
+      check(
+        'stowed arm: the build reads a ramp at the front where the arm is, and a ground intake where the frame holds the rollers',
+        armRead.intake?.edge === 'front' && armRead.intake.ramp === true && armRead.intake.rampEdge === 'front' && fixedRead.intake?.edge === 'front' && !fixedRead.intake.ramp,
+        JSON.stringify({ arm: armRead.intake, fixed: fixedRead.intake }),
+      );
+      // the ramp group swings on the shaft it names (`axisBody`), not its lowest band
+      const [plan] = motion.planFolds(ap, [{ role: 'ramp', bodies: arm?.bodies ?? [], filePose: 'folded', deployDeg: arm?.deployDeg, axisBody: arm?.shaft }]);
+      check(
+        'stowed arm: it swings on the shaft it names, down by its own deploy angle',
+        !!plan && Math.abs(plan.hinge[0] - 5) < 0.01 && Math.abs(plan.hinge[2] - 4) < 0.01 && Math.abs(plan.deploy - (44 * Math.PI) / 180) < 1e-9 && plan.angle === 0,
+        JSON.stringify(plan && { hinge: plan.hinge, deploy: plan.deploy, angle: plan.angle }),
+      );
+    }
+    // one end only stays one end
+    const oneEnd = withBodies(prisms.filter((p) => !p.name.startsWith('back')));
+    const one = motion.readBuild(oneEnd, new Set());
+    check('two intakes: a roller at one end only is one intake', !!one.intake && !one.intake.both, JSON.stringify(one.intake));
+  }
+
+  // ---- a default nobody moved is defaulted again on the model as it is now (`withoutDefaults`) ----
+  {
+    const auto = { intakes: [{ edge: 'front' as const, from: -6.39, to: 6.39 }], shooter: { x: 1, y: 0, z: 10 } };
+    const mine = { intakes: [{ edge: 'front' as const, from: -6.39, to: 6.39 }, { edge: 'back' as const, from: -5, to: 5 }], shooter: { x: 1.5, y: 0, z: 10 } };
+    const left = em.withoutDefaults(mine, auto);
+    check(
+      'live defaults: a span still equal to its default goes (to be defaulted again); a moved launcher and a span the player placed stay',
+      JSON.stringify(left) === JSON.stringify({ intakes: [{ edge: 'back', from: -5, to: 5 }], shooter: { x: 1.5, y: 0, z: 10 } }),
+      JSON.stringify(left),
+    );
+    const next = { intakes: [{ edge: 'front' as const, from: -8.3, to: 8.3 }, { edge: 'back' as const, from: -5, to: 5 }], shooter: { x: 1.5, y: 0, z: 10 } };
+    check('live defaults: what the defaults put in is recorded (the front span), nothing the player placed', JSON.stringify(em.defaultsIn(next, left)) === JSON.stringify({ intakes: [{ edge: 'front', from: -8.3, to: 8.3 }] }));
+    check('live defaults: a span moves with the frame like every placement', em.shiftMech(auto, 0, 1, 0).intakes![0].from === -5.39);
+  }
+}
+
+/**
  * DELETING PARTS (`docs/area/robot-import.md`, "Deleting parts"). The synthetic robot with a body per
  * solid and a 1-in cube floating 4 in off its left side: a deleted body is measured as if the file
  * never had it, each set of deleted bodies is an orientation of its own, the main thread rebuilds
@@ -39909,6 +40690,16 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     check(`import UI review: an ordinary 16 × 14 in robot carries its import and blocks nothing — ${game}`, !!ok.spec.imported && blocks(reviewItems(meas(16, 14, 15), ok, game)) === 0, reviewItems(meas(16, 14, 15), ok, game).filter((i) => i.level === 'block').map((i) => i.text).join(' | '));
     const tiny = meas(0.6, 0.5, 0.6);
     check(`import UI review: ⚠️ a footprint under the sim’s 6-in floor BLOCKS (coerceImported would drop it) — ${game}`, reviewItems(tiny, buildSpec(doc, tiny), game).some((i) => i.id === 'tiny' && i.level === 'block'));
+    const apartItems = reviewItems(meas(16, 14, 15), ok, game, false, [], 2);
+    const apart = apartItems.find((i) => i.id === 'apart');
+    check(
+      `import UI review: parts left out of the footprint are a WARNING (drawn, no collision, not counted in the 18 in cube) whose Fix goes to Parts; it blocks nothing, and none left out says nothing — ${game}`,
+      apart?.level === 'warn' && apart.fix?.step === 0 && apart.fix.focus === 'ri-parts' && blocks(apartItems) === 0 &&
+        apart.text === '2 parts left out of the footprint: drawn, but no collision and not counted in the 18 in cube.' &&
+        /^1 part left out of the footprint: drawn/.test(reviewItems(meas(16, 14, 15), ok, game, false, [], 1).find((i) => i.id === 'apart')?.text ?? '') &&
+        !reviewItems(meas(16, 14, 15), ok, game).some((i) => i.id === 'apart'),
+      apart?.text,
+    );
   }
   check('import UI: the draft key names the game and the robot, a new import is `new`', draftKey('chain', null) === 'chain:new' && draftKey('biobuzz', 'abc') === 'biobuzz:abc');
   check('import UI: a robot is named after its file, cut to the name field’s 24', baseName('my_robot_v3.step') === 'my robot v3' && baseName('a'.repeat(40) + '.glb').length === 24);
@@ -40020,10 +40811,11 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   // the wiring: the editor's own edits are auto, a new file starts the history empty, and it is never written
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
   const autoSites = [
-    /update\(\(d\) => \(\{ \.\.\.d, mech: next \}\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => \(sameFrame\(d\.mechAt, m\.sourceToModel\) \? \{ \.\.\.d, mech: want\.mech, turretRing: want\.turretRing, mechAuto: auto \} : d\), 'auto'\)/, // the placements defaulting in
+    /update\(\(d\) => followFrame\(d, frameNow\), 'auto'\)/, // the placements following the model frame
     /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
     /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
-    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\) \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\), mechAt: \[\.\.\.frame\] \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
     /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*'auto',/, // ...and read again after a turn
     /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
     /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
@@ -42127,11 +42919,123 @@ function fxImportFixed(): RobotSpec {
     'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
     /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
       /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
-      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
+      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech, mechAt: keepAt \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
       /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
       /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
       /disabled=\{doc\.savedModel\}/.test(ms) &&
       /onPick=\{onDetail\}/.test(ms),
+  );
+  const dz = readFileSync('src/robotImport/ui/DropZone.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'drop box: Detail is chosen before STEP reads, handed files wait for that choice, and every way in asks checkImportFiles (source pins)',
+    /label=\{COPY\.detail\}/.test(dz) &&
+      /onPick=\{onDetail\}/.test(dz) &&
+      /pendingFiles\?\.length/.test(dz) &&
+      /COPY\.startImport/.test(dz) &&
+      !/robotOnly|COPY\.scope/.test(dz) &&
+      /accept=\{ACCEPT\}/.test(dz) &&
+      /accept=\{ACCEPT\}/.test(ms) &&
+      /void checkFiles\(files\)\.then/.test(ms) &&
+      /const sel = await checkFiles\(files\);\s*if \(!sel\.ok\)/.test(ed) &&
+      /const stageHandedFiles = useCallback/.test(ed) &&
+      /if \(files\) void stageHandedFiles\(files\)/.test(ed),
+  );
+
+  // ---- what the editor takes (`fileSelection.ts`), asked of `File`s as a drop hands them over ----
+  const sel = await import('../src/robotImport/ui/fileSelection');
+  const { zipFileNames, resolveFiles } = await import('../src/robotImport/engine/load');
+  const { COPY: IC } = await import('../src/robotImport/ui/copy');
+  const { zipSync, strToU8 } = await import('three/examples/jsm/libs/fflate.module.js');
+  const file = (name: string, bytes: Uint8Array = strToU8('x')): File => new File([bytes as Uint8Array<ArrayBuffer>], name);
+  const zipOf = (name: string, entries: Record<string, Uint8Array>): File => file(name, zipSync(entries));
+  const verdict = async (files: File[]): Promise<string> => {
+    const r = await sel.checkImportFiles(files, zipFileNames);
+    return r.ok ? r.kind : `refused: ${r.text}`;
+  };
+  const stepZip = zipOf('starter.zip', { 'bot/robot.step': strToU8('ISO-10303-21;'), 'readme.txt': strToU8('hi') });
+  const cases: [string, File[], string][] = [
+    ['a STEP', [file('robot.step')], 'step'],
+    ['an upper-case .STP', [file('ROBOT.STP')], 'step'],
+    ['two STEP files', [file('a.step'), file('b.stp')], 'step'],
+    ['a STEP with a PNG', [file('robot.step'), file('render.png')], `refused: ${IC.notStep('robot.step, render.png')}`],
+    ['two GLBs', [file('a.glb'), file('b.glb')], `refused: ${IC.notStep('a.glb, b.glb')}`],
+    ['one GLB (a share file, checked by the editor)', [file('bot.glb')], 'share'],
+    ['an STL', [file('robot.stl')], `refused: ${IC.notStep('robot.stl')}`],
+    ['a zip with a STEP in a folder', [stepZip], 'zip'],
+    ['a zip of meshes', [zipOf('meshes.zip', { 'robot.stl': strToU8('solid'), 'readme.txt': strToU8('hi') })], `refused: ${IC.zipNoStep('meshes.zip', 'robot.stl, readme.txt')}`],
+    ['a zip whose only STEP is a macOS resource fork', [zipOf('mac.zip', { '__MACOSX/._robot.step': strToU8('x'), 'notes.txt': strToU8('y') })], `refused: ${IC.zipNoStep('mac.zip', 'notes.txt')}`],
+    ['an empty zip', [zipOf('empty.zip', {})], `refused: ${IC.zipNoStep('empty.zip', '')}`],
+    ['a zip with a STEP beside it', [stepZip, file('robot.step')], `refused: ${IC.notStep('starter.zip, robot.step')}`],
+  ];
+  const got = await Promise.all(cases.map(([, files]) => verdict(files)));
+  const wrong = cases.filter(([, , want], i) => got[i] !== want).map(([what], i) => `${what}: ${got[i]}`);
+  check(
+    'drop box: STEP files (any case), one zip whose directory holds a STEP, or one GLB for the share check are taken; a STEP with anything else, two GLBs, an STL, a zip without a STEP (a resource fork does not count) and an empty zip are refused, each with its sentence',
+    wrong.length === 0 && sel.ACCEPT === '.step,.stp,.zip,.glb',
+    wrong.join(' | '),
+  );
+  const damaged = await verdict([file('broken.zip', strToU8('this is no zip, it only has the name of one'))]);
+  const engineDown = await sel.checkImportFiles([stepZip], async () => {
+    throw new TypeError('Failed to fetch dynamically imported module');
+  });
+  check(
+    'drop box: a file named .zip that is not one is refused with the zip reader’s own sentence; an engine that does not load says so',
+    /^refused: Couldn’t open broken\.zip: it isn’t a zip, or it is cut off\./.test(damaged) && !engineDown.ok && engineDown.text === IC.engineFailed,
+    damaged,
+  );
+  const both = zipOf('both.zip', { 'render.glb': strToU8('glTF'), 'cad/robot.step': strToU8('ISO-10303-21;') });
+  const anyModel = await resolveFiles([both]);
+  const stepOnly = await resolveFiles([both], { zipFormats: ['step'] });
+  let noStep = '';
+  try {
+    await resolveFiles([zipOf('meshes.zip', { 'robot.stl': strToU8('solid') })], { zipFormats: ['step'] });
+  } catch (e) {
+    noStep = e instanceof Error ? e.message : String(e);
+  }
+  check(
+    'drop box: the editor reads a zip as its STEP (zipFormats), even beside a GLB the priority would pick, and a zip with none says so',
+    anyModel.format === 'glb' && stepOnly.format === 'step' && stepOnly.zip?.name === 'robot.step' && /^Couldn’t find a STEP file in meshes\.zip: it holds robot\.stl\./.test(noStep),
+    `${anyModel.format}, ${stepOnly.format}, ${noStep}`,
+  );
+
+  // ---- a file staged at a Detail is read as a NEW file at that detail ----
+  const em = await import('../src/robotImport/ui/editorModel');
+  const loaded = {
+    ...geo.defaultImportSetup(),
+    triBudget: geo.LIGHT_TRI_BUDGET,
+    units: 'mm' as const,
+    up: '+z' as const,
+    yaw: 1 as const,
+    removed: [3],
+    apart: [4],
+    keepFloating: [5],
+    motion: [{ role: 'wheel' as const, bodies: [1] }],
+  };
+  const staged = em.readSetup(loaded, { setup: { triBudget: geo.FULL_DETAIL } });
+  const saved = em.readSetup(loaded, { setup: { units: 'm', up: '+y', yaw: 0, apart: [4] }, savedModel: true });
+  check(
+    'drop box: a staged file is read at the tile’s Detail as a new file (nothing of the loaded model’s setup, its build not kept); a Detail change re-reads and keeps the build; a saved robot keeps its left-out parts and has no deleted ones',
+    staged.triBudget === geo.FULL_DETAIL && staged.units === 'auto' && staged.up === 'auto' && staged.yaw === 0 && staged.removed === undefined && staged.apart === undefined &&
+      staged.keepFloating === undefined && staged.motion === undefined && staged.wheels === null &&
+      !em.readKeepsBuild({ setup: { triBudget: geo.FULL_DETAIL } }) && em.readKeepsBuild({ setup: loaded, keepHistory: true }) && em.readKeepsBuild({ savedModel: true }) &&
+      JSON.stringify(saved.apart) === '[4]' && !('removed' in saved) && saved.triBudget === geo.LIGHT_TRI_BUDGET,
+  );
+  check(
+    'drop box: the Detail picked on the tile is the Model step’s own state, passed to the read at Start and never written into the open document; a loaded model offers Keep current model (source pins)',
+    /const \[stagedDetail, setStagedDetail\] = useState<number \| null>\(null\);/.test(ms) &&
+      /onDetail=\{setStagedDetail\}/.test(ms) &&
+      /onFiles\(files, detail\);/.test(ms) &&
+      /onStartPending\(detail\);/.test(ms) &&
+      /onKeepCurrent=\{m \? keepCurrent : undefined\}/.test(ms) &&
+      /COPY\.keepCurrent/.test(dz) &&
+      !/beforeRead/.test(ed + ms) &&
+      /void readModel\(files, budget === undefined \? \{\} : \{ setup: \{ triBudget: budget \} \}\);/.test(ed) &&
+      /cadBuild: readKeepsBuild\(opts\) \? baseDoc\.cadBuild : undefined,/.test(ed) &&
+      /zipFormats: \['step'\],/.test(ed),
+  );
+  check(
+    'drop box: a share file set up for another game keeps its parts left out of the footprint (source pin)',
+    /drive: payload\.setup\.drive, apart: payload\.setup\.apart \}, savedModel: true/.test(ed),
   );
 }
 
@@ -42502,9 +43406,16 @@ function fxImportFixed(): RobotSpec {
   );
   const built = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0], name: 'bot' }, cad);
   check(
-    'a ramp down in front: BIOBUZZ builds the ramp intake on the front edge, and says so',
-    !!built && bbIntakeKindOf(built.spec) === 'ramp' && built.spec.intakeMount === 'front' && built.set.includes('a ramp at the front'),
-    J(built && { kind: bbIntakeKindOf(built.spec), mount: built.spec.intakeMount, set: built.set }),
+    // a roller at each end takes in at each end (owner, 2026-11-06: "There are also two intakes: front
+    // and back, but the back intake isnt even intaking anything"), with the ramp at the front alone
+    'a ramp down in front: BIOBUZZ builds a ramp intake taking in at both ends, the ramp on the front mouth alone, and says so',
+    !!built &&
+      bbIntakeKindOf(built.spec) === 'ramp' &&
+      built.spec.intakeMount === 'frontback' &&
+      built.set.includes('a ramp at the front and rollers at the back') &&
+      built.mech?.intakes?.find((i) => i.edge === 'front')?.ramp === true &&
+      !built.mech?.intakes?.find((i) => i.edge === 'back')?.ramp,
+    J(built && { kind: bbIntakeKindOf(built.spec), mount: built.spec.intakeMount, set: built.set, intakes: built.mech?.intakes }),
   );
   check('a model in the wrong units runs past 18 in at both ends: nothing is offered as deployed', motion.findOverhang(mk(rp, 3), new Set()) === null && motion.findDeployedGroup(mk(rp, 3), [{ edge: 'front' }], 'ramp', new Set()) === null);
 
@@ -42565,6 +43476,24 @@ function fxImportFixed(): RobotSpec {
       waitAt > 0 &&
       waitAt < ed.indexOf('const found = findAll([]);') &&
       ed.includes('[doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]'),
+  );
+  // a lift's payload is looked for once every other moving part is (they are what it may not push), and
+  // before the riders pass, which then sees the payload as the stage's own (owner, 2026-11-07)
+  const payAt = ed.indexOf('const payload = liftPayload(parts, [...have, ...out], tubes);');
+  check(
+    'the editor finds what a lift carries after the turret and a deployed part, before the riders, and puts its rollers on the stage (source pins)',
+    payAt > ed.indexOf('findDeployedGroup(parts, intakes,') &&
+      payAt > ed.indexOf('findTurretGroup(parts, at,') &&
+      payAt < ed.indexOf('ridersOf(parts, rows, foundAt)') &&
+      ed.includes('for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };'),
+  );
+  // a ramp build with no ramp shown deployed looks for one tucked in (owner, 2026-11-08, Offset's arms)
+  const depAt = ed.indexOf("const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());");
+  const armAt = ed.indexOf('const arm = findIntakeArm(parts, rollers, i.edge, taken());');
+  check(
+    'the editor looks for a stowed intake arm when a ramp build shows no ramp deployed, and makes it the ramp, folded in the file, on the shaft it swings on (source pins)',
+    depAt > 0 && armAt > depAt && armAt < ed.indexOf('ridersOf(parts, rows, foundAt)') &&
+      ed.includes("out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });"),
   );
 }
 
@@ -43369,6 +44298,31 @@ function fxImportFixed(): RobotSpec {
     'menu stage: the 3D stage’s robot is on the field on Home too, so the fly neither adds nor drops it',
     /world = stageWorld\(game, spec, alliance, '3d'\);/.test(stageSrc) && !/robotOn|dropRobotAt/.test(stageSrc),
   );
+  // the idea is PR #125's: the first Play's camera "jumps half way through the movement" when a long
+  // task lands in the fly, because it ran on the wall clock
+  {
+    const { flyStep, FLY_STEP_MAX_S } = await import('../src/ui/stageFly');
+    // a 1 s fly at 60 fps with a 126 ms stall (the click's commit) on its first frame and a 61 ms one
+    // (the robot built) on the second: frame gaps in seconds, the first frame's 0 being `lastT` at rest
+    const gaps = [0, 0.126, 0.061, ...Array.from({ length: 80 }, () => 1 / 60)];
+    const path: number[] = [];
+    gaps.reduce((p, dt) => (path.push(flyStep(p, dt, 1000)), path[path.length - 1]), 0);
+    const steps = path.map((p, i) => p - (i ? path[i - 1] : 0));
+    const landsAt = path.indexOf(1);
+    let at20 = 0;
+    let frames20 = 0;
+    while (at20 < 1) (at20 = flyStep(at20, 0.05, 1000)), frames20++;
+    check(
+      'menu stage: the fly runs on frame time: its first frame moves nothing, a stalled frame moves it at most 5 % (never the stall’s share), it lands at exactly 1 on a steady 60 fps and in 20 frames at 20 fps, and at once under reduced motion',
+      FLY_STEP_MAX_S === 0.05 && steps[0] === 0 && Math.max(...steps) <= 0.05 + 1e-12 && Math.abs(steps[1] - 0.05) < 1e-12 &&
+        landsAt > 0 && path.slice(landsAt).every((p) => p === 1) && frames20 === 20 && flyStep(0, 0, 0) === 1 && flyStep(0.4, 0.3, 0) === 1,
+      JSON.stringify({ first: steps.slice(0, 4), landsAt, frames20 }),
+    );
+    check(
+      'menu stage: the 3D stage advances its fly by flyStep (progress, not a start time) and the fly’s first frame starts from rest (source pin)',
+      stageSrc.includes('fly.p = flyStep(fly.p, dt, fly.ms);') && !/fly\.t0|t0: performance\.now\(\)/.test(stageSrc) && /p: 0,\s*ms: reducedMotion\(\) \? 0 : FLY_MS,\s*\};\s*\/\/[^\n]*\n\s*lastT = 0;/.test(stageSrc),
+    );
+  }
   check(
     'menu stage: the 3D stage holds the boot screen, and lets go when shown, when it fails and when it unmounts',
     /const releaseBoot = holdBoot\(\)/.test(stageSrc) && (stageSrc.match(/releaseBoot\(\)/g) ?? []).length >= 3,

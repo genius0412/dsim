@@ -886,6 +886,48 @@ export function detectWheels(contactXY: ArrayLike<number>, edges: ArrayLike<numb
   };
 }
 
+/** the DRIVE BASE a wheel guess is made in: the model no higher than this, inches */
+const WHEEL_BASE_IN = 1;
+/** a guessed wheel's centre sits this far inside the drive base's front and back (a 96–104 mm wheel's
+ *  radius) and its sides (half a drive pod), inches */
+const WHEEL_GUESS_INSET = { x: 2, y: 1.5 } as const;
+
+/**
+ * WHERE THE WHEELS ARE when none touch the floor (FL FR BL BR, MODEL frame): inside the box of the
+ * DRIVE BASE, the model no higher than `WHEEL_BASE_IN`, by `WHEEL_GUESS_INSET`; null when that box is
+ * too small to hold a rectangle of wheels. A CAD exported without its drive wheels stands on whatever
+ * is lowest, and its whole box can reach well past where the wheels are (a top, a turret or a folded
+ * ramp that overhangs the drive base), so the box's corners put the wheels outside the drive base
+ * (2026-11-06).
+ */
+export function wheelGuessIn(base: readonly MeshPart[]): Vec2[] | null {
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (const p of base) {
+    const a = p.positions;
+    for (let i = 0; i < a.length; i += 3) {
+      if (a[i + 2] > WHEEL_BASE_IN) continue;
+      if (a[i] < x0) x0 = a[i];
+      if (a[i] > x1) x1 = a[i];
+      if (a[i + 1] < y0) y0 = a[i + 1];
+      if (a[i + 1] > y1) y1 = a[i + 1];
+    }
+  }
+  const fx = x1 - WHEEL_GUESS_INSET.x;
+  const bx = x0 + WHEEL_GUESS_INSET.x;
+  const ly = y1 - WHEEL_GUESS_INSET.y;
+  const ry = y0 + WHEEL_GUESS_INSET.y;
+  if (!(fx - bx >= 2 && ly - ry >= 2)) return null;
+  return [
+    { x: fx, y: ly },
+    { x: fx, y: ry },
+    { x: bx, y: ly },
+    { x: bx, y: ry },
+  ].map((w) => ({ x: q64(w.x), y: q64(w.y) }));
+}
+
 /**
  * THE FOUR LINES of a rectangle of wheels (FL FR BL BR, MODEL frame): the front and back axles
  * (x) and the left and right sides (y). Each line is the mean of the two wheels on it, so a
@@ -1524,6 +1566,8 @@ export interface OrientedMeasure {
   rawHull: Vec2[];
   /** what wheel detection found (a manual override is applied in `finishMeasure`) */
   wheels: WheelDetection;
+  /** with no wheels found, where they are guessed to be, MODEL frame (`wheelGuess`); else null */
+  wheelGuess?: Vec2[] | null;
   /** which way the geometry says the robot faces (`detectFront`), as a yaw from the CAD front */
   front: FrontDetection;
   /** bands in the MODEL frame, before the shift to the wheelbase centre; null = none or not asked */
@@ -1803,6 +1847,7 @@ export function orientParts(
       if (d.wheels && isRectangle(d.wheels, WHEEL_SQUARE_TOL_IN)) wheels = d;
     }
   }
+  const wheelGuess = empty || wheels.wheels ? null : wheelGuessIn(base);
   const bandsModel = setup.bands && !empty ? computeBands(base, size.height) : null;
   const front: FrontDetection = empty ? { yaw: 0, confidence: 0, detected: false, cue: null } : detectFront(base, wheels.wheels, size.height, yaw);
   // here, not on the main thread: the bodies' boxes cost a pass over the measured copy (50–90 ms
@@ -1822,6 +1867,7 @@ export function orientParts(
       size,
       rawHull,
       wheels,
+      wheelGuess,
       front,
       bandsModel,
       folds,
@@ -1851,7 +1897,9 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
   const square = !manual && !!det && setup.wheelLayout !== 'free' && (setup.wheelLayout === 'rect' || isRectangle(det, WHEEL_SQUARE_TOL_IN));
   const squared = square && det ? squareWheels(det) : null;
   const moved = !!squared && !isRectangle(det!);
-  const wheelsUsed = manual ? setup.wheels!.map((w) => ({ x: w.x, y: w.y })) : (squared ?? det);
+  // none found or placed: the guess inside the drive base, kept apart so the editor still says so
+  const guess = !manual && !det && o.wheelGuess ? o.wheelGuess.map((w) => ({ x: w.x, y: w.y })) : null;
+  const wheelsUsed = manual ? setup.wheels!.map((w) => ({ x: w.x, y: w.y })) : (squared ?? det ?? guess);
   const wheelSource: ImportMeasurement['wheelSource'] = manual ? 'manual' : det ? 'detected' : 'none';
   // the note says so when the found wheels were moved; `o` itself is never written
   const wheelInfo: WheelDetection = moved ? { ...wheels, note: `${wheels.note} Lined them up as a rectangle.` } : wheels;
@@ -1913,7 +1961,12 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
       checks.push({
         code: few <= 1 ? 'no-floor' : 'few-wheels',
         level: 'warn',
-        message: few <= 1 ? 'Only one part of the robot touches the floor. Check the up axis, or drag the wheel markers onto the wheels.' : wheels.note,
+        message:
+          few <= 1
+            ? 'Only one part of the robot touches the floor. Check the up axis, or drag the wheel markers onto the wheels.'
+            : guess
+              ? 'Couldn’t find any wheels touching the floor, so they stand at the corners of the drive base. Drag the wheel markers onto the wheels.'
+              : wheels.note,
       });
     } else if (wheelSource === 'detected' && /corner ones/.test(wheels.note)) {
       checks.push({ code: 'wheels-picked', level: 'info', message: wheelInfo.note });
@@ -1954,6 +2007,7 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
     wheelsUsed,
     wheelSource,
     ...(moved ? { wheelsSquared: true as const } : {}),
+    ...(guess ? { wheelsGuessed: true as const } : {}),
     origin,
     heightIn,
     bands,
@@ -1981,7 +2035,7 @@ export function mechModelToRobot(mech: ImportedMech, origin: Vec2): ImportedMech
       const lateral = m.edge === 'front' || m.edge === 'back' ? origin.y : origin.x;
       const a = q64(m.from - lateral);
       const b = q64(m.to - lateral);
-      return { edge: m.edge as ImportedEdge, from: Math.min(a, b), to: Math.max(a, b) };
+      return { edge: m.edge as ImportedEdge, from: Math.min(a, b), to: Math.max(a, b), ...(m.ramp ? { ramp: true } : {}) };
     });
   }
   return out;

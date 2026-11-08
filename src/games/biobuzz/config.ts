@@ -3698,6 +3698,16 @@ export const BB3_INTAKE_Z = 5;
  */
 export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
 
+/**
+ * THE BOTTOM OF AN IMPORT'S SKIRT (in above the tiles; `import3dShapes`, `SIM_PATCH` 14). Under a
+ * CAD band whose underside is above an element's centre and below its top, the band met the
+ * element on its upper half, the contact pushed the robot UP, and a robot driven at a NECTAR
+ * climbed on top of it (0.67 in on the IMPORT lane's frame-over-pods robot). The skirt fills under the band from here, which
+ * is below a POLLEN's centre (1.4), so an element meets its face at its own centre height and is
+ * pushed along the tiles. Kept off the tiles because the skirt's group still meets them.
+ */
+export const BB3_IMPORT_SKIRT_Z0 = 1;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE DRAWN HEIGHT PROFILE — what the 3D chassis compound is TALL AT
 //

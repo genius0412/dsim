@@ -1,7 +1,6 @@
-import { useId, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { useDialog } from '../../ui/useDialog';
 import { PAGE_COPY as COPY } from './pageCopy';
-import { ROBOT_NAME_MAX, TEAM_NAME_MAX, TEAM_NUMBER_MAX, cleanIdentity, teamNumberFrom, type RobotIdentity } from '../identity';
 
 /**
  * The importer's dialogs: edit a robot's details, and the confirms (delete, discard, replace-or-keep-both). One
@@ -76,87 +75,6 @@ export function ConfirmDialog({
       }
     >
       {body}
-    </Shell>
-  );
-}
-
-/**
- * WHO A ROBOT IS, edited from its card: the name, the team name and the team number, with the
- * limits and the cleaning every other door into a spec has (`identity.ts`). One dialog for an
- * imported robot (the device library) and a saved one (the settings), so the two lists edit the
- * same way. Save is off while the name is empty or nothing has changed.
- */
-export function IdentityDialog({
-  identity,
-  onSave,
-  onClose,
-}: {
-  identity: RobotIdentity;
-  onSave: (next: RobotIdentity) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(identity.name);
-  const [teamName, setTeamName] = useState(identity.teamName);
-  const [teamNumber, setTeamNumber] = useState(identity.teamNumber ? String(identity.teamNumber) : '');
-  const next = cleanIdentity({ name, teamName, teamNumber: teamNumberFrom(teamNumber) });
-  const changed =
-    !!next && (next.name !== identity.name || next.teamName !== identity.teamName || next.teamNumber !== identity.teamNumber);
-  const submit = (): void => {
-    if (next && changed) onSave(next as RobotIdentity);
-  };
-  const onEnter = (e: KeyboardEvent): void => {
-    if (e.key === 'Enter') submit();
-  };
-  return (
-    <Shell
-      title={COPY.editTitle}
-      onClose={onClose}
-      actions={
-        <>
-          <button type="button" className="ds-btn ghost" data-padnav-back onClick={onClose}>
-            {COPY.cancel}
-          </button>
-          <button type="button" className="ds-btn primary" disabled={!changed} onClick={submit}>
-            {COPY.save}
-          </button>
-        </>
-      }
-    >
-      <label>
-        {COPY.robotName}
-        <input
-          className="ds-input"
-          type="text"
-          maxLength={ROBOT_NAME_MAX}
-          value={name}
-          autoFocus
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={onEnter}
-        />
-      </label>
-      <label>
-        {COPY.teamNameLabel}
-        <input
-          className="ds-input"
-          type="text"
-          maxLength={TEAM_NAME_MAX}
-          value={teamName}
-          onChange={(e) => setTeamName(e.target.value)}
-          onKeyDown={onEnter}
-        />
-      </label>
-      <label>
-        {COPY.teamNumberLabel}
-        <input
-          className="ds-input"
-          type="number"
-          min={0}
-          max={TEAM_NUMBER_MAX}
-          value={teamNumber}
-          onChange={(e) => setTeamNumber(e.target.value === '' ? '' : String(teamNumberFrom(e.target.value)))}
-          onKeyDown={onEnter}
-        />
-      </label>
     </Shell>
   );
 }

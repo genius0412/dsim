@@ -12,6 +12,7 @@
  */
 import { bakeModelHere, type BakeModelInput } from './bakeMesh';
 import { isFullDetail, type MeshPart } from '../geometry';
+import type { ModelFormat } from '../types';
 import { ImportError, abortError } from './importError';
 import { partBuffers, type ImportProgress, type ImportRequest, type ImportResponse } from './importProtocol';
 import { liteMesh } from './lite';
@@ -22,6 +23,8 @@ import { simplifyModel, type PreparedModel } from './prepare';
 export interface ImportOptions {
   /** the triangle budget (`ImportSetup.triBudget`) */
   budget: number;
+  /** the formats a zip's model may be (`ResolveOptions.zipFormats`; the editor asks for STEP) */
+  zipFormats?: readonly ModelFormat[];
   onProgress?: (p: ImportProgress) => void;
   signal?: AbortSignal;
 }
@@ -39,7 +42,7 @@ function spawn(): Worker | null {
 
 /** the same steps on this thread (no worker) */
 async function onMainThread(files: File[], opts: ImportOptions): Promise<PreparedModel> {
-  const loaded = await loadModel(files, (stage, frac) => opts.onProgress?.({ stage, frac }), { signal: opts.signal, keepSmall: isFullDetail(opts.budget) });
+  const loaded = await loadModel(files, (stage, frac) => opts.onProgress?.({ stage, frac }), { signal: opts.signal, keepSmall: isFullDetail(opts.budget), zipFormats: opts.zipFormats });
   if (opts.signal?.aborted) throw abortError();
   opts.onProgress?.({ stage: 'simplify', tris: loaded.trisIn });
   // a frame for the label to paint before the synchronous part of simplification
@@ -104,7 +107,7 @@ export async function liteMeshOff(glb: ArrayBuffer, maxBytes: number): Promise<A
 /** read and prepare `input` (the editor's `readModel`); throws `ImportError` or `AbortError` */
 export async function importModel(input: readonly File[] | FileList, opts: ImportOptions): Promise<PreparedModel> {
   const files = Array.from(input as ArrayLike<File>);
-  const r = await resolveFiles(files);
+  const r = await resolveFiles(files, opts);
   const name = r.zip ? r.zip.name : r.file.name;
   if (opts.signal?.aborted) throw abortError();
   const worker = spawn();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ImporterEngine } from '../engineLoader';
-import type { PreviewController, PreviewState, PreviewView } from '../engine/preview';
+import type { GizmoCallbacks, PreviewController, PreviewState, PreviewView } from '../engine/preview';
 import { COPY } from './copy';
 
 /**
@@ -20,6 +20,7 @@ export function PreviewPane({
   empty,
   legend,
   onPickBody,
+  gizmo,
 }: {
   eng: ImporterEngine | null;
   /** null before a model: the empty frame */
@@ -30,6 +31,8 @@ export function PreviewPane({
   legend?: string | null;
   /** a click on a part while `state.picking` (`shift`: that one body, not its axle) */
   onPickBody?: (body: number, shift: boolean) => void;
+  /** a placement handle picked or dragged in 3D while `state.gizmo` is set */
+  gizmo?: GizmoCallbacks;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
@@ -89,6 +92,11 @@ export function PreviewPane({
   pickRef.current = onPickBody;
   useEffect(() => {
     ctl.current?.onPickBody((b, shift) => pickRef.current?.(b, shift));
+  }, [ready, failed, eng]);
+  const gizmoRef = useRef(gizmo);
+  gizmoRef.current = gizmo;
+  useEffect(() => {
+    ctl.current?.onGizmo({ select: (k) => gizmoRef.current?.select(k), move: (k, p) => gizmoRef.current?.move(k, p) });
   }, [ready, failed, eng]);
 
   const pick = (v: PreviewView): void => {

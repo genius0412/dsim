@@ -228,7 +228,16 @@ export default defineConfig({
   // dev server's dependency pre-bundle moves the loader into its cache, where that path 404s and the
   // worker evaluates the SPA's HTML (a modeled venue, `renderModelVenue.ts`). Served from
   // node_modules, the path holds; the production build emits the transcoder as hashed assets either way.
-  optimizeDeps: { exclude: ['three/examples/jsm/loaders/KTX2Loader.js'] },
+  //
+  // ⚠️ THE IMPORTER'S LAZY DEPS ARE PRE-BUNDLED UP FRONT. `occt-import-js` (the STEP reader) and
+  // TransformControls are first imported when the editor chunk loads, so on a cold dev cache Vite
+  // found them mid-import, re-optimised and RELOADED THE PAGE — dropping the dropped file (it lives
+  // in module memory) and leaving an empty editor. Measured in the dev log: two "optimized
+  // dependencies changed. reloading" lines on the first import. Dev only; a build is unaffected.
+  optimizeDeps: {
+    exclude: ['three/examples/jsm/loaders/KTX2Loader.js'],
+    include: ['occt-import-js', 'three/examples/jsm/controls/TransformControls.js'],
+  },
   build: {
     // ⚠️ THE PLATE FONTS ARE NEVER INLINED. Each is 1.1–1.6 KB, under Vite's 4 KB default, so they
     // were being written into the MAIN chunk as base64 (+10 KB gzipped for every player of every

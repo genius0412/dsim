@@ -58,6 +58,9 @@ per deployment, in two halves over one rule. **Do not open it on production with
   Every caller reaches the engine through `loadImporterEngine()` (`engineLoader.ts`), the one
   dynamic specifier. The RENDER lane (`scripts/smoke-biobuzz/render.ts`) fails a static import of
   `engine/` from outside it, a second specifier, or three.js anywhere but the two zones.
+- `engine/gizmo.ts` (the placement handles in 3D, with three's TransformControls) is reached by its
+  own `import()` from `engine/preview.ts` the first time a state carries `gizmo`, so the engine chunk
+  does not carry it (bundleaudit's `gizmo` route, 7.8 KB gz; static, it put `importer` at 105.4).
 - `engine/stepReader.ts` is reached by its own `import()` from `engine/load.ts` and starts the STEP
   worker (`stepWorker.ts`), which reads the dropped file itself and runs occt in workers of its own
   (`occtWorker.ts`, a worker made inside a worker, which Vite bundles as its own chunk), so the glue
@@ -129,6 +132,14 @@ per deployment, in two halves over one rule. **Do not open it on production with
   (confidence 0.12, and 0.09–0.30) and their CAD front is their real one. Never wrongly detected
   on any of them (measured on the stored meshes the editor saved, turned through all 24
   orientations).
+  **The build's intake settles an assumed front** (`frontFromBuild`, 2026-11-06). The intake cue
+  above reads geometry under 3 in past the outermost wheel, so a CAD without drive wheels, or with
+  its rollers higher up, stays assumed. When the front is assumed and `readBuild` (below, the
+  editor's first read of a new file) finds a CLEAR intake edge (a ramp the file shows deployed
+  there, or more roller groups at that edge than at any other: `CadBuild.edges`), the editor turns the
+  robot to it once and calls the front detected ("Detected from the intake"); after a turn the build
+  is read again in the new frame. A quarter turn only when no detected wheel rolls the other way
+  (`wheelAxleVotes`). Never over a detected front, a player's turn, or a saved robot.
 - **Floor contacts → wheels**: vertices within 0.15 in of the floor (0.5 in if that finds fewer
   than four wheels), joined when within 1 in of each other OR when a mesh edge runs between them
   inside the slab. The edges matter: a cylinder's contact line is two cap vertices a wheel-width
@@ -142,6 +153,14 @@ per deployment, in two halves over one rule. **Do not open it on production with
   No four corners, or four that are no rectangle within `WHEEL_SQUARE_TOL_IN`, are looked for again
   at 0.08 in and taken when they are one (Offset: its four mecanum wheels). A robot found square at
   0.15 is measured as before.
+  ⚠️ **No wheels found: a guess inside the DRIVE BASE** (`wheelGuessIn`, `OrientedMeasure.wheelGuess`,
+  2026-11-06). A CAD exported without its drive wheels stands on whatever is lowest, and the old
+  default (1.5 in inside the WHOLE footprint box) put the wheels under a top, a turret or a folded ramp
+  that overhangs the base. The guess is 2 in inside the front and back and 1.5 in inside the sides of
+  the box of everything within 1 in of the floor. It is `wheelsUsed` (so the origin, the stored
+  descriptor's `wheels`, the turn rate and Home use it) with `wheelSource` still `'none'` and
+  `wheelsGuessed` set: the Model step says "Placed at the drive base's corners" and Review keeps the
+  `few-wheels` note. Wheels placed by hand or detected never read it.
 - **Footprint hull**: monotone chain on every vertex's (x, y), reduced to ≤ 16 vertices by a
   MIN-MAX search (binary search on the tolerance; farthest-reach walks from every start), an inner
   approximation whose measured maximum deviation is reported. Greedy removal alone is a local
@@ -395,10 +414,15 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   priority as dropped files; a .gltf brings its .bin, an .obj its .mtl). The model is inflated where
   it is read, in 4 MB slices of the compressed data into a buffer of its stated size: in the STEP
   worker for a STEP (390 MB in 1.8 s), in the import worker for the rest.
+- **The editor reads a zip as its STEP.** It takes a zip only when the directory names a `.step` or
+  `.stp` (`fileSelection.ts`, through the engine's `zipFileNames`), and reads with
+  `ImportOptions.zipFormats: ['step']`, so a zip that also holds a GLB (which the priority would pick)
+  is read as its STEP. The dev harness and the engine's own tests read a zip's model of any format.
 - **A file cut off is said before occt sees it** (`checkStepText`: a STEP opens with
   `ISO-10303-21;` and ends with `END-ISO-10303-21;`): "Couldn’t read …: the file is cut off …".
-  Every STEP failure ends with `EXPORT_HINT`, the mesh export menu by menu for Onshape, Fusion,
-  SolidWorks and Inventor. `step-reader` (the reader did not load) is the only one with Try again.
+  Every STEP failure ends with `EXPORT_HINT`, a fresh STEP export menu by menu for Onshape, Fusion,
+  SolidWorks and Inventor (it named a GLB or STL export until the editor stopped taking them).
+  `step-reader` (the reader did not load) is the only one with Try again.
 
 | starter bot (file) | read | longest main-thread task | renderer peak | triangles in → kept | footprint (L × W), height | wheels (corner four) | front |
 |---|---|---|---|---|---|---|---|
@@ -676,7 +700,173 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
   drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
   any change to what the finders find. A saved robot's re-open is left alone. 2: tubing, what a wheel's
-  shaft carries, the gears it drives, a wheel's axle along x.
+  shaft carries, the gears it drives, a wheel's axle along x. 5: the three rules below.
+- ⚠️ **MOUNTED MEANS TOUCHING** (`mountedOn`, `touchingPairs`, `CONTACT_IN` 0.04 in, 2026-11-06). What
+  is mounted on a plate (a click on it, and a deployed part's members, `findOverhang`) was every
+  smaller body inside its box. A deployed ramp's arm can be a diagonal truss whose box holds the
+  chassis under it: chassis plates and an intake shaft's rollers folded up with the ramp. Now a
+  candidate must also TOUCH the seed, or touch another candidate that does (a nut on a screw through
+  the plate): a vertex of one within `CONTACT_IN` of a triangle of the other. Mated CAD faces coincide
+  in the occt mesh to thousandths of an inch; a part that turns has clearance. `touchingPairs` collects the
+  candidates' triangles in one pass, grids them, and tests each body's vertices against the others' in
+  its cell.
+- ⚠️ **A ROLLER RIDES A FOLDING PART ONLY WHEN IT TOUCHES IT** (`planFolds`, `RIDE_CONTACT_IN` 0.08 in on
+  the measured copy). Centre-inside-the-box alone took an intake roller held by the chassis between a
+  ramp's arms and folded it up with the ramp.
+- ⚠️ **RINGS ROUND A TURNING HUB TURN WITH IT** (`ringsAbout`, in `spinAxle`). A mecanum or omni wheel on
+  an intake shaft has its rollers as bodies of their own, standing past the hub, so neither the axle
+  nor the cylinder rule took them: the hubs turned and the rollers stood still. Three or more bodies
+  ALIKE about the axle (reach in and out, span along it, to `RING_TOL_IN` 0.03) that go round it
+  (`goesRound`), within one STACK of touching rotors and reaching into its radius, at most
+  `RING_REACH_IN` (0.35) past it, each at least `RING_MIN_IN` (0.15) across, and TOUCHING what turns
+  (or a ring that does). A stack ends at a gap: a bearing retainer's bolt circle round the shaft is
+  the frame's. The contact rule is what keeps a motor's face screws out: on AndyMark's RoBits bots the
+  40T gear's long hub spans the NeveRest's face, whose four screws are alike round its shaft, knurl
+  ridge by knurl ridge (248 slivers a gear, before the rule). A flywheel's through-bolts touch it and
+  turn with it (goBILDA's DECODE bot: four M4 × 20 that stood still before).
+- **Rollers at every edge** (`findEdgeRollers`, from the editor's `findAll`): the intake spans' rollers
+  first, then those at the other edges that are as long along the edge as an intake roller (at least
+  half the robot, `EDGE_ROLLER_SPAN`), so a robot that takes in at both ends turns both whichever end
+  the build places its intake at. Without the length rule Offset's slide spools by its back edge were
+  offered as intake rollers.
+- **The intake's later stages** (`findStageRollers`, last in `findAll`, `MOTION_FINDER` 6; owner,
+  2026-11-06: "You still missed part of the intake/transfer rollers further inside the robot"). An edge
+  roller sits within `ROLLER_DEPTH_IN` of its edge, and deeper only a SPOKED axle chained to one was
+  found, so a transfer of compliant wheels on plain shafts inside the frame was found nowhere. Now a
+  LEVEL axle (along x or y), seeded by a round body as the edge finder seeds one and under
+  `ROLLER_TOP_IN`, is a roller when its axle comes within `ROLLER_STAGE_IN` (4 in) of a roller already
+  found. Axle to axle as SEGMENTS over the bodies' length, so a stage square to the one before it counts.
+  Each stage found can hand on to the next. It runs last, so a turret, flywheel, slide or ramp has its
+  parts first.
+  - ⚠️ **NEAR A ROLLER IS NOT ENOUGH.** On Offset's concept robot "within 4 in" took its two transfer
+    rollers and twelve other parts: odometry pods, servo-driven spools, a slide's belt spools, a
+    pulley and a gear blank. A stage must also satisfy three rules:
+    - **On the element's path**: within `STAGE_PATH_SHARE` (1.25) element diameters of the line from
+      an intake roller's middle to the launcher (the point the flywheel search uses). No launcher
+      means no stages. Offset's transfer rollers stand 0.1–0.5 in off it; its pods and side spools
+      4.1–5.3 in.
+    - **On a shaft of its own** at least `STAGE_SHAFT_MIN_IN` (1.5 in) long. Servo spools turn on the
+      servo's screw (0.66 in) and odometry pods on a pin (0.61); Offset's transfer rollers turn on 5-in shafts.
+      `onShaft`'s roller-bar rule alone also takes a single round part with no shaft (a motor can).
+    - **Something to grip with**: a rim at least `STAGE_R_MIN_IN` (0.6 in) from the axle. A belt spool
+      measured 0.55 and a pulley 0.41; Offset's transfer rollers 0.94.
+  - **Tried and dropped**:
+    - An element-sized ball clear of structure beside each stage: a real transfer's timing belts and
+      guides stand within half an inch of its wheels.
+    - A drive link to the intake: a transfer is often driven apart from it, and contact over a few
+      thousand bodies takes minutes.
+  - **Measured**: on a private team CAD, its transfer found and nothing else. Offset gets its two
+    transfer rollers and two belt-driven shafts of the intake's drive.
+- ⚠️ **THE PLACEMENTS FOLLOW THE MODEL FRAME** (`EditorDoc.mechAt`, `followFrame`; owner, 2026-11-06:
+  "The turret is not turning around the correct point"). A new import's build is read BEFORE its
+  moving parts are found. When those include a part the file shows deployed, the measurement folds it,
+  the model's box shrinks, and the frame (centred on the box) moves. Every part that does not fold
+  stays where the file has it, and the placements did not move with them: a turret read on its ring
+  ended inches off it, and the game turned, aimed and launched about that point while the 3D mesh
+  turned about the ring. `mechAt` is the `sourceToModel` the placements, the home placements, the
+  turret axis and the hand-placed wheels are written in. A measurement with the same linear part
+  carries them by the difference in its shift. A frame turned or scaled clears them (`frameMoved`), so
+  there it is only recorded. Every effect that reads placements waits until they are in the current
+  frame (`sameFrame`), and undo restores the frame WITH them (`restoreDoc`).
+- **A two-ended intake reads as one** (`readBuild`'s `spans` and `intake.both`, `buildFromCad`; owner,
+  2026-11-06: "There are also two intakes: front and back, but the back intake isnt even intaking
+  anything"). `readBuild` scored every edge's rollers but kept only the best. It now records each
+  edge's roller span. When the opposite edge also has a roller at least `EDGE_ROLLER_SPAN` of the robot
+  long, as the intake's does, the build takes in at both: BIOBUZZ `frontback`, or `side`. A ramp the
+  file shows deployed at either end is that end's alone (`rampEdge`, the span's `ramp` flag; the sim's
+  side is in `docs/area/biobuzz.md`). The wording says so: "a ramp at the front and rollers at the
+  back".
+- ⚠️ **A MOUTH SPANS ITS ROLLERS, AND A DEFAULT NOBODY MOVED IS DEFAULTED AGAIN** (`buildFromCad`,
+  `withoutDefaults`, `EditorDoc.mechAuto`; owner, 2026-11-06: the ball "does not even go under the
+  wheel" at a roller's end).
+  - **The bug.** The game's default mouth is the hull's chord at the face line, and a new import is
+    measured before its moving parts are found, so unfolded. A hull tapering to a deployed ramp's tip
+    gave a mouth inches short each side. It stayed that way after the fold, kept as if placed, which put
+    the vector wheels on a roller's ends outside the mouth.
+  - **The fix.** The model's own rollers now set each mouth's span (read before anything folds, so
+    independent of the hull).
+  - **Live defaults.** Every placement the editor defaults in is recorded as written. One still equal
+    to that record was never moved, and is defaulted again on the model as it is now. A placement the
+    player moved, or one read from the model, no longer matches and stays.
+- **A spinning part turns on its own shaft** (`onOwnShaft`, in `deriveMotion`; owner, 2026-11-06:
+  "One of the intake rollers are also spinning around the wrong axis"). `fitRound` centres a part on
+  the middle of its box across its axle. A part that isn't centrally symmetric has its box off its
+  axle: three paddles 120° apart put a roller's box off its shaft, so it orbited. When the group
+  carries a shaft (a slender body along the axle, within `OWN_SHAFT_NEAR_IN` of the fit), the axle runs
+  down its centreline. An odd-count mecanum wheel had the same error, smaller.
+- **A hinged part turns on its rod** (`hingeRod`, in `planFolds`; owner, 2026-11-06: "The flower ramp's
+  pivot is incorrect"). The hinge was the part's innermost point, and a ramp's arms reach back past
+  their bolts as a lever, so the folded part swung out of its own bolt holes. The hinge is now a slender body along the
+  fold axis, in no moving part, that the part is bored round. Its vertices stand in a ring just outside
+  the rod's radius in all four quarters. With two such rods, it takes the innermost along `u`; the
+  other is a crossbar that belongs to the part (it touches only the part; `ridersOf` adds it).
+- ⚠️ **WHAT A MOVING PART CARRIES IS ADDED TO IT** (`ridersOf`, in `findAll` on the found rows; owner,
+  2026-11-06: "there are floating parts").
+  - **The gap.** Each finder chooses members its own way. A turret takes what stands within reach above
+    its ring; a deployed part takes the bodies inside one member's box that touch it. What those rules
+    miss stays put and hangs in the air when the part moves: screws hanging under a turret's ring, or a
+    ramp's crossbar, which runs between its arms and so lies in neither arm's box.
+  - **The rule.** Round each turret, ramp, fold, swing or slide group (its box grown by
+    `RIDER_PAD_IN`), the bodies in no group are split into clusters by contact.
+    - A cluster with a member reaching out of that box is the robot.
+    - A cluster wholly inside the box that touches the group is carried, and joins it.
+  - **Cost.** A few seconds on a large CAD at Full detail, once per import.
+- **The launcher's feed inside its turret** (`findLauncherFeed`). The flywheel finder takes at most two
+  discs within 5 in, and the turret took the rest. Feed rollers inside it turned with it but never
+  spun. Now an axle in the turret group parallel to the flywheel's is a `roller` riding the turret when
+  it is no motor's, lies wholly in the turret, has a roller's radius and turns on a shaft of at least
+  `STAGE_SHAFT_MIN_IN`. `MOTION_FINDER` 7 for all of the above.
+- ⚠️ **WHAT A LIFT CARRIES IS WHAT IT WOULD PUSH UP** (`liftPayload`, in `findAll` after every other
+  finder and before `ridersOf`; owner, 2026-11-07: "Does the Offset robot work FULLY?"). Offset's FLOWER
+  chute (15 in of rollers between its Box Tube's columns) hangs from brackets on the last stages' tops
+  and reaches the floor. It is in no stage's box, and it stands on the chassis, so `ridersOf` never saw
+  it hang. It stayed on the floor while the tubes rose.
+  - **The rule.** From each upright moving stage, innermost first, a flood through contacts that push:
+    a body touching it through a face looking down, or resting on one of its faces looking up. Faces
+    are turned outward by each body's signed volume (a mirrored STEP instance winds the other way).
+  - **What it never takes.** Other moving parts; tube stages and anything inside a tube's column (the
+    stages' own fittings, by `findBoxTubes`); a body held across faces looking up or down by the fixed
+    stage (a belt clamped to it) or by one reaching out of the tubes' box grown by `LIFT_REACH_IN` (a
+    guided block on a rail that runs on under the robot). Sideways faces only slide past (the chute's
+    front plate beside the transfer plates). A stage whose flood takes half the surroundings gets nothing.
+  - **Rollers ride it** (`MotionGroup.rideOn`) when most of what they touch outside themselves is the
+    payload; a belt touching only those rollers and the payload joins the payload.
+  - **Offset**: chute, roller plates, two servos and their belts, brackets → the last stage; the six
+    rollers ride it; the plate under the chute, its guided ramp, the stages' top plates stay. 4–5 s at
+    Full detail, contacts worked out only for the bodies the flood reaches (`lazyContacts`).
+- **A turret takes only what stands on its ring** (`onTheRing`, 2026-11-07). Its reach (ring radius
+  + 3 in, above the ring) also covered the top of Offset's chute beside it. The candidates are split
+  into pieces by contact; a piece is kept if it holds the ring or touches nothing else.
+- **A Box Tube build takes NECTAR** (`buildFromCad`, 2026-11-07). A FLOWER is owned by the NECTAR on
+  top, and the importer has no feed choice, so a single turret's POLLEN-only default left the lift with
+  nothing worth placing. A build read with box tubes writes `feed: 'mixed'`, and the found line says
+  "for POLLEN and NECTAR". A single turret then launches a NECTAR on top of the hopper as well, which
+  Offset's turret (a 3.5-in ring bore) could not; the place buttons are the way to use one.
+- `MOTION_FINDER` 8 for the three above, and the final stage's bottom insert (0.600 in under its
+  tube) on that stage (`TUBE_BASE_END_IN` 0.65).
+- ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN** (`findIntakeArm`, in `readBuild` and in `findAll`;
+  owner, 2026-11-08: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride
+  arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft,
+  raised inside 18 in. Only a ramp shown deployed past the frame was read, so this was a Ground intake,
+  which takes nothing from a FLOWER (0 of 36 drive-ins; 36 of 36 as a ramp).
+  - **The rule.** At an intake edge, the outer roller rides an arm when what holds it, followed through
+    contacts that would stop it swinging on an inner roller's shaft (within `ARM_PIVOT_MAX_IN`), never
+    reaches a body running back past the pivot (`ARM_BEHIND_IN`). Contacts are counted per point: a point
+    across the swing only when every face it is on is (`lazyContacts`' third number), so a plate lying
+    flat on the frame beside it, which also touches the frame's edge faces at its own edge, slides.
+    Whatever else swings alone on that shaft (the wedge's arms) joins it; `ridersOf` adds the wedge,
+    which hangs loose on a rod.
+  - **The group.** `role: 'ramp'`, `filePose: 'folded'`, `axisBody` the shaft (`planFolds` hinges on a
+    named shaft before `hingeRod`), `deployDeg` until the outer roller's bottom is 1 in off the floor
+    (Offset: 43°; under 10° is shown down already and is not read). The rollers ride it.
+  - **Not covered:** a saved robot keeps the intake it was read with (the build is read once); pick Ramp
+    in Mechanisms, or import again. The deploy angle ignores a hard stop on the frame. `MOTION_FINDER` 9.
+- **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
+  turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
+  about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto
+  the measured axis whenever that axis is new to the document (a turret found, its parts changed, a
+  saved robot opened, which is what repairs a robot saved before the fix). A later drag is kept until
+  the axis moves again. Height is never touched, and a double turret is left alone.
 - ⚠️ **THE MOVING PARTS STEP** (2026-10-04, owner: "UI is very unintuitive"). Moving parts were the
   bottom of a long Mechanisms page, every row carried Pick parts / Reverse / Remove and two link
   menus, ten Add and Find buttons sat under them, and the preview tinted every part one colour. Now
@@ -742,7 +932,8 @@ The editor, rebuilt with this code, finds the same groups as the Node probe on a
   rotated frame before the box, hull and contacts: the hinge is level, square to the direction the
   part sits out from the robot, through its innermost point; it folds up until its far end is over
   the hinge (or by `foldDeg`). That is how a robot whose CAD has its ramp out fits the 18-in start.
-  A spinning part whose box centre is inside the hinged part's box rides on it and folds with it.
+  A spinning part whose box centre is inside the hinged part's box AND that touches it rides on it and
+  folds with it.
   `toModelFrame` re-applies the folds at the same step, so the main thread rebuilds the worker's
   model frame bit for bit. Use the box centre, not the vertex mean, for "inside": a fanned cap puts
   half a cylinder's vertices on one rim point.
@@ -815,9 +1006,37 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
 - **The UI** (Model step, Parts). The mode is "Select parts": a click selects, then Leave out of
   footprint or Delete selected. Include all brings them back. They show orange on the Model step
   while left out. One undo step each ("leave 2 parts out of the footprint").
-- **Not done yet:** a left-out part is not a moving part, so it is drawn at the starting pose, outside
-  the collision hull, and the 18 in start check does not count it. Marking it a `fold`/`slide` row
-  is the next step.
+- **Review warns** (`reviewItems`, id `apart`, Fix goes to Parts): a left-out part is not a moving
+  part, so it is drawn at the starting pose, outside the collision hull, and the 18 in start check
+  does not count it. Marking it a `fold`/`slide` row is the next step.
+- **Share files.** "Set it up for …" (a share file from another game) carries `apart`, since it names
+  the stored mesh's own bodies. `readShareFile` refuses an `apart` that is not ascending body ids, and a
+  `motion` with an unknown role or choice, a number that is not finite, or a `follows`/`rideOn` that is
+  not another row (`isBodyList`, `isMotionList`).
+
+### The drop box, before a file is read
+
+The Model step asks **Detail** (Full or Light, the same `triBudget` it shows after reading) BEFORE a
+CAD file is read, so a big STEP is read once at the chosen detail. It also stages files dropped on
+the robot page's Import card until the player chooses Detail and starts the read. Detail lives
+beside the tile rather than inside it: the tile's content still swaps between empty, ready, reading
+and failed without moving the page.
+
+- **STEP is the only CAD import** (owner, 2026-11-05). `checkImportFiles` (`fileSelection.ts`) is
+  asked for every way in: the picker and a drop, Replace, and files handed from the robot page. It
+  takes STEP files, one zip whose directory names a STEP (goBILDA ships its starter bots that way), or
+  one `.glb`, which `ImportEditor.tsx` then accepts only as a DSIM share file (a newer share can offer
+  its mesh for a fresh setup). Anything else is refused with `COPY.notStep`, a zip without a STEP with
+  `COPY.zipNoStep` (it names what the zip holds), a damaged zip with the zip reader's own sentence.
+  The engine's other readers remain for stored meshes, share files and the dev harness.
+- **Detail on the tile is the Model step's own state**, passed to the read as `opts.setup.triBudget`
+  when it starts, never written into the open document. It was, and a Replace staged at Full and then
+  left (Drivetrain and back) showed Full over a Light model, and the next Light click re-read the old
+  file and lost its deleted and left-out parts. `readSetup`/`readKeepsBuild` (`editorModel.ts`) say
+  what a read keeps: a staged file is a new file whatever its detail; only a Detail change on the
+  model already read (`keepHistory`) or a saved robot keeps its build.
+- **Keep current model**: a file waiting on the tile while a model is loaded (a Replace, or a file
+  handed from the robot page) can be put down, back to the model as it was.
 
 ### Floating parts
 
@@ -1010,7 +1229,7 @@ The ACCOUNT syncs the active robot's SPEC (`settings.spec.imported`: id, hull, m
 2. **A share file whose robot IS the account's active robot keeps the active id** (`planShareAdd` → `adopt`). "Is" means the same descriptor whatever its id (`sameImportedRobot`), not the same file id: a teammate's copy of a file has its own id, and their second device must adopt THEIR id, which the file does not carry. The record's spec is the account's active spec (the file brings the model), so the add changes nothing that syncs. An older copy of it here under another id is retired.
 3. **Any other share file gets a fresh id per device**, or the replace / keep-both question when this device already has the file's robot. Unchanged since 6035eca6.
 
-   **Edit details** (2026-11-04) writes `updateIdentity` (name, team name, team number) and, for the active robot, `settings.spec` in the same step; it never touches `spec.imported`, so `sameImportedRobot` is unaffected and nothing re-syncs a model. It is on the card (Play's strip and the robot page's row) and in the Imported robot panel, where it replaced Rename.
+   **The name, team name and team number** are fields at the top of the Imported robot panel (2026-11-06; before that a ✎ on the card opened an Edit details dialog, and before that the panel had Rename). Each writes `updateIdentity` and, for the active robot, `settings.spec` in the same step, on Enter or when focus leaves; it never touches `spec.imported`, so `sameImportedRobot` is unaffected and nothing re-syncs a model.
 
 4. **An EDIT saves under the active id when the record answers for it through `sharedFrom`** (`editSaveId`). A copy added from a share file before rule 2 has an id of its own; rule 1 offers it for editing, and saving it under its own id made the edit the active robot under a NEW id, which synced (the ping-pong again, reached by editing). The editor's Save writes it under the active id and deletes the old record.
 5. **An OUT-OF-DATE copy is never drawn, sent or re-applied.** Edited on device A, the robot reaches device B as the same id with another descriptor, while B's record still holds the old model. The library says what a record holds (`descriptorFor`); the asset registry keeps the descriptor each picture and mesh came with and answers `null` to a reader that passes another version (`importedTopImage(id, imp)`, `importedTopUrl`, `importedMeshBlob(id, imp)`; the 3D mesh slot is keyed by the descriptor too), so the robot draws as its footprint; the relay's owner sends nothing for it (above). The robot page compares the record with the active robot (`sameImportedRobot`): the hero shows the footprint, ONE line at the top of the panel body (it arrives in the same render as the record's facts) says the model on this device is out of date and to import the robot's newest exported file, and the panel head's "Edit in the importer" becomes "Import the file" in the same place (an edit would save the old version over the new one). Picking the card that answers for the active robot (robot page, lobby) is a no-op, since applying the old record's spec would revert the account. Importing the newest file adopts it (rule 2) and replaces the record.
@@ -1114,9 +1333,37 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   - Proof: the `import UI undo` checks in `npm test`, and `scripts/robot-import/undoeditor.cjs`, which
     drives the production editor offscreen (two edits, two undos, two redos, a units change, a Detail
     change, a handle stepped by keys) and reads the persisted draft after each.
+- **Save from any step** (2026-11-06, owner: "as streamlined as possible"). The header carries Save robot
+  (Save changes for an edit) on every step but Review, whose footer has it with Test drive and Export.
+  A model the importer read right then needs no step walked through: drop the file, look at it, save.
+  It waits, like Review's, for no block and no measurement, and for what the editor reads by itself
+  (`autoDone`: a new file's build, then its moving parts, each an effect a render after the last), so
+  a save from the Model step never stores a robot half-read. ⚠️ It is a plain `.ds-btn`, not `primary`:
+  the pad's Y presses the first `.ds-btn.primary` on the page (`PadNavLayer`), which must stay the
+  step's Next. It is its own item in the header, after the Undo/Redo/Discard group; under 560 px the
+  four do not fit a line, so it moves up beside Back and the group wraps under them whole
+  (`.ds-import-headsave`), rather than leaving Save alone on a third line. Checked end to end in the
+  production editor: what it saves from the Model step is what the five steps save (wheels, moving
+  parts, build).
 - **Test drive** passes the draft's spec to `GameView` (`testDrive`), frozen at mount: free
   drive, its own assists, the default start, no other robots, no Zenith auto. Leaving the
   match returns to the editor route, and the draft is flushed first, so nothing is lost.
+- **Layout** (owner, 2026-11-05). Where the editor's container is 860 px or wider, the step body and
+  its buttons are one column (`.ds-import-dock`, 19 to 24 rem) left of the 3D view, and the step rail is
+  its own centred row above both. The page widens by that column (`.ds-main:has(.ds-import)`, 1080 to
+  1480 px), so the view keeps its width where the window has room: 435 to 1061 px wide at 1920. Narrower,
+  the dock is `display: contents` and the grid stacks as before. Nothing overlaps the view, so the
+  model is centred in it (an inset for a dock over the view was always 0, and is gone).
+- **Placements in 3D** (Mechanisms). Every placement is a handle over the model (`engine/gizmo.ts`):
+  a click picks one, the gizmo's arrows drag it. Keys, while the pointer is on the view or a grab is
+  on: G grabs (the handle follows the pointer until a click or Enter); X, Y or Z locks an axis (again:
+  unlocks; mid-grab, the grab goes on along it); Esc puts a grab back where G was pressed, else drops
+  the lock, else clears the pick. The launcher, else the first point, is picked ONCE on entering the
+  step: a pick that came back whenever none was set made Esc jump to the launcher. The map and the 3D
+  view both write through `mechMove.ts` (`moveHandle`): a point stays within 12 in of the footprint's
+  centre (`REACH_IN`), its height inside `zRange` (the game's window under the robot's top, the height
+  slider's own range). The handle list is memoised (`gizmoState`): the preview compares it by
+  identity, and a new one every render rebuilt every handle mesh on every render and drag frame.
 - **The preview takes a fresh `<canvas>` per controller.** Re-using one after `dispose()`
   (which forces a context loss) threw `Cannot read properties of null (reading 'precision')`
   on the next mount. A lost context falls back to the top-down map.
@@ -1142,7 +1389,8 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
 - `scripts/importshots.cjs` photographs every editor state at 1440×900, 1100×720 and 390×844 in
   both themes, in an OFFSCREEN Electron window, into `scratch/importshots/<sha>/` with an
   `index.html` sheet. `scripts/importpad.cjs` walks the editor by stubbed gamepad and then by
-  real key events and asserts each step. Both need `npx vite --port 5194 --strictPort` running
+  real key events and asserts each step. Every probe seeds with `robot.step` (the editor takes no
+  other fixture format), so the first read waits for the occt reader. Both need `npx vite --port 5194 --strictPort` running
   and `env -u ELECTRON_RUN_AS_NODE npx electron scripts/<file>`.
 - `scripts/importprobe.cjs` measures the UI's cost against a PRODUCTION build (`npx vite preview
   --port 4173`), cold cache, long tasks observed from before the first script. Measured

@@ -10,7 +10,13 @@
  *      the heap after a forced GC within 5 MB of the first trip (the controller, the session and
  *      their object URLs all go when the editor does).
  *
- *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/importprobe.cjs [--port 4173] [--file robot.glb]
+ *   env -u ELECTRON_RUN_AS_NODE npx electron scripts/importprobe.cjs [--port 4173] [--file robot.step]
+ *       [--heavy <a big STEP>]
+ *
+ * The editor takes STEP CAD (or a zip of it) and a DSIM share file, so both drops are STEP: the
+ * fixture, and for the heavy drop the stress robot's STEP (`npx tsx scripts/robot-import/stress.ts
+ * --levels s --formats step`, 0.5 M triangles, written to %TEMP%/dsim-robot-stress), skipped with a
+ * line when it is not on disk.
  *
  * A measurement with budgets, not a test in `npm test`: the numbers depend on the machine. The run
  * prints them and fails (exit 1) only when a budget is broken.
@@ -22,8 +28,8 @@ const argOf = (name, fallback) => {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 };
 const BASE = `http://localhost:${argOf('port', '4173')}`;
-const FILE = argOf('file', 'robot.glb');
-const HEAVY = Number(argOf('tris', '150000'));
+const FILE = argOf('file', 'robot.step');
+const HEAVY = argOf('heavy', require('path').join(require('os').tmpdir(), 'dsim-robot-stress', 'stress-s.step'));
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
@@ -106,7 +112,8 @@ app.whenReady().then(async () => {
     input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   })()`);
-  await until(`document.querySelector('.ds-import-filerow') && document.querySelector('.ds-import-canvas-host canvas')`, 60000);
+  // a STEP read loads the occt reader (7.6 MB of wasm) first, cold
+  await until(`document.querySelector('.ds-import-filerow') && document.querySelector('.ds-import-canvas-host canvas')`, 120000);
   await js(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`);
   const dropMs = Date.now() - t0;
   const dropTasks = await tasks();
@@ -164,49 +171,42 @@ app.whenReady().then(async () => {
   console.log(`${warnings.length ? 'FAIL' : 'PASS'}  ten editor trips: "Too many active WebGL contexts" ${warnings.length} times`);
   if (warnings.length) broken++;
 
-  // 5. a HEAVY model: the STL fixture (a robot on four wheels) with its triangles split into four
-  // until there are ${HEAVY} (`--tris`, default 150k: past the editor's 100k budget, so the
-  // simplifier runs), as dense at the floor as a CAD export of real wheels. Made in the page.
-  await win.loadURL(BASE + '/decode/configure/robot/import');
-  await until(`document.querySelector('.ds-import-drop input[type=file]')`);
-  await sleep(800);
-  const stl = require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'robot-import', 'robot.stl')).toString('base64');
-  const tris = await js(`(() => {
-    const raw = atob('${stl}'); const u = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) u[i] = raw.charCodeAt(i);
-    const dv0 = new DataView(u.buffer); const n0 = dv0.getUint32(80, true);
-    let tris = [];
-    for (let n = 0; n < n0; n++) { const t = []; for (let a = 0; a < 3; a++) { const v = []; for (let b = 0; b < 3; b++) v.push(dv0.getFloat32(84 + n * 50 + 12 + a * 12 + b * 4, true)); t.push(v); } tris.push(t); }
-    const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
-    // split whole levels while a full level fits, then split just enough of the next one
-    while (tris.length < ${HEAVY}) {
-      const room = Math.min(tris.length, Math.ceil((${HEAVY} - tris.length) / 3));
-      const next = [];
-      tris.forEach((t, i) => { if (i >= room) return void next.push(t); const [A, B, C] = t; const ab = mid(A, B), bc = mid(B, C), ca = mid(C, A); next.push([A, ab, ca], [ab, B, bc], [ca, bc, C], [ab, bc, ca]); });
-      tris = next;
-    }
-    const buf = new ArrayBuffer(84 + tris.length * 50), dv = new DataView(buf);
-    dv.setUint32(80, tris.length, true);
-    tris.forEach((t, n) => t.forEach((v, a) => v.forEach((x, b) => dv.setFloat32(84 + n * 50 + 12 + a * 12 + b * 4, x, true))));
-    window.__heavy = new File([buf], 'heavy.stl');
-    return tris.length;
-  })()`);
-  // making the file is the PROBE's work, not the importer's: the clock starts at the drop
-  await sleep(300);
-  await js(`window.__lt.length = 0; true`);
-  const h0 = Date.now();
-  await js(`(() => {
-    const input = document.querySelector('.ds-import-drop input[type=file]');
-    const dt = new DataTransfer(); dt.items.add(window.__heavy);
-    input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  const okHeavy = await until(`document.querySelector('.ds-import-filerow') && document.querySelector('.ds-import-canvas-host canvas')`, 120000);
-  await js(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`);
-  const heavyMs = Date.now() - h0;
-  const heavyTasks = await tasks();
-  console.log(`heavy STL (${tris.toLocaleString('en-US')} triangles, the fixture subdivided): ${okHeavy ? `first frame after ${heavyMs} ms` : 'NO FRAME'}, long tasks ${heavyTasks.length}, longest ${max(heavyTasks).toFixed(0)} ms`);
-  if (!okHeavy) broken++;
-  budget('heavy drop: the longest main-thread task', max(heavyTasks), 200, 'ms');
+  // 5. a HEAVY model: a big STEP (`--heavy`, default the stress robot's 0.5 M-triangle STEP), past
+  // the Light budget, so the simplifier runs as it does on a real export. Served from here over
+  // HTTP: the preview server does not serve the temp dir, and tens of MB do not belong in a script.
+  if (!require('fs').existsSync(HEAVY)) {
+    console.log(`SKIP  heavy drop: ${HEAVY} is not on disk (npx tsx scripts/robot-import/stress.ts --levels s --formats step)`);
+  } else {
+    const srv = require('http').createServer((req, res) => {
+      res.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
+      require('fs').createReadStream(HEAVY).pipe(res);
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    await win.loadURL(BASE + '/decode/configure/robot/import');
+    await until(`document.querySelector('.ds-import-drop input[type=file]')`);
+    await sleep(800);
+    const heavyName = require('path').basename(HEAVY);
+    await js(`(async () => { const r = await fetch('http://127.0.0.1:${srv.address().port}/'); window.__heavy = new File([await r.blob()], ${JSON.stringify(heavyName)}); return 1; })()`);
+    srv.close();
+    // fetching the file is the PROBE's work, not the importer's: the clock starts at the drop
+    await sleep(300);
+    await js(`window.__lt.length = 0; true`);
+    const h0 = Date.now();
+    await js(`(() => {
+      const input = document.querySelector('.ds-import-drop input[type=file]');
+      const dt = new DataTransfer(); dt.items.add(window.__heavy);
+      input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    const okHeavy = await until(`document.querySelector('.ds-import-filerow') && document.querySelector('.ds-import-canvas-host canvas')`, 300000);
+    await js(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`);
+    const heavyMs = Date.now() - h0;
+    const heavyTasks = await tasks();
+    const mbs = (require('fs').statSync(HEAVY).size / 1048576).toFixed(1);
+    console.log(`heavy STEP (${heavyName}, ${mbs} MB): ${okHeavy ? `first frame after ${heavyMs} ms` : 'NO FRAME'}, long tasks ${heavyTasks.length}, longest ${max(heavyTasks).toFixed(0)} ms`);
+    if (!okHeavy) broken++;
+    budget('heavy drop: the longest main-thread task', max(heavyTasks), 200, 'ms');
+  }
 
   console.log(broken ? `\n${broken} BUDGET(S) BROKEN` : '\nALL BUDGETS MET');
   app.exit(broken ? 1 : 0);

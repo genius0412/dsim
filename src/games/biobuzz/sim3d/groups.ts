@@ -99,3 +99,15 @@ export const GROUP_FLOWER_RING = (((GROUP_RING_BIT << 16) | (0xffff & ~GROUP_RAM
 export const GROUP_FLOWER_SOLID = (((0xffff << 16) | (0xffff & ~(GROUP_ELEMENT_BIT | GROUP_NECTAR_BIT | GROUP_RAMP_BIT))) >>> 0) as number;
 /** a robot's chassis boxes, mechanism shapes and side-roller wheels: everything but a ring trimesh */
 export const GROUP_CHASSIS = (((0xffff << 16) | (0xffff & ~GROUP_RING_BIT)) >>> 0) as number;
+
+/**
+ * AN IMPORT'S SKIRT AND ITS NECTAR GATE (`import3dShapes`, `SIM_PATCH` 14): solid to elements and
+ * as little else as the pairing rule allows. The ELEMENT-bit filter keeps out the HIVE (`FRAME`,
+ * `TRAY`), a FLOWER's plates (`FLOWER_SOLID`, `FLOWER_RING`), a ramp and every pocket filler. What
+ * still meets them is whatever carries every membership bit: the tiles (a skirt starts
+ * `BB3_IMPORT_SKIRT_Z0` up, so never), the walls, a FLOWER's supports and another robot's chassis,
+ * all of which the band above stops at the same plan distance first.
+ */
+export const GROUP_SKIRT = (((GROUP_ELEMENT_BIT << 16) | GROUP_ELEMENT_BIT) >>> 0) as number;
+/** the NECTAR-only half: a skirt under a band a POLLEN passes beneath, and a POLLEN-only mouth's gate */
+export const GROUP_SKIRT_NECTAR = (((GROUP_NECTAR_BIT << 16) | GROUP_NECTAR_BIT) >>> 0) as number;

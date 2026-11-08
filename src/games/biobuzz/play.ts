@@ -36,7 +36,7 @@ import { bbBarStep, bbOnCapture, bbSorterTakes, bbSorterTick } from './nectarRej
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
-import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbRampOnEdge } from './mechs';
 import { bbDumpZ, bbSideRollerOffsets, importSideRollersPre6 } from './importMech';
 import {
   type BbMouthAxes,
@@ -1023,7 +1023,9 @@ export interface BbFlowerGateOpts {
 }
 
 export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach, opts: BbFlowerGateOpts = {}): BbFlowerIntakeHit | null {
-  const mouths = bbMouths(r.spec);
+  // a ramp lifts a POLLEN off a FLOWER only at the mouth that carries it (`bbRampOnEdge`)
+  const ramp = bbIntakeKindOf(r.spec) === 'ramp';
+  const mouths = bbMouths(r.spec).filter((m) => !ramp || bbRampOnEdge(r.spec, m.edge));
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const pre6 = opts.pre6 ?? false;
@@ -1202,6 +1204,7 @@ function bbRampSwingStep2d(world: World, rob: RobotState): void {
   const edgeAxes = [rot({ x: 1, y: 0 }, rob.heading), rot({ x: 0, y: 1 }, rob.heading)];
   let hit = false;
   for (const m of bbMouths(rob.spec)) {
+    if (!bbRampOnEdge(rob.spec, m.edge)) continue;
     const ax = mouthAxes(m, hl, hw);
     const corners = bbRampFootprintCorners(rob, ax, reach);
     for (const s of biobuzzColliders.statics) {
