@@ -844,6 +844,23 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   Offset's turret (a 3.5-in ring bore) could not; the place buttons are the way to use one.
 - `MOTION_FINDER` 8 for the three above, and the final stage's bottom insert (0.600 in under its
   tube) on that stage (`TUBE_BASE_END_IN` 0.65).
+- ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN** (`findIntakeArm`, in `readBuild` and in `findAll`;
+  owner, 2026-11-08: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride
+  arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft,
+  raised inside 18 in. Only a ramp shown deployed past the frame was read, so this was a Ground intake,
+  which takes nothing from a FLOWER (0 of 36 drive-ins; 36 of 36 as a ramp).
+  - **The rule.** At an intake edge, the outer roller rides an arm when what holds it, followed through
+    contacts that would stop it swinging on an inner roller's shaft (within `ARM_PIVOT_MAX_IN`), never
+    reaches a body running back past the pivot (`ARM_BEHIND_IN`). Contacts are counted per point: a point
+    across the swing only when every face it is on is (`lazyContacts`' third number), so a plate lying
+    flat on the frame beside it, which also touches the frame's edge faces at its own edge, slides.
+    Whatever else swings alone on that shaft (the wedge's arms) joins it; `ridersOf` adds the wedge,
+    which hangs loose on a rod.
+  - **The group.** `role: 'ramp'`, `filePose: 'folded'`, `axisBody` the shaft (`planFolds` hinges on a
+    named shaft before `hingeRod`), `deployDeg` until the outer roller's bottom is 1 in off the floor
+    (Offset: 43°; under 10° is shown down already and is not read). The rollers ride it.
+  - **Not covered:** a saved robot keeps the intake it was read with (the build is read once); pick Ramp
+    in Mechanisms, or import again. The deploy angle ignores a hard stop on the frame. `MOTION_FINDER` 9.
 - **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
   turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
   about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto

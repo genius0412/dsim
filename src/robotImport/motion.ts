@@ -39,9 +39,10 @@ const norm = (a: V3): V3 => {
  * rule missed (`ridersOf`), a hinged part on its rod (`hingeRod`), both ends of a two-ended intake
  * (2026-11-06). 8: what a lift's stage carries up and the rollers riding it (`liftPayload`), a turret's
  * parts only where they stand on its ring (`onTheRing`), a box tube's last insert on its own stage
- * (2026-11-07).
+ * (2026-11-07). 9: an intake arm the file shows tucked in is the ramp (`findIntakeArm`), swinging on
+ * the shaft it names (2026-11-08).
  */
-export const MOTION_FINDER = 8;
+export const MOTION_FINDER = 9;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -2580,7 +2581,9 @@ export function readShot(parts: readonly MeshPart[], disc: number, elementD: num
 export interface CadBuild {
   /**
    * the edge with the most intake rollers, whether one of them stands upright (side rollers), and
-   * whether the file shows a ramp deployed past them (`findOverhang` at that edge, down to the floor)
+   * whether there is a ramp: one the file shows deployed past them (`findOverhang` at that edge, down to
+   * the floor), or an arm it shows tucked in that swings on one roller's shaft carrying another
+   * (`findIntakeArm`)
    */
   intake: { edge: 'front' | 'back' | 'left' | 'right'; upright: boolean; ramp?: boolean; rampEdge?: 'front' | 'back' | 'left' | 'right'; both?: boolean } | null;
   /**
@@ -2762,9 +2765,11 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
   const edges = { front: 0, back: 0, left: 0, right: 0 };
   const spans: NonNullable<CadBuild['spans']> = {};
   const longest = { front: 0, back: 0, left: 0, right: 0 };
+  const byEdge: Partial<Record<Edge, MotionGroup[]>> = {};
   const stB = bodyStats(parts);
   for (const edge of ['front', 'back', 'left', 'right'] as const) {
     const groups = findRollerGroups(parts, [{ edge, from: -1e3, to: 1e3 }], used, outside);
+    byEdge[edge] = groups;
     let upright = false;
     const k = edge === 'front' || edge === 'back' ? 1 : 0;
     for (const g of groups) {
@@ -2808,6 +2813,16 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
     if (Math.min(...over.bodies.map((b) => st0.min[3 * b + 2])) - floor <= RAMP_FLOOR_IN) {
       intake.ramp = true;
       intake.rampEdge = over.edge;
+    }
+  }
+  // ...or one the file shows tucked in: an arm swinging on an intake roller's shaft, carrying the roller
+  // outside it (`findIntakeArm`; owner, 2026-11-08, Offset's front arms)
+  if (intake && !intake.ramp && !intake.upright) {
+    for (const edge of intake.both && opposite ? [intake.edge, opposite] : [intake.edge]) {
+      if (!findIntakeArm(parts, byEdge[edge] ?? [], edge, used)) continue;
+      intake.ramp = true;
+      intake.rampEdge = edge;
+      break;
     }
   }
   let launcher: CadBuild['launcher'] = null;
@@ -2888,6 +2903,161 @@ export function findOverhang(parts: readonly MeshPart[], taken: ReadonlySet<numb
     const rest = free.filter((b) => !bodies.has(b));
     if (![...bodies].some((a) => rest.some((b) => gap(a, b) <= OVERHANG_ATTACH_IN))) continue;
     return { edge: end.edge, bodies: [...bodies].sort((a, b) => a - b) };
+  }
+  return null;
+}
+
+/** an intake arm's pivot roller stands at most this far inside its outer roller, inches */
+const ARM_PIVOT_MAX_IN = 8;
+/** ...and the arm reaches no further inside its pivot than this: more is the chassis, inches */
+const ARM_BEHIND_IN = 1.5;
+/** an arm is at most this many bodies (more is the robot, reached through a contact) */
+const ARM_MAX_BODIES = 600;
+/** a body stops an arm swinging when at least this many contact points stand across the swing */
+const ARM_STOP_POINTS = 3;
+/** a stowed arm deploys until its outer roller's bottom is this high off the floor, inches */
+const ARM_DEPLOY_CLEAR_IN = 1;
+/** ...turning at least this far (less: the file shows it down already) and at most this far, degrees */
+const ARM_DEPLOY_MIN_DEG = 10;
+const ARM_DEPLOY_MAX_DEG = 75;
+
+/** a stowed intake arm (`findIntakeArm`) */
+export interface IntakeArm {
+  /** the arm's bodies: what swings on the pivot roller's shaft, with the outer roller's supports */
+  bodies: number[];
+  /** the pivot: a point on the shaft it swings on, MODEL frame */
+  pivot: V3;
+  /** the shaft (its body: the hinge `planFolds` turns it on, as the group's `axisBody`), or -1 */
+  shaft: number;
+  /** degrees it swings down to deploy */
+  deployDeg: number;
+}
+
+/**
+ * ⚠️ **A STOWED INTAKE ARM: A FLOWER RAMP THE FILE SHOWS TUCKED IN** (owner, 2026-11-08, Offset's
+ * robot: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride arms that
+ * a pair of servos swing on the inner roller's shaft, with a wedge on a second pair of arms on the same
+ * shaft, and the file shows them raised inside 18 in, so `findOverhang` (a part shown deployed past the
+ * frame) never saw a ramp and the intake read as a Ground intake, which takes nothing from a FLOWER.
+ *
+ * At `edge`, among its intake `rollers` (axles along the edge), the OUTER roller rides an arm when what
+ * holds it, followed through contacts that would stop the arm swinging on an INNER roller's shaft (up
+ * to `ARM_PIVOT_MAX_IN` inside), stays a part of its own: it never reaches a body that runs out of the
+ * front of the robot (`ARM_BEHIND_IN` behind the pivot), and stays under `ARM_MAX_BODIES`. A contact
+ * across faces square to the shaft (an arm plate flat against the frame beside it) only slides as it
+ * swings, so it does not join the frame to the arm. Anything else swinging on that shaft and standing
+ * alone the same way (the wedge's arms) is the arm too. It deploys until the outer roller's bottom is
+ * `ARM_DEPLOY_CLEAR_IN` off the floor; one shown down already (under `ARM_DEPLOY_MIN_DEG`) is not
+ * stowed. Null when no roller rides such an arm. `taken`: bodies of other moving parts, left out.
+ */
+export function findIntakeArm(parts: readonly MeshPart[], rollers: readonly MotionGroup[], edge: Edge, taken: ReadonlySet<number>): IntakeArm | null {
+  const st = bodyStats(parts);
+  const along: 0 | 1 = edge === 'front' || edge === 'back' ? 1 : 0;
+  const across: 0 | 1 = along === 1 ? 0 : 1;
+  const outward = edge === 'front' || edge === 'left' ? 1 : -1;
+  // the rollers with an axle along the edge: long along it, outermost first
+  const rows = rollers
+    .filter((g) => g.bodies.length)
+    .map((g) => {
+      const mo = setMoments(st, g.bodies);
+      const ext = [0, 1, 2].map((k) => mo.max[k] - mo.min[k]);
+      return { g, mo, c: boxCentre(mo), ok: ext[along] >= 2 * Math.max(ext[across], ext[2]) };
+    })
+    .filter((r) => r.ok)
+    .sort((p, q) => outward * (q.c[across] - p.c[across]));
+  if (rows.length < 2) return null;
+  const floor = Math.min(...st.ids.map((b) => st.min[3 * b + 2]));
+  const outer = rows[0];
+  const moving = new Set(taken);
+  for (const r of rows) for (const b of r.g.bodies) moving.add(b);
+  for (const inner of rows.slice(1)) {
+    const gap = outward * (outer.c[across] - inner.c[across]);
+    if (gap < 1 || gap > ARM_PIVOT_MAX_IN) continue;
+    // the pivot: the inner roller's own shaft, the thinnest body in it running its whole length
+    let shaft = -1;
+    let thin = Infinity;
+    for (const b of inner.g.bodies) {
+      const len = st.max[3 * b + along] - st.min[3 * b + along];
+      const w = Math.max(st.max[3 * b + across] - st.min[3 * b + across], st.max[3 * b + 2] - st.min[3 * b + 2]);
+      if (len >= 0.6 * (inner.mo.max[along] - inner.mo.min[along]) && w < thin) (thin = w), (shaft = b);
+    }
+    const pivot: V3 = shaft >= 0 ? boxCentre(setMoments(st, [shaft])) : inner.c;
+    const axis: V3 = along === 1 ? [0, 1, 0] : [1, 0, 0];
+    const sPivot = outward * pivot[across];
+    // the parts round the edge, and what runs on from them into the robot
+    const lo = sPivot - ARM_BEHIND_IN;
+    const near = new Set<number>();
+    const beyond = new Set<number>();
+    for (const b of st.ids) {
+      if (moving.has(b) && !outer.g.bodies.includes(b) && !inner.g.bodies.includes(b)) continue;
+      const smax = Math.max(outward * st.min[3 * b + across], outward * st.max[3 * b + across]);
+      const smin = Math.min(outward * st.min[3 * b + across], outward * st.max[3 * b + across]);
+      if (smax < lo - 0.5) continue;
+      near.add(b);
+      if (smin < lo) beyond.add(b);
+    }
+    // a point's motion as the arm swings on the shaft: round it, in the plane square to it
+    const c = lazyContacts(parts, near, CONTACT_IN, (x, y, z) => {
+      const p: V3 = [x - pivot[0], y - pivot[1], z - pivot[2]];
+      const v = cross(axis, p);
+      const len = Math.hypot(v[0], v[1], v[2]);
+      return len < 0.1 ? [0, 0, 0] : [v[0] / len, v[1] / len, v[2] / len];
+    });
+    // ...stopped by a body only where points of it stand on faces across the swing alone (a plate flat
+    // on another touches the other's edge faces too, at its own edge: that slides)
+    const stops = (a: number, o: number): boolean => (c.along(a, o)?.[2] ?? 0) + (c.along(o, a)?.[2] ?? 0) >= ARM_STOP_POINTS;
+    const touches = (a: number, o: number): boolean => !!c.along(a, o) || !!c.along(o, a);
+    // a part standing alone from a seed: everything that would stop it swinging comes with it; it may
+    // not reach the robot behind the pivot
+    const claimed = new Set<number>();
+    const alone = (seed: number): number[] | null => {
+      const part = new Set([seed]);
+      const queue = [seed];
+      while (queue.length) {
+        const a = queue.pop()!;
+        if (beyond.has(a) || part.size > ARM_MAX_BODIES) return null;
+        for (const o of c.near(a)) {
+          if (part.has(o) || moving.has(o) || !near.has(o) || !stops(a, o)) continue;
+          part.add(o);
+          queue.push(o);
+        }
+      }
+      return [...part];
+    };
+    const seedsOf = (g: MotionGroup): number[] => {
+      const out = new Set<number>();
+      for (const b of g.bodies) for (const o of c.near(b)) if (!moving.has(o) && near.has(o) && touches(b, o)) out.add(o);
+      return [...out].sort((a, b) => a - b);
+    };
+    // the outer roller's arm first: without one there is nothing here
+    const arm = new Set<number>();
+    for (const seed of seedsOf(outer.g)) {
+      if (arm.has(seed)) continue;
+      const part = alone(seed);
+      if (!part) {
+        arm.clear();
+        break;
+      }
+      for (const b of part) arm.add(b);
+    }
+    if (!arm.size || !inner.g.bodies.some((b) => c.near(b).some((o) => arm.has(o) && touches(b, o)))) continue;
+    for (const b of arm) claimed.add(b);
+    // ...then whatever else swings on the same shaft standing alone (a wedge on its own arms)
+    for (const seed of seedsOf(inner.g)) {
+      if (claimed.has(seed)) continue;
+      const part = alone(seed);
+      if (!part) continue;
+      for (const b of part) (arm.add(b), claimed.add(b));
+    }
+    // how far it swings down: the outer roller's bottom to `ARM_DEPLOY_CLEAR_IN` off the floor
+    const du = outward * (outer.c[across] - pivot[across]);
+    const dz = outer.c[2] - pivot[2];
+    const r = Math.hypot(du, dz);
+    const want = floor + ARM_DEPLOY_CLEAR_IN + (outer.c[2] - outer.mo.min[2]) - pivot[2];
+    if (r < 1e-6 || Math.abs(want / r) > 1) continue;
+    const deployDeg = ((Math.atan2(dz, du) - Math.asin(want / r)) * 180) / Math.PI;
+    if (deployDeg < ARM_DEPLOY_MIN_DEG) continue;
+    return { bodies: [...arm].sort((a, b) => a - b), pivot, shaft, deployDeg: Math.min(ARM_DEPLOY_MAX_DEG, Math.round(deployDeg)) };
   }
   return null;
 }
@@ -3069,7 +3239,10 @@ export function planFolds(parts: readonly MeshPart[], motion: readonly MotionGro
     const lateral = sub(mo.c, scale(u, dot(mo.c, u)));
     const sHinge = folded && n ? sSum / n : sMin;
     // the rod it turns on, where the model shows one; else its innermost point
-    const rod = hingeRod(parts, st, g.bodies, u, axis, inAnyGroup);
+    // a shaft named for it (`axisBody`: an intake arm on its inner roller's shaft, `findIntakeArm`),
+    // else the rod it is bored round
+    const pin = g.axisBody !== undefined && g.axisBody < st.n.length && st.n[g.axisBody] > 0 ? boxCentre(setMoments(st, [g.axisBody])) : null;
+    const rod = pin ? { s: pin[0] * u[0] + pin[1] * u[1], z: pin[2] } : hingeRod(parts, st, g.bodies, u, axis, inAnyGroup);
     const hinge: V3 = rod
       ? [lateral[0] + u[0] * rod.s, lateral[1] + u[1] * rod.s, rod.z]
       : [lateral[0] + u[0] * sHinge, lateral[1] + u[1] * sHinge, n ? zSum / n : mo.min[2]];
@@ -3232,11 +3405,14 @@ const LIFT_COLUMN_END_IN = 1.2;
 /**
  * Contact between bodies of `bodies`, worked out only for the pairs asked about (a lift's flood
  * reaches a few hundred of the thousands round it). `along(a, o)`: a vertex of `a` lies within `eps`
- * of a triangle of `o`; the least and the most of those triangles' outward normals along `d`, or null.
+ * of a triangle of `o`; the least and the most of those triangles' outward normals along `d` (a unit
+ * direction, or one per point: a hinge's motion is round its axis), and how many of those vertices
+ * stand only on faces across it (|normal · d| over `LIFT_PUSH_COS`), or null.
  * A body's triangles are turned outward by its own signed volume: a mirrored instance in a STEP file
  * winds the other way round. `near(b)`: the bodies whose boxes come within `eps` of `b`'s.
  */
-function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, eps: number, d: V3) {
+function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, eps: number, d: V3 | ((x: number, y: number, z: number) => V3)) {
+  const dirAt = typeof d === 'function' ? d : (): V3 => d;
   const st = bodyStats(parts);
   const want = new Uint8Array(st.n.length);
   for (const b of bodies) if (b < st.n.length) want[b] = 1;
@@ -3317,11 +3493,11 @@ function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, e
     triGrids.set(o, g);
     return g;
   };
-  const alongCache = new Map<string, [number, number] | null>();
-  const along = (a: number, o: number): [number, number] | null => {
+  const alongCache = new Map<string, [number, number, number] | null>();
+  const along = (a: number, o: number): [number, number, number] | null => {
     const ck = `${a},${o}`;
     if (alongCache.has(ck)) return alongCache.get(ck)!;
-    let r: [number, number] | null = null;
+    let r: [number, number, number] | null = null;
     const l = tris.get(o);
     if (l && want[a]) {
       const g = triGrid(o);
@@ -3331,6 +3507,10 @@ function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, e
       const hi = [0, 1, 2].map((k) => st.max[3 * o + k] + eps);
       eachVertex(parts, new Set([a]), (x, y, z) => {
         if (x < lo[0] || y < lo[1] || z < lo[2] || x > hi[0] || y > hi[1] || z > hi[2]) return;
+        // the vertex stands ACROSS the motion only when every face of `o` it is on does: one on a
+        // plate's face and on the edge beside it (two plates lying flat on each other) slides
+        let on = false;
+        let across = true;
         for (const t of g.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell))) ?? []) {
           const A = corner(l[t], l[t + 1]);
           const B = corner(l[t], l[t + 2]);
@@ -3339,13 +3519,16 @@ function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, e
           const n = cross(sub(B, A), sub(C, A));
           const len = Math.hypot(n[0], n[1], n[2]);
           if (len < 1e-12) continue;
-          const al = (sign * dot(n, d)) / len;
-          if (!r) r = [al, al];
+          const al = (sign * dot(n, dirAt(x, y, z))) / len;
+          on = true;
+          if (Math.abs(al) <= LIFT_PUSH_COS) across = false;
+          if (!r) r = [al, al, 0];
           else {
             if (al < r[0]) r[0] = al;
             if (al > r[1]) r[1] = al;
           }
         }
+        if (on && across && r) r[2]++;
       });
     }
     alongCache.set(ck, r);
@@ -3437,7 +3620,7 @@ export function liftPayload(parts: readonly MeshPart[], groups: readonly MotionG
   const staged = new Set(tubeBodies);
   // held up or down by a fixed body: a contact across faces looking up or down (a block on its rail, a
   // belt clamped to the outer tube). Faces looking sideways only slide past each other as it rises.
-  const across = (r: [number, number] | null): boolean => !!r && (r[0] < -LIFT_PUSH_COS || r[1] > LIFT_PUSH_COS);
+  const across = (r: readonly number[] | null): boolean => !!r && (r[0] < -LIFT_PUSH_COS || r[1] > LIFT_PUSH_COS);
   const bolted = (o: number): boolean => c.near(o).some((f) => (fixed.has(f) || beyond.has(f)) && (across(c.along(o, f)) || across(c.along(f, o))));
   const claimed = new Set<number>();
   for (const { g, gi } of lifts) {
@@ -3710,7 +3893,7 @@ export function touchingPairs(parts: readonly MeshPart[], bodies: ReadonlySet<nu
 export function foldKey(motion: readonly MotionGroup[] | undefined): string {
   if (!motion || !motion.some((g) => isHinge(g.role) && g.bodies.length)) return '';
   return JSON.stringify(
-    motion.map((g) => (isHinge(g.role) ? [g.role, g.bodies, g.filePose ?? 'deployed', g.foldDeg ?? null, g.deployDeg ?? null] : isSpin(g.role) ? [g.bodies] : [])),
+    motion.map((g) => (isHinge(g.role) ? [g.role, g.bodies, g.filePose ?? 'deployed', g.foldDeg ?? null, g.deployDeg ?? null, ...(g.axisBody !== undefined ? [g.axisBody] : [])] : isSpin(g.role) ? [g.bodies] : [])),
   );
 }
 

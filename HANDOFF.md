@@ -1,3 +1,24 @@
+# HANDOFF — 2026-11-08b (A flower ramp the file shows tucked in: Offset's front arms)
+
+**State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 9. `npm test` (shared 5162, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner: "do they not have a flower ramp? I thought they did".** They do: Offset's front rollers ride
+  arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft
+  (the CAD calls them "flower arm" and "Flower intake wedge"). The file shows them raised inside 18 in.
+  The importer only read a ramp shown deployed past the frame, so the intake was a Ground intake, which
+  takes nothing from a FLOWER: 0 of 36 drive-ins, against 36 of 36 as a ramp (2D and 3D, deployed).
+- **Fixed (rules in `docs/area/robot-import.md`):** `findIntakeArm` finds an outer intake roller riding
+  an arm that swings on an inner roller's shaft and never reaches back into the chassis; `readBuild`
+  then reads a ramp at that edge, and the editor makes the arm the ramp part (`filePose: 'folded'`,
+  `deployDeg` until the roller is 1 in off the floor: 43° on Offset, `axisBody` the shaft, which
+  `planFolds` now hinges on). Contacts count per point, so an arm plate lying flat on the frame beside
+  it slides instead of joining the frame.
+- **Verified:** Offset reads "a ramp at the front for POLLEN and NECTAR"; the ramp part is both arm
+  pairs and the wedge (33 bodies) on the inner roller's shaft, with the front roller riding it. Loose
+  POLLEN pickup is the same folded or deployed. In the client, on Offset's STEP in the real editor: Moving parts lists "Ramp, 33 parts, deploys 43°", Play swings the front assembly down on the rear roller's shaft, and in the game's 3D view, with the ramp deployed (Z) and driven into a FLOWER, it took all four POLLEN (FLOWER 4 → 0). Nine vendor STEPs: only Offset changes (its intake and the new ramp part); three plain ground intakes stay Ground intakes.
+- **Not covered:** a robot saved before keeps the intake it was read with (pick Ramp in Mechanisms, or
+  import again). The deploy angle ignores a hard stop on the frame.
+
 # HANDOFF — 2026-11-08 (Offset's FLOWER box: what a lift carries, a turret on its ring, Box Tube builds take NECTAR)
 
 **State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 8, so a draft found by the old finders is looked for again when opened. `npm test` (shared 5157, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass (the importer chunk baseline raised to 106.20 KB for the new finder code); `importpad` (offscreen, dev server) ALL PASS.

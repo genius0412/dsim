@@ -13,7 +13,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -985,6 +985,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
       if (dep) out.push(dep);
+      else if (ramp) {
+        // a ramp the file shows tucked in: an arm swinging on an intake roller's shaft (Offset's front)
+        const rollers = [...have, ...out].filter((g) => g.role === 'roller');
+        const flagged = intakes.filter((i) => i.ramp);
+        for (const i of flagged.length ? flagged : intakes) {
+          const arm = findIntakeArm(parts, rollers, i.edge, taken());
+          if (!arm) continue;
+          out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });
+          break;
+        }
+      }
     }
     // what a lift's stages push up as they rise: the payload hung from them (a chute on a Box Tube),
     // and the rollers it holds ride with it
