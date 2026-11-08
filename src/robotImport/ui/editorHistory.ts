@@ -132,7 +132,7 @@ export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
   // can fold or unfold a part and move the frame, and a frame kept from `current` would have them
   // carried by a move they never made. The home placements and the turret axis are in it too.
   const out: EditorDoc = { ...current, setup, mech: target.mech, spec: target.spec };
-  for (const k of ['mechAt', 'cadMech', 'turretRing'] as const) {
+  for (const k of ['mechAt', 'cadMech', 'turretRing', 'mechAuto'] as const) {
     if (target[k] === undefined) delete out[k];
     else (out as unknown as Record<string, unknown>)[k] = target[k];
   }

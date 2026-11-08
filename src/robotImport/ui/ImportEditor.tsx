@@ -13,7 +13,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -49,6 +49,8 @@ import {
   measuredTurretRing,
   sameFrame,
   turretOnRing,
+  withoutDefaults,
+  defaultsIn,
   restoreBodies,
   reviewItems,
   reviewSummary,
@@ -687,13 +689,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // (never from a measurement of the orientation being replaced: the placements would land on it)
   useEffect(() => {
     if (!doc || !m || !built || m.hull.length < 3 || measuring || !sameFrame(doc.mechAt, m.sourceToModel)) return;
-    // the game's defaults round what the player placed, else what the model showed (`cadMech`); a
-    // single turret's launcher on the ring the model turns it about (`turretOnRing`)
-    const next = defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null);
+    // the game's defaults round what the player placed, else what the model showed (`cadMech`), a
+    // default nobody moved placed again on the model as it is now (`withoutDefaults`); a single
+    // turret's launcher on the ring the model turns it about (`turretOnRing`)
+    const base = doc.mech ?? doc.cadMech ?? null;
+    const have = base ? withoutDefaults(base, doc.mechAuto) : null;
+    const next = defaultMechFor(game, built.spec, m.origin, have);
+    const auto = defaultsIn(next, have);
     const ring = singleTurret(game, built.spec) ? measuredTurretRing(m) : null;
     const want = turretOnRing({ ...doc, mech: next }, ring);
-    if (JSON.stringify(want.mech) !== JSON.stringify(doc.mech) || want.turretRing !== doc.turretRing) {
-      update((d) => (sameFrame(d.mechAt, m.sourceToModel) ? { ...d, mech: want.mech, turretRing: want.turretRing } : d), 'auto');
+    if (JSON.stringify(want.mech) !== JSON.stringify(doc.mech) || want.turretRing !== doc.turretRing || JSON.stringify(auto) !== JSON.stringify(doc.mechAuto)) {
+      update((d) => (sameFrame(d.mechAt, m.sourceToModel) ? { ...d, mech: want.mech, turretRing: want.turretRing, mechAuto: auto } : d), 'auto');
     }
   }, [doc, m, built, game, update, measuring]);
 
@@ -978,6 +984,25 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
       if (dep) out.push(dep);
+    }
+    // what a turret, a ramp or a slide carries that its finder missed (it would stay put as it moved)
+    const rows = [...have, ...out];
+    const foundAt = new Set(out.map((_, i) => have.length + i));
+    for (const [gi, add] of ridersOf(parts, rows, foundAt)) {
+      const g = out[gi - have.length];
+      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
+    }
+    // the rollers that feed the flywheel inside a found turret: out of the turret, riding it
+    const ti = out.findIndex((g) => g.role === 'turret');
+    if (ti >= 0) {
+      const turretRow = out[ti];
+      const others = new Set([...have, ...out].filter((g) => g !== turretRow).flatMap((g) => g.bodies));
+      const feed = findLauncherFeed(parts, turretRow.bodies, [...have, ...out].filter((g) => g.role === 'flywheel'), others);
+      if (feed.length) {
+        const gone = new Set(feed.flatMap((g) => g.bodies));
+        out[ti] = { ...turretRow, bodies: turretRow.bodies.filter((b) => !gone.has(b)) };
+        out.push(...feed);
+      }
     }
     // the intake's later stages inside the robot, on the way from a roller found to the launcher; last,
     // so a turret, a flywheel, a slide and a ramp have their parts first

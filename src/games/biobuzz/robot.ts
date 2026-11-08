@@ -85,7 +85,7 @@ import {
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
 } from './config';
-import { bbAutoSorts, bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
+import { bbAutoSorts, bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbRampOnEdge, bbTurretFor } from './mechs';
 import { approach } from '../../math';
 import { EDGE_ANGLE } from './mounts';
 import {
@@ -454,6 +454,10 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const axes = mouths.map((m) => mouthAxes(m, hl, hw));
+  // a deployed ramp reaches out only from the mouth that carries it (`bbRampOnEdge`); a side roller's
+  // reach, the other kind with one, is every mouth's
+  const rampKind = bbIntakeKindOf(r.spec) === 'ramp';
+  const reachOf = mouths.map((m) => (rampKind && !bbRampOnEdge(r.spec, m.edge) ? 0 : extraReach));
   const velRobot = rot(r.vel, -r.heading);
 
   interface Cand {
@@ -487,7 +491,7 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
       // element's OWN radius (a NECTAR is 1.8 where a POLLEN is 1.4) plus the contact lip; the
       // inboard and lateral bounds stay the drawn rect's, so no edge can ever swallow something
       // behind or beside the chassis.
-      if (!(u > g.uIn && u < g.uOut + extraReach + er + BB_INTAKE_LIP)) continue;
+      if (!(u > g.uIn && u < g.uOut + reachOf[i] + er + BB_INTAKE_LIP)) continue;
       // ...and LATERALLY, the element's CENTRE has to be UNDER THE BAR — `|v| < half`, the
       // roller's own span and not an inch more.
       //

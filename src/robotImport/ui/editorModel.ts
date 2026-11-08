@@ -24,7 +24,7 @@ import { BB_FIXED_HOOD_MAX_DEG, BB_FIXED_HOOD_MIN_DEG, BB_HOOD_DEFAULT_DEG, BB_P
 import { BB_IMPORT_DUMP_Z, BB_IMPORT_TURRET_Z } from '../../games/biobuzz/importMech';
 import { DECODE_IMPORT_LAUNCH_MIN } from '../../sim/importedMech';
 import { BALL_RADIUS } from '../../config';
-import { BB_DEFAULT_SHOOTER_MOUNT, isEdgePos, type BbIntakeMount, type BbMountPos, type BbScoreMode } from '../../games/biobuzz/mounts';
+import { BB_DEFAULT_SHOOTER_MOUNT, bbIntakeEdges, isEdgePos, type BbIntakeMount, type BbMountPos, type BbScoreMode } from '../../games/biobuzz/mounts';
 import { COPY } from './copy';
 
 export const STEP_COUNT = 4;
@@ -87,6 +87,9 @@ export interface EditorDoc {
   mechAt?: number[];
   /** the measured turret axis the launcher was last put on (MODEL frame, `turretOnRing`) */
   turretRing?: Vec2;
+  /** the placements the editor last DEFAULTED in, as it wrote them (MODEL frame, `mechAt`): one still
+   *  equal to its default here was never moved, and is defaulted again (`withoutDefaults`) */
+  mechAuto?: ImportedMech;
   updated: number;
 }
 
@@ -527,9 +530,46 @@ export function deleteBodies(d: EditorDoc, bodies: readonly number[], movesFrame
  * (`cadMech`, in the old frame); while the player has not changed the build that read set
  * (`cadKey`), it is read again in the new frame (`cadReread`).
  */
-export function frameMoved(d: EditorDoc): Pick<EditorDoc, 'mech' | 'cadMech' | 'turretRing'> & { cadReread?: boolean } {
+export function frameMoved(d: EditorDoc): Pick<EditorDoc, 'mech' | 'cadMech' | 'turretRing' | 'mechAuto'> & { cadReread?: boolean } {
   const reread = d.cadBuild !== undefined && d.cadKey !== undefined && d.cadKey === cadMechKey(d.spec);
-  return { mech: null, cadMech: undefined, turretRing: undefined, ...(reread ? { cadReread: true } : {}) };
+  return { mech: null, cadMech: undefined, turretRing: undefined, mechAuto: undefined, ...(reread ? { cadReread: true } : {}) };
+}
+
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * ⚠️ **A DEFAULT NOBODY MOVED IS DEFAULTED AGAIN** (owner, 2026-11-06: the ball "does not even go
+ * under the wheel" at the end of an intake roller). The game's defaults are computed on the model as
+ * it is measured at the time, and a new import is measured unfolded before its moving parts are
+ * found: a mouth defaulted on a hull that tapered to a deployed ramp's tip came out inches short each
+ * side, and stayed so once the ramp folded, kept as if the player had placed it. `mech` without every
+ * placement still equal to what the editor defaulted in (`auto`, `EditorDoc.mechAuto`), so
+ * `defaultMechFor` places those again; a placement the player moved, or one read from the model, no
+ * longer matches and stays.
+ */
+export function withoutDefaults(mech: ImportedMech, auto: ImportedMech | undefined): ImportedMech {
+  if (!auto) return mech;
+  const out: ImportedMech = { ...mech };
+  for (const k of ['shooter', 'shooter2', 'place', 'shooterYawDeg'] as const) {
+    if (out[k] !== undefined && sameJson(out[k], auto[k])) delete out[k];
+  }
+  if (out.intakes) {
+    const kept = out.intakes.filter((s) => !sameJson(s, auto.intakes?.find((a) => a.edge === s.edge)));
+    if (kept.length) out.intakes = kept;
+    else delete out.intakes;
+  }
+  return out;
+}
+
+/** what of `next` the defaults put there: every placement `have` did not hold (by field, a span by edge) */
+export function defaultsIn(next: ImportedMech, have: ImportedMech | null): ImportedMech | undefined {
+  const out: ImportedMech = {};
+  for (const k of ['shooter', 'shooter2', 'place', 'shooterYawDeg'] as const) {
+    if (next[k] !== undefined && have?.[k] === undefined) (out as Record<string, unknown>)[k] = next[k];
+  }
+  const spans = (next.intakes ?? []).filter((s) => !have?.intakes?.some((h) => h.edge === s.edge));
+  if (spans.length) out.intakes = spans;
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** are two `sourceToModel`s the same frame (every entry equal)? An absent one is no frame. */
@@ -563,6 +603,7 @@ export function followFrame(d: EditorDoc, sourceToModel: readonly number[]): Edi
   const out: EditorDoc = { ...d, mechAt: stamp };
   if (d.mech) out.mech = shiftMech(d.mech, dx, dy, dz);
   if (d.cadMech) out.cadMech = shiftMech(d.cadMech, dx, dy, dz);
+  if (d.mechAuto) out.mechAuto = shiftMech(d.mechAuto, dx, dy, dz);
   if (d.turretRing) out.turretRing = { x: d.turretRing.x + dx, y: d.turretRing.y + dy };
   if (d.setup.wheels) out.setup = { ...d.setup, wheels: d.setup.wheels.map((w) => ({ x: w.x + dx, y: w.y + dy })) };
   return out;
@@ -760,10 +801,22 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
     }
     let intake: BbIntakeKind = bbIntakeKindOf(spec);
     let intakeMount = (spec.intakeMount ?? 'front') as BbIntakeMount;
+    let spans: NonNullable<ImportedMech['intakes']> = [];
     if (cad.intake) {
+      const e = cad.intake.edge;
       intake = cad.intake.upright ? 'siderollers' : cad.intake.ramp ? 'ramp' : 'sweeper';
-      intakeMount = cad.intake.edge === 'front' ? 'front' : cad.intake.edge === 'back' ? 'back' : 'side';
-      set.push(COPY.cadIntake(intake, intakeMount));
+      // rollers at both ends take in at both (owner, 2026-11-06: "There are also two intakes: front and
+      // back, but the back intake isnt even intaking anything")
+      intakeMount = cad.intake.both ? (e === 'front' || e === 'back' ? 'frontback' : 'side') : e === 'front' ? 'front' : e === 'back' ? 'back' : 'side';
+      const rampEdge = intake === 'ramp' ? (cad.intake.rampEdge ?? e) : undefined;
+      // each mouth spans the rollers the model shows there, read before anything folds (owner,
+      // 2026-11-06: the ball "does not even go under the wheel" at the end of a roller); the ramp is on
+      // the edge the file shows it deployed at, and only there
+      spans = bbIntakeEdges(intakeMount).flatMap((edge) => {
+        const s = cad.spans?.[edge];
+        return s ? [{ edge, from: q64(s[0]), to: q64(s[1]), ...(rampEdge === edge ? { ramp: true } : {}) }] : [];
+      });
+      set.push(COPY.cadIntake(intake, intakeMount, cad.intake.both ? rampEdge : undefined));
     }
     if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : shot ? COPY.cadFixedAt(mount, hoodDeg) : COPY.cadFixed);
     // a Box Tube where the model shows box tubes, on the cell they stand in; else none
@@ -781,8 +834,9 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
       undefined,
       'biobuzz',
     );
-    const placed: ImportedMech | undefined =
+    let placed: ImportedMech | undefined =
       liftMount && cad.lift ? { ...(mech ?? {}), place: { x: q64(cad.lift.base[0]), y: q64(cad.lift.base[1]), z: q64(cad.lift.base[2]) } } : mech;
+    if (spans.length) placed = { ...(placed ?? {}), intakes: spans };
     return { spec: { ...next, name: spec.name }, set, ...(placed ? { mech: placed } : {}) };
   }
   if (game === 'decode') {

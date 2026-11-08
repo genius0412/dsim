@@ -768,6 +768,54 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   carries them by the difference in its shift. A frame turned or scaled clears them (`frameMoved`), so
   there it is only recorded. Every effect that reads placements waits until they are in the current
   frame (`sameFrame`), and undo restores the frame WITH them (`restoreDoc`).
+- **A two-ended intake reads as one** (`readBuild`'s `spans` and `intake.both`, `buildFromCad`; owner,
+  2026-11-06: "There are also two intakes: front and back, but the back intake isnt even intaking
+  anything"). `readBuild` scored every edge's rollers but kept only the best. It now records each
+  edge's roller span. When the opposite edge also has a roller at least `EDGE_ROLLER_SPAN` of the robot
+  long, as the intake's does, the build takes in at both: BIOBUZZ `frontback`, or `side`. A ramp the
+  file shows deployed at either end is that end's alone (`rampEdge`, the span's `ramp` flag; the sim's
+  side is in `docs/area/biobuzz.md`). The wording says so: "a ramp at the front and rollers at the
+  back".
+- ⚠️ **A MOUTH SPANS ITS ROLLERS, AND A DEFAULT NOBODY MOVED IS DEFAULTED AGAIN** (`buildFromCad`,
+  `withoutDefaults`, `EditorDoc.mechAuto`; owner, 2026-11-06: the ball "does not even go under the
+  wheel" at a roller's end).
+  - **The bug.** The game's default mouth is the hull's chord at the face line, and a new import is
+    measured before its moving parts are found, so unfolded. A hull tapering to a deployed ramp's tip
+    gave a mouth inches short each side. It stayed that way after the fold, kept as if placed, which put
+    the vector wheels on a roller's ends outside the mouth.
+  - **The fix.** The model's own rollers now set each mouth's span (read before anything folds, so
+    independent of the hull).
+  - **Live defaults.** Every placement the editor defaults in is recorded as written. One still equal
+    to that record was never moved, and is defaulted again on the model as it is now. A placement the
+    player moved, or one read from the model, no longer matches and stays.
+- **A spinning part turns on its own shaft** (`onOwnShaft`, in `deriveMotion`; owner, 2026-11-06:
+  "One of the intake rollers are also spinning around the wrong axis"). `fitRound` centres a part on
+  the middle of its box across its axle. A part that isn't centrally symmetric has its box off its
+  axle: three paddles 120° apart put a roller's box off its shaft, so it orbited. When the group
+  carries a shaft (a slender body along the axle, within `OWN_SHAFT_NEAR_IN` of the fit), the axle runs
+  down its centreline. An odd-count mecanum wheel had the same error, smaller.
+- **A hinged part turns on its rod** (`hingeRod`, in `planFolds`; owner, 2026-11-06: "The flower ramp's
+  pivot is incorrect"). The hinge was the part's innermost point, and a ramp's arms reach back past
+  their bolts as a lever, so the folded part swung out of its own bolt holes. The hinge is now a slender body along the
+  fold axis, in no moving part, that the part is bored round. Its vertices stand in a ring just outside
+  the rod's radius in all four quarters. With two such rods, it takes the innermost along `u`; the
+  other is a crossbar that belongs to the part (it touches only the part; `ridersOf` adds it).
+- ⚠️ **WHAT A MOVING PART CARRIES IS ADDED TO IT** (`ridersOf`, in `findAll` on the found rows; owner,
+  2026-11-06: "there are floating parts").
+  - **The gap.** Each finder chooses members its own way. A turret takes what stands within reach above
+    its ring; a deployed part takes the bodies inside one member's box that touch it. What those rules
+    miss stays put and hangs in the air when the part moves: screws hanging under a turret's ring, or a
+    ramp's crossbar, which runs between its arms and so lies in neither arm's box.
+  - **The rule.** Round each turret, ramp, fold, swing or slide group (its box grown by
+    `RIDER_PAD_IN`), the bodies in no group are split into clusters by contact.
+    - A cluster with a member reaching out of that box is the robot.
+    - A cluster wholly inside the box that touches the group is carried, and joins it.
+  - **Cost.** A few seconds on a large CAD at Full detail, once per import.
+- **The launcher's feed inside its turret** (`findLauncherFeed`). The flywheel finder takes at most two
+  discs within 5 in, and the turret took the rest. Feed rollers inside it turned with it but never
+  spun. Now an axle in the turret group parallel to the flywheel's is a `roller` riding the turret when
+  it is no motor's, lies wholly in the turret, has a roller's radius and turns on a shaft of at least
+  `STAGE_SHAFT_MIN_IN`. `MOTION_FINDER` 7 for all of the above.
 - **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
   turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
   about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto

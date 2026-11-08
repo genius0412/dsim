@@ -1,3 +1,35 @@
+# HANDOFF — 2026-11-07 (Importer: two-ended intakes, roller-width mouths, ramp on its rod, riders, the launcher's feed, shaft pivots)
+
+**State: on `alpha`, client and sim, no `SIM_PATCH`; the dsim-alpha server is redeployed** (an import with the flag plays online, so the server builds its ramp per mouth too). The per-mouth ramp changes physics only for an import whose spans carry the new flag; every standard robot and saved robot steps bit-identically (the determinism pins hold). `MOTION_FINDER` 7. `npm test` (shared 5151, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).
+
+- **Owner's reports on the private team CAD (nothing from it is in the repo):**
+  - The ball "does not even go under the wheel" at the vector wheel on a roller's end. Cause: the
+    default mouth was filled in on the unfolded hull (tapering to the deployed ramp), then kept as if
+    placed. Mouths now span the model's own rollers (`buildFromCad`), and a default nobody moved is
+    recomputed (`withoutDefaults`, `EditorDoc.mechAuto`).
+  - "The back intake isnt even intaking anything". `readBuild` kept only the best edge. It now records
+    every edge's roller span and `intake.both`; the build is `frontback` (or `side`). The ramp is the
+    end that shows it deployed (`ImportedMech.intakes[].ramp`, `bbRampOnEdge` in the sim: colliders,
+    swing guards, pull reach, FLOWER retrieval, 2D drawing).
+  - "The flower ramp's pivot is incorrect". The hinge was the innermost point; it is now the rod the
+    part is bored round (`hingeRod`).
+  - "There are floating parts". Parts a turret or ramp carries that its finder missed are added
+    (`ridersOf`: clusters of bodies that touch only the group and stay inside its padded box).
+  - "One of the intake rollers are also spinning around the wrong axis". A three-paddle roller's box
+    was off its shaft; a spinning part's axle is now its own shaft's centreline (`onOwnShaft`).
+  - Found in the audit: the shooter's feed rollers inside the turret never spun
+    (`findLauncherFeed`).
+- **Intake, measured on the saved robot (scratch sweeps, not committed):**
+  - 2D and 3D, front and back; 9 offsets, 3 angles, 3 speeds; ball loose, against a wall, in a corner.
+  - Every ball under the roller is taken: 480/480 up to 7 in off centre.
+  - At the roller's extreme ends (7.5–8 in), an approach into a wall at 15° can sweep the ball away
+    along the wall: the far corner meets the wall first and the robot squares up.
+  - FLOWER retrieval with the front ramp is 36/36; NECTAR is pushed away at both ends.
+- **Vendor regression** (nine STEPs, the editor's own pipeline): only the private CAD (its new groups)
+  and Offset (its transfer stages, from 11-06c) change.
+- **Smoke:** the old check "a ramp down in front ... builds the ramp intake on the front edge" was
+  updated. Its robot has a roller at each end, which now correctly reads as a two-ended intake.
+
 # HANDOFF — 2026-11-06c (Imports push NECTAR away; the turret on its ring; the intake's later stages)
 
 **State: on `alpha`. `SIM_PATCH` 14 (3D physics for imports), so the dsim-alpha server is redeployed.** No `SIM_VERSION`/`BALANCE_VERSION` change. `MOTION_FINDER` 6. `npm test` (shared 5139, BIOBUZZ 6330), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).

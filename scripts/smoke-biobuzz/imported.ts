@@ -27,6 +27,7 @@ import {
 import { polyFeature } from '../../src/sim/imported';
 import { BB_G402_CROSS_IN, bbIntrusion } from '../../src/games/biobuzz/penalties';
 import { bbImportMouths, bbSideRollerOffsets } from '../../src/games/biobuzz/importMech';
+import { bbRampOnEdge } from '../../src/games/biobuzz/mechs';
 import {
   SIDE_ROLLER_IMPORT,
   SIDE_ROLLER_IMPORT_BUILD,
@@ -285,6 +286,7 @@ export function importedChecks(check: Check): void {
   importedSideRollerChecks(check);
   importedFlowerPlateChecks(check);
   importedSkirtChecks(check);
+  importedTwoEndChecks(check);
 
   // ---- launchers and the Box Tube work from where they were placed ---------------------------
   {
@@ -571,6 +573,70 @@ function importedFlowerPlateChecks(check: Check): void {
  * patch the frame band's lower edge met a NECTAR above its centre and the robot rode up onto it and
  * stayed there; a NECTAR met at the mouth rolled in under the lintel to the face.
  */
+/**
+ * A ROBOT THAT TAKES IN AT BOTH ENDS, ITS FLOWER RAMP AT ONE (owner, 2026-11-06: "There are also two
+ * intakes: front and back, but the back intake isnt even intaking anything"). The importer reads it as a
+ * `frontback` mount with the ramp's span flagged (`ImportedMech.intakes[].ramp`); the sim builds the
+ * ramp at that mouth alone (`bbRampOnEdge`), and the other takes in with its rollers.
+ */
+function importedTwoEndChecks(check: Check): void {
+  const rect = (x: number, y: number): Vec2[] => [{ x: -x, y: -y }, { x, y: -y }, { x, y }, { x: -x, y }];
+  const imp = (flag: boolean): ImportedRobot => ({
+    v: 1,
+    id: 'd4d4d4d4d4d4d4d4',
+    hull: rect(9, 8),
+    heightIn: 14,
+    mech: { intakes: [{ edge: 'front', from: -7.5, to: 7.5, ...(flag ? { ramp: true } : {}) }, { edge: 'back', from: -7.5, to: 7.5 }] },
+  });
+  const spec = (flag: boolean): RobotSpec =>
+    bbCoerce({ intakeMount: 'frontback', bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 45 }, lift: null, intake: { kind: 'ramp' } }, imported: imp(flag) });
+  const flagged = spec(true);
+  const plain = spec(false);
+  check(
+    'two-ended import: the ramp flag survives coercion, and names the front mouth alone; with no flag every mouth of a ramp build has one, as before',
+    flagged.imported!.mech!.intakes![0].ramp === true &&
+      bbRampOnEdge(flagged, 'front') && !bbRampOnEdge(flagged, 'back') &&
+      bbRampOnEdge(plain, 'front') && bbRampOnEdge(plain, 'back') &&
+      !bbRampOnEdge(bbCoerce({ ...SWEEP, imported: imp(true) }), 'front'),
+  );
+  const h = flagged.heightIn ?? 14;
+  const ramps = (sp: RobotSpec): number => chassis3dReachShapes(sp, h, true).filter((s) => s.ramp).length;
+  check('two-ended import 3D: the settled ramp is built at the flagged mouth only (half the boxes of a ramp at both)', ramps(flagged) > 0 && ramps(flagged) * 2 === ramps(plain), `${ramps(flagged)} vs ${ramps(plain)}`);
+  // REAL DRIVES: a loose POLLEN met by each end, intake held, in both engines
+  const drive = (physics: '2d' | '3d', end: 'front' | 'back', y: number): number => {
+    const w = createBiobuzzWorld('free', 25, [setup(0, 'blue', flagged)], undefined, physics);
+    const r = w.robots[0];
+    for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'ground' };
+    r.hopper = [];
+    const t = w.balls.find((b) => b.state.kind === 'ground' && b.color === 'yellow')!;
+    for (const b of w.balls) if (b !== t && b.state.kind === 'ground') b.pos = { x: -60, y: 60 };
+    Object.assign(t, { pos: { x: 20, y: -40 }, vel: { x: 0, y: 0 }, z: 0, vz: 0, state: { kind: 'ground' } });
+    const dir = end === 'front' ? 1 : -1;
+    r.heading = end === 'front' ? 0 : Math.PI;
+    r.pos = { x: 20 - (9 + BB_POLLEN_R + 6), y: -40 - y };
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    const m = new Map([[0, cmd({ driveY: 0.5 * dir, leftDrive: 0.5 * dir, rightDrive: 0.5 * dir, intake: true })]]);
+    for (let i = 0; i < 180; i++) {
+      biobuzzStep(w, SIM_DT, m);
+      if (t.state.kind === 'held') return i;
+    }
+    return -1;
+  };
+  for (const physics of ['2d', '3d'] as const) {
+    const rows: string[] = [];
+    let all = true;
+    for (const end of ['front', 'back'] as const) {
+      for (const y of [0, 4, 7]) {
+        const at = drive(physics, end, y);
+        if (at < 0) all = false;
+        rows.push(`${end} y${y}: ${at < 0 ? 'NO' : '@' + at}`);
+      }
+    }
+    check(`two-ended import ${physics}: a loose POLLEN is taken at the front and at the back, across the roller out to 7 in`, all, rows.join(' · '));
+  }
+}
+
 function importedSkirtChecks(check: Check): void {
   const rect = (x: number, y: number): Vec2[] => [{ x: -x, y: -y }, { x, y: -y }, { x, y }, { x: -x, y }];
   const pods = (frameZ: number): ImportedRobot => ({

@@ -279,7 +279,16 @@ export const COPY = {
   cadFixed: 'a fixed shooter',
   cadFixedAt: (edge: string, deg: number) => `a fixed shooter facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge} at ${deg}°`,
   cadFixedFacing: (edge: string) => `a fixed launcher facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge}`,
-  cadIntake: (kind: string, mount: string) => `${kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a ground intake'} at the ${mount === 'side' ? 'side' : mount}`,
+  cadIntake: (kind: string, mount: string, rampEdge?: string) => {
+    const what = kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a ground intake';
+    if (mount === 'frontback' || mount === 'side') {
+      const [a, b] = mount === 'side' ? ['left', 'right'] : ['front', 'back'];
+      // a ramp at one end of a two-ended intake: the other end takes in with its rollers alone
+      if (kind === 'ramp' && rampEdge) return `a ramp at the ${rampEdge} and rollers at the ${rampEdge === a ? b : a}`;
+      return `${what} at the ${a} and the ${b}`;
+    }
+    return `${what} at the ${mount}`;
+  },
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,
   cadHandLoaded: 'no intake (loaded by hand)',

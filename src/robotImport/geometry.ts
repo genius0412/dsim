@@ -2035,7 +2035,7 @@ export function mechModelToRobot(mech: ImportedMech, origin: Vec2): ImportedMech
       const lateral = m.edge === 'front' || m.edge === 'back' ? origin.y : origin.x;
       const a = q64(m.from - lateral);
       const b = q64(m.to - lateral);
-      return { edge: m.edge as ImportedEdge, from: Math.min(a, b), to: Math.max(a, b) };
+      return { edge: m.edge as ImportedEdge, from: Math.min(a, b), to: Math.max(a, b), ...(m.ramp ? { ramp: true } : {}) };
     });
   }
   return out;

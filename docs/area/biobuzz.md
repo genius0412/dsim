@@ -3063,6 +3063,22 @@ positions.
   `groundRoll3d`, so a POLLEN that lands on an import's top rolls off. The FULL predictor gives the
   LOCAL import the authority's compound and a REMOTE one the uncarved bands; the PERF lane holds a
   heavy import (16-vertex hull, four bands, side sweepers) to the standard budgets.
+- **A RAMP ON ONE MOUTH OF TWO** (`bbRampOnEdge`, `ImportedMech.intakes[].ramp`; owner, 2026-11-06:
+  "There are also two intakes: front and back"). A `ramp` build put the ramp on every mouth, so an
+  import with plain rollers at one end and a FLOWER ramp at the other could be modelled only by giving
+  the roller end a ramp it does not have. When any of an import's spans carries `ramp`, only those
+  mouths have one, in every place a ramp is used:
+  - the settled ramp's colliders and the 3D swing guard (`chassis3dReachShapes`, `bbRampSwingShapes`);
+  - the 2D swing guard;
+  - the roller pull's extra reach (`bbIntakeAct`'s `reachOf`; a side roller's reach still applies to
+    every mouth);
+  - FLOWER retrieval (`bbFlowerAtIntakeMouth`);
+  - the 2D drawing.
+
+  No span carrying it means every mouth, as before, so a standard robot and every saved robot step
+  bit-identically and no `SIM_PATCH` is needed. Coercion keeps the flag. The IMPORT lane drives a
+  synthetic two-ended import: a POLLEN is taken at both ends in 2D and 3D, and the ramp is built at the
+  front alone.
 - ⚠️ **AN IMPORT PUSHES A NECTAR AWAY, IT DOES NOT CLIMB IT, `SIM_PATCH` 14** (owner, 2026-11-06: "The
   robot should not be able to get stuck on top of a nectar. It should just push it away because it
   has that barrier that makes it so only pollen can get in").

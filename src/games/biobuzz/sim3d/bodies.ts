@@ -60,7 +60,7 @@ import { bbMouths, mouthAxes } from '../robot';
 import { bbImportClipReach, bbImportMouths, bbSideRollerOffsets } from '../importMech';
 import { carveImportPlates, clipHalf } from '../../../sim/importedMech';
 import { polyArea, polyBounds, polyGrow } from '../../../sim/imported';
-import { bbIntakeFeedOf, bbIntakeKindOf } from '../mechs';
+import { bbIntakeFeedOf, bbIntakeKindOf, bbRampOnEdge } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
@@ -1492,7 +1492,7 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
           elementSolid: true,
         });
       }
-    } else if (kind === 'ramp' && rampReady) {
+    } else if (kind === 'ramp' && rampReady && bbRampOnEdge(spec, m.edge)) {
       const railY = rampRailY(axes.half);
       // the PLOW: three boxes, rail-to-rail wide (`railY`) — the LIP→CREST rise, the CREST→DROP
       // fall, and the level DECK that carries a lifted POLLEN the rest of the way to the mouth.
@@ -1582,6 +1582,7 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
   const wedgeZHi = BB_RAMP_DECK_Z;
   const wedgeZOffset = (wedgeZLo + wedgeZHi) / 2 - BB_RAMP_DECK_Z;
   for (const m of bbMouths(spec)) {
+    if (!bbRampOnEdge(spec, m.edge)) continue;
     const axes = mouthAxes(m, hl, hw);
     const { n, p, uOut } = axes;
     const place = (u: number, v: number): { cx: number; cy: number } => ({ cx: u * n.x + (v + axes.vc) * p.x, cy: u * n.y + (v + axes.vc) * p.y });

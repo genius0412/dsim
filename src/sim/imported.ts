@@ -752,7 +752,7 @@ function coerceMech(raw: unknown, f: Frame, b: Bounds, hull: readonly Vec2[], he
       let c = clamp(q(clamp(to, -L, L) * f.s) + off, lo, hi);
       if (a > c) [a, c] = [c, a];
       if (!(c - a >= IMPORT_MIN_SPAN)) continue;
-      list.push({ edge, from: a, to: c });
+      list.push({ edge, from: a, to: c, ...(r.ramp === true ? { ramp: true } : {}) });
     }
     // a function of the SET, so re-sorting a sorted list is a no-op
     list.sort((p, s) => EDGES.indexOf(p.edge) - EDGES.indexOf(s.edge));

@@ -273,6 +273,20 @@ export function bbHasRampBar(spec: RobotSpec): boolean {
   return bbIntakeKindOf(spec) === 'ramp' && bbIntakeFeedOf(spec) === 'mixed';
 }
 
+/**
+ * DOES THE MOUTH ON `edge` CARRY THIS BUILD'S RAMP? Every mouth of a `ramp` build does, except on an
+ * import whose intake spans name the ramp's own (`ImportedMech.intakes[].ramp`): there only those
+ * do. A robot that takes in at both ends with its FLOWER ramp at one of them (owner, 2026-11-06: "There
+ * are also two intakes: front and back") would otherwise grow a second ramp it does not have, at the
+ * end whose plain rollers take in. Absent the flag, every mouth, as every build before it.
+ */
+export function bbRampOnEdge(spec: RobotSpec, edge: string): boolean {
+  if (bbIntakeKindOf(spec) !== 'ramp') return false;
+  const spans = spec.imported?.mech?.intakes;
+  if (!spans || !spans.some((s) => s.ramp)) return true;
+  return spans.some((s) => s.edge === edge && !!s.ramp);
+}
+
 /** does this build have a NECTAR bar at all — a `bar` sorter, or a ramp that doubles as one? */
 export function bbHasNectarBar(spec: RobotSpec): boolean {
   return bbHasRampBar(spec) || bbNectarRejectOf(spec) === 'bar';
