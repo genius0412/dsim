@@ -803,7 +803,11 @@ const BASELINE = {
   // STEP-only and placement work grew it without a raise. This change is +2.12: `motion.ts`'s
   // `touchingPairs` and the contact rules built on it, `ringsAbout`, `findEdgeRollers`, and
   // `geometry.ts`'s `wheelGuessIn` (`geometry-*.js` 29.76 -> 31.87).
-  importer: { gzip: 101.74 * 1000 },
+  // 2026-11-08 (Offset's FLOWER box): 101.74 -> 106.20, raised on purpose: `motion.ts`'s `liftPayload`
+  // (what a lift's stage pushes up, the rollers riding it) with the lazy contact pass it needs, the
+  // turret's `onTheRing`, and the 11-07 riders, launcher feed and shaft pivots that came in under the
+  // tolerance.
+  importer: { gzip: 106.2 * 1000 },
   // 2026-11-05: NEW. `gizmo-*.js` 7.78: the placement handles drawn, picked and G-grabbed in the 3D
   // preview (`engine/gizmo.ts`) and three's TransformControls (~5.6 of it). Statically in the engine it
   // put `importer` at 105.4; lazy, the engine keeps 98.7 and only the Mechanisms step fetches this.

@@ -35064,7 +35064,7 @@ function impPlayCheck(g: GameId): void {
   const motion = await import('../src/robotImport/motion');
   const em = await import('../src/robotImport/ui/editorModel');
   const { BB_PRESETS } = await import('../src/games/biobuzz/config');
-  const { bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
+  const { bbIntakeFeedOf, bbIntakeKindOf, bbLauncherOf, bbLiftOf } = await import('../src/games/biobuzz/mechs');
   const { decodeFixedLauncher } = await import('../src/sim/fixedShot');
   const { DEFAULT_SPEC } = await import('../src/sim/spawn');
   type P = import('../src/robotImport/geometry').MeshPart;
@@ -35186,6 +35186,70 @@ function impPlayCheck(g: GameId): void {
       J(bt && { lift: bbLiftOf(bt.spec), place: bt.mech?.place, set: bt.set }));
     const none = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { intake: null, launcher: null, lift: null });
     check('box tubes: with none in the model there is no Box Tube', !!none && bbLiftOf(none.spec) === null);
+    // A BOX TUBE MEANS THE INTAKE TAKES NECTAR (owner, 2026-11-07, Offset's robot): a single turret's
+    // default feed is POLLEN only, and the importer has no feed choice, so its lift could never place one
+    const withIntake = { ...cadTubes, intake: { edge: 'front' as const, upright: false } };
+    const fed = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, withIntake);
+    const fedNone = em.buildFromCad('biobuzz', { ...DEFAULT_SPEC, ...BB_PRESETS[0] }, { ...withIntake, lift: null });
+    check(
+      'box tubes: a build read with a Box Tube takes NECTAR as well as POLLEN, and says so; one without keeps its launcher\'s feed',
+      !!fed && bbIntakeFeedOf(fed.spec) === 'mixed' && fed.set.some((x) => x.includes('for POLLEN and NECTAR')) && !!fedNone && bbIntakeFeedOf(fedNone.spec) === 'pollen' && !fedNone.set.some((x) => x.includes('NECTAR')),
+      J({ fed: fed && bbIntakeFeedOf(fed.spec), set: fed?.set, none: fedNone && bbIntakeFeedOf(fedNone.spec) }),
+    );
+  }
+  // WHAT A LIFT CARRIES (`liftPayload`; owner, 2026-11-07, Offset's robot: its FLOWER chute, hung from
+  // the tops of the Box Tube's last stages, stayed on the floor while the tubes rose): two upright
+  // three-stage slides, a bracket lying across the final stages' tops, a chute of two side plates hung on
+  // it through a notch in each, a roller on a shaft between them, the floor plate the chute stands on, and
+  // a cap resting on the bracket that is also bolted to a rail running on under the robot
+  {
+    const slide = (y: number): import('./robot-import/synthRobot').Prism[] => [
+      synth.box('outer', G, -7.6, -6.0, y - 0.8, y + 0.8, 3.5, 15.3),
+      synth.box('middle', G, -7.4, -6.2, y - 0.6, y + 0.6, 4.0, 16.0),
+      synth.box('final', G, -7.2, -6.4, y - 0.4, y + 0.4, 4.9, 17.5),
+    ];
+    // a side plate in the x-z plane, extruded along y, with a notch for the bracket at z 17.5..17.8
+    const plate = (name: string, y0: number, y1: number): import('./robot-import/synthRobot').Prism => ({
+      name,
+      color: G,
+      base: [[-7.6, y0, 1], [-6.0, y0, 1], [-6.0, y0, 17.5], [-7.25, y0, 17.5], [-7.25, y0, 17.8], [-6.0, y0, 17.8], [-6.0, y0, 18.2], [-7.6, y0, 18.2]].reverse() as import('./robot-import/synthRobot').V3[],
+      extrude: [0, y1 - y0, 0],
+    });
+    const robot = [
+      synth.box('frame', G, -8, 8, -8, 8, 0, 0.5),
+      synth.box('floor', G, -7.8, -5.8, -2.4, 2.4, 0.5, 1),
+      ...slide(5),
+      ...slide(-5),
+      synth.box('bracket', G, -7.25, -6.35, -5.4, 5.4, 17.5, 17.8),
+      plate('plate_l', 1.8, 2.0),
+      plate('plate_r', -2.0, -1.8),
+      synth.cylY('roller', G, -6.8, 9, 0.8, -1.5, 1.5, 20),
+      synth.cylY('shaft', G, -6.8, 9, 0.2, -1.8, 1.8, 12),
+      synth.box('cap', G, -7.1, -6.6, 3.0, 3.5, 17.8, 18.0),
+      synth.box('rail', G, -6.9, 6, 3.0, 3.5, 18.0, 18.2),
+    ];
+    const parts = mk(robot);
+    const names = robot.map((p) => p.name);
+    const id = (n: string): number => names.indexOf(n);
+    const tubes = motion.findBoxTubes(parts, new Set());
+    const groups = [...motion.boxTubeGroups(tubes, 0), { role: 'roller' as const, bodies: [id('roller'), id('shaft')].sort((a, b) => a - b) }];
+    const pay = motion.liftPayload(parts, groups, tubes);
+    const finals = groups.map((g, gi) => ({ g, gi })).filter(({ g }) => g.role === 'slide' && g.follows?.ratio === 2);
+    const [lead] = finals;
+    const carried = [...(pay.carried.get(lead?.gi ?? -1) ?? [])].map((b) => names[b]).sort();
+    check(
+      'lift payload: the bracket on the final stages\' tops and the chute hung on it ride the first final stage; the floor it stands on, the frame and a cap bolted to a rail beyond do not',
+      tubes.length === 2 && finals.length === 2 && pay.carried.size === 1 && J(carried) === J(['bracket', 'plate_l', 'plate_r']),
+      J({ carried, all: [...pay.carried].map(([g, s]) => [g, [...s].map((b) => names[b])]) }),
+    );
+    check('lift payload: the roller between the chute\'s plates rides that stage', pay.riders.get(groups.length - 1) === lead?.gi, J([...pay.riders]));
+    // the same chute standing on the floor with no bracket: nothing to push it, so it stays
+    const bare = mk(robot.filter((p) => p.name !== 'bracket'));
+    const bareNames = robot.filter((p) => p.name !== 'bracket').map((p) => p.name);
+    const bareTubes = motion.findBoxTubes(bare, new Set());
+    const bareGroups = [...motion.boxTubeGroups(bareTubes, 0), { role: 'roller' as const, bodies: [bareNames.indexOf('roller'), bareNames.indexOf('shaft')].sort((a, b) => a - b) }];
+    const barePay = motion.liftPayload(bare, bareGroups, bareTubes);
+    check('lift payload: a chute standing beside the tubes with nothing hanging it from them stays, and so does its roller', barePay.carried.size === 0 && barePay.riders.size === 0, J([...barePay.carried].map(([g, s]) => [g, [...s].map((b) => bareNames[b])])));
   }
   // THE FLOOR BAND (`computeBands`, 2026-10-04, owner: "I know i can get closer into the flower but it
   // blocks me"): four wheels on the tiles, the frame from 1 in up, an intake reaching 2.7 in past the
@@ -40080,7 +40144,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         JSON.stringify({ spool: st2.map((g) => g.bodies.map((b) => b < prisms.length ? prisms[b].name : 'spool_shaft')), side: sideOn.map((g) => g.bodies.map((b) => prisms[b].name)) }),
       );
     }
-    check('intake stages: the finders’ version moved, so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 7);
+    check('the finders’ version moved (lift payloads, turrets on their ring), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 8);
   }
 
   // ---- a spinning part turns about its own shaft, not the middle of its box (`onOwnShaft`; owner,
@@ -40200,6 +40264,27 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
       'turret riders: two screws under the ring that touch only it turn with it; a bracket on the frame below does not',
       JSON.stringify(tAdd) === JSON.stringify([tid('screw_a'), tid('screw_b')].sort((a, b) => a - b)),
       JSON.stringify(tAdd.map((b) => tPrisms[b].name)),
+    );
+    // what stands within the turret's reach above its ring but is bolted to something else (owner,
+    // 2026-11-07, Offset's robot: the turret took the top of the Box Tube's carriage beside it)
+    const rPrisms = [
+      synth.box('frame', [0.5, 0.5, 0.5], -9, 9, -7, 7, 1, 3),
+      synth.cylZ('ring', [0.2, 0.6, 1], 0, 0, 3, 4, 4.4, 24),
+      synth.box('head', [0.2, 0.6, 1], -2, 2, -1.5, 1.5, 4.4, 9),
+      // a screw in the head's top, touching only the head
+      synth.cylZ('head_screw', [0.6, 0.6, 0.6], 0, 0, 0.1, 9, 9.4, 8),
+      // a post from the frame up beside the turret, and the cap on its top: inside the turret's reach
+      // (ring radius + 3) and above its ring, bolted to the post, which starts below the ring
+      synth.box('post', [0.5, 0.5, 0.5], 4.2, 4.8, -0.3, 0.3, 3, 10),
+      synth.box('cap', [0.5, 0.5, 0.5], 3.9, 5.1, -0.6, 0.6, 10, 10.4),
+    ];
+    const rParts = withBodies(rPrisms);
+    const rid = (n: string): number => rPrisms.findIndex((p) => p.name === n);
+    const rTur = motion.findTurretGroup(rParts, [0, 0, 8], new Set());
+    check(
+      'turret: the cap of a post beside it, within its reach above the ring but bolted to the post, does not turn with it; the head and a screw in it do',
+      !!rTur && rTur.bodies.includes(rid('ring')) && rTur.bodies.includes(rid('head')) && rTur.bodies.includes(rid('head_screw')) && !rTur.bodies.includes(rid('cap')),
+      JSON.stringify(rTur?.bodies.map((b) => rPrisms[b].name)),
     );
   }
 
@@ -43334,6 +43419,16 @@ function fxImportFixed(): RobotSpec {
       waitAt > 0 &&
       waitAt < ed.indexOf('const found = findAll([]);') &&
       ed.includes('[doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]'),
+  );
+  // a lift's payload is looked for once every other moving part is (they are what it may not push), and
+  // before the riders pass, which then sees the payload as the stage's own (owner, 2026-11-07)
+  const payAt = ed.indexOf('const payload = liftPayload(parts, [...have, ...out], tubes);');
+  check(
+    'the editor finds what a lift carries after the turret and a deployed part, before the riders, and puts its rollers on the stage (source pins)',
+    payAt > ed.indexOf('findDeployedGroup(parts, intakes,') &&
+      payAt > ed.indexOf('findTurretGroup(parts, at,') &&
+      payAt < ed.indexOf('ridersOf(parts, rows, foundAt)') &&
+      ed.includes('for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };'),
   );
 }
 

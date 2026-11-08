@@ -279,15 +279,17 @@ export const COPY = {
   cadFixed: 'a fixed shooter',
   cadFixedAt: (edge: string, deg: number) => `a fixed shooter facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge} at ${deg}°`,
   cadFixedFacing: (edge: string) => `a fixed launcher facing ${edge === 'front' || edge === 'back' ? `the ${edge}` : edge}`,
-  cadIntake: (kind: string, mount: string, rampEdge?: string) => {
+  /** what the model's intake was read as; `nectar`: it takes NECTAR as well (a build with a Box Tube) */
+  cadIntake: (kind: string, mount: string, rampEdge?: string, nectar = false) => {
     const what = kind === 'siderollers' ? 'side rollers' : kind === 'ramp' ? 'a ramp' : 'a ground intake';
+    const takes = nectar ? ' for POLLEN and NECTAR' : '';
     if (mount === 'frontback' || mount === 'side') {
       const [a, b] = mount === 'side' ? ['left', 'right'] : ['front', 'back'];
       // a ramp at one end of a two-ended intake: the other end takes in with its rollers alone
-      if (kind === 'ramp' && rampEdge) return `a ramp at the ${rampEdge} and rollers at the ${rampEdge === a ? b : a}`;
-      return `${what} at the ${a} and the ${b}`;
+      if (kind === 'ramp' && rampEdge) return `a ramp at the ${rampEdge} and rollers at the ${rampEdge === a ? b : a}${takes}`;
+      return `${what} at the ${a} and the ${b}${takes}`;
     }
-    return `${what} at the ${mount}`;
+    return `${what} at the ${mount}${takes}`;
   },
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,

@@ -13,7 +13,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -950,7 +950,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     out.push(...findDriveGears(parts, [...have, ...out], taken()));
     // box tubes before the rollers: a slide's pulleys and bearings ride on its stages
     // (their moving stages, numbered where they land in the setup's motion)
-    if (!have.some((g) => g.role === 'slide')) out.push(...boxTubeGroups(findBoxTubes(parts, taken()), have.length + out.length));
+    const tubes = have.some((g) => g.role === 'slide') ? [] : findBoxTubes(parts, taken());
+    out.push(...boxTubeGroups(tubes, have.length + out.length));
     const intakes = doc.mech?.intakes ?? [];
     // the edges the rollers are looked for at are the robot's own, not a ramp's the file shows down
     const over = findOverhang(parts, taken(), 18, intakes.map((i) => i.edge));
@@ -985,6 +986,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
       if (dep) out.push(dep);
     }
+    // what a lift's stages push up as they rise: the payload hung from them (a chute on a Box Tube),
+    // and the rollers it holds ride with it
+    const payload = liftPayload(parts, [...have, ...out], tubes);
+    for (const [gi, add] of payload.carried) {
+      if (gi < have.length) continue;
+      const g = out[gi - have.length];
+      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
+    }
+    for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };
     // what a turret, a ramp or a slide carries that its finder missed (it would stay put as it moved)
     const rows = [...have, ...out];
     const foundAt = new Set(out.map((_, i) => have.length + i));

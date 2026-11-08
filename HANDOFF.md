@@ -1,3 +1,48 @@
+# HANDOFF — 2026-11-08 (Offset's FLOWER box: what a lift carries, a turret on its ring, Box Tube builds take NECTAR)
+
+**State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 8, so a draft found by the old finders is looked for again when opened. `npm test` (shared 5157, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass (the importer chunk baseline raised to 106.20 KB for the new finder code); `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner: "Does the Offset robot work FULLY? like all the flower features".** It did not. What
+  Offset's CAD shows, read from its parts:
+  - **The back is a FLOWER box on the Box Tube.** A 15-in chute (two side plates, a frame of rods, six
+    surgical-tubing rollers in two columns, two servos driving them by belts) hangs from brackets on the
+    two last stages' tops and reaches the floor. Under it, on the chassis, a plate pitched by a servo and
+    a curved ramp on two linear rails that run on under the robot.
+  - **The front intake** is tubing rollers on counter-sprung arms with a "flower intake wedge" at the tip.
+  - **The turret** shoots through a 3.5-in ring bore; a NECTAR (3.6 in) cannot go up it, so NECTAR goes
+    to the box.
+- **Fixed (rules in `docs/area/robot-import.md`):**
+  - **The chute stayed on the floor while the tubes rose.** `liftPayload`: a stage carries what it would
+    push up (faces looking down at it, or bodies resting on it), never the tube columns' own fittings,
+    a body touching the fixed stage, or one touching a part that reaches out of the lift's surroundings.
+    On Offset: the chute, roller plates, servos, belts and brackets ride the last stage; its six rollers
+    ride it (`rideOn`). 4–5 s at Full detail (contacts only for what the flood reaches).
+  - **The turret carried the chute's top** (two corner blocks, their 12 screws, a rod): its reach covered
+    them. `onTheRing` keeps only the pieces that hold the ring or touch nothing else.
+  - **The final stage's bottom insert rode the middle stage** (0.600 in under its tube, the pad 0.6):
+    `TUBE_BASE_END_IN` 0.65.
+  - **The robot could never place a NECTAR**: a single turret's default feed is POLLEN only and the
+    importer has no feed choice. A build read with box tubes now takes NECTAR (`feed: 'mixed'`; the found
+    line says "for POLLEN and NECTAR").
+- **Verified:** headless, Offset backed into each of the four FLOWERS, 2D and 3D, places a POLLEN then
+  its own NECTAR (POLLEN only, before the feed fix). In the client, on Offset's STEP in the real editor: Moving parts lists the last stage at 286 parts and the turret at 96; Play raises the whole chute with its rollers; in the game's 3D view, backed onto a FLOWER, the Box Tube rises with the chute above the ring, and C places a POLLEN (4 → 5). Nine vendor STEPs through the editor's
+  pipeline: only Offset changes.
+- **Not done, for the owner:**
+  - **FLOWER retrieval from Offset's front intake.** The sim's Ground intake has no FLOWER reach by design;
+    only a ramp or side rollers do. Offset's arms and wedge look built to duck under the FLOWER's middle
+    plate, but the CAD shows the roller at mid-plate height (centre 4.35 in, plate 3.90–5.25), so whether
+    it reaches is a guess. A ramp-like reach for such an import would be a new sim rule.
+  - **A single turret with a mixed feed launches a NECTAR** on top of the hopper. Offset's turret could
+    not; its NECTAR is for the box (place buttons).
+  - **The middle stages' top plates and idlers stay with the outer column** when the tubes rise
+    (their boxes stand 0.27 in past the middle tube's sides).
+  - Floating parts: Offset reads 25.7 in wide until its five stray parts are deleted (the editor offers
+    it, and Save is blocked until then); a harness that skips that saves it at 70%.
+- **Gotcha, offscreen Electron captures of 3D:** with hardware acceleration off and SwiftShader on,
+  `capturePage` freezes a WebGL canvas after its first frame, and the game refuses a software
+  renderer (falls back to 2D). Keep the GPU on (no `disableHardwareAcceleration`), call
+  `setFrameRate`, and save frames from the `paint` event (as `scripts/firstload.cjs` does).
+
 # HANDOFF — 2026-11-07 (Importer: two-ended intakes, roller-width mouths, ramp on its rod, riders, the launcher's feed, shaft pivots)
 
 **State: on `alpha`, client and sim, no `SIM_PATCH`; the dsim-alpha server is redeployed** (an import with the flag plays online, so the server builds its ramp per mouth too). The per-mouth ramp changes physics only for an import whose spans carry the new flag; every standard robot and saved robot steps bit-identically (the determinism pins hold). `MOTION_FINDER` 7. `npm test` (shared 5151, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS (52).

@@ -19,7 +19,7 @@ import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
 import type { FloatingGroup, FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { validateMechFor } from './placement';
 import type { CadBuild } from '../motion';
-import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeKind } from '../../games/biobuzz/mechs';
+import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeFeed, type BbIntakeKind } from '../../games/biobuzz/mechs';
 import { BB_FIXED_HOOD_MAX_DEG, BB_FIXED_HOOD_MIN_DEG, BB_HOOD_DEFAULT_DEG, BB_POLLEN_R } from '../../games/biobuzz/config';
 import { BB_IMPORT_DUMP_Z, BB_IMPORT_TURRET_Z } from '../../games/biobuzz/importMech';
 import { DECODE_IMPORT_LAUNCH_MIN } from '../../sim/importedMech';
@@ -799,6 +799,12 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
         hoodDeg = Math.min(BB_FIXED_HOOD_MAX_DEG, Math.max(BB_FIXED_HOOD_MIN_DEG, Math.round(shot.elevDeg)));
       }
     }
+    const liftMount = cad.lift && cad.box ? cellOf(cad.lift.base, cad.box) : null;
+    // ⚠️ A BOX TUBE MEANS THE INTAKE TAKES NECTAR (owner, 2026-11-07, Offset's robot, whose chute on its
+    // Box Tube is NECTAR-sized). A FLOWER is owned by the NECTAR on top of it, so a lift with no NECTAR
+    // to place only adds POLLEN to whoever owns the FLOWER, and the importer has no feed choice of its
+    // own: read as `pollen` (a single turret's default), the robot could never place one.
+    const feed: BbIntakeFeed | undefined = liftMount ? 'mixed' : undefined;
     let intake: BbIntakeKind = bbIntakeKindOf(spec);
     let intakeMount = (spec.intakeMount ?? 'front') as BbIntakeMount;
     let spans: NonNullable<ImportedMech['intakes']> = [];
@@ -816,11 +822,10 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
         const s = cad.spans?.[edge];
         return s ? [{ edge, from: q64(s[0]), to: q64(s[1]), ...(rampEdge === edge ? { ramp: true } : {}) }] : [];
       });
-      set.push(COPY.cadIntake(intake, intakeMount, cad.intake.both ? rampEdge : undefined));
+      set.push(COPY.cadIntake(intake, intakeMount, cad.intake.both ? rampEdge : undefined, feed === 'mixed'));
     }
     if (cad.launcher) set.push(kind === 'turret' ? COPY.cadTurret : shot ? COPY.cadFixedAt(mount, hoodDeg) : COPY.cadFixed);
     // a Box Tube where the model shows box tubes, on the cell they stand in; else none
-    const liftMount = cad.lift && cad.box ? cellOf(cad.lift.base, cad.box) : null;
     set.push(liftMount ? COPY.cadLift(cad.lift!.count, liftMount) : COPY.cadNoLift);
     const next = coerceSpec(
       {
@@ -829,7 +834,7 @@ export function buildFromCad(game: GameId, spec: RobotSpec, cad: CadBuild): { sp
         shooterMount: mount,
         intakeMount,
         intakeSide: intakeMount === 'side',
-        bbMech: { launcher: { kind, mount, hoodDeg }, lift: liftMount ? { kind: 'vslide', mount: liftMount } : null, intake: { kind: intake } },
+        bbMech: { launcher: { kind, mount, hoodDeg }, lift: liftMount ? { kind: 'vslide', mount: liftMount } : null, intake: { kind: intake, ...(feed ? { feed } : {}) } },
       },
       undefined,
       'biobuzz',

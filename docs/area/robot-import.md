@@ -816,6 +816,34 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   spun. Now an axle in the turret group parallel to the flywheel's is a `roller` riding the turret when
   it is no motor's, lies wholly in the turret, has a roller's radius and turns on a shaft of at least
   `STAGE_SHAFT_MIN_IN`. `MOTION_FINDER` 7 for all of the above.
+- ⚠️ **WHAT A LIFT CARRIES IS WHAT IT WOULD PUSH UP** (`liftPayload`, in `findAll` after every other
+  finder and before `ridersOf`; owner, 2026-11-07: "Does the Offset robot work FULLY?"). Offset's FLOWER
+  chute (15 in of rollers between its Box Tube's columns) hangs from brackets on the last stages' tops
+  and reaches the floor. It is in no stage's box, and it stands on the chassis, so `ridersOf` never saw
+  it hang. It stayed on the floor while the tubes rose.
+  - **The rule.** From each upright moving stage, innermost first, a flood through contacts that push:
+    a body touching it through a face looking down, or resting on one of its faces looking up. Faces
+    are turned outward by each body's signed volume (a mirrored STEP instance winds the other way).
+  - **What it never takes.** Other moving parts; tube stages and anything inside a tube's column (the
+    stages' own fittings, by `findBoxTubes`); a body held across faces looking up or down by the fixed
+    stage (a belt clamped to it) or by one reaching out of the tubes' box grown by `LIFT_REACH_IN` (a
+    guided block on a rail that runs on under the robot). Sideways faces only slide past (the chute's
+    front plate beside the transfer plates). A stage whose flood takes half the surroundings gets nothing.
+  - **Rollers ride it** (`MotionGroup.rideOn`) when most of what they touch outside themselves is the
+    payload; a belt touching only those rollers and the payload joins the payload.
+  - **Offset**: chute, roller plates, two servos and their belts, brackets → the last stage; the six
+    rollers ride it; the plate under the chute, its guided ramp, the stages' top plates stay. 4–5 s at
+    Full detail, contacts worked out only for the bodies the flood reaches (`lazyContacts`).
+- **A turret takes only what stands on its ring** (`onTheRing`, 2026-11-07). Its reach (ring radius
+  + 3 in, above the ring) also covered the top of Offset's chute beside it. The candidates are split
+  into pieces by contact; a piece is kept if it holds the ring or touches nothing else.
+- **A Box Tube build takes NECTAR** (`buildFromCad`, 2026-11-07). A FLOWER is owned by the NECTAR on
+  top, and the importer has no feed choice, so a single turret's POLLEN-only default left the lift with
+  nothing worth placing. A build read with box tubes writes `feed: 'mixed'`, and the found line says
+  "for POLLEN and NECTAR". A single turret then launches a NECTAR on top of the hopper as well, which
+  Offset's turret (a 3.5-in ring bore) could not; the place buttons are the way to use one.
+- `MOTION_FINDER` 8 for the three above, and the final stage's bottom insert (0.600 in under its
+  tube) on that stage (`TUBE_BASE_END_IN` 0.65).
 - **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
   turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
   about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto
