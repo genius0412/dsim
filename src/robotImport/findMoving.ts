@@ -134,17 +134,21 @@ export function findMoving(parts: readonly MeshPart[], s: MotionSearch): MotionG
     }
     out.push(...wheels);
   }
+  // what stays with the robot though a moving part's box holds it (an intake's own arm beside a ramp)
+  const fixed = new Set<number>();
   if (intakes.length && !have.some((g) => g.role === 'ramp' || g.role === 'fold')) {
     const dep = findDeployedGroup(parts, intakes, s.rampIntake ? 'ramp' : 'fold', taken());
     if (dep) out.push(dep);
     else if (s.rampIntake) {
-      // a ramp the file shows tucked in: an arm swinging on an intake roller's shaft (Offset's front)
+      // a ramp the file shows tucked in: a wedge's arms swinging on an intake roller's shaft beside the
+      // arm that carries the outer roller, which stays (Offset's front)
       const rollers = [...have, ...out].filter((g) => g.role === 'roller');
       const flagged = intakes.filter((i) => i.ramp);
       for (const i of flagged.length ? flagged : intakes) {
         const arm = findIntakeArm(parts, rollers, i.edge, taken());
         if (!arm) continue;
         out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });
+        for (const b of arm.intake) fixed.add(b);
         break;
       }
     }
@@ -161,7 +165,7 @@ export function findMoving(parts: readonly MeshPart[], s: MotionSearch): MotionG
   // what a turret, a ramp or a slide carries that its finder missed (it would stay put as it moved)
   const rows = [...have, ...out];
   const foundAt = new Set(out.map((_, i) => have.length + i));
-  for (const [gi, add] of ridersOf(parts, rows, foundAt)) {
+  for (const [gi, add] of ridersOf(parts, rows, foundAt, fixed)) {
     const g = out[gi - have.length];
     out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
   }

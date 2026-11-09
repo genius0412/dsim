@@ -808,7 +808,11 @@ const BASELINE = {
   // (what a lift's stage pushes up, the rollers riding it) with the lazy contact pass it needs, the
   // turret's `onTheRing`, and the 11-07 riders, launcher feed and shaft pivots that came in under the
   // tolerance.
-  importer: { gzip: 106.2 * 1000 },
+  // 2026-11-09 (a flower ramp apart from the intake arm): 106.20 -> 110.24, raised on purpose. HEAD
+  // before it (7fc9928d) measured 110.09, inside tolerance by 0.11: the worker's async search and the
+  // 11-09 contact index came in under it. This change is +0.15: `findIntakeArm` splits the ramp from the
+  // roller's arm, runs the riders pass on it and deploys it from every point.
+  importer: { gzip: 110.24 * 1000 },
   // 2026-11-05: NEW. `gizmo-*.js` 7.78: the placement handles drawn, picked and G-grabbed in the 3D
   // preview (`engine/gizmo.ts`) and three's TransformControls (~5.6 of it). Statically in the engine it
   // put `importer` at 105.4; lazy, the engine keeps 98.7 and only the Mechanisms step fetches this.

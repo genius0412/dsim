@@ -40,9 +40,10 @@ const norm = (a: V3): V3 => {
  * (2026-11-06). 8: what a lift's stage carries up and the rollers riding it (`liftPayload`), a turret's
  * parts only where they stand on its ring (`onTheRing`), a box tube's last insert on its own stage
  * (2026-11-07). 9: an intake arm the file shows tucked in is the ramp (`findIntakeArm`), swinging on
- * the shaft it names (2026-11-08).
+ * the shaft it names (2026-11-08). 10: that ramp is the wedge's arms beside the intake's arm, which
+ * stays with its roller, and the roller on the ramp's shaft does not ride it (2026-11-09).
  */
-export const MOTION_FINDER = 9;
+export const MOTION_FINDER = 10;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -2830,8 +2831,8 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
       intake.rampEdge = over.edge;
     }
   }
-  // ...or one the file shows tucked in: an arm swinging on an intake roller's shaft, carrying the roller
-  // outside it (`findIntakeArm`; owner, 2026-11-08, Offset's front arms)
+  // ...or one the file shows tucked in: arms swinging on an intake roller's shaft beside the arm that
+  // carries the roller outside it (`findIntakeArm`; owner, 2026-11-08, Offset's front arms)
   if (intake && !intake.ramp && !intake.upright) {
     for (const edge of intake.both && opposite ? [intake.edge, opposite] : [intake.edge]) {
       if (!findIntakeArm(parts, byEdge[edge] ?? [], edge, used)) continue;
@@ -2922,16 +2923,20 @@ const ARM_BEHIND_IN = 1.5;
 const ARM_MAX_BODIES = 600;
 /** a body stops an arm swinging when at least this many contact points stand across the swing */
 const ARM_STOP_POINTS = 3;
-/** a stowed arm deploys until its outer roller's bottom is this high off the floor, inches */
-const ARM_DEPLOY_CLEAR_IN = 1;
+/** a stowed ramp deploys until its lowest point is this high off the floor, inches: the standard
+ * ramp's blade on a FLOWER's lower plate (BIOBUZZ's `BB_RAMP_FLOOR_Z`) */
+const ARM_DEPLOY_CLEAR_IN = 0.4;
 /** ...turning at least this far (less: the file shows it down already) and at most this far, degrees */
 const ARM_DEPLOY_MIN_DEG = 10;
 const ARM_DEPLOY_MAX_DEG = 75;
 
-/** a stowed intake arm (`findIntakeArm`) */
+/** a stowed flower ramp on an intake roller's shaft (`findIntakeArm`) */
 export interface IntakeArm {
-  /** the arm's bodies: what swings on the pivot roller's shaft, with the outer roller's supports */
+  /** the ramp's bodies: what swings on the pivot roller's shaft beside the intake's own arm */
   bodies: number[];
+  /** the intake's own arm, which carries the outer roller and stays with the robot as the ramp
+   * swings (`ridersOf` must not hand it to the ramp) */
+  intake: number[];
   /** the pivot: a point on the shaft it swings on, MODEL frame */
   pivot: V3;
   /** the shaft (its body: the hinge `planFolds` turns it on, as the group's `axisBody`), or -1 */
@@ -2941,21 +2946,29 @@ export interface IntakeArm {
 }
 
 /**
- * ⚠️ **A STOWED INTAKE ARM: A FLOWER RAMP THE FILE SHOWS TUCKED IN** (owner, 2026-11-08, Offset's
- * robot: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride arms that
- * a pair of servos swing on the inner roller's shaft, with a wedge on a second pair of arms on the same
- * shaft, and the file shows them raised inside 18 in, so `findOverhang` (a part shown deployed past the
- * frame) never saw a ramp and the intake read as a Ground intake, which takes nothing from a FLOWER.
+ * ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN, BESIDE AN INTAKE ARM** (owner, 2026-11-08, Offset's
+ * robot: "do they not have a flower ramp? I thought they did"). Offset's front roller rides arms on
+ * the inner roller's shaft, and a second pair of arms on that shaft carries a wedge (the CAD's "flower
+ * arm" and "Flower intake wedge"). The file shows both raised inside 18 in, so `findOverhang` (a part
+ * shown deployed past the frame) never saw a ramp and the intake read as a Ground intake, which takes
+ * nothing from a FLOWER.
+ *
+ * ⚠️ **THE RAMP IS THE WEDGE'S ARMS ALONE.** The first version made both arm pairs the ramp, so the
+ * front roller swung down with it (owner, 2026-11-09: "The flower ramp is moving with the intake
+ * rollers. That should not happen."). It is BIOBUZZ's own ramp intake: a frame swinging on the
+ * sweeper's shaft while the rollers stay where they are. An arm that carries an intake roller is the
+ * intake, and stays with the robot.
  *
  * At `edge`, among its intake `rollers` (axles along the edge), the OUTER roller rides an arm when what
  * holds it, followed through contacts that would stop the arm swinging on an INNER roller's shaft (up
  * to `ARM_PIVOT_MAX_IN` inside), stays a part of its own: it never reaches a body that runs out of the
  * front of the robot (`ARM_BEHIND_IN` behind the pivot), and stays under `ARM_MAX_BODIES`. A contact
  * across faces square to the shaft (an arm plate flat against the frame beside it) only slides as it
- * swings, so it does not join the frame to the arm. Anything else swinging on that shaft and standing
- * alone the same way (the wedge's arms) is the arm too. It deploys until the outer roller's bottom is
+ * swings, so it does not join the frame to the arm. The RAMP is whatever else swings on that shaft and
+ * stands alone the same way without joining that arm. It deploys until its lowest point is
  * `ARM_DEPLOY_CLEAR_IN` off the floor; one shown down already (under `ARM_DEPLOY_MIN_DEG`) is not
- * stowed. Null when no roller rides such an arm. `taken`: bodies of other moving parts, left out.
+ * stowed. Null when there is no such ramp: a roller on an arm with nothing else on the shaft is a
+ * drop-down intake. `taken`: bodies of other moving parts, left out.
  */
 export function findIntakeArm(parts: readonly MeshPart[], rollers: readonly MotionGroup[], edge: Edge, taken: ReadonlySet<number>): IntakeArm | null {
   const st = bodyStats(parts);
@@ -3049,22 +3062,35 @@ export function findIntakeArm(parts: readonly MeshPart[], rollers: readonly Moti
     }
     if (!arm.size || !inner.g.bodies.some((b) => c.near(b).some((o) => arm.has(o) && touches(b, o)))) continue;
     for (const b of arm) claimed.add(b);
-    // ...then whatever else swings on the same shaft standing alone (a wedge on its own arms)
+    // ...then the ramp: whatever else swings on the same shaft standing alone (a wedge on its own
+    // arms); a part that joins the roller's arm is that arm, and carries the roller
+    const ramp = new Set<number>();
     for (const seed of seedsOf(inner.g)) {
       if (claimed.has(seed)) continue;
       const part = alone(seed);
-      if (!part) continue;
-      for (const b of part) (arm.add(b), claimed.add(b));
+      if (!part || part.some((b) => arm.has(b))) continue;
+      for (const b of part) (ramp.add(b), claimed.add(b));
     }
-    // how far it swings down: the outer roller's bottom to `ARM_DEPLOY_CLEAR_IN` off the floor
-    const du = outward * (outer.c[across] - pivot[across]);
-    const dz = outer.c[2] - pivot[2];
-    const r = Math.hypot(du, dz);
-    const want = floor + ARM_DEPLOY_CLEAR_IN + (outer.c[2] - outer.mo.min[2]) - pivot[2];
-    if (r < 1e-6 || Math.abs(want / r) > 1) continue;
-    const deployDeg = ((Math.atan2(dz, du) - Math.asin(want / r)) * 180) / Math.PI;
-    if (deployDeg < ARM_DEPLOY_MIN_DEG) continue;
-    return { bodies: [...arm].sort((a, b) => a - b), pivot, shaft, deployDeg: Math.min(ARM_DEPLOY_MAX_DEG, Math.round(deployDeg)) };
+    if (!ramp.size) continue;
+    // ...with what hangs from it (the wedge on the rod across its tips: it only slides on the rod as
+    // the arms swing, so it stands alone from no seed), the roller's arm staying with the robot
+    const riders = ridersOf(parts, [{ role: 'ramp', bodies: [...ramp] }, { role: 'roller', bodies: [...moving] }], new Set([0]), arm).get(0) ?? [];
+    for (const b of riders) ramp.add(b);
+    // how far it swings down: until its lowest point is `ARM_DEPLOY_CLEAR_IN` off the floor, the first
+    // of its points to get there (each turns about the shaft on its own circle)
+    const want = floor + ARM_DEPLOY_CLEAR_IN - pivot[2];
+    let deployDeg = Infinity;
+    eachVertex(parts, ramp, (x, y, z) => {
+      const du = outward * ((across === 0 ? x : y) - pivot[across]);
+      const dz = z - pivot[2];
+      const r = Math.hypot(du, dz);
+      if (r < 1e-6 || Math.abs(want / r) > 1) return;
+      const deg = ((Math.atan2(dz, du) - Math.asin(want / r)) * 180) / Math.PI;
+      if (deg >= 0 && deg < deployDeg) deployDeg = deg;
+    });
+    if (!Number.isFinite(deployDeg) || deployDeg < ARM_DEPLOY_MIN_DEG) continue;
+    const sorted = (s: Set<number>): number[] => [...s].sort((a, b) => a - b);
+    return { bodies: sorted(ramp), intake: sorted(arm), pivot, shaft, deployDeg: Math.min(ARM_DEPLOY_MAX_DEG, Math.round(deployDeg)) };
   }
   return null;
 }
@@ -3208,7 +3234,9 @@ export function planFolds(parts: readonly MeshPart[], motion: readonly MotionGro
     const inBox = motion
       .map((o, oi) => ({ o, oi }))
       .filter(({ o, oi }) => {
-        if (oi === gi || !isSpin(o.role) || !o.bodies.length) return false;
+        // not the roller whose shaft it swings on (`axisBody`): turning with it, that roller's own
+        // tubing swung round by the whole deploy angle
+        if (oi === gi || !isSpin(o.role) || !o.bodies.length || (g.axisBody !== undefined && o.bodies.includes(g.axisBody))) return false;
         const c = boxCentre(setMoments(st, o.bodies));
         return [0, 1, 2].every((k) => c[k] >= mo.min[k] - RIDE_PAD_IN && c[k] <= mo.max[k] + RIDE_PAD_IN);
       });
@@ -3656,9 +3684,11 @@ const CARRIER_ROLES: readonly MotionRole[] = ['turret', 'ramp', 'fold', 'swing',
  * contact (\`touchingPairs\`). A cluster with a member that reaches out of that box is the robot,
  * bolted elsewhere; a cluster wholly inside it that touches the group is carried by it, and joins it.
  * One that touches nothing is a floating part, which \`findFloatingParts\` reports. \`only\` limits it
- * to those groups (the found ones: a row the player edited is theirs). The bodies to add, per group.
+ * to those groups (the found ones: a row the player edited is theirs). \`fixed\`: bodies known to stay
+ * with the robot (an intake's own arm beside a flower ramp, \`findIntakeArm\`), so a cluster joining
+ * one is the robot too. The bodies to add, per group.
  */
-export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGroup[], only?: ReadonlySet<number>): Map<number, number[]> {
+export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGroup[], only?: ReadonlySet<number>, fixed?: ReadonlySet<number>): Map<number, number[]> {
   const st = bodyStats(parts);
   const moving = new Set(groups.flatMap((g) => g.bodies));
   const out = new Map<number, number[]>();
@@ -3679,7 +3709,7 @@ export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGrou
     // asked pair by pair (`contactIndex`): a cluster starts only at a body touching the group, and is
     // given up at its first member reaching out of the box (the robot: everything after it is too)
     const ci = contactIndex(parts);
-    const bolted = new Set<number>();
+    const bolted = new Set<number>(fixed);
     const seen = new Set<number>();
     const add: number[] = [];
     for (const start of near) {
@@ -3696,7 +3726,7 @@ export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGrou
           break;
         }
         for (const o of ci.near(b)) {
-          if (!nearSet.has(o) || !ci.touches(b, o)) continue;
+          if (!(nearSet.has(o) || fixed?.has(o)) || !ci.touches(b, o)) continue;
           // a cluster given up already is the robot, and so is this one, joined to it
           if (bolted.has(o)) {
             out = true;

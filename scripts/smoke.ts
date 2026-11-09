@@ -40180,7 +40180,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         JSON.stringify({ spool: st2.map((g) => g.bodies.map((b) => b < prisms.length ? prisms[b].name : 'spool_shaft')), side: sideOn.map((g) => g.bodies.map((b) => prisms[b].name)) }),
       );
     }
-    check('the finders’ version moved (stowed intake arms), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 9);
+    check('the finders’ version moved (a stowed ramp apart from the intake arm), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 10);
   }
 
   // ---- a spinning part turns about its own shaft, not the middle of its box (`onOwnShaft`; owner,
@@ -40253,6 +40253,8 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
       JSON.stringify(add) === JSON.stringify([id('crossbar')]),
       JSON.stringify(add.map((b) => prisms[b].name)),
     );
+    const held = motion.ridersOf(parts, [ramp], undefined, new Set([id('crossbar')])).get(0) ?? [];
+    check('ramp riders: a body named as staying with the robot (`fixed`: an intake arm beside a ramp) is not carried', held.length === 0, JSON.stringify(held.map((b) => prisms[b].name)));
     const [plan2] = motion.planFolds(parts, [{ ...ramp, bodies: [...ramp.bodies, id('crossbar')].sort((a, b) => a - b) }]);
     check('ramp hinge: ...and with the crossbar in the ramp, still on the bolts', !!plan2 && Math.abs(plan2.hinge[0] - 3) < 0.02, JSON.stringify(plan2?.hinge));
     // a turret, and two screws under its ring that touch only it
@@ -40372,12 +40374,15 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         r.set[0] === 'a ramp at the front and rollers at the back',
       JSON.stringify({ mount: r?.spec.intakeMount, ints, set: r?.set }),
     );
-    // A STOWED INTAKE ARM (`findIntakeArm`; owner, 2026-11-08, Offset's front arms: "do they not have a
-    // flower ramp? I thought they did"): the outer roller rides two plates that swing on the inner
-    // roller's shaft, each lying flat against a frame plate beside it, raised inside the frame
+    // A FLOWER RAMP TUCKED IN BESIDE AN INTAKE ARM (`findIntakeArm`; owner, 2026-11-08, Offset's front
+    // arms: "do they not have a flower ramp? I thought they did"): the outer roller rides two plates that
+    // swing on the inner roller's shaft, each lying flat against a frame plate beside it, raised inside
+    // the frame; a wedge's own arms swing on that shaft outboard of them, a bar across their tips. The
+    // ramp is the wedge's arms ALONE (owner, 2026-11-09: "The flower ramp is moving with the intake
+    // rollers. That should not happen.")
     {
       const G2: [number, number, number] = [0.6, 0.6, 0.6];
-      const armBot = (held: 'arm' | 'frame') => [
+      const armBot = (held: 'arm' | 'frame', wedge = true) => [
         synth.box('frame', G2, -8, 4, -5.5, 5.5, 1, 3),
         // the frame's side plates, to just past the pivot (the arm plates lie flat against them there)
         synth.box('side_l', G2, -8, held === 'frame' ? 8.6 : 5, 5.8, 6.0, 0, 4.5),
@@ -40387,46 +40392,76 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         synth.cylY('outer_roller', G2, 8, 4, 0.9, -5, 5, 20),
         synth.cylY('outer_shaft', G2, 8, 4, 0.2, held === 'frame' ? -5.8 : -5.6, held === 'frame' ? 5.8 : 5.6, 12),
         ...(held === 'arm' ? [synth.box('arm_l', G2, 4.6, 8.6, 5.6, 5.8, 3.5, 4.5), synth.box('arm_r', G2, 4.6, 8.6, -5.8, -5.6, 3.5, 4.5)] : []),
+        ...(wedge
+          ? [
+              // the shaft run on out through the side plates, the wedge's arms on its ends, and the bar
+              // across their tips (it only slides on them as they swing: it joins them as what they carry)
+              synth.cylY('pin_l', G2, 5, 4, 0.2, held === 'frame' ? 5.8 : 5.6, 6.6, 12),
+              synth.cylY('pin_r', G2, 5, 4, 0.2, -6.6, held === 'frame' ? -5.8 : -5.6, 12),
+              synth.box('wedge_l', G2, 4.7, 8.9, 6.6, 6.8, 3.6, 5.4),
+              synth.box('wedge_r', G2, 4.7, 8.9, -6.8, -6.6, 3.6, 5.4),
+              synth.cylY('wedge_bar', G2, 8.6, 5.2, 0.15, -6.6, 6.6, 12),
+            ]
+          : []),
       ];
       const armPrisms = armBot('arm');
       const ap = withBodies(armPrisms);
       const an = (n: string): number => armPrisms.findIndex((p) => p.name === n);
-      const rollers = [
-        { role: 'roller' as const, bodies: [an('inner_roller'), an('inner_shaft')] },
-        { role: 'roller' as const, bodies: [an('outer_roller'), an('outer_shaft')] },
-      ];
-      const arm = motion.findIntakeArm(ap, rollers, 'front', new Set());
+      const innerRoller = { role: 'roller' as const, bodies: [an('inner_roller'), an('inner_shaft'), an('pin_l'), an('pin_r')] };
+      const outerRoller = { role: 'roller' as const, bodies: [an('outer_roller'), an('outer_shaft')] };
+      const arm = motion.findIntakeArm(ap, [innerRoller, outerRoller], 'front', new Set());
+      const ids = (...n: string[]): string => JSON.stringify(n.map(an).sort((a, b) => a - b));
+      // the far bottom corner of a wedge arm (8.9, 3.6) is the first to come down to 0.4 in: 60.8°
       check(
-        'stowed arm: the outer roller rides two plates swinging on the inner roller\'s shaft (flat against the frame plates, which only slide past), deploying until the roller is 1 in off the floor',
-        !!arm && JSON.stringify(arm.bodies) === JSON.stringify([an('arm_l'), an('arm_r')].sort((a, b) => a - b)) && arm.shaft === an('inner_shaft') && Math.abs(arm.pivot[0] - 5) < 0.01 && Math.abs(arm.pivot[2] - 4) < 0.01 && arm.deployDeg === 44,
-        JSON.stringify(arm && { bodies: arm.bodies.map((b) => armPrisms[b].name), shaft: arm.shaft, pivot: arm.pivot, deploy: arm.deployDeg }),
+        'stowed ramp: the wedge\'s arms and the bar across their tips swing on the inner roller\'s shaft; the arm carrying the outer roller is the intake, which stays; it deploys until its lowest point is 0.4 in off the floor',
+        !!arm && JSON.stringify(arm.bodies) === ids('wedge_l', 'wedge_r', 'wedge_bar') && JSON.stringify(arm.intake) === ids('arm_l', 'arm_r') &&
+          arm.shaft === an('inner_shaft') && Math.abs(arm.pivot[0] - 5) < 0.01 && Math.abs(arm.pivot[2] - 4) < 0.01 && arm.deployDeg === 61,
+        JSON.stringify(arm && { bodies: arm.bodies.map((b) => armPrisms[b].name), intake: arm.intake.map((b) => armPrisms[b].name), shaft: arm.shaft, pivot: arm.pivot, deploy: arm.deployDeg }),
       );
+      const bareArm = armBot('arm', false);
+      const bp = withBodies(bareArm);
+      const bn = (n: string): number => bareArm.findIndex((p) => p.name === n);
+      const bareRollers = [
+        { role: 'roller' as const, bodies: [bn('inner_roller'), bn('inner_shaft')] },
+        { role: 'roller' as const, bodies: [bn('outer_roller'), bn('outer_shaft')] },
+      ];
+      check('stowed ramp: a roller on an arm with nothing else on the shaft is a drop-down intake, not a ramp', motion.findIntakeArm(bp, bareRollers, 'front', new Set()) === null);
       const fixedPrisms = armBot('frame');
       const fp = withBodies(fixedPrisms);
       const fn = (n: string): number => fixedPrisms.findIndex((p) => p.name === n);
       const fixedArm = motion.findIntakeArm(
         fp,
         [
-          { role: 'roller', bodies: [fn('inner_roller'), fn('inner_shaft')] },
+          { role: 'roller', bodies: [fn('inner_roller'), fn('inner_shaft'), fn('pin_l'), fn('pin_r')] },
           { role: 'roller', bodies: [fn('outer_roller'), fn('outer_shaft')] },
         ],
         'front',
         new Set(),
       );
-      check('stowed arm: the same rollers held by the frame\'s own side plates ride no arm', fixedArm === null, JSON.stringify(fixedArm));
+      check('stowed ramp: the same rollers held by the frame\'s own side plates ride no arm, and there is no ramp', fixedArm === null, JSON.stringify(fixedArm));
       const armRead = motion.readBuild(ap, new Set());
+      const bareRead = motion.readBuild(bp, new Set());
       const fixedRead = motion.readBuild(fp, new Set());
       check(
-        'stowed arm: the build reads a ramp at the front where the arm is, and a ground intake where the frame holds the rollers',
-        armRead.intake?.edge === 'front' && armRead.intake.ramp === true && armRead.intake.rampEdge === 'front' && fixedRead.intake?.edge === 'front' && !fixedRead.intake.ramp,
-        JSON.stringify({ arm: armRead.intake, fixed: fixedRead.intake }),
+        'stowed ramp: the build reads a ramp at the front where the wedge\'s arms are, and a ground intake for the bare arm and where the frame holds the rollers',
+        armRead.intake?.edge === 'front' && armRead.intake.ramp === true && armRead.intake.rampEdge === 'front' &&
+          bareRead.intake?.edge === 'front' && !bareRead.intake.ramp && fixedRead.intake?.edge === 'front' && !fixedRead.intake.ramp,
+        JSON.stringify({ arm: armRead.intake, bare: bareRead.intake, fixed: fixedRead.intake }),
       );
-      // the ramp group swings on the shaft it names (`axisBody`), not its lowest band
-      const [plan] = motion.planFolds(ap, [{ role: 'ramp', bodies: arm?.bodies ?? [], filePose: 'folded', deployDeg: arm?.deployDeg, axisBody: arm?.shaft }]);
+      // the ramp group swings on the shaft it names (`axisBody`), not its lowest band, and carries
+      // neither roller: not the one on its own shaft, not the one on the intake's arm
+      const rampRow = { role: 'ramp' as const, bodies: arm?.bodies ?? [], filePose: 'folded' as const, deployDeg: arm?.deployDeg, axisBody: arm?.shaft };
+      const [plan] = motion.planFolds(ap, [rampRow, innerRoller, outerRoller]);
       check(
-        'stowed arm: it swings on the shaft it names, down by its own deploy angle',
-        !!plan && Math.abs(plan.hinge[0] - 5) < 0.01 && Math.abs(plan.hinge[2] - 4) < 0.01 && Math.abs(plan.deploy - (44 * Math.PI) / 180) < 1e-9 && plan.angle === 0,
-        JSON.stringify(plan && { hinge: plan.hinge, deploy: plan.deploy, angle: plan.angle }),
+        'stowed ramp: it swings on the shaft it names, down by its own deploy angle, and no roller rides it',
+        !!plan && Math.abs(plan.hinge[0] - 5) < 0.01 && Math.abs(plan.hinge[2] - 4) < 0.01 && Math.abs(plan.deploy - (61 * Math.PI) / 180) < 1e-9 && plan.angle === 0 && plan.riders.length === 0,
+        JSON.stringify(plan && { hinge: plan.hinge, deploy: plan.deploy, angle: plan.angle, riders: plan.riders }),
+      );
+      const parts3 = motion.deriveMotion(ap, [rampRow, innerRoller, outerRoller], plan ? [plan] : [], [0, 0, 0]);
+      check(
+        'stowed ramp: measured, both rollers turn on their own (no parent), and the ramp is no one\'s rider',
+        parts3.length === 3 && parts3.every((p) => p.parent === -1) && parts3[0].role === 'ramp',
+        JSON.stringify(parts3.map((p) => [p.role, p.parent])),
       );
     }
     // one end only stays one end
@@ -43540,7 +43575,7 @@ function fxImportFixed(): RobotSpec {
     'the search finds what a lift carries after the turret and a deployed part, before the riders, and puts its rollers on the stage (source pins)',
     payAt > fmv.indexOf('findDeployedGroup(parts, intakes,') &&
       payAt > fmv.indexOf('findTurretGroup(parts, at,') &&
-      payAt < fmv.indexOf('ridersOf(parts, rows, foundAt)') &&
+      payAt < fmv.indexOf('ridersOf(parts, rows, foundAt, fixed)') &&
       fmv.includes('for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };'),
   );
   // a ramp build with no ramp shown deployed looks for one tucked in (owner, 2026-11-08, Offset's arms)
@@ -43548,8 +43583,14 @@ function fxImportFixed(): RobotSpec {
   const armAt = fmv.indexOf('const arm = findIntakeArm(parts, rollers, i.edge, taken());');
   check(
     'the search looks for a stowed intake arm when a ramp build shows no ramp deployed, and makes it the ramp, folded in the file, on the shaft it swings on (source pins)',
-    depAt > 0 && armAt > depAt && armAt < fmv.indexOf('ridersOf(parts, rows, foundAt)') &&
+    depAt > 0 && armAt > depAt && armAt < fmv.indexOf('ridersOf(parts, rows, foundAt, fixed)') &&
       fmv.includes("out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });"),
+  );
+  // ...and the intake's own arm beside it stays with the robot: the riders pass may not hand it to the
+  // ramp (owner, 2026-11-09: "The flower ramp is moving with the intake rollers.")
+  check(
+    'the intake arm beside a stowed ramp is fixed for the riders pass (source pins)',
+    fmv.includes('for (const b of arm.intake) fixed.add(b);') && fmv.includes('ridersOf(parts, rows, foundAt, fixed)'),
   );
   // ⚠️ THE EDITOR RUNS NO FINDER ON THE PAGE'S THREAD: Offset froze it for 205 s, then 2.8 s (2026-11-09)
   const motionImport = /import \{([^}]*)\} from '\.\.\/motion';/.exec(ed)?.[1] ?? '';

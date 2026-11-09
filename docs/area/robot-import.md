@@ -887,22 +887,35 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
 - `MOTION_FINDER` 8 for the three above, and the final stage's bottom insert (0.600 in under its
   tube) on that stage (`TUBE_BASE_END_IN` 0.65).
 - ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN** (`findIntakeArm`, in `readBuild` and in `findMoving`;
-  owner, 2026-11-08: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride
-  arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft,
-  raised inside 18 in. Only a ramp shown deployed past the frame was read, so this was a Ground intake,
-  which takes nothing from a FLOWER (0 of 36 drive-ins; 36 of 36 as a ramp).
+  owner, 2026-11-08: "do they not have a flower ramp? I thought they did"). Offset's front roller rides
+  arms on the inner roller's shaft, and a second pair of arms on that shaft (the CAD's "flower arm")
+  carries a rod across their tips with the "Flower intake wedge" on it, all raised inside 18 in. Only a
+  ramp shown deployed past the frame was read, so this was a Ground intake, which takes nothing from a
+  FLOWER (0 of 36 drive-ins; 36 of 36 as a ramp).
   - **The rule.** At an intake edge, the outer roller rides an arm when what holds it, followed through
     contacts that would stop it swinging on an inner roller's shaft (within `ARM_PIVOT_MAX_IN`), never
     reaches a body running back past the pivot (`ARM_BEHIND_IN`). Contacts are counted per point: a point
     across the swing only when every face it is on is (`lazyContacts`' third number), so a plate lying
     flat on the frame beside it, which also touches the frame's edge faces at its own edge, slides.
-    Whatever else swings alone on that shaft (the wedge's arms) joins it; `ridersOf` adds the wedge,
-    which hangs loose on a rod.
+    The RAMP is whatever else swings alone on that shaft without joining the roller's arm (the flower
+    arms), with what `ridersOf` finds hanging from it (the rod and the wedge). No such part: no ramp. A
+    roller on an arm alone is a drop-down intake.
+  - ⚠️ **THE RAMP DOES NOT CARRY THE INTAKE** (owner, 2026-11-09: "The flower ramp is moving with the
+    intake rollers. That should not happen."). The first version made both arm pairs the ramp, so the
+    front roller and its arms swung down with it. The roller's arm (`IntakeArm.intake`) now stays with
+    the robot: `findMoving` passes it to `ridersOf` as `fixed`, so the riders pass cannot hand it back
+    to the ramp, and `planFolds` takes no rider whose bodies hold the ramp's own `axisBody` (the inner
+    roller would have turned through the whole deploy angle with it). It is BIOBUZZ's own ramp intake: a
+    frame on the sweeper's shaft, the rollers staying put.
   - **The group.** `role: 'ramp'`, `filePose: 'folded'`, `axisBody` the shaft (`planFolds` hinges on a
-    named shaft before `hingeRod`), `deployDeg` until the outer roller's bottom is 1 in off the floor
-    (Offset: 43°; under 10° is shown down already and is not read). The rollers ride it.
+    named shaft before `hingeRod`), `deployDeg` until its lowest point is 0.4 in off the floor (the
+    standard blade's `BB_RAMP_FLOOR_Z`; Offset: 61°, the wedge's bottom edge; under 10° is shown down
+    already and is not read). No roller rides it.
   - **Not covered:** a saved robot keeps the intake it was read with (the build is read once); pick Ramp
-    in Mechanisms, or import again. The deploy angle ignores a hard stop on the frame. `MOTION_FINDER` 9.
+    in Mechanisms, or import again. A saved robot also keeps its moving parts: Find in Moving parts and
+    save again. The wedge is rigid with the arms (measured on Offset at ten angles through the swing: it
+    passes in front of the intake's arms and roller, and none of its points is inside them). The deploy angle
+    ignores a hard stop on the frame. `MOTION_FINDER` 10.
 - **A single turret's launcher is on its ring** (`turretOnRing`, `measuredTurretRing`). The game
   turns an import's turret about its launcher placement (`turretLocal`); the stored mesh turns it
   about the ring it measured (`MotionPart.pivot`). Those must be one point. The placement goes onto

@@ -1,6 +1,33 @@
+# HANDOFF — 2026-11-09c (A flower ramp no longer carries the intake rollers)
+
+**State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` 10. `npm test` (shared 5170, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass (`importer` baseline 106.20 → 110.24: the commit before measured 110.09, this adds 0.15). importpad and the undo probe were not rerun (the change is in the finders, which smoke covers).
+
+- **Owner: "The flower ramp is moving with the intake rollers. That should not happen."** Offset's ramp
+  part was both arm pairs on the inner roller's shaft: the flower arms (rod and "Flower intake wedge" at
+  their tips) AND the intake's own arms, which carry the front roller. So the front roller, its arms and
+  its crossbars swung down with the ramp, and both rollers rode it.
+- **Fixed (rules in `docs/area/robot-import.md`, the stowed flower ramp):** `findIntakeArm` still needs
+  the roller's arm to find the shaft, but the ramp is now only what else swings alone on that shaft
+  (plus what `ridersOf` finds hanging from it); the roller's arm comes back as `intake` and stays with
+  the robot. `findMoving` passes it to `ridersOf` as `fixed`, so the riders pass cannot hand it back,
+  and `planFolds` takes no rider holding the ramp's own `axisBody` (the inner roller would have turned
+  through the whole deploy angle). The ramp deploys until its lowest point is 0.4 in off the floor (the
+  standard blade's height). A roller on an arm with nothing else on the shaft is now a drop-down intake,
+  not a ramp.
+- **Verified on Offset:** ramp 33 → 20 bodies (4 flower arms, 2 3DP flower arms, 12 tip bearings, the
+  rod, the wedge); 13 intake-arm bodies (inner and outer intake arms, CF crossbars, counterspring arms,
+  the belt) stay put; front and inner rollers have no parent. Deploys 61° (was 43°), the wedge's tip
+  0.41 in off the floor. Swung through the deploy (checked at ten angles, 0–61°), no ramp point lands inside the
+  intake's arms or the front roller. Through the real editor (production build with `VITE_ROBOT_IMPORT=1`, offscreen Electron) the
+  stored rows are the headless ones: finder 10, the ramp 20 parts deploying 61° on the inner shaft, every
+  other row unchanged. The other eight models find the same groups, builds and measured parents as the
+  last baseline.
+- **A saved robot keeps its old ramp.** Open it, press Find in Moving parts, and save again (an open
+  draft finds again by itself: `MOTION_FINDER` moved).
+
 # HANDOFF — 2026-11-09b (The moving-part search runs in the measure worker)
 
-**State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` stays 9 (what the search finds is unchanged). `npm test` (shared 5166, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` ALL PASS (52) and the undo probe 24/24 (offscreen, dev server).
+**State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` stayed 9 (what the search finds is unchanged). `npm test` (shared 5166, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` ALL PASS (52) and the undo probe 24/24 (offscreen, dev server).
 
 - **Follow-up to the freeze fix below** (owner: "Make your own decisions"): the search still cost a
   3-s hitch on Offset's robot, so it left the page's thread.
