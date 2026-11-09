@@ -40604,6 +40604,42 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         J(em.savedSetup(out.setup).apart) === J([cubeId]) && em.includeAllBodies(doc, false) === doc,
     );
   }
+
+  // ---- PART COLOURS (`ImportSetup.colors`): drawn and baked, never measured ----
+  {
+    check(
+      'part colors: hex parses (#rgb, no #, case) and round-trips through linear RGB; a bad hex is refused',
+      geo.parseHex('#ABC') === '#aabbcc' && geo.parseHex('1a2b3c') === '#1a2b3c' && geo.parseHex('#12345') === null && geo.parseHex('zzzzzz') === null &&
+        ['#000000', '#ffffff', '#ff8800', '#1a2b3c', '#7f7f7f'].every((h) => geo.linearToHex(geo.hexToLinear(h)) === h),
+    );
+    // the flag and the cube merged into one part (a merge by colour), the cube recoloured
+    const merged: P = { positions: new Float32Array([...withCube[id('flag')].positions, ...withCube[cubeId].positions]), indices: null, color: [1, 1, 1], name: 'm', body: null };
+    const nf = withCube[id('flag')].positions.length / 3;
+    merged.body = new Uint32Array(merged.positions.length / 3).map((_, v) => (v < nf ? id('flag') : cubeId));
+    const painted = geo.withColors([merged], { [cubeId]: '#ff0000' });
+    const tri = (ps: readonly P[]): number => ps.reduce((n, p) => n + (p.indices ? p.indices.length : p.positions.length / 3) / 3, 0);
+    const red = painted.find((p) => p.body?.[0] === cubeId);
+    const rest = painted.find((p) => p.body?.[0] === id('flag'));
+    check(
+      'part colors: a recoloured body leaves its merged part for one of its colour, every triangle and body id kept; the rest keep the part’s colour; no colours is the parts themselves',
+      painted.length === 2 && tri(painted) === tri([merged]) && !!red && red.body!.every((b) => b === cubeId) && J(red.color) === J([1, 0, 0]) &&
+        !!rest && rest.body!.every((b) => b === id('flag')) && J(rest.color) === J([1, 1, 1]) &&
+        geo.withColors(withCube, undefined) === withCube && geo.withColors(withCube, {}) === withCube &&
+        geo.withColors(withCube, { 9999: '#ff0000' }).every((p, i) => p === withCube[i]),
+    );
+    check(
+      'part colors: a body’s colour is its override, else its part’s',
+      geo.bodyColor([merged], cubeId, { [cubeId]: '#00ff00' }) === '#00ff00' && geo.bodyColor([merged], cubeId, undefined) === '#ffffff' && geo.bodyColor([merged], 9999, undefined) === null,
+    );
+    const c1 = em.colorBodies(doc, [cubeId, id('flag')], '#123456');
+    const c2 = em.colorBodies(c1, [cubeId], null);
+    check(
+      'part colors: Color is one document edit naming each body; Use file color takes those bodies out, and the last one drops the field; colours change no orientation; a saved setup has none (its stored mesh is baked in them)',
+      J(c1.setup.colors) === J({ [cubeId]: '#123456', [id('flag')]: '#123456' }) && J(c2.setup.colors) === J({ [id('flag')]: '#123456' }) &&
+        !('colors' in em.colorBodies(c2, [id('flag')], null).setup) && !('colors' in em.resetColors(c1).setup) && em.resetColors(doc) === doc &&
+        geo.orientKey(c1.setup) === geo.orientKey(doc.setup) && !('colors' in em.savedSetup(c1.setup)) && c1.mech === doc.mech,
+    );
+  }
 }
 
 /**
@@ -43256,13 +43292,15 @@ function fxImportFixed(): RobotSpec {
   const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8');
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8');
   check(
-    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
+    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts (recoloured) and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
     /creaseParts\(state\.shown \?\? state\.parts\)/.test(pv) &&
       /e\.importModel\(\[file\], \{ budget: Number\.MAX_SAFE_INTEGER \}\)/.test(ed) &&
       /pickModel = buildMeshGroup\(state\.parts, 'pick'\)/.test(pv) &&
       /const target = pickModel \?\? model;/.test(pv) &&
-      /shown: normalised\.shownParts \?\? null,/.test(ed) &&
-      /modelParts: normalised\.shownParts \?\? normalised\.modelParts,/.test(ed),
+      // drawn and baked in the player's colours (`withColors`), the full copy still
+      /normalised\?\.shownParts \? withColors\(normalised\.shownParts, colors\) : null/.test(ed) &&
+      /shown: coloredShown,/.test(ed) &&
+      /modelParts: withColors\(normalised\.shownParts \?\? normalised\.modelParts, cur\.doc\.setup\.colors\),/.test(ed),
   );
 }
 
