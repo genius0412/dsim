@@ -1041,6 +1041,27 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
   `motion` with an unknown role or choice, a number that is not finite, or a `follows`/`rideOn` that is
   not another row (`isBodyList`, `isMotionList`).
 
+### Recolouring parts
+
+Owner, 2026-11-08: in the Select parts menu, "edit the color of the parts … a color wheel … hsv wheel …
+also hex codes". `ImportSetup.colors` maps a `MeshPart.body` id to `#rrggbb` (sRGB, as typed).
+
+- **Drawn and baked, never measured.** `withColors(parts, colors)` (`geometry.ts`) moves a recoloured
+  body out of its part (parts are merged BY COLOUR, so one holds many bodies) into a part of the new
+  colour, positions, normals and body ids kept, converted to LINEAR for `MeshPart.color`. The editor
+  applies it to what the preview draws (`modelParts`, and `shownParts` at Full) and to what it bakes,
+  so the finish (`finish.ts`) follows the new colour. Nothing in `orientParts` reads it and
+  `orientKey` does not name it, so a recolour costs a preview rebuild, never a re-measure. Clicks
+  still report body ids, and the moving parts still own the same bodies.
+- **Never saved, like `removed`.** The stored mesh is baked in the colours, so `savedSetup` drops
+  `colors`; a re-open shows them as the file's own. A new file and a Detail change clear them (ids
+  name other solids at the other detail), and `restoreDoc` keeps the current ones across a Detail change.
+- **The UI.** Select parts → Color opens `ColorDialog` (a `.ds-modal`): a canvas HSV wheel (hue round,
+  saturation out, arrow keys move it), Brightness, a Hex field (Enter applies; `#rgb` and no `#` read)
+  and Now/New swatches. Apply is one undo step ("color 3 parts"); Use file color (shown when the
+  selection has one) takes the selection's back; File colors in the Parts row takes them all back.
+  The Delete key does not delete while the dialog is open.
+
 ### The drop box, before a file is read
 
 The Model step asks **Detail** (Full or Light, the same `triBudget` it shows after reading) BEFORE a

@@ -599,3 +599,39 @@
     transition: none;
   }
 }
+
+/* ---- the parts' colour picker (`ColorDialog.tsx`): the wheel, Brightness, then Hex beside the
+   before/after swatches. The swatch colour is the player's pick, handed in as `--ri-swatch`. ---- */
+.ds-import-color {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-import-wheel {
+  /* one-off geometry: the canvas draws a 200px disc and its own marker (`WHEEL`) */
+  width: 200px;
+  height: 200px;
+  align-self: center;
+  border-radius: var(--ds-round-full);
+  touch-action: none;
+  cursor: crosshair;
+}
+.ds-import-colorrow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-s-3);
+}
+.ds-import-colorrow > .ds-field {
+  flex: 1;
+}
+.ds-import-swatches {
+  display: flex;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  overflow: hidden;
+}
+.ds-import-swatch {
+  width: var(--ds-s-6);
+  height: var(--ds-s-6);
+  background: var(--ri-swatch);
+}

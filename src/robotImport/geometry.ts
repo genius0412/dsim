@@ -1648,6 +1648,80 @@ export function withoutBodies(parts: readonly MeshPart[], removed: readonly numb
   return out;
 }
 
+/** a `#rrggbb` hex colour (sRGB), lower case; null when `s` is not one (`#rgb` and no `#` are read too) */
+export function parseHex(s: string): string | null {
+  let h = s.trim().replace(/^#/, '').toLowerCase();
+  if (/^[0-9a-f]{3}$/.test(h)) h = h.replace(/./g, (c) => c + c);
+  return /^[0-9a-f]{6}$/.test(h) ? `#${h}` : null;
+}
+
+const srgbToLinear = (v: number): number => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+const linearToSrgb = (v: number): number => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+
+/** `#rrggbb` (sRGB) → LINEAR RGB 0..1, the space `MeshPart.color` is in */
+export function hexToLinear(hex: string): [number, number, number] {
+  const h = parseHex(hex) ?? '#808080';
+  const c = (i: number): number => srgbToLinear(parseInt(h.slice(1 + 2 * i, 3 + 2 * i), 16) / 255);
+  return [c(0), c(1), c(2)];
+}
+
+/** LINEAR RGB 0..1 → `#rrggbb` (sRGB) */
+export function linearToHex(c: readonly [number, number, number] | readonly number[]): string {
+  const b = (v: number): string =>
+    Math.round(Math.min(1, Math.max(0, linearToSrgb(Math.min(1, Math.max(0, v))))) * 255)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${b(c[0])}${b(c[1])}${b(c[2])}`;
+}
+
+/** the colour `body` is drawn in: its override (`ImportSetup.colors`), else its part's, as `#rrggbb`; null = not found */
+export function bodyColor(parts: readonly MeshPart[], body: number, colors: Readonly<Record<string, string>> | undefined): string | null {
+  const own = colors?.[String(body)];
+  if (own) return own;
+  for (const p of parts) if (p.body?.includes(body)) return linearToHex(p.color);
+  return null;
+}
+
+/**
+ * THE PARTS WITH THE PLAYER'S COLOURS (`ImportSetup.colors`): a body with a colour of its own leaves
+ * its part (parts are merged BY COLOUR, so one part holds many bodies) for a part of that colour.
+ * Positions, normals and body ids are kept, so a click, the moving parts and the bake see the same
+ * bodies. `parts` itself comes back when nothing is recoloured, and a part none of whose bodies are
+ * comes back as it is.
+ */
+export function withColors(parts: readonly MeshPart[], colors: Readonly<Record<string, string>> | undefined): MeshPart[] {
+  if (!colors || !Object.keys(colors).length) return parts as MeshPart[];
+  const out: MeshPart[] = [];
+  for (const p of parts) {
+    const body = p.body;
+    if (!body) {
+      out.push(p);
+      continue;
+    }
+    // the part's bodies, by the colour they take ('' = the part's own)
+    const by = new Map<string, Set<number>>();
+    const seen = new Set<number>();
+    for (let v = 0; v < body.length; v++) {
+      const b = body[v];
+      if (seen.has(b)) continue;
+      seen.add(b);
+      const c = colors[String(b)] ?? '';
+      let s = by.get(c);
+      if (!s) by.set(c, (s = new Set()));
+      s.add(b);
+    }
+    if (by.size === 1 && by.has('')) {
+      out.push(p);
+      continue;
+    }
+    for (const [c, keep] of by) {
+      const drop = [...seen].filter((b) => !keep.has(b));
+      for (const q of withoutBodies([p], drop)) out.push(c ? { ...q, color: hexToLinear(c), name: `${p.name} (${c})` } : q);
+    }
+  }
+  return out;
+}
+
 /** the box of every vertex whose body is not in `skip`, in the parts' own frame (null: none) */
 export function boxWithout(parts: readonly MeshPart[], skip: ReadonlySet<number>): { min: V3; max: V3 } | null {
   const min: V3 = [Infinity, Infinity, Infinity];

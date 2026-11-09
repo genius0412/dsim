@@ -793,6 +793,7 @@ export function readSetup(base: ImportSetup, opts: ReadOpts): ImportSetup {
     removed: undefined,
     apart: undefined,
     keepFloating: undefined,
+    colors: undefined,
     ...opts.setup,
   };
   return opts.savedModel ? savedSetup(setup) : setup;
@@ -805,10 +806,33 @@ export const readKeepsBuild = (opts: ReadOpts): boolean => !!(opts.keepHistory |
 /** the setup a saved robot keeps: no deleted bodies, since its stored mesh is made without them (and
  *  a body id names a body of the file as read, not of the stored mesh read back) */
 export function savedSetup(s: ImportSetup): ImportSetup {
-  if (!('removed' in s)) return s;
+  if (!('removed' in s) && !('colors' in s)) return s;
   const out = { ...s };
+  // the colours too: the stored mesh is baked in them (`withColors`)
   delete out.removed;
+  delete out.colors;
   return out;
+}
+
+/** the document with `bodies` drawn in `hex` (`ImportSetup.colors`); null puts their file colour back */
+export function colorBodies(d: EditorDoc, bodies: readonly number[], hex: string | null): EditorDoc {
+  if (!bodies.length) return d;
+  const colors: Record<string, string> = { ...(d.setup.colors ?? {}) };
+  for (const b of bodies) {
+    if (hex) colors[String(b)] = hex;
+    else delete colors[String(b)];
+  }
+  const setup: ImportSetup = { ...d.setup, colors };
+  if (!Object.keys(colors).length) delete setup.colors;
+  return { ...d, setup };
+}
+
+/** the document with every body back in its file colour */
+export function resetColors(d: EditorDoc): EditorDoc {
+  if (!d.setup.colors) return d;
+  const setup: ImportSetup = { ...d.setup };
+  delete setup.colors;
+  return { ...d, setup };
 }
 
 /** each moving part's name: its kind (a wheel's corner), numbered when two share one */

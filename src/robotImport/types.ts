@@ -151,6 +151,12 @@ export interface ImportSetup {
   apart?: number[];
   /** the floating bodies (`findFloatingParts`) the player chose to keep, so they are not offered again */
   keepFloating?: number[];
+  /**
+   * the colours the player gave bodies: `MeshPart.body` id → `#rrggbb` (sRGB). Drawn in the preview
+   * and baked into the stored mesh (`withColors`); nothing measured reads them. Never saved, like
+   * `removed`: the stored mesh carries them. Absent = none.
+   */
+  colors?: Record<string, string>;
 }
 
 // ---- moving parts ----------------------------------------------------------------------------

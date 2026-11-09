@@ -8,7 +8,7 @@ import { PAGE_COPY as COPY } from './pageCopy';
  * `.ds-dialog-title`, actions last with the primary rightmost (`docs/ui-standard.md` §6). A
  * destructive confirm names its target and its effect.
  */
-function Shell({
+export function Shell({
   title,
   onClose,
   children,

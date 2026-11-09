@@ -10,22 +10,24 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-457 classes · 147 families · 3 with no reference found.
+462 classes · 147 families · 3 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
-## `ds-import` — 39
+## `ds-import` — 44
 
 | class | declared | used |
 |---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 52 |
+| `.ds-import` | src/ui/competitions.css:4 | 58 |
 | `.ds-import-before` | src/ui/importer.css:214 | 1 |
 | `.ds-import-body` | src/ui/importer.css:40 | 1 |
 | `.ds-import-box` | src/ui/importer.css:101 | 2 |
 | `.ds-import-canvas` | src/ui/importer.css:110 | 2 |
 | `.ds-import-canvas-host` | src/ui/importer.css:94 | 1 |
 | `.ds-import-checks` | src/ui/importer.css:533 | 1 |
+| `.ds-import-color` | src/ui/importer.css:605 | 1 |
+| `.ds-import-colorrow` | src/ui/importer.css:619 | 1 |
 | `.ds-import-dock` | src/ui/importer.css:50 | 1 |
 | `.ds-import-drop` | src/ui/importer.css:218 | 4 |
 | `.ds-import-drop-acts` | src/ui/importer.css:234 | 2 |
@@ -54,10 +56,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-import-preview-stage` | src/ui/importer.css:84 | 1 |
 | `.ds-import-preview-tools` | src/ui/importer.css:124 | 1 |
 | `.ds-import-steps` | src/ui/importer.css:34 | 1 |
+| `.ds-import-swatch` | src/ui/importer.css:633 | 2 |
+| `.ds-import-swatches` | src/ui/importer.css:627 | 1 |
 | `.ds-import-thumb` | src/ui/shell.css:5671 | 3 |
 | `.ds-import-tune` | src/ui/importer.css:257 | 2 |
 | `.ds-import-tune-row` | src/ui/importer.css:262 | 1 |
 | `.ds-import-turns` | src/ui/importer.css:250 | 6 |
+| `.ds-import-wheel` | src/ui/importer.css:610 | 1 |
 
 ## `ds-comp` — 31
 
@@ -610,7 +615,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:2707 | 102 |
+| `.ds-field` | src/ui/importer.css:624 | 104 |
 | `.ds-field-row` | src/ui/shell.css:2596 | 12 |
 
 ## `ds-fold` — 2
@@ -797,7 +802,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1026 | 406 |
+| `.ds-btn` | src/ui/shell.css:1026 | 411 |
 
 ## `ds-checkline` — 1
 
@@ -911,7 +916,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-input` | src/ui/shell.css:2305 | 104 |
+| `.ds-input` | src/ui/shell.css:2305 | 105 |
 
 ## `ds-key` — 1
 
@@ -1031,7 +1036,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-range` | src/ui/shell.css:5822 | 27 |
+| `.ds-range` | src/ui/shell.css:5822 | 28 |
 
 ## `ds-rankedstanding` — 1
 
