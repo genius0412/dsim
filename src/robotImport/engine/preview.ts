@@ -78,11 +78,25 @@ export interface PreviewController {
   resetView(): void;
   /** one of the camera presets, framed on the model */
   setView(view: PreviewView): void;
-  /** called with the body under a click while `picking` (`shift`: the one body, not its axle) */
+  /** called with the body under a click while `picking` (`shift`: the one body, not its axle); -1 is
+   *  a click on nothing */
   onPickBody(cb: ((body: number, shift: boolean) => void) | null): void;
+  /** called with the bodies a box drag takes while `picking` (`BoxPick`) */
+  onPickBox(cb: ((pick: BoxPick) => void) | null): void;
   /** called when a placement handle is picked or dragged while `gizmo` is set */
   onGizmo(cb: GizmoCallbacks | null): void;
   dispose(): void;
+}
+
+/**
+ * A box dragged with the left button while `picking` (the Onshape rule): dragged left to right it takes
+ * the bodies wholly inside it, right to left every body it touches. Hidden bodies count, as there.
+ * `remove`: Ctrl (Cmd) was held, so the box takes them out instead.
+ */
+export interface BoxPick {
+  bodies: number[];
+  crossing: boolean;
+  remove: boolean;
 }
 
 const TILE_IN = 24;
@@ -166,6 +180,11 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   controls.maxPolarAngle = Math.PI * 0.495;
   controls.minDistance = 10;
   controls.maxDistance = 250;
+  // THE ONSHAPE MOUSE: the right button orbits (Ctrl or Shift with it pans), the middle pans, the
+  // wheel zooms. The left button orbits too until parts are being picked, when it draws a box.
+  const orbitLeft = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+  const boxLeft = { LEFT: null as unknown as THREE.MOUSE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+  controls.mouseButtons = orbitLeft;
 
   const state: PreviewState = {
     parts: null,
@@ -190,6 +209,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
   scene.add(tints);
   let hover = -1;
   let pickCb: ((body: number, shift: boolean) => void) | null = null;
+  let boxCb: ((pick: BoxPick) => void) | null = null;
 
   let frame = 0;
   const render = (): void => {
@@ -416,28 +436,97 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     if (!hit?.face || !attr) return -1;
     return Math.round(attr.getX(hit.face.a));
   };
-  let down: { x: number; y: number; t: number } | null = null;
+  /** every body with a vertex (`crossing`) or all of its vertices (window) inside the screen box */
+  const bodiesInBox = (x0: number, y0: number, x1: number, y1: number, crossing: boolean): number[] => {
+    if (!state.parts) return [];
+    const r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return [];
+    const nx = (x: number): number => ((x - r.left) / r.width) * 2 - 1;
+    const ny = (y: number): number => -((y - r.top) / r.height) * 2 + 1;
+    const minX = Math.min(nx(x0), nx(x1));
+    const maxX = Math.max(nx(x0), nx(x1));
+    const minY = Math.min(ny(y0), ny(y1));
+    const maxY = Math.max(ny(y0), ny(y1));
+    camera.updateMatrixWorld();
+    const e = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).elements;
+    // body → every vertex inside so far (window), or any vertex inside (crossing)
+    const hit = new Map<number, boolean>();
+    for (const p of state.parts) {
+      if (!p.body) continue;
+      const pos = p.positions;
+      for (let v = 0; v < p.body.length; v++) {
+        const b = p.body[v];
+        const had = hit.get(b);
+        if (crossing ? had : had === false) continue;
+        const x = pos[3 * v];
+        const y = pos[3 * v + 1];
+        const z = pos[3 * v + 2];
+        const w = e[3] * x + e[7] * y + e[11] * z + e[15];
+        let inside = w > 0;
+        if (inside) {
+          const cx = (e[0] * x + e[4] * y + e[8] * z + e[12]) / w;
+          const cy = (e[1] * x + e[5] * y + e[9] * z + e[13]) / w;
+          inside = cx >= minX && cx <= maxX && cy >= minY && cy <= maxY;
+        }
+        hit.set(b, crossing ? inside : (had ?? true) && inside);
+      }
+    }
+    return [...hit].filter(([, v]) => v).map(([b]) => b).sort((a, b) => a - b);
+  };
+  /** the box drawn while dragging (a div over the canvas: `.ds-import-box`, dashed when crossing) */
+  let boxEl: HTMLDivElement | null = null;
+  const drawBox = (x0: number, y0: number, x1: number, y1: number): void => {
+    const host = canvas.parentElement;
+    if (!host) return;
+    if (!boxEl) {
+      boxEl = document.createElement('div');
+      boxEl.className = 'ds-import-box';
+      host.appendChild(boxEl);
+    }
+    const hr = host.getBoundingClientRect();
+    boxEl.classList.toggle('cross', x1 < x0);
+    boxEl.style.left = `${Math.min(x0, x1) - hr.left}px`;
+    boxEl.style.top = `${Math.min(y0, y1) - hr.top}px`;
+    boxEl.style.width = `${Math.abs(x1 - x0)}px`;
+    boxEl.style.height = `${Math.abs(y1 - y0)}px`;
+  };
+  const endBox = (): void => {
+    boxEl?.remove();
+    boxEl = null;
+  };
+  let down: { x: number; y: number; t: number; button: number; box: boolean } | null = null;
   let hoverAt = 0;
   const onDown = (e: PointerEvent): void => {
     // a click that confirms a G-grab is the grab's alone
     if (layer?.down(e.clientX, e.clientY)) return;
-    down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, box: false };
   };
   const onUp = (e: PointerEvent): void => {
     const d = down;
     down = null;
-    if (!d || e.button !== 0) return;
+    if (!d || e.button !== 0 || d.button !== 0) return;
+    if (d.box) {
+      endBox();
+      if (!state.picking || !boxCb) return;
+      const crossing = e.clientX < d.x;
+      boxCb({ bodies: bodiesInBox(d.x, d.y, e.clientX, e.clientY, crossing), crossing, remove: e.ctrlKey || e.metaKey });
+      return;
+    }
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5 || performance.now() - d.t > 600) return;
     if (state.gizmo) {
       layer?.click(e.clientX, e.clientY);
       return;
     }
     if (!state.picking || !pickCb) return;
-    const b = bodyAt(e.clientX, e.clientY);
-    if (b >= 0) pickCb(b, e.shiftKey);
+    pickCb(bodyAt(e.clientX, e.clientY), e.shiftKey);
   };
   const onMove = (e: PointerEvent): void => {
     if (layer?.move(e.clientX, e.clientY, down !== null)) return;
+    if (down && down.button === 0 && state.picking && (down.box || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5)) {
+      down.box = true;
+      drawBox(down.x, down.y, e.clientX, e.clientY);
+      return;
+    }
     if (!state.picking || down) return;
     const now = performance.now();
     if (now - hoverAt < 70) return;
@@ -540,6 +629,11 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       if (state.gizmo) loadLayer();
       layer?.update(was);
     }
+    controls.mouseButtons = state.picking ? boxLeft : orbitLeft;
+    if (!state.picking) {
+      down = null;
+      endBox();
+    }
     if (!state.picking && hover >= 0) {
       hover = -1;
       canvas.style.cursor = '';
@@ -570,6 +664,9 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
     onPickBody(cb): void {
       pickCb = cb;
     },
+    onPickBox(cb): void {
+      boxCb = cb;
+    },
     onGizmo(cb): void {
       gizmoCb = cb;
     },
@@ -582,6 +679,7 @@ export function createPreview(canvas: HTMLCanvasElement, initial: Partial<Previe
       canvas.removeEventListener('pointerleave', onLeave);
       controls.removeEventListener('change', render);
       disposed = true;
+      endBox();
       layer?.dispose();
       controls.dispose();
       disposeTree(scene);

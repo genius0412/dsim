@@ -40604,6 +40604,42 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         J(em.savedSetup(out.setup).apart) === J([cubeId]) && em.includeAllBodies(doc, false) === doc,
     );
   }
+
+  // ---- PART COLOURS (`ImportSetup.colors`): drawn and baked, never measured ----
+  {
+    check(
+      'part colors: hex parses (#rgb, no #, case) and round-trips through linear RGB; a bad hex is refused',
+      geo.parseHex('#ABC') === '#aabbcc' && geo.parseHex('1a2b3c') === '#1a2b3c' && geo.parseHex('#12345') === null && geo.parseHex('zzzzzz') === null &&
+        ['#000000', '#ffffff', '#ff8800', '#1a2b3c', '#7f7f7f'].every((h) => geo.linearToHex(geo.hexToLinear(h)) === h),
+    );
+    // the flag and the cube merged into one part (a merge by colour), the cube recoloured
+    const merged: P = { positions: new Float32Array([...withCube[id('flag')].positions, ...withCube[cubeId].positions]), indices: null, color: [1, 1, 1], name: 'm', body: null };
+    const nf = withCube[id('flag')].positions.length / 3;
+    merged.body = new Uint32Array(merged.positions.length / 3).map((_, v) => (v < nf ? id('flag') : cubeId));
+    const painted = geo.withColors([merged], { [cubeId]: '#ff0000' });
+    const tri = (ps: readonly P[]): number => ps.reduce((n, p) => n + (p.indices ? p.indices.length : p.positions.length / 3) / 3, 0);
+    const red = painted.find((p) => p.body?.[0] === cubeId);
+    const rest = painted.find((p) => p.body?.[0] === id('flag'));
+    check(
+      'part colors: a recoloured body leaves its merged part for one of its colour, every triangle and body id kept; the rest keep the part’s colour; no colours is the parts themselves',
+      painted.length === 2 && tri(painted) === tri([merged]) && !!red && red.body!.every((b) => b === cubeId) && J(red.color) === J([1, 0, 0]) &&
+        !!rest && rest.body!.every((b) => b === id('flag')) && J(rest.color) === J([1, 1, 1]) &&
+        geo.withColors(withCube, undefined) === withCube && geo.withColors(withCube, {}) === withCube &&
+        geo.withColors(withCube, { 9999: '#ff0000' }).every((p, i) => p === withCube[i]),
+    );
+    check(
+      'part colors: a body’s colour is its override, else its part’s',
+      geo.bodyColor([merged], cubeId, { [cubeId]: '#00ff00' }) === '#00ff00' && geo.bodyColor([merged], cubeId, undefined) === '#ffffff' && geo.bodyColor([merged], 9999, undefined) === null,
+    );
+    const c1 = em.colorBodies(doc, [cubeId, id('flag')], '#123456');
+    const c2 = em.colorBodies(c1, [cubeId], null);
+    check(
+      'part colors: Color is one document edit naming each body; Use file color takes those bodies out, and the last one drops the field; colours change no orientation; a saved setup has none (its stored mesh is baked in them)',
+      J(c1.setup.colors) === J({ [cubeId]: '#123456', [id('flag')]: '#123456' }) && J(c2.setup.colors) === J({ [id('flag')]: '#123456' }) &&
+        !('colors' in em.colorBodies(c2, [id('flag')], null).setup) && !('colors' in em.resetColors(c1).setup) && em.resetColors(doc) === doc &&
+        geo.orientKey(c1.setup) === geo.orientKey(doc.setup) && !('colors' in em.savedSetup(c1.setup)) && c1.mech === doc.mech,
+    );
+  }
 }
 
 /**
@@ -43256,13 +43292,15 @@ function fxImportFixed(): RobotSpec {
   const pv = readFileSync('src/robotImport/engine/preview.ts', 'utf8');
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8');
   check(
-    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
+    'full detail: the preview draws `shown` and tests a click against the measured parts, never drawn; the editor hands it shownParts (recoloured) and bakes them, and reads a share file in the import worker, nothing simplified (source pins)',
     /creaseParts\(state\.shown \?\? state\.parts\)/.test(pv) &&
       /e\.importModel\(\[file\], \{ budget: Number\.MAX_SAFE_INTEGER \}\)/.test(ed) &&
       /pickModel = buildMeshGroup\(state\.parts, 'pick'\)/.test(pv) &&
       /const target = pickModel \?\? model;/.test(pv) &&
-      /shown: normalised\.shownParts \?\? null,/.test(ed) &&
-      /modelParts: normalised\.shownParts \?\? normalised\.modelParts,/.test(ed),
+      // drawn and baked in the player's colours (`withColors`), the full copy still
+      /normalised\?\.shownParts \? withColors\(normalised\.shownParts, colors\) : null/.test(ed) &&
+      /shown: coloredShown,/.test(ed) &&
+      /modelParts: withColors\(normalised\.shownParts \?\? normalised\.modelParts, cur\.doc\.setup\.colors\),/.test(ed),
   );
 }
 
@@ -44804,6 +44842,54 @@ function fxImportFixed(): RobotSpec {
     'page scroll: the shell lands every page (AppShell runs useRouteScroll on the page App names)',
     /useRouteScroll\(appRef, mainRef, scrollPage\)/.test(shell) && /scrollPage=\{scrollPage\}/.test(app) && /pushRoute\(url\)/.test(app),
   );
+}
+
+// ---- importer: picking moving parts by identity (assignBodies / unassignBodies) -----------------
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  type G = import('../src/robotImport/types').MotionGroup;
+  const J = JSON.stringify;
+  const rows: G[] = [
+    { role: 'roller', bodies: [1, 2], found: true },
+    { role: 'flywheel', bodies: [3], found: true },
+    { role: 'spin', bodies: [4], follows: { group: 1, ratio: 2 } },
+  ];
+  // armed: a click makes a NEW row, and takes the part out of the row it was in
+  const a = em.assignBodies(rows, [3], null, 'roller');
+  check(
+    'identity pick: an armed click makes a new row, empties and drops the old one, and the links after it move up',
+    a.index === 2 && J(a.groups.map((g) => [g.role, g.bodies])) === J([['roller', [1, 2]], ['spin', [4]], ['roller', [3]]]) && a.groups[1].follows === undefined && a.groups[0].found === true,
+    J(a),
+  );
+  // a selected row takes the part, keeps its place, and is the player's now
+  const b = em.assignBodies(rows, [2], 1, 'flywheel');
+  check(
+    'identity pick: a click into the selected row adds to it, out of the other, and both are no longer found',
+    b.index === 1 && J(b.groups[0].bodies) === J([1]) && J(b.groups[1].bodies) === J([2, 3]) && !b.groups[0].found && !b.groups[1].found,
+    J(b),
+  );
+  // a row that held only what is moved into another is dropped, and the receiving row's index follows
+  const c = em.assignBodies(rows, [1, 2], 2, 'spin');
+  check('identity pick: the receiving row lands where the drop moved it', c.index === 1 && J(c.groups[1].bodies) === J([1, 2, 4]) && c.groups.length === 2, J(c));
+  // unclick: taking the last part of the selected row drops it (-1), taking one of two keeps it
+  const d = em.unassignBodies(rows, [3], 1);
+  const e = em.unassignBodies(rows, [1], 0);
+  check(
+    'identity pick: a click on a part already in the row takes it out; the row goes with its last part',
+    d.index === -1 && d.groups.length === 2 && e.index === 0 && J(e.groups[0].bodies) === J([2]) && !e.groups[0].found,
+    J([d, e]),
+  );
+  // the Select tool: delete rows (links move up, a link to a deleted row goes), lock and unlock
+  const del = em.removeRows(rows, new Set([1]));
+  check('row select: deleting a row drops it and the link that named it', del.length === 2 && del[1].role === 'spin' && del[1].follows === undefined, J(del));
+  const lk = em.lockRows(rows, new Set([0]), true);
+  check(
+    'row select: a locked row is the player\'s (no longer found), its bodies are frozen, and unlocking clears the flag',
+    lk[0].locked === true && !lk[0].found && lk[1].found === true && J([...em.lockedBodies(lk)]) === J([1, 2]) && em.lockRows(lk, new Set([0]), false)[0].locked === undefined,
+    J(lk),
+  );
+  const sf = await import('../src/robotImport/shareFile');
+  check('row select: a share file keeps a locked row, and refuses a lock that is not a boolean', sf.isMotionList(lk) && !sf.isMotionList([{ role: 'roller', bodies: [1], locked: 'yes' }]));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

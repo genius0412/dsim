@@ -12,9 +12,10 @@ const LINKABLE: readonly MotionRole[] = ['roller', 'flywheel', 'spin', 'swing', 
 
 /**
  * THE MOVING PARTS STEP (`docs/area/robot-import.md`, "Moving parts"): what turns, folds or slides
- * in a match. One row per part. Selecting a row shows its parts in the preview and makes a click
- * there add or take out parts (for a wheel, roller or flywheel, everything on its axle); its
- * settings open under it. Hovering a row shows its parts without selecting it. The parts are looked
+ * in a match. One row per part. PICKING BY IDENTITY: arm an identity in the palette and each click in
+ * the preview makes a new part of it (a click on one that is it already takes it back); select a row
+ * and clicks add to or take out of that one (for a wheel, roller or flywheel, everything on its
+ * axle), and its settings open under it. Hovering a row shows its parts without selecting it. The parts are looked
  * for once on the first visit; Find moving parts again redoes that for every row the player has not
  * edited. For a mechanism no named kind covers, a spinning, swinging or sliding part is moved by
  * one of the robot's signals (`MotionDrive`), about a robot axis or a picked part's axle, or geared
@@ -26,6 +27,14 @@ export function MotionPanel({
   parts,
   active,
   target,
+  armed,
+  onArm,
+  selecting,
+  onSelecting,
+  rowSel,
+  onRowSel,
+  onDeleteRows,
+  onLockRows,
   playing,
   onHover,
   onActive,
@@ -41,6 +50,17 @@ export function MotionPanel({
   /** the selected row, or null, and what a click in the preview does for it */
   active: number | null;
   target: PickTarget;
+  /** the identity each click makes a new part of, or null */
+  armed: MotionRole | null;
+  onArm: (role: MotionRole | null) => void;
+  /** the Select tool: a click or a box in the preview, or a row's checkbox, selects whole rows */
+  selecting: boolean;
+  onSelecting: (on: boolean) => void;
+  /** the selected rows (ascending) */
+  rowSel: readonly number[];
+  onRowSel: (rows: number[]) => void;
+  onDeleteRows: () => void;
+  onLockRows: (lock: boolean) => void;
   playing: boolean;
   /** a row under the pointer (null: none), shown in the preview while nothing is selected */
   onHover: (i: number | null) => void;
@@ -75,15 +95,65 @@ export function MotionPanel({
         }),
     );
   };
-  const add = (role: MotionRole): void => {
-    onChange([...groups, { role, bodies: [] }]);
-    onActive(groups.length, 'bodies');
-  };
   const roles: MotionRole[] = ['roller', 'flywheel', 'turret', ...(rampOk ? (['ramp'] as const) : []), 'fold', ...JOINT_ROLES];
   const anyParts = groups.some((g) => g.bodies.length);
   return (
     <>
-      <p className="ds-hint">{groups.length ? COPY.movingHint : COPY.movingNone}</p>
+      <div className="ds-field">
+        <span className="cap">{COPY.motionIdsCap}</span>
+        <div className="ds-import-ids" role="group" aria-label={COPY.motionIdsCap}>
+          {groups.length ? (
+            <button
+              type="button"
+              className={`ds-btn small${selecting ? ' primary' : ' ghost'}`}
+              aria-pressed={selecting}
+              title={COPY.motionSelectToolTitle}
+              onClick={() => onSelecting(!selecting)}
+            >
+              {COPY.motionSelectTool}
+            </button>
+          ) : null}
+          {roles.map((r) => (
+            <button
+              key={r}
+              type="button"
+              className={`ds-btn small${armed === r && active === null ? ' primary' : ''}`}
+              aria-pressed={armed === r}
+              title={COPY.motionAddKind(r)}
+              onClick={() => onArm(armed === r && active === null ? null : r)}
+            >
+              {COPY.motionIdName(r)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="ds-hint" role="status">
+        {active !== null
+          ? groups[active]?.locked
+            ? COPY.motionLockedHint
+            : COPY.motionRowHint
+          : selecting
+            ? COPY.motionSelectHint
+            : armed
+              ? COPY.motionArmedHint(COPY.motionRole(armed))
+              : groups.length
+                ? COPY.movingHint
+                : COPY.movingNone}
+      </p>
+      {selecting && groups.length ? (
+        <div className="ds-import-turns">
+          <span className="ds-hint">{COPY.motionSelCount(rowSel.length)}</span>
+          <button type="button" className="ds-btn ghost small" onClick={() => onRowSel(rowSel.length === groups.length ? [] : groups.map((_, i) => i))}>
+            {rowSel.length === groups.length ? COPY.motionSelClear : COPY.motionSelAll}
+          </button>
+          <button type="button" className="ds-btn small" disabled={!rowSel.length} onClick={() => onLockRows(!rowSel.every((i) => groups[i]?.locked))}>
+            {rowSel.length && rowSel.every((i) => groups[i]?.locked) ? COPY.motionUnlock : COPY.motionLock}
+          </button>
+          <button type="button" className="ds-btn small danger" disabled={!rowSel.length} onClick={onDeleteRows}>
+            {COPY.motionDelete}
+          </button>
+        </div>
+      ) : null}
       <div className="ds-import-turns">
         {anyParts ? (
           <button type="button" className={`ds-btn small${playing ? ' primary' : ''}`} aria-pressed={playing} onClick={() => onPlay(!playing)}>
@@ -106,15 +176,33 @@ export function MotionPanel({
             const others = groups.map((_, j) => j).filter((j) => j !== i && LINKABLE.includes(groups[j].role));
             const axis: JointAxis = g.axis ?? (joint === 'swing' ? 'left' : joint === 'slide' ? 'up' : 'part');
             const summary = g.bodies.length ? COPY.motionSummary(g.role, g.bodies.length, p, !!g.found) : COPY.motionEmpty;
+            const ticked = rowSel.includes(i);
             return (
-              <li key={i} className={on ? 'on' : undefined} onMouseEnter={() => onHover(i)}>
-                <button type="button" className="ds-import-moving-row" aria-expanded={on} onClick={() => onActive(on ? null : i, 'bodies')}>
-                  <span className="what">
-                    {names[i]}
-                    <small>{summary}</small>
-                  </span>
-                  {on ? null : <span className="go">{COPY.motionEdit}</span>}
-                </button>
+              <li key={i} className={on || ticked ? 'on' : undefined} onMouseEnter={() => onHover(i)}>
+                <div className="ds-import-moving-head">
+                  {selecting ? (
+                    <input
+                      type="checkbox"
+                      className="ds-import-moving-tick"
+                      checked={ticked}
+                      aria-label={COPY.motionRowCheck(names[i])}
+                      onChange={(e) => onRowSel(e.target.checked ? [...rowSel, i].sort((x, y) => x - y) : rowSel.filter((j) => j !== i))}
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ds-import-moving-row"
+                    aria-expanded={on}
+                    onClick={() => (selecting ? onRowSel(ticked ? rowSel.filter((j) => j !== i) : [...rowSel, i].sort((x, y) => x - y)) : onActive(on ? null : i, 'bodies'))}
+                  >
+                    <span className="what">
+                      {names[i]}
+                      <small>{summary}</small>
+                    </span>
+                    {g.locked ? <span className="ds-import-lock">{COPY.motionLocked}</span> : null}
+                    {on || selecting ? null : <span className="go">{COPY.motionEdit}</span>}
+                  </button>
+                </div>
                 {on ? (
                   <div className="ds-import-moving-edit">
                     <p className="ds-hint">{target === 'axis' ? COPY.motionPickAxisHint : COPY.motionPickHint(g.role)}</p>
@@ -251,23 +339,6 @@ export function MotionPanel({
           })}
         </ul>
       ) : null}
-      <label className="ds-field narrow">
-        <span className="cap">{COPY.motionAddCap}</span>
-        <select
-          className="ds-select"
-          value=""
-          onChange={(e) => {
-            if (e.target.value) add(e.target.value as MotionRole);
-          }}
-        >
-          <option value="">{COPY.motionAddPick}</option>
-          {roles.map((r) => (
-            <option key={r} value={r}>
-              {COPY.motionAddKind(r)}
-            </option>
-          ))}
-        </select>
-      </label>
     </>
   );
 }

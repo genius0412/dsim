@@ -12,12 +12,12 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
+import { bodyColor, defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, withColors, type MeshPart } from '../geometry';
 import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
-import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type QuarterTurns, type WheelLayout } from '../types';
+import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type MotionRole, type QuarterTurns, type WheelLayout } from '../types';
 import { defaultMechFor, mechHandlesFor, mechRobotToModel, validateMechFor } from './placement';
 import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAssets } from '../../render/importedAssets';
 import { COPY } from './copy';
@@ -38,6 +38,8 @@ import {
   rectangleWheels,
   buildFromCad,
   cadMechKey,
+  colorBodies,
+  resetColors,
   deleteBodies,
   frameMoved,
   floatingOffer,
@@ -46,6 +48,11 @@ import {
   leaveOutBodies,
   followFrame,
   keepEditedMotion,
+  assignBodies,
+  unassignBodies,
+  removeRows,
+  lockRows,
+  lockedBodies,
   measuredTurretRing,
   sameFrame,
   turretOnRing,
@@ -84,10 +91,12 @@ import {
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
 import { checkImportFiles } from './fileSelection';
 import { libraryChanged, postRobotNotice, takeHandedFiles } from './handoff';
+import { ColorDialog } from './ColorDialog';
 import { ConfirmDialog, DuplicateDialog } from './LibraryDialogs';
 import { MechanismsStep } from './MechanismsStep';
 import { ModelStep } from './ModelStep';
 import { MotionPanel, type PickTarget } from './MotionPanel';
+import type { BoxPick } from '../engine/preview';
 import { TunePanel } from './TunePanel';
 import { driveTuneFields, mechTuneFields } from './tuneFields';
 import { PreviewPane } from './PreviewPane';
@@ -207,10 +216,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   /** the moving part whose row is under the pointer, shown while none is selected */
   const [hoverMotion, setHoverMotion] = useState<number | null>(null);
   const [pickTarget, setPickTarget] = useState<PickTarget>('bodies');
+  /** the identity armed on the Moving parts step: each click on a part makes a new one of it */
+  const [armedRole, setArmedRole] = useState<MotionRole | null>(null);
+  /** the Moving parts step's Select tool, and the rows it has selected (for Delete and Lock) */
+  const [selectTool, setSelectTool] = useState(false);
+  const [rowSel, setRowSel] = useState<number[]>([]);
   const [playing, setPlaying] = useState(false);
   /** the Model step's Delete parts mode, and the bodies selected in it */
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
+  /** the colour picker, open over the selection (`ColorDialog`) */
+  const [coloring, setColoring] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
@@ -766,7 +782,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (cur.baked?.stamp === stamp) return cur.baked;
     const r = await e.bake({
       // every triangle at Full detail; what was measured otherwise
-      modelParts: normalised.shownParts ?? normalised.modelParts,
+      modelParts: withColors(normalised.shownParts ?? normalised.modelParts, cur.doc.setup.colors),
       origin: normalised.measurement.origin,
       descriptor: built.spec.imported,
       motion: normalised.measurement.motion,
@@ -904,7 +920,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
     // small parts out, so a body id names another solid at the other detail. The floating parts are
     // offered again once it is read.
-    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
+    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined, colors: undefined };
     const keepMech = doc.mech;
     const keepAt = doc.mechAt;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
@@ -1106,34 +1122,155 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     setHoverMotion(null);
     update((d) => ({ ...d, setup: { ...d.setup, motion: [...kept, ...findAll(kept)], motionFinder: MOTION_FINDER } }), { label: COPY.edits.findMoving });
   };
-  // a selected row is being edited: a click in the preview adds or takes out its parts
-  const picking = step === MOVING_STEP && activeMotion !== null && !!motion?.[activeMotion];
-  // a click in the preview: the part under it (and, for something that spins, its axle; for the rest,
-  // what is mounted on it) joins the group being picked, or leaves it when it is already in it.
-  // A body belongs to one moving part at a time.
+  // ---- picking moving parts by identity (`docs/area/robot-import.md`, "Picking by identity") -----
+  // Arm an identity (Roller, Flywheel ...) and every click on a part makes a NEW one of it; a click on
+  // one that already is it takes it back. Select a row first and clicks add to (or take out of) that
+  // one instead. With nothing armed or selected, a click on a moving part selects its row. A click on
+  // nothing ends the row's selection (the identity stays armed). A box drag takes many at once: into
+  // the selected row, or as ONE new row of the armed identity; Ctrl with it takes them out.
+  // THE SELECT TOOL picks whole rows instead (a click, a box, a row's checkbox) for Delete and Lock.
+  // A LOCKED row's bodies are never moved by a click or a box.
+  const picking = step === MOVING_STEP && !!motion && !playing;
+  const selectRow = (i: number | null): void => {
+    setActiveMotion(i);
+    setPickTarget('bodies');
+  };
+  /** the rows that own any of `bodies` */
+  const rowsOf = (bodies: readonly number[]): number[] => {
+    const set = new Set(bodies);
+    return (motion ?? []).map((g, i) => (g.bodies.some((b) => set.has(b)) ? i : -1)).filter((i) => i >= 0);
+  };
   const onPickBody = (body: number, shift: boolean): void => {
-    if (deletePicking) return onSelectBody(body, shift);
-    if (!picking || !normalised || !motion || activeMotion === null) return;
-    const g = motion[activeMotion];
-    if (pickTarget === 'axis') {
-      // naming a joint's axle (or a slide's rail): one click, and the picking ends
-      setMotion(motion.map((o, i) => (i === activeMotion ? { ...o, axis: 'part' as const, axisBody: body, found: undefined } : o)));
-      setActiveMotion(null);
+    if (deletePicking) return onSelectBody(body);
+    if (!picking || !normalised || !motion) return;
+    if (selectTool) {
+      // a click toggles the row the part is in; a click on nothing clears
+      if (body < 0) return setRowSel([]);
+      const owner = motion.findIndex((g) => g.bodies.includes(body));
+      if (owner >= 0) setRowSel((cur) => (cur.includes(owner) ? cur.filter((i) => i !== owner) : [...cur, owner].sort((x, y) => x - y)));
       return;
     }
+    const row = activeMotion !== null ? motion[activeMotion] : undefined;
+    if (row && pickTarget === 'axis') {
+      // naming a joint's axle (or a slide's rail): one click, then back to its parts
+      if (body < 0) return setPickTarget('bodies');
+      setMotion(motion.map((o, i) => (i === activeMotion ? { ...o, axis: 'part' as const, axisBody: body, found: undefined } : o)));
+      setPickTarget('bodies');
+      return;
+    }
+    if (body < 0) {
+      if (row) selectRow(null);
+      return;
+    }
+    const owner = motion.findIndex((g) => g.bodies.includes(body));
+    const role = row?.role ?? armedRole;
+    if (!role) {
+      // nothing armed: a click on a moving part selects its row
+      if (owner >= 0) selectRow(owner);
+      return;
+    }
+    // a locked row is left as it is: neither added to nor taken from
+    if (row?.locked || (owner >= 0 && motion[owner].locked)) return;
+    const frozen = lockedBodies(motion);
     const parts = detectParts();
-    const take = shift ? [body] : isSpin(g.role) ? coaxialBodies(parts, body, g.role) : mountedBodies(parts, body);
-    const leaving = g.bodies.includes(body);
-    const set = new Set(take);
-    const next = motion.map((o, i) => {
-      if (i === activeMotion) {
-        const bodies = leaving ? o.bodies.filter((b) => !set.has(b)) : [...new Set([...o.bodies, ...take])].sort((a, b) => a - b);
-        return { ...o, bodies, found: undefined };
-      }
-      return leaving ? o : { ...o, bodies: o.bodies.filter((b) => !set.has(b)) };
-    });
-    setMotion(next);
+    const take = (shift ? [body] : isSpin(role) ? coaxialBodies(parts, body, role) : mountedBodies(parts, body)).filter((b) => !frozen.has(b));
+    if (!take.length) return;
+    if (row) {
+      // the selected row: a click adds the part to it, or takes it out when it is in it already
+      const r = owner === activeMotion ? unassignBodies(motion, take, activeMotion) : assignBodies(motion, take, activeMotion, role);
+      setMotion(r.groups);
+      setActiveMotion(r.index >= 0 ? r.index : null);
+      return;
+    }
+    // armed: a part that already is this identity is taken back; anything else becomes a new one
+    setMotion(owner >= 0 && motion[owner].role === role ? unassignBodies(motion, take).groups : assignBodies(motion, take, null, role).groups);
   };
+  const onPickBox = (box: BoxPick): void => {
+    if (deletePicking) {
+      const set = new Set(box.bodies);
+      setSelected((cur) => (box.remove ? cur.filter((b) => !set.has(b)) : [...new Set([...cur, ...box.bodies])]));
+      return;
+    }
+    if (!picking || !motion || !box.bodies.length) return;
+    if (selectTool) {
+      const hit = new Set(rowsOf(box.bodies));
+      setRowSel((cur) => (box.remove ? cur.filter((i) => !hit.has(i)) : [...new Set([...cur, ...hit])].sort((x, y) => x - y)));
+      return;
+    }
+    const row = activeMotion !== null ? motion[activeMotion] : undefined;
+    if (row?.locked) return;
+    const frozen = lockedBodies(motion);
+    const bodies = box.bodies.filter((b) => !frozen.has(b));
+    if (!bodies.length) return;
+    if (box.remove) {
+      // Ctrl: out of the selected row, else out of every row of the armed identity
+      const mine = new Set((row ? [row] : motion.filter((g) => g.role === armedRole)).flatMap((g) => g.bodies));
+      const take = bodies.filter((b) => mine.has(b));
+      if (!take.length) return;
+      const r = unassignBodies(motion, take, activeMotion);
+      setMotion(r.groups);
+      if (row) setActiveMotion(r.index >= 0 ? r.index : null);
+      return;
+    }
+    if (row) {
+      const r = assignBodies(motion, bodies, activeMotion, row.role);
+      setMotion(r.groups);
+      setActiveMotion(r.index);
+    } else if (armedRole) setMotion(assignBodies(motion, bodies, null, armedRole).groups);
+  };
+  /** the selected rows deleted: one undo step */
+  const deleteRows = (rows: readonly number[]): void => {
+    if (!motion || !rows.length) return;
+    const drop = new Set(rows);
+    setRowSel([]);
+    selectRow(null);
+    setHoverMotion(null);
+    update((d) => ({ ...d, setup: { ...d.setup, motion: removeRows(d.setup.motion ?? [], drop) } }), { label: COPY.edits.deleteMoving(rows.length) });
+  };
+  /** the selected rows locked or unlocked: one undo step */
+  const lockSel = (rows: readonly number[], lock: boolean): void => {
+    if (!motion || !rows.length) return;
+    const set = new Set(rows);
+    update((d) => ({ ...d, setup: { ...d.setup, motion: lockRows(d.setup.motion ?? [], set, lock) } }), { label: COPY.edits.lockMoving(rows.length, lock) });
+  };
+  // a row selection that outlived its rows (an undo, a Find) is dropped rather than left pointing at others
+  const motionLen = motion?.length ?? 0;
+  useEffect(() => setRowSel([]), [motionLen]);
+  // Esc on the step: the axle pick, then the row, then the row selection, then the tool
+  const escRef = useRef<() => boolean>(() => false);
+  escRef.current = () => {
+    if (activeMotion !== null && pickTarget === 'axis') setPickTarget('bodies');
+    else if (activeMotion !== null) selectRow(null);
+    else if (rowSel.length) setRowSel([]);
+    else if (armedRole) setArmedRole(null);
+    else if (selectTool) setSelectTool(false);
+    else return false;
+    return true;
+  };
+  const rowDeleteRef = useRef<() => void>(() => {});
+  rowDeleteRef.current = () => deleteRows(rowSel);
+  useEffect(() => {
+    if (step !== MOVING_STEP) return;
+    const onKey = (e: KeyboardEvent): void => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (e.key === 'Escape') {
+        if (escRef.current()) e.preventDefault();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        rowDeleteRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step]);
+  // leaving the step puts the tools down
+  useEffect(() => {
+    if (step === MOVING_STEP) return;
+    setArmedRole(null);
+    setSelectTool(false);
+    setRowSel([]);
+  }, [step]);
   // ---- deleting parts --------------------------------------------------------------------------
   // The Model step's Delete parts mode: a click in the preview selects a body (Shift adds), and Delete
   // takes the selection out of everything (`withoutBodies`). What floats apart from the robot
@@ -1182,6 +1319,21 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       (d) => ({ ...d, setup: { ...d.setup, keepFloating: [...new Set([...(d.setup.keepFloating ?? []), ...floatingBodies])].sort((a, b) => a - b) } }),
       { label: COPY.edits.keepFloating },
     );
+  // ---- the parts' colours (`ImportSetup.colors`): drawn and baked, never measured ----
+  const colors = doc?.setup.colors;
+  const colorKey = colors ? JSON.stringify(colors) : '';
+  // keyed on the parts' own arrays and the colours, so the preview rebuilds only when either changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const coloredParts = useMemo(() => (normalised ? withColors(normalised.modelParts, colors) : null), [normalised?.modelParts, colorKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const coloredShown = useMemo(() => (normalised?.shownParts ? withColors(normalised.shownParts, colors) : null), [normalised?.shownParts, colorKey]);
+  const colorParts = (bodies: readonly number[], hex: string | null): void => {
+    setColoring(false);
+    if (!bodies.length) return;
+    // the selection goes, as after Delete or Leave out: its tint would hide the colour just picked
+    setSelected([]);
+    update((d) => colorBodies(d, bodies, hex), { label: hex ? COPY.edits.colorParts(bodies.length) : COPY.edits.resetColors });
+  };
   // the mode belongs to the Model step: leaving it ends the mode and drops the selection
   useEffect(() => {
     if (step === 0) return;
@@ -1192,7 +1344,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const deleteRef = useRef<() => void>(() => {});
   deleteRef.current = () => deleteParts(selected);
   useEffect(() => {
-    if (!deletePicking) return;
+    if (!deletePicking || coloring) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const t = e.target as HTMLElement | null;
@@ -1202,10 +1354,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deletePicking]);
-  /** a click in the preview while deleting: that body alone is the selection, or Shift adds or takes it out */
-  const onSelectBody = (body: number, shift: boolean): void =>
-    setSelected((cur) => (shift ? (cur.includes(body) ? cur.filter((b) => b !== body) : [...cur, body]) : cur.length === 1 && cur[0] === body ? [] : [body]));
+  }, [deletePicking, coloring]);
+  /** a click in the preview while selecting: the part joins the selection or leaves it; a click on nothing clears it */
+  const onSelectBody = (body: number): void =>
+    setSelected((cur) => (body < 0 ? [] : cur.includes(body) ? cur.filter((b) => b !== body) : [...cur, body]));
 
   const highlight = useMemo(() => {
     if (step === 0) {
@@ -1216,12 +1368,14 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       return active.length || others.length ? { active, others } : null;
     }
     if (step !== MOVING_STEP || !motion) return null;
-    // the selected row, or else the one under the pointer
+    // the selected row; else the one under the pointer; else every row of the armed identity
     const shown = activeMotion ?? (hoverMotion !== null && hoverMotion < motion.length ? hoverMotion : null);
-    const active = shown !== null ? (motion[shown]?.bodies ?? []) : [];
-    const others = motion.flatMap((g, i) => (i === shown ? [] : g.bodies));
+    const lit = (g: MotionGroup, i: number): boolean =>
+      shown !== null ? i === shown : selectTool ? rowSel.includes(i) : !!armedRole && g.role === armedRole;
+    const active = motion.flatMap((g, i) => (lit(g, i) ? g.bodies : []));
+    const others = motion.flatMap((g, i) => (lit(g, i) ? [] : g.bodies));
     return active.length || others.length ? { active, others } : null;
-  }, [step, motion, activeMotion, hoverMotion, deleting, selected, floatingBodies, apart]);
+  }, [step, motion, activeMotion, hoverMotion, armedRole, selectTool, rowSel, deleting, selected, floatingBodies, apart]);
 
   // ---- undo and redo (`editorHistory.ts`) -------------------------------------------------------
   // The step the player is on stays: moving between steps is not an edit, and an undo that also
@@ -1290,8 +1444,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // on Mechanisms, the moving parts on theirs, and all of it on Review
   const previewState = m && normalised
     ? {
-        parts: normalised.modelParts,
-        shown: normalised.shownParts ?? null,
+        parts: coloredParts ?? normalised.modelParts,
+        shown: coloredShown,
         hull: m.hull,
         wheels: step === 0 || step === 1 || step === REVIEW_STEP ? shownWheels : null,
         contacts: step === 0 ? m.wheels.contacts : null,
@@ -1302,7 +1456,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         size: m.size,
         showCube: true,
         motion: m.motion ?? null,
-        playing: playing && step === MOVING_STEP && !picking,
+        playing: playing && step === MOVING_STEP,
         highlight: playing ? null : highlight,
         picking: picking || deletePicking,
       }
@@ -1341,8 +1495,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             ? COPY.legend.mechEdit
             : COPY.legend.mech({ intake: !!doc.mech?.intakes?.length, shooter: !!doc.mech?.shooter, place: !!doc.mech?.place })
           : step === MOVING_STEP
-            ? motion?.length
-              ? COPY.legend.moving
+            ? motion?.length || armedRole
+              ? selectTool
+                ? COPY.legend.movingSelect
+                : COPY.legend.moving(armedRole && activeMotion === null ? COPY.motionRole(armedRole) : null)
               : null
             : null;
 
@@ -1384,6 +1540,26 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         parts={m.motion ?? []}
         active={picking ? activeMotion : null}
         target={pickTarget}
+        armed={armedRole}
+        onArm={(r) => {
+          setArmedRole(r);
+          setSelectTool(false);
+          setRowSel([]);
+          setActiveMotion(null);
+          if (r) setPlaying(false);
+        }}
+        selecting={selectTool}
+        onSelecting={(on) => {
+          setSelectTool(on);
+          setArmedRole(null);
+          setActiveMotion(null);
+          if (!on) setRowSel([]);
+          else setPlaying(false);
+        }}
+        rowSel={rowSel}
+        onRowSel={setRowSel}
+        onDeleteRows={() => deleteRows(rowSel)}
+        onLockRows={(lock) => lockSel(rowSel, lock)}
         playing={playing}
         onHover={setHoverMotion}
         onActive={(i, target = 'bodies') => {
@@ -1395,7 +1571,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         onRefind={refindMotion}
         onPlay={(on) => {
           setPlaying(on);
-          if (on) setActiveMotion(null);
+          if (on) {
+            setActiveMotion(null);
+            setArmedRole(null);
+            setSelectTool(false);
+          }
         }}
       />
     ) : null;
@@ -1499,6 +1679,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           state={previewState}
           legend={legend}
           onPickBody={onPickBody}
+          onPickBox={onPickBox}
           gizmo={gizmo}
           empty={<p className="ds-hint ds-import-preview-empty">{COPY.previewEmpty}</p>}
           fallback={
@@ -1591,6 +1772,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                   onRestore: restoreParts,
                   onDeleteFloating: () => deleteParts(floatingBodies),
                   onKeepFloating: keepFloating,
+                  colored: colors ? Object.keys(colors).length : 0,
+                  onColor: () => {
+                    if (selected.length) setColoring(true);
+                  },
+                  onResetColors: () => update(resetColors, { label: COPY.edits.resetColors }),
                 }}
               />
             ) : step === 1 ? (
@@ -1701,6 +1887,16 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             setDialog(null);
             setPhase(null);
           }}
+        />
+      ) : null}
+      {coloring && deletePicking && selected.length && normalised ? (
+        <ColorDialog
+          count={selected.length}
+          initial={bodyColor(normalised.modelParts, selected[0], colors) ?? '#808080'}
+          canReset={!!colors && selected.some((b) => String(b) in colors)}
+          onApply={(hex) => colorParts(selected, hex)}
+          onReset={() => colorParts(selected, null)}
+          onClose={() => setColoring(false)}
         />
       ) : null}
     </>

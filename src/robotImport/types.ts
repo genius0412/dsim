@@ -151,6 +151,12 @@ export interface ImportSetup {
   apart?: number[];
   /** the floating bodies (`findFloatingParts`) the player chose to keep, so they are not offered again */
   keepFloating?: number[];
+  /**
+   * the colours the player gave bodies: `MeshPart.body` id → `#rrggbb` (sRGB). Drawn in the preview
+   * and baked into the stored mesh (`withColors`); nothing measured reads them. Never saved, like
+   * `removed`: the stored mesh carries them. Absent = none.
+   */
+  colors?: Record<string, string>;
 }
 
 // ---- moving parts ----------------------------------------------------------------------------
@@ -225,6 +231,9 @@ export interface MotionGroup {
   /** rides on another group (an arm on a slide, a claw on an arm): moves with it. An index into the
    *  setup's `motion`. */
   rideOn?: number;
+  /** the player locked it: a click or a box in the editor neither adds to it nor takes from it, and
+   *  Find moving parts keeps it. Editor-only; the game never reads it. */
+  locked?: boolean;
 }
 
 /** a generic joint's amount when the player has not said: turns a second, degrees, inches */

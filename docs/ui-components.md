@@ -10,49 +10,59 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-452 classes · 147 families · 3 with no reference found.
+462 classes · 147 families · 3 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
-## `ds-import` — 34
+## `ds-import` — 44
 
 | class | declared | used |
 |---|---|---|
-| `.ds-import` | src/ui/competitions.css:4 | 45 |
-| `.ds-import-before` | src/ui/importer.css:202 | 1 |
+| `.ds-import` | src/ui/competitions.css:4 | 58 |
+| `.ds-import-before` | src/ui/importer.css:214 | 1 |
 | `.ds-import-body` | src/ui/importer.css:40 | 1 |
-| `.ds-import-canvas` | src/ui/importer.css:98 | 2 |
+| `.ds-import-box` | src/ui/importer.css:101 | 2 |
+| `.ds-import-canvas` | src/ui/importer.css:110 | 2 |
 | `.ds-import-canvas-host` | src/ui/importer.css:94 | 1 |
-| `.ds-import-checks` | src/ui/importer.css:500 | 1 |
+| `.ds-import-checks` | src/ui/importer.css:533 | 1 |
+| `.ds-import-color` | src/ui/importer.css:605 | 1 |
+| `.ds-import-colorrow` | src/ui/importer.css:619 | 1 |
 | `.ds-import-dock` | src/ui/importer.css:50 | 1 |
-| `.ds-import-drop` | src/ui/importer.css:206 | 4 |
-| `.ds-import-drop-acts` | src/ui/importer.css:222 | 2 |
-| `.ds-import-filerow` | src/ui/importer.css:230 | 1 |
+| `.ds-import-drop` | src/ui/importer.css:218 | 4 |
+| `.ds-import-drop-acts` | src/ui/importer.css:234 | 2 |
+| `.ds-import-filerow` | src/ui/importer.css:242 | 1 |
 | `.ds-import-foot` | src/ui/importer.css:44 | 1 |
-| `.ds-import-handle` | src/ui/importer.css:425 | 1 |
-| `.ds-import-headacts` | src/ui/importer.css:540 | 1 |
-| `.ds-import-headsave` | src/ui/importer.css:547 | 2 |
+| `.ds-import-handle` | src/ui/importer.css:458 | 1 |
+| `.ds-import-headacts` | src/ui/importer.css:573 | 1 |
+| `.ds-import-headsave` | src/ui/importer.css:580 | 2 |
 | `.ds-import-hero-img` | src/ui/shell.css:5676 | 1 |
+| `.ds-import-ids` | src/ui/importer.css:269 | 1 |
 | `.ds-import-in` | src/ui/importer.css:27 | 1 |
-| `.ds-import-legend` | src/ui/importer.css:177 | 1 |
-| `.ds-import-map` | src/ui/importer.css:353 | 4 |
-| `.ds-import-map-front` | src/ui/importer.css:403 | 1 |
-| `.ds-import-map-status` | src/ui/importer.css:414 | 1 |
-| `.ds-import-map-wrap` | src/ui/importer.css:109 | 1 |
-| `.ds-import-moving` | src/ui/importer.css:257 | 6 |
-| `.ds-import-moving-edit` | src/ui/importer.css:318 | 1 |
-| `.ds-import-moving-hinge` | src/ui/importer.css:330 | 3 |
-| `.ds-import-moving-row` | src/ui/importer.css:280 | 1 |
+| `.ds-import-legend` | src/ui/importer.css:189 | 1 |
+| `.ds-import-lock` | src/ui/importer.css:307 | 1 |
+| `.ds-import-map` | src/ui/importer.css:386 | 4 |
+| `.ds-import-map-front` | src/ui/importer.css:436 | 1 |
+| `.ds-import-map-status` | src/ui/importer.css:447 | 1 |
+| `.ds-import-map-wrap` | src/ui/importer.css:121 | 1 |
+| `.ds-import-moving` | src/ui/importer.css:275 | 8 |
+| `.ds-import-moving-edit` | src/ui/importer.css:351 | 1 |
+| `.ds-import-moving-head` | src/ui/importer.css:298 | 1 |
+| `.ds-import-moving-hinge` | src/ui/importer.css:363 | 3 |
+| `.ds-import-moving-row` | src/ui/importer.css:313 | 1 |
+| `.ds-import-moving-tick` | src/ui/importer.css:302 | 1 |
 | `.ds-import-preview` | src/ui/importer.css:37 | 4 |
-| `.ds-import-preview-empty` | src/ui/importer.css:104 | 1 |
+| `.ds-import-preview-empty` | src/ui/importer.css:116 | 1 |
 | `.ds-import-preview-stage` | src/ui/importer.css:84 | 1 |
-| `.ds-import-preview-tools` | src/ui/importer.css:112 | 1 |
+| `.ds-import-preview-tools` | src/ui/importer.css:124 | 1 |
 | `.ds-import-steps` | src/ui/importer.css:34 | 1 |
+| `.ds-import-swatch` | src/ui/importer.css:633 | 2 |
+| `.ds-import-swatches` | src/ui/importer.css:627 | 1 |
 | `.ds-import-thumb` | src/ui/shell.css:5671 | 3 |
-| `.ds-import-tune` | src/ui/importer.css:245 | 2 |
-| `.ds-import-tune-row` | src/ui/importer.css:250 | 1 |
-| `.ds-import-turns` | src/ui/importer.css:238 | 5 |
+| `.ds-import-tune` | src/ui/importer.css:257 | 2 |
+| `.ds-import-tune-row` | src/ui/importer.css:262 | 1 |
+| `.ds-import-turns` | src/ui/importer.css:250 | 6 |
+| `.ds-import-wheel` | src/ui/importer.css:610 | 1 |
 
 ## `ds-comp` — 31
 
@@ -605,7 +615,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:2707 | 102 |
+| `.ds-field` | src/ui/importer.css:624 | 104 |
 | `.ds-field-row` | src/ui/shell.css:2596 | 12 |
 
 ## `ds-fold` — 2
@@ -627,13 +637,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | class | declared | used |
 |---|---|---|
 | `.ds-head` | src/ui/shell.css:4861 | 17 |
-| `.ds-head-spacer` | src/ui/importer.css:560 | 14 |
+| `.ds-head-spacer` | src/ui/importer.css:593 | 14 |
 
 ## `ds-hint` — 2
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/importer.css:324 | 246 |
+| `.ds-hint` | src/ui/importer.css:357 | 247 |
 | `.ds-hint-caption` | src/ui/shell.css:4830 | 1 |
 
 ## `ds-homestats` — 2
@@ -792,13 +802,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1026 | 401 |
+| `.ds-btn` | src/ui/shell.css:1026 | 411 |
 
 ## `ds-checkline` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/importer.css:327 | 9 |
+| `.ds-checkline` | src/ui/importer.css:360 | 9 |
 
 ## `ds-chip` — 1
 
@@ -906,7 +916,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-input` | src/ui/shell.css:2305 | 104 |
+| `.ds-input` | src/ui/shell.css:2305 | 105 |
 
 ## `ds-key` — 1
 
@@ -1026,7 +1036,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-range` | src/ui/shell.css:5822 | 27 |
+| `.ds-range` | src/ui/shell.css:5822 | 28 |
 
 ## `ds-rankedstanding` — 1
 
@@ -1080,7 +1090,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-select` | src/ui/shell.css:2872 | 35 |
+| `.ds-select` | src/ui/shell.css:2872 | 34 |
 
 ## `ds-server` — 1
 

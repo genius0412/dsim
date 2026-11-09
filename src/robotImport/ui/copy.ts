@@ -28,6 +28,14 @@ const ADD_KIND: Partial<Record<MotionRole, string>> = {
   swing: 'An arm or flap that swings',
   slide: 'A lift or a slide',
 };
+/** the palette's short names */
+const ID_NAME: Partial<Record<MotionRole, string>> = {
+  roller: 'Roller',
+  fold: 'Fold',
+  spin: 'Spin',
+  swing: 'Swing',
+  slide: 'Slide',
+};
 const CORNER_NAME = ['Front-left wheel', 'Front-right wheel', 'Back-left wheel', 'Back-right wheel'];
 import { FORMAT_LABEL, PAGE_COPY } from './pageCopy';
 
@@ -84,11 +92,15 @@ export const COPY = {
     aim: (name: string) => `turn the ${name}`,
     change: (name: string) => `change the ${name}`,
     removeMoving: (name: string) => `remove the ${name}`,
+    deleteMoving: (n: number) => (n === 1 ? 'delete a moving part' : `delete ${n} moving parts`),
+    lockMoving: (n: number, lock: boolean) => `${lock ? 'lock' : 'unlock'} ${n === 1 ? 'a moving part' : `${n} moving parts`}`,
     deleteParts: (n: number) => `delete ${n} ${n === 1 ? 'part' : 'parts'}`,
     restoreParts: 'restore the deleted parts',
     keepFloating: 'keep the floating parts',
     leaveOut: (n: number) => `leave ${n} ${n === 1 ? 'part' : 'parts'} out of the footprint`,
     includeAll: 'include all parts in the footprint',
+    colorParts: (n: number) => `color ${n} ${n === 1 ? 'part' : 'parts'}`,
+    resetColors: 'put back the file colors',
   },
 
   // ---- Model ----
@@ -177,8 +189,10 @@ export const COPY = {
   left: 'Left',
   useDetected: 'Use detected wheels',
   parts: 'Parts',
-  partsState: (selected: number, deleted: number, apart = 0) =>
-    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : ''].filter(Boolean).join(', '),
+  partsState: (selected: number, deleted: number, apart = 0, colored = 0) =>
+    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : '', colored ? `${colored} recolored` : '']
+      .filter(Boolean)
+      .join(', '),
   floating: (n: number, near: number, far: number) =>
     `${n} ${n === 1 ? 'part floats' : 'parts float'} ${near.toFixed(1)}${far - near >= 0.05 ? ` to ${far.toFixed(1)}` : ''} in away from the robot. Delete ${n === 1 ? 'it' : 'them'}?`,
   floatDelete: 'Delete',
@@ -186,10 +200,21 @@ export const COPY = {
   deleteParts: 'Select parts',
   deleteDone: 'Done',
   deleteSelected: 'Delete selected',
+  colorSelected: 'Color',
+  colorsReset: 'File colors',
+  colorTitle: (n: number) => `Color ${n} ${n === 1 ? 'part' : 'parts'}`,
+  colorWheel: 'Hue and saturation',
+  colorWheelValue: (h: number, s: number) => `Hue ${h} degrees, saturation ${s}%`,
+  colorBrightness: 'Brightness',
+  colorHex: 'Hex',
+  colorWas: 'Now',
+  colorNew: 'New',
+  colorApply: 'Apply',
+  colorReset: 'Use file color',
   leaveOut: 'Leave out of footprint',
   includeAll: 'Include all',
   deleteHint:
-    'Click a part in the preview to select it. Shift-click selects more. Leave out of footprint keeps a part (a deployed ramp) on the robot but measures the footprint and wheels without it. The Delete key removes them.',
+    'Click parts in the preview to select them; click one again to drop it, or click nothing to clear. Drag a box to select many (Ctrl takes them out). Color repaints them. Leave out of footprint keeps a part (a deployed ramp) on the robot but measures the footprint and wheels without it. The Delete key removes them.',
   restoreAll: 'Restore all',
   grabPad: (dpad: string, a: string, b: string) => `Move with ${dpad} or the left stick. ${a} to drop, ${b} to cancel.`,
   grabKeys: 'Arrow keys move it. Hold Shift for small steps. Home puts it back.',
@@ -222,7 +247,9 @@ export const COPY = {
     mech: (has: { intake: boolean; shooter: boolean; place: boolean }) =>
       ['Arrow: the front.', has.intake ? 'Green bar: the intake.' : '', has.shooter ? 'Orange: the launcher.' : '', has.place ? 'Purple: where it places.' : ''].filter(Boolean).join(' '),
     mechEdit: 'Click the green bar or the orange and purple marks to pick one. Drag an arrow to move it. G grabs, then X, Y or Z locks an axis. Esc puts it back.',
-    moving: 'Blue: the selected part. Orange: the other moving parts.',
+    moving: (armed: string | null) =>
+      `${armed ? `Blue: every ${armed.toLowerCase()}.` : 'Blue: the selected part.'} Orange: the other moving parts. Drag a box to take many: left to right takes what is inside, right to left what it touches. Right drag turns the view, middle drag pans.`,
+    movingSelect: 'Blue: the selected moving parts. Orange: the others. Click one to select it or drop it, or drag a box; Ctrl with the box drops them.',
     deleting: 'Blue: the selected parts. Orange: the parts left out of the footprint.',
     apart: 'Orange: the parts left out of the footprint.',
     floating: 'Blue: the parts that float apart from the robot.',
@@ -294,8 +321,25 @@ export const COPY = {
   cadNoLift: 'no box tube',
   cadLift: (count: number, cell: string) => `${count > 1 ? `a box tube (${count} slides)` : 'a box tube'} at the ${cell.replace(/^(front|back)(left|right)$/, '$1 $2')}`,
   cadHandLoaded: 'no intake (loaded by hand)',
-  movingHint: 'Select a part to see it in the preview and change it.',
-  movingNone: 'Nothing moves yet. Find moving parts looks for the wheels, rollers, flywheels and a turret.',
+  movingHint: 'Pick what you are marking above, then click parts in the preview: each click makes a new one. Click a moving part to select it and change it.',
+  movingNone: 'Nothing moves yet. Pick what you are marking above and click its parts, or Find moving parts looks for the wheels, rollers, flywheels and a turret.',
+  motionIdsCap: 'Mark parts as',
+  motionSelectTool: 'Select',
+  motionSelectToolTitle: 'Select whole moving parts to delete or lock them',
+  motionSelectHint: 'Click moving parts in the preview, drag a box, or tick rows below. Then delete or lock them. Esc stops.',
+  motionSelCount: (n: number) => (n === 1 ? '1 selected' : `${n} selected`),
+  motionSelAll: 'Select all',
+  motionSelClear: 'Clear',
+  motionLock: 'Lock',
+  motionUnlock: 'Unlock',
+  motionDelete: 'Delete',
+  motionLocked: 'Locked',
+  motionLockedHint: 'Locked: clicks and boxes leave its parts alone, and Find moving parts keeps it. Unlock it to change its parts.',
+  motionRowCheck: (name: string) => `Select ${name}`,
+  motionIdName: (role: MotionRole) => ID_NAME[role] ?? ROLE_NAME[role] ?? 'Moving part',
+  motionArmedHint: (name: string) =>
+    `Click a part to make it a new ${name.toLowerCase()}; click one again to take it back. To put several parts in one ${name.toLowerCase()}, drag a box over them, or select it in the list and click them. Esc stops.`,
+  motionRowHint: 'Clicks now add to this one or take parts out of it. Click empty space or press Esc to stop.',
   motionRole: (role: MotionRole, corner?: number) =>
     role === 'wheel' && corner !== undefined ? (CORNER_NAME[corner] ?? ROLE_NAME.wheel) : (ROLE_NAME[role] ?? 'Moving part'),
   motionSummary: (role: MotionRole, n: number, p: MotionPart | undefined, found: boolean) => {
@@ -343,8 +387,6 @@ export const COPY = {
   motionRatio: 'Ratio',
   motionRides: 'Rides on',
   motionNone: 'Nothing',
-  motionAddCap: 'Add a moving part',
-  motionAddPick: 'Choose what it is…',
   motionAddKind: (role: MotionRole) => ADD_KIND[role] ?? ROLE_NAME[role] ?? 'Moving part',
   motionPlay: 'Play',
   motionStop: 'Stop',
