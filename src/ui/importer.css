@@ -92,8 +92,20 @@
   place-items: center;
 }
 .ds-import-canvas-host {
+  position: relative;
   width: 100%;
   height: 100%;
+}
+/* the box a left drag draws while picking parts: solid takes what is wholly inside, dashed
+   (dragged right to left) what it touches. Ground is the dark 3D view, so the field-ink tokens. */
+.ds-import-box {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid var(--ds-on-field-accent);
+  background: color-mix(in srgb, var(--ds-on-field-accent) 12%, transparent);
+}
+.ds-import-box.cross {
+  border-style: dashed;
 }
 .ds-import-canvas {
   display: block;
@@ -253,6 +265,12 @@
   gap: var(--ds-s-2);
 }
 
+/* the identity palette: arm one, then each click in the preview makes a new part of it */
+.ds-import-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
 /* ---- Moving parts: one row per part; the selected one opens its settings under it ---- */
 .ds-import-moving {
   list-style: none;
@@ -275,6 +293,21 @@
 }
 .ds-import-moving li.on {
   border-color: var(--ds-accent);
+}
+/* a row's head: the Select tool's checkbox, then the row's button */
+.ds-import-moving-head {
+  display: flex;
+  align-items: center;
+}
+.ds-import-moving-tick {
+  margin-left: var(--ds-s-3);
+  flex: none;
+}
+/* a locked row says so beside its name */
+.ds-import-lock {
+  flex: none;
+  color: var(--ds-mut);
+  font-size: var(--ds-t-sm);
 }
 /* the row itself is the button that selects the part */
 .ds-import-moving-row {

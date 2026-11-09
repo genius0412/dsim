@@ -44806,5 +44806,53 @@ function fxImportFixed(): RobotSpec {
   );
 }
 
+// ---- importer: picking moving parts by identity (assignBodies / unassignBodies) -----------------
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  type G = import('../src/robotImport/types').MotionGroup;
+  const J = JSON.stringify;
+  const rows: G[] = [
+    { role: 'roller', bodies: [1, 2], found: true },
+    { role: 'flywheel', bodies: [3], found: true },
+    { role: 'spin', bodies: [4], follows: { group: 1, ratio: 2 } },
+  ];
+  // armed: a click makes a NEW row, and takes the part out of the row it was in
+  const a = em.assignBodies(rows, [3], null, 'roller');
+  check(
+    'identity pick: an armed click makes a new row, empties and drops the old one, and the links after it move up',
+    a.index === 2 && J(a.groups.map((g) => [g.role, g.bodies])) === J([['roller', [1, 2]], ['spin', [4]], ['roller', [3]]]) && a.groups[1].follows === undefined && a.groups[0].found === true,
+    J(a),
+  );
+  // a selected row takes the part, keeps its place, and is the player's now
+  const b = em.assignBodies(rows, [2], 1, 'flywheel');
+  check(
+    'identity pick: a click into the selected row adds to it, out of the other, and both are no longer found',
+    b.index === 1 && J(b.groups[0].bodies) === J([1]) && J(b.groups[1].bodies) === J([2, 3]) && !b.groups[0].found && !b.groups[1].found,
+    J(b),
+  );
+  // a row that held only what is moved into another is dropped, and the receiving row's index follows
+  const c = em.assignBodies(rows, [1, 2], 2, 'spin');
+  check('identity pick: the receiving row lands where the drop moved it', c.index === 1 && J(c.groups[1].bodies) === J([1, 2, 4]) && c.groups.length === 2, J(c));
+  // unclick: taking the last part of the selected row drops it (-1), taking one of two keeps it
+  const d = em.unassignBodies(rows, [3], 1);
+  const e = em.unassignBodies(rows, [1], 0);
+  check(
+    'identity pick: a click on a part already in the row takes it out; the row goes with its last part',
+    d.index === -1 && d.groups.length === 2 && e.index === 0 && J(e.groups[0].bodies) === J([2]) && !e.groups[0].found,
+    J([d, e]),
+  );
+  // the Select tool: delete rows (links move up, a link to a deleted row goes), lock and unlock
+  const del = em.removeRows(rows, new Set([1]));
+  check('row select: deleting a row drops it and the link that named it', del.length === 2 && del[1].role === 'spin' && del[1].follows === undefined, J(del));
+  const lk = em.lockRows(rows, new Set([0]), true);
+  check(
+    'row select: a locked row is the player\'s (no longer found), its bodies are frozen, and unlocking clears the flag',
+    lk[0].locked === true && !lk[0].found && lk[1].found === true && J([...em.lockedBodies(lk)]) === J([1, 2]) && em.lockRows(lk, new Set([0]), false)[0].locked === undefined,
+    J(lk),
+  );
+  const sf = await import('../src/robotImport/shareFile');
+  check('row select: a share file keeps a locked row, and refuses a lock that is not a boolean', sf.isMotionList(lk) && !sf.isMotionList([{ role: 'roller', bodies: [1], locked: 'yes' }]));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
