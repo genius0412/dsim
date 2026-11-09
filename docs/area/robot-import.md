@@ -873,10 +873,37 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   they are a step of their own (Model · Drivetrain · Mechanisms · Moving parts · Review). SELECTING
   a row is editing it: its parts tint blue, a click in the preview adds or takes out parts, and its
   settings open under it (turns the other way, the hinge or joint fields, Geared to, Rides on,
-  Remove); hovering a row tints it without selecting. One "Add a moving part" menu replaces the Add
+  Remove); hovering a row tints it without selecting. The identity palette (below) replaced the Add
   buttons. Find moving parts looks again for every row still `found` and keeps the edited ones
   (`keepEditedMotion` moves their links; a wheel row the player edited keeps its corner). Each step's
   preview draws only what that step is about, with a legend under the cameras.
+- ⚠️ **PICKING BY IDENTITY** (2026-11-08, owner: "click one thing and then click series of parts and it
+  makes seperate instances, if u want multiple things in one instance u select the instance first … it
+  needs to be like really easy to use"). The "Add a moving part" menu is gone; a palette ("Mark parts
+  as": Roller, Flywheel, Turret, Ramp, Fold, Spin, Swing, Slide) ARMS an identity (`armedRole`, editor
+  state, never stored). Armed, each click makes a NEW row of it (`assignBodies(…, null, role)`), and a
+  click on a part already in a row of that identity takes it back (`unassignBodies`). A SELECTED row
+  wins over the armed identity: clicks add to it or take out of it. Nothing armed or selected, a click on
+  a moving part selects its row. A click on nothing ends the row's selection (the identity stays armed);
+  Esc steps back: axle pick, then row, then identity. Every pick is one undo step (`setMotion`), a row a
+  pick empties goes (`pruneMotion`'s rule, the selection follows the index), and a touched row is no
+  longer `found`, so Find moving parts keeps it.
+- **Select, Delete, Lock** (owner, 2026-11-08: "a select function for moving parts and i can delete
+  them or lock them"). The palette's Select tool picks WHOLE rows: a click on a part toggles its row, a
+  box adds every row it touches (Ctrl drops them), a click on nothing clears, and each row grows a
+  checkbox. Delete (or the Delete key) removes the rows in one undo step (`removeRows`: links after them
+  move up, a link to a removed row goes); Lock/Unlock sets `MotionGroup.locked` (`lockRows`). A locked
+  row is the player's (never `found`, so Find keeps it) and no click or box adds to it or takes from it
+  (`lockedBodies` is filtered out of every pick). It is stored and validated in a share file
+  (`isMotionList`); the game never reads it. The row selection clears whenever the row count changes.
+- **Box select and the Onshape mouse** (`engine/preview.ts`, `BoxPick`). While parts are being picked
+  (Model step's Select parts, the Moving parts step) the LEFT drag draws a box: left to right takes the
+  bodies wholly inside, right to left every body with a vertex inside (crossing, dashed); hidden bodies
+  count, as in Onshape; Ctrl takes them out. A box makes ONE new row of the armed identity, or goes into
+  the selected row; it takes bodies as they are, no axle expansion. The view orbits on the RIGHT button
+  (Ctrl/Shift with it pans) and pans on the middle on every step; the left orbits too off the picking
+  steps, so the Mechanisms gizmo is untouched. Select parts on the Model step is Onshape's too: a click
+  adds or drops a part, a click on nothing clears (the old Shift-click is gone).
 - **Picking** (the Moving parts step, a selected row): a click on a wheel takes what lies in its cylinder and
   turns with it (`wheelBodies`, at the clicked body's own radius); on a roller, flywheel or spinning
   part, its axle (`spinAxle`): bodies centred within 0.4 in of the line, as one run along it (0.4 in

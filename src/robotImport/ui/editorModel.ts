@@ -16,7 +16,7 @@ import { chainMassFloorBump } from '../../games/chain/config';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
 import { bbox, buildDescriptor, isRectangle, linesToWheels, q64, squareWheels, WHEEL_SQUARE_TOL_IN, wheelLines, type WheelLines } from '../geometry';
 import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
-import type { FloatingGroup, FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
+import type { FloatingGroup, FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, MotionRole, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { validateMechFor } from './placement';
 import type { CadBuild } from '../motion';
 import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeFeed, type BbIntakeKind } from '../../games/biobuzz/mechs';
@@ -463,6 +463,81 @@ export function keepEditedMotion(groups: readonly MotionGroup[]): MotionGroup[] 
     return g;
   });
 }
+
+// ---- picking moving parts by identity (`docs/area/robot-import.md`, "Picking by identity") ------
+
+/** the rows a pick changes (they hold a body in `gone`, or are row `also`) are the player's now: not `found` */
+function touched(groups: readonly MotionGroup[], gone: ReadonlySet<number>, also: number | null = null): MotionGroup[] {
+  return groups.map((g, i) => (g.found && (i === also || g.bodies.some((b) => gone.has(b))) ? { ...g, found: undefined } : g));
+}
+
+/** where row `i` lands once `pruneMotion(groups, gone)` drops the rows `gone` empties */
+function landsAt(groups: readonly MotionGroup[], gone: ReadonlySet<number>, i: number): number {
+  return groups.slice(0, i).filter((g) => !(g.bodies.length && g.bodies.every((b) => gone.has(b)))).length;
+}
+
+/**
+ * `take` into row `into`, or into a NEW row of `role` (`into` null), and out of every other row; a
+ * row it empties goes and the indices after it move up (`pruneMotion`'s rule). Returns the rows and
+ * where the receiving row landed, so a selection follows it.
+ */
+export function assignBodies(groups: readonly MotionGroup[], take: readonly number[], into: number | null, role: MotionRole): { groups: MotionGroup[]; index: number } {
+  const gone = new Set(take);
+  const sorted = (b: Iterable<number>): number[] => [...new Set(b)].sort((x, y) => x - y);
+  if (into === null || !groups[into]) {
+    const kept = pruneMotion(touched(groups, gone), gone);
+    return { groups: [...kept, { role, bodies: sorted(gone) }], index: kept.length };
+  }
+  // the receiving row is emptied first, and an empty row is never one a prune drops
+  const own = groups[into];
+  const pruned = pruneMotion(touched(groups, gone, into).map((g, i) => (i === into ? { ...g, bodies: [] } : g)), gone);
+  const index = landsAt(groups, gone, into);
+  const out = pruned.map((g, i) => (i === index ? { ...g, bodies: sorted([...own.bodies, ...take]) } : g));
+  return { groups: out, index };
+}
+
+/** `take` out of every row (a row it empties goes), and where row `track` landed (-1: it went or none) */
+export function unassignBodies(groups: readonly MotionGroup[], take: readonly number[], track: number | null = null): { groups: MotionGroup[]; index: number } {
+  const gone = new Set(take);
+  const t = track !== null ? groups[track] : undefined;
+  const index = t && !(t.bodies.length && t.bodies.every((b) => gone.has(b))) ? landsAt(groups, gone, track!) : -1;
+  return { groups: pruneMotion(touched(groups, gone), gone), index };
+}
+
+/** the rows `drop` gone; what named the rows after them by index (`follows`, `rideOn`) moves up, and a
+ *  link to a dropped row goes */
+export function removeRows(groups: readonly MotionGroup[], drop: ReadonlySet<number>): MotionGroup[] {
+  const at = new Map<number, number>();
+  groups.forEach((_, i) => {
+    if (!drop.has(i)) at.set(i, at.size);
+  });
+  return groups
+    .filter((_, i) => !drop.has(i))
+    .map((g) => {
+      const out: MotionGroup = { ...g };
+      const f = g.follows ? at.get(g.follows.group) : undefined;
+      if (g.follows && f !== undefined) out.follows = { ...g.follows, group: f };
+      else delete out.follows;
+      const r = g.rideOn !== undefined ? at.get(g.rideOn) : undefined;
+      if (r !== undefined) out.rideOn = r;
+      else delete out.rideOn;
+      return out;
+    });
+}
+
+/** the rows `rows` locked or unlocked; a locked row is the player's, so no longer `found` */
+export function lockRows(groups: readonly MotionGroup[], rows: ReadonlySet<number>, lock: boolean): MotionGroup[] {
+  return groups.map((g, i) => {
+    if (!rows.has(i) || !!g.locked === lock) return g;
+    const out: MotionGroup = { ...g, found: undefined };
+    if (lock) out.locked = true;
+    else delete out.locked;
+    return out;
+  });
+}
+
+/** the bodies no click or box may move: every body of a locked row */
+export const lockedBodies = (groups: readonly MotionGroup[]): Set<number> => new Set(groups.flatMap((g) => (g.locked ? g.bodies : [])));
 
 // ---- deleting parts (`docs/area/robot-import.md`, "Deleting parts") -----------------------------
 

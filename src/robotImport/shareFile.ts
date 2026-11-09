@@ -122,6 +122,7 @@ export function isMotionList(v: unknown): boolean {
         g.bodies.every(isBody) &&
         oneOf(g.flip, [true, false]) &&
         oneOf(g.found, [true, false]) &&
+        oneOf(g.locked, [true, false]) &&
         oneOf(g.corner, [0, 1, 2, 3]) &&
         oneOf(g.filePose, ['deployed', 'folded']) &&
         oneOf(g.drive, MOTION_DRIVES) &&

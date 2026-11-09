@@ -225,6 +225,9 @@ export interface MotionGroup {
   /** rides on another group (an arm on a slide, a claw on an arm): moves with it. An index into the
    *  setup's `motion`. */
   rideOn?: number;
+  /** the player locked it: a click or a box in the editor neither adds to it nor takes from it, and
+   *  Find moving parts keeps it. Editor-only; the game never reads it. */
+  locked?: boolean;
 }
 
 /** a generic joint's amount when the player has not said: turns a second, degrees, inches */
