@@ -140,7 +140,7 @@ SATELLITE_SIZES=(
   lhr:shared-cpu-8x:2048
   gru:shared-cpu-8x:2048
   jnb:shared-cpu-4x:1024
-  syd:shared-cpu-8x:2048
+  syd:shared-cpu-4x:1024
   nrt:shared-cpu-4x:1024
 )
 # 2026-09-30: these are the sizes the capacity checkup has been running since 09-28 under the
