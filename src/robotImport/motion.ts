@@ -730,13 +730,13 @@ function ringsAbout(parts: readonly MeshPart[], st: BodyStats, turningIds: reado
   const lo3 = [0, 1, 2].map((k) => Math.min(...members.map((b) => st.min[3 * b + k])) - CONTACT_IN);
   const hi3 = [0, 1, 2].map((k) => Math.max(...members.map((b) => st.max[3 * b + k])) + CONTACT_IN);
   const nearTurning = turningIds.filter((b) => b < st.n.length && [0, 1, 2].every((k) => st.min[3 * b + k] <= hi3[k] && st.max[3 * b + k] >= lo3[k]));
-  const touch = touchingPairs(parts, new Set([...members, ...nearTurning]), CONTACT_IN);
+  const ci = contactIndex(parts);
   const held = new Set(nearTurning);
   const out: number[] = [];
   for (let grew = true; grew; ) {
     grew = false;
     for (const ring of rings) {
-      if (held.has(ring[0]) || !ring.some((b) => [...(touch.get(b) ?? [])].some((x) => held.has(x)))) continue;
+      if (held.has(ring[0]) || !ring.some((b) => ci.near(b).some((x) => held.has(x) && ci.touches(b, x)))) continue;
       for (const b of ring) held.add(b);
       out.push(...ring);
       grew = true;
@@ -2222,7 +2222,7 @@ export function findTurretRing(parts: readonly MeshPart[], at: V3, taken: Readon
 }
 
 /** `findTurretGroup`, with the ring it found: its centre (on the turret's axis) and radius */
-function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>): { group: MotionGroup; ring: { c: V3; r: number } } | null {
+function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<number>, pieces = true): { group: MotionGroup; ring: { c: V3; r: number } } | null {
   const st = bodyStats(parts);
   const ring = turretRing(parts, at, taken);
   if (!ring) return null;
@@ -2250,7 +2250,8 @@ function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<numbe
     if (d > (out.get(b) ?? 0)) out.set(b, d);
   });
   for (const b of check) if ((out.get(b) ?? Infinity) <= reach) bodies.push(b);
-  const kept = onTheRing(parts, st, bodies, ring.b, taken);
+  // (the build only asks whether there is a turret and where its ring is: no pieces, `readBuild`)
+  const kept = pieces ? onTheRing(parts, st, bodies, ring.b, taken) : bodies;
   return kept.length ? { group: { role: 'turret', bodies: kept.sort((a, b) => a - b), found: true }, ring: { c: ring.c, r: ring.r } } : null;
 }
 
@@ -2264,32 +2265,29 @@ function findTurret(parts: readonly MeshPart[], at: V3, taken: ReadonlySet<numbe
 function onTheRing(parts: readonly MeshPart[], st: BodyStats, bodies: readonly number[], ring: number, taken: ReadonlySet<number>): number[] {
   const set = new Set(bodies);
   if (!set.has(ring) || set.size < 2) return [...bodies];
-  const mo = setMoments(st, bodies);
-  const near = new Set(bodies);
-  for (const b of st.ids) {
-    if (set.has(b) || taken.has(b)) continue;
-    if ([0, 1, 2].every((k) => st.min[3 * b + k] <= mo.max[k] + CONTACT_IN && st.max[3 * b + k] >= mo.min[k] - CONTACT_IN)) near.add(b);
-  }
-  const touch = touchingPairs(parts, near, CONTACT_IN);
+  void st;
+  const ci = contactIndex(parts);
   const seen = new Set<number>();
   const kept: number[] = [];
-  for (const start of bodies) {
+  // the ring's piece first, which is kept whatever else it touches; then each other piece, which is
+  // given up at its first contact with something outside the turret
+  for (const start of [ring, ...bodies]) {
     if (seen.has(start)) continue;
     const piece: number[] = [];
-    let holdsRing = false;
+    const holdsRing = start === ring;
     let bolted = false;
     const queue = [start];
     seen.add(start);
     while (queue.length) {
       const b = queue.pop()!;
       piece.push(b);
-      if (b === ring) holdsRing = true;
-      for (const o of touch.get(b) ?? []) {
-        if (!set.has(o)) bolted = true;
-        else if (!seen.has(o)) {
-          seen.add(o);
-          queue.push(o);
-        }
+      for (const o of ci.near(b)) {
+        if (set.has(o)) {
+          if (!seen.has(o) && ci.touches(b, o)) {
+            seen.add(o);
+            queue.push(o);
+          }
+        } else if (!bolted && !holdsRing && !taken.has(o) && ci.touches(b, o)) bolted = true;
       }
     }
     if (holdsRing || !bolted) kept.push(...piece);
@@ -2744,6 +2742,23 @@ export function boxTubeGroups(tubes: readonly BoxTube[], first: number): MotionG
 }
 
 /**
+ * THE LAUNCHER `readBuild` reads, alone: the largest flywheel disc centred above `LAUNCHER_MIN_Z_IN` that
+ * is not a motor's part, whether a turret ring is under it, and its hood's shot. The moving-part search
+ * asks only this, and used to read the whole build for it (the rollers on every edge, the box tubes, an
+ * intake arm), on the page's thread (2026-11-08). `used`: bodies already taken.
+ */
+export function readLauncher(parts: readonly MeshPart[], used: ReadonlySet<number>, elementD = 0): CadBuild['launcher'] {
+  const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
+  for (const d of discs) {
+    if (spinAxle(parts, d.b).motor) continue;
+    const turret = findTurret(parts, d.c, used, false);
+    const shot = readShot(parts, d.b, elementD);
+    return { at: d.c, turret: !!turret, ...(turret ? { axis: turret.ring.c } : {}), ...(shot ? { shot } : {}) };
+  }
+  return null;
+}
+
+/**
  * WHAT THE MODEL IS BUILT WITH, read before anything is placed (2026-10-04, owner on goBILDA's BIOBUZZ
  * mecanum bot: "side rollers are not selected by default, single static shooter is not selected by
  * default, offset boxtube is selected even though I dont have it"). An import started from the
@@ -2825,15 +2840,7 @@ export function readBuild(parts: readonly MeshPart[], taken: ReadonlySet<number>
       break;
     }
   }
-  let launcher: CadBuild['launcher'] = null;
-  const discs = flywheelDiscs(parts, used, (c) => c[2] >= LAUNCHER_MIN_Z_IN).sort((a, b) => seedSize(b.r) - seedSize(a.r) || a.b - b.b);
-  for (const d of discs) {
-    if (spinAxle(parts, d.b).motor) continue;
-    const turret = findTurret(parts, d.c, used);
-    const shot = readShot(parts, d.b, elementD);
-    launcher = { at: d.c, turret: !!turret, ...(turret ? { axis: turret.ring.c } : {}), ...(shot ? { shot } : {}) };
-    break;
-  }
+  const launcher = readLauncher(parts, used, elementD);
   const tubes = findBoxTubes(parts, taken);
   const lift = tubes.length
     ? { base: scale(tubes.reduce((s, t) => add(s, t.base), [0, 0, 0] as V3), 1 / tubes.length), count: tubes.length }
@@ -3353,8 +3360,9 @@ export function mountedBodies(parts: readonly MeshPart[], seed: number): number[
 
 /**
  * `seeds` and the bodies MOUNTED ON them: a body smaller than a seed whose box lies inside that seed's,
- * padded by `MOUNT_PAD_IN`, and that TOUCHES a seed or another such body (`touchingPairs`: a nut on a
- * screw through the plate). `skip`: bodies that are never taken (another row's).
+ * padded by `MOUNT_PAD_IN`, and that TOUCHES a seed or another such body (the `touchingPairs` rule, asked
+ * through `contactIndex`: a nut on a screw through the plate). `skip`: bodies that are never taken
+ * (another row's).
  *
  * ⚠️ BY CONTACT, NOT BY THE BOX ALONE (2026-11-06). A deployed ramp's arm can be a diagonal truss whose
  * box holds the chassis under it, and the box rule took chassis plates and the rollers of an intake
@@ -3378,12 +3386,13 @@ export function mountedOn(parts: readonly MeshPart[], seeds: readonly number[], 
   }
   const out = new Set(live);
   if (cand.size) {
-    const touch = touchingPairs(parts, new Set([...live, ...cand]), CONTACT_IN);
+    // asked pair by pair (`contactIndex`), from the seeds out
+    const ci = contactIndex(parts);
     const queue = [...live];
     while (queue.length) {
       const b = queue.pop()!;
-      for (const o of touch.get(b) ?? []) {
-        if (out.has(o) || !cand.has(o)) continue;
+      for (const o of ci.near(b)) {
+        if (out.has(o) || !cand.has(o) || !ci.touches(b, o)) continue;
         out.add(o);
         queue.push(o);
       }
@@ -3414,112 +3423,42 @@ const LIFT_COLUMN_END_IN = 1.2;
 function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, eps: number, d: V3 | ((x: number, y: number, z: number) => V3)) {
   const dirAt = typeof d === 'function' ? d : (): V3 => d;
   const st = bodyStats(parts);
-  const want = new Uint8Array(st.n.length);
-  for (const b of bodies) if (b < st.n.length) want[b] = 1;
-  // each body's triangles: part, three vertices
-  const tris = new Map<number, number[]>();
-  const vol = new Map<number, number>();
-  const corner = (pi: number, v: number): V3 => {
-    const a = parts[pi].positions;
-    return [a[3 * v], a[3 * v + 1], a[3 * v + 2]];
-  };
-  parts.forEach((p, pi) => {
-    if (!p.body) return;
-    const ix = p.indices;
-    const n = ix ? ix.length : p.positions.length / 3;
-    for (let t = 0; t + 2 < n; t += 3) {
-      const v0 = ix ? ix[t] : t;
-      const b = p.body[v0];
-      if (!want[b]) continue;
-      const v1 = ix ? ix[t + 1] : t + 1;
-      const v2 = ix ? ix[t + 2] : t + 2;
-      let l = tris.get(b);
-      if (!l) tris.set(b, (l = []));
-      l.push(pi, v0, v1, v2);
-      vol.set(b, (vol.get(b) ?? 0) + dot(corner(pi, v0), cross(corner(pi, v1), corner(pi, v2))) / 6);
-    }
-  });
-  // the bodies' boxes in a coarse grid, for `near`
-  const BOX_CELL = 1;
-  const key = (i: number, j: number, k: number): number => ((i & 2047) * 2048 + (j & 2047)) * 2048 + (k & 2047);
-  const boxGrid = new Map<number, number[]>();
-  const cellsOf = (b: number, pad: number, cell: number, f: (kk: number) => void): void => {
-    const lo = [0, 1, 2].map((k) => Math.floor((st.min[3 * b + k] - pad) / cell));
-    const hi = [0, 1, 2].map((k) => Math.floor((st.max[3 * b + k] + pad) / cell));
-    for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) f(key(i, j, k));
-  };
-  for (const b of bodies)
-    cellsOf(b, 0, BOX_CELL, (kk) => {
-      const l = boxGrid.get(kk);
-      if (l) l.push(b);
-      else boxGrid.set(kk, [b]);
-    });
+  // the model's own contact index holds each body's faces, gridded when first asked for (`contactIndex`)
+  const ci = contactIndex(parts);
+  void eps;
   const nearCache = new Map<number, number[]>();
   const near = (b: number): number[] => {
     let out = nearCache.get(b);
-    if (out) return out;
-    const s = new Set<number>();
-    cellsOf(b, eps, BOX_CELL, (kk) => {
-      for (const o of boxGrid.get(kk) ?? [])
-        if (o !== b && [0, 1, 2].every((k) => st.min[3 * o + k] <= st.max[3 * b + k] + eps && st.min[3 * b + k] <= st.max[3 * o + k] + eps)) s.add(o);
-    });
-    out = [...s];
-    nearCache.set(b, out);
+    if (!out) nearCache.set(b, (out = ci.near(b).filter((o) => bodies.has(o))));
     return out;
   };
-  // a body's triangles in a fine grid, built when first asked for
-  const cell = Math.max(CONTACT_CELL_IN, 2 * eps);
-  const triGrids = new Map<number, Map<number, number[]>>();
-  const triGrid = (o: number): Map<number, number[]> => {
-    let g = triGrids.get(o);
-    if (g) return g;
-    g = new Map();
-    const l = tris.get(o) ?? [];
-    for (let t = 0; t < l.length; t += 4) {
-      const A = corner(l[t], l[t + 1]);
-      const B = corner(l[t], l[t + 2]);
-      const C = corner(l[t], l[t + 3]);
-      const lo = [0, 1, 2].map((k) => Math.floor((Math.min(A[k], B[k], C[k]) - eps) / cell));
-      const hi = [0, 1, 2].map((k) => Math.floor((Math.max(A[k], B[k], C[k]) + eps) / cell));
-      for (let i = lo[0]; i <= hi[0]; i++)
-        for (let j = lo[1]; j <= hi[1]; j++)
-          for (let k = lo[2]; k <= hi[2]; k++) {
-            const kk = key(i, j, k);
-            const c = g.get(kk);
-            if (c) c.push(t);
-            else g.set(kk, [t]);
-          }
-    }
-    triGrids.set(o, g);
-    return g;
-  };
-  const alongCache = new Map<string, [number, number, number] | null>();
+  const alongCache = new Map<number, [number, number, number] | null>();
+  const N = st.n.length;
+  const A: V3 = [0, 0, 0];
+  const B: V3 = [0, 0, 0];
+  const C: V3 = [0, 0, 0];
   const along = (a: number, o: number): [number, number, number] | null => {
-    const ck = `${a},${o}`;
+    const ck = a * N + o;
     if (alongCache.has(ck)) return alongCache.get(ck)!;
     let r: [number, number, number] | null = null;
-    const l = tris.get(o);
-    if (l && want[a]) {
-      const g = triGrid(o);
-      const sign = (vol.get(o) ?? 0) < 0 ? -1 : 1;
-      // the box test first: a vertex of `a` further than eps from `o`'s box touches nothing
-      const lo = [0, 1, 2].map((k) => st.min[3 * o + k] - eps);
-      const hi = [0, 1, 2].map((k) => st.max[3 * o + k] + eps);
-      eachVertex(parts, new Set([a]), (x, y, z) => {
-        if (x < lo[0] || y < lo[1] || z < lo[2] || x > hi[0] || y > hi[1] || z > hi[2]) return;
+    if (bodies.has(a) && bodies.has(o) && a !== o) {
+      const F = ci.faces(o);
+      const { g, sign, cell, nrm } = F;
+      const lo = [0, 1, 2].map((k) => st.min[3 * o + k] - CONTACT_IN);
+      const hi = [0, 1, 2].map((k) => st.max[3 * o + k] + CONTACT_IN);
+      ci.vertsIn(a, lo, hi, (x, y, z) => {
+        const l = g.get(gridKey(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell)));
+        if (!l) return false;
         // the vertex stands ACROSS the motion only when every face of `o` it is on does: one on a
         // plate's face and on the edge beside it (two plates lying flat on each other) slides
         let on = false;
         let across = true;
-        for (const t of g.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell))) ?? []) {
-          const A = corner(l[t], l[t + 1]);
-          const B = corner(l[t], l[t + 2]);
-          const C = corner(l[t], l[t + 3]);
-          if (pointTriangle(x, y, z, A, B, C) > eps) continue;
-          const n = cross(sub(B, A), sub(C, A));
-          const len = Math.hypot(n[0], n[1], n[2]);
-          if (len < 1e-12) continue;
-          const al = (sign * dot(n, dirAt(x, y, z))) / len;
+        for (const t of l) {
+          if (!onFace(x, y, z, t, F, A, B, C)) continue;
+          const nx = nrm[4 * t], ny = nrm[4 * t + 1], nz = nrm[4 * t + 2];
+          if (nx === 0 && ny === 0 && nz === 0) continue;
+          const dd = dirAt(x, y, z);
+          const al = sign * (nx * dd[0] + ny * dd[1] + nz * dd[2]);
           on = true;
           if (Math.abs(al) <= LIFT_PUSH_COS) across = false;
           if (!r) r = [al, al, 0];
@@ -3529,6 +3468,7 @@ function lazyContacts(parts: readonly MeshPart[], bodies: ReadonlySet<number>, e
           }
         }
         if (on && across && r) r[2]++;
+        return false;
       });
     }
     alongCache.set(ck, r);
@@ -3734,30 +3674,41 @@ export function ridersOf(parts: readonly MeshPart[], groups: readonly MotionGrou
       if ([0, 1, 2].every((k) => st.min[3 * b + k] <= hi[k] && st.max[3 * b + k] >= lo[k])) near.push(b);
     }
     if (!near.length) return;
+    const nearSet = new Set(near);
     const inside = (b: number): boolean => [0, 1, 2].every((k) => st.min[3 * b + k] >= lo[k] && st.max[3 * b + k] <= hi[k]);
-    const touch = touchingPairs(parts, new Set([...near, ...g.bodies]), CONTACT_IN);
+    // asked pair by pair (`contactIndex`): a cluster starts only at a body touching the group, and is
+    // given up at its first member reaching out of the box (the robot: everything after it is too)
+    const ci = contactIndex(parts);
+    const bolted = new Set<number>();
     const seen = new Set<number>();
     const add: number[] = [];
     for (const start of near) {
-      if (seen.has(start)) continue;
+      if (seen.has(start) || bolted.has(start) || !inside(start) || !ci.near(start).some((o) => mine.has(o) && ci.touches(start, o))) continue;
       const cluster: number[] = [];
       const queue = [start];
       seen.add(start);
-      let bolted = false;
-      let carried = false;
-      while (queue.length) {
+      let out = false;
+      while (queue.length && !out) {
         const b = queue.pop()!;
         cluster.push(b);
-        if (!inside(b)) bolted = true;
-        for (const o of touch.get(b) ?? []) {
-          if (mine.has(o)) carried = true;
-          else if (!moving.has(o) && !seen.has(o)) {
-            seen.add(o);
-            queue.push(o);
+        if (bolted.has(b) || !inside(b)) {
+          out = true;
+          break;
+        }
+        for (const o of ci.near(b)) {
+          if (!nearSet.has(o) || !ci.touches(b, o)) continue;
+          // a cluster given up already is the robot, and so is this one, joined to it
+          if (bolted.has(o)) {
+            out = true;
+            break;
           }
+          if (seen.has(o)) continue;
+          seen.add(o);
+          queue.push(o);
         }
       }
-      if (carried && !bolted) add.push(...cluster);
+      if (out) for (const b of [...cluster, ...queue]) bolted.add(b);
+      else add.push(...cluster);
     }
     if (add.length) out.set(gi, add.sort((a, b) => a - b));
   });
@@ -3887,6 +3838,318 @@ export function touchingPairs(parts: readonly MeshPart[], bodies: ReadonlySet<nu
     }
   });
   return out;
+}
+
+// ---- contact on demand ---------------------------------------------------------------------------
+
+/** the bodies' boxes are gridded this coarse for `ContactIndex.near`, inches */
+const NEAR_CELL_IN = 1;
+
+/**
+ * CONTACT, ASKED PAIR BY PAIR (`touchingPairs`' rule: a vertex of one within `CONTACT_IN` of a
+ * triangle of the other), answered once and remembered for the model (memoised on `parts`).
+ *
+ * ⚠️ **WHY THIS EXISTS: THE IMPORTER FROZE FOR 3½ MINUTES** (owner, 2026-11-08: "It is so laggy once I
+ * import and it freezes and i cant click any buttons"). Profiled on Offset's robot, the moving-part
+ * search was one 205-s task on the page's thread, nearly all of it `touchingPairs` over every pair of
+ * bodies in a big box: the riders pass (104 s, a Box Tube's stage with its payload is most of the back
+ * of the robot), the ring test under the intake-stage search (81 s, asked again for every candidate
+ * axle) and the turret's piece filter (18 s). Each of them needs a handful of pairs, and most can stop
+ * at the first contact that settles it. Here a body's triangles are gridded only when it is first
+ * asked about, and a pair is tested only when asked.
+ */
+export interface ContactIndex {
+  /** the bodies whose boxes come within `CONTACT_IN` of `b`'s */
+  near(b: number): readonly number[];
+  /** `a` and `o` touch */
+  touches(a: number, o: number): boolean;
+  /** `o`'s triangles: corners (9 per triangle), their grid (cells of `cell` inches, keyed by `gridKey`),
+   *  and the sign that turns their normals outward (the body's signed volume: a mirrored STEP instance
+   *  winds the other way round) */
+  faces(o: number): Faces;
+  /** each vertex of `a` inside the box `lo`..`hi`, until `f` answers true (then true) */
+  vertsIn(a: number, lo: readonly number[], hi: readonly number[], f: (x: number, y: number, z: number) => boolean): boolean;
+}
+
+/** a grid cell's key (a model far out of range only shares cells; every pair is still measured) */
+function gridKey(i: number, j: number, k: number): number {
+  return ((i & 2047) * 2048 + (j & 2047)) * 2048 + (k & 2047);
+}
+
+/** a body's triangles as `ContactIndex.faces` gives them: corners (9 per triangle), unit normals with
+ *  each plane's offset (4; a degenerate triangle's normal is zero), boxes (6: min then max), a grid over
+ *  them (cells of `cell` inches by `gridKey`), and the sign that turns the normals outward (the body's
+ *  signed volume: a mirrored STEP instance winds the other way round; 0 until asked for) */
+export interface Faces {
+  c: Float64Array;
+  nrm: Float64Array;
+  bb: Float64Array;
+  g: Map<number, number[]>;
+  sign: number;
+  cell: number;
+}
+
+/** triangle `n`'s unit normal, plane offset and box, from its corners in `c` */
+function faceFacts(c: Float64Array, n: number, nrm: Float64Array, bb: Float64Array): void {
+  const o = 9 * n;
+  const ux = c[o + 3] - c[o], uy = c[o + 4] - c[o + 1], uz = c[o + 5] - c[o + 2];
+  const vx = c[o + 6] - c[o], vy = c[o + 7] - c[o + 1], vz = c[o + 8] - c[o + 2];
+  let nx = uy * vz - uz * vy;
+  let ny = uz * vx - ux * vz;
+  let nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz);
+  if (len > 1e-12) ((nx /= len), (ny /= len), (nz /= len));
+  else nx = ny = nz = 0;
+  nrm[4 * n] = nx;
+  nrm[4 * n + 1] = ny;
+  nrm[4 * n + 2] = nz;
+  nrm[4 * n + 3] = nx * c[o] + ny * c[o + 1] + nz * c[o + 2];
+  for (let k = 0; k < 3; k++) {
+    bb[6 * n + k] = Math.min(c[o + k], c[o + 3 + k], c[o + 6 + k]);
+    bb[6 * n + 3 + k] = Math.max(c[o + k], c[o + 3 + k], c[o + 6 + k]);
+  }
+}
+
+/** the point lies within `CONTACT_IN` of triangle `t`: its box and its plane first, which turn away
+ *  most of the triangles a cell holds, then the exact distance (`A`..`C`: scratch) */
+function onFace(x: number, y: number, z: number, t: number, F: Faces, A: V3, B: V3, C: V3): boolean {
+  const e = CONTACT_IN;
+  const b = F.bb;
+  if (x < b[6 * t] - e || y < b[6 * t + 1] - e || z < b[6 * t + 2] - e || x > b[6 * t + 3] + e || y > b[6 * t + 4] + e || z > b[6 * t + 5] + e) return false;
+  const nr = F.nrm;
+  const nx = nr[4 * t], ny = nr[4 * t + 1], nz = nr[4 * t + 2];
+  if ((nx !== 0 || ny !== 0 || nz !== 0) && Math.abs(nx * x + ny * y + nz * z - nr[4 * t + 3]) > e) return false;
+  const c = F.c;
+  for (let q = 0; q < 3; q++) ((A[q] = c[9 * t + q]), (B[q] = c[9 * t + 3 + q]), (C[q] = c[9 * t + 6 + q]));
+  return pointTriangle(x, y, z, A, B, C) <= e;
+}
+
+const contactCache = new WeakMap<readonly MeshPart[], ContactIndex>();
+
+export function contactIndex(parts: readonly MeshPart[]): ContactIndex {
+  const hit = contactCache.get(parts);
+  if (hit) return hit;
+  const st = bodyStats(parts);
+  const N = st.n.length;
+  const eps = CONTACT_IN;
+  const key = gridKey;
+  // each body's triangles: runs of consecutive triangles of one body in one part, laid out per body
+  let triStart: Uint32Array | null = null;
+  let triPart: Uint32Array;
+  let triT0: Uint32Array;
+  let triT1: Uint32Array;
+  const triRuns = (): void => {
+    if (triStart) return;
+    let runs = 0;
+    for (const p of parts) {
+      if (!p.body) continue;
+      const ix = p.indices;
+      const n = (ix ? ix.length : p.positions.length / 3) / 3;
+      let prev = -1;
+      for (let t = 0; t < n; t++) {
+        const b = p.body[ix ? ix[3 * t] : 3 * t];
+        if (b !== prev) (runs++, (prev = b));
+      }
+    }
+    const perBody = new Uint32Array(N + 1);
+    const rb = new Uint32Array(runs);
+    const rp = new Uint32Array(runs);
+    const r0 = new Uint32Array(runs);
+    const r1 = new Uint32Array(runs);
+    let r = -1;
+    parts.forEach((p, pi) => {
+      if (!p.body) return;
+      const ix = p.indices;
+      const n = (ix ? ix.length : p.positions.length / 3) / 3;
+      let prev = -1;
+      for (let t = 0; t < n; t++) {
+        const b = p.body[ix ? ix[3 * t] : 3 * t];
+        if (b !== prev) {
+          r++;
+          rb[r] = b;
+          rp[r] = pi;
+          r0[r] = t;
+          perBody[b + 1]++;
+          prev = b;
+        }
+        r1[r] = t + 1;
+      }
+    });
+    for (let b = 0; b < N; b++) perBody[b + 1] += perBody[b];
+    const fill = perBody.slice(0, N);
+    triPart = new Uint32Array(runs);
+    triT0 = new Uint32Array(runs);
+    triT1 = new Uint32Array(runs);
+    for (let i = 0; i < runs; i++) {
+      const at = fill[rb[i]]++;
+      triPart[at] = rp[i];
+      triT0[at] = r0[i];
+      triT1[at] = r1[i];
+    }
+    triStart = perBody;
+  };
+  // a body's triangles' corners, and a grid over them, made when it is first asked about
+  const grids = new Map<number, Faces>();
+  const cell = Math.max(CONTACT_CELL_IN, 2 * eps);
+  const gridOf = (o: number): Faces => {
+    const had = grids.get(o);
+    if (had) return had;
+    triRuns();
+    let count = 0;
+    for (let i = triStart![o]; i < triStart![o + 1]; i++) count += triT1[i] - triT0[i];
+    const c = new Float64Array(9 * count);
+    const nrm = new Float64Array(4 * count);
+    const bb = new Float64Array(6 * count);
+    const g = new Map<number, number[]>();
+    let n = 0;
+    for (let i = triStart![o]; i < triStart![o + 1]; i++) {
+      const p = parts[triPart[i]];
+      const a = p.positions;
+      const ix = p.indices;
+      for (let t = triT0[i]; t < triT1[i]; t++, n++) {
+        for (let k = 0; k < 3; k++) {
+          const v = ix ? ix[3 * t + k] : 3 * t + k;
+          c[9 * n + 3 * k] = a[3 * v];
+          c[9 * n + 3 * k + 1] = a[3 * v + 1];
+          c[9 * n + 3 * k + 2] = a[3 * v + 2];
+        }
+        faceFacts(c, n, nrm, bb);
+        const lo = [0, 1, 2].map((k) => Math.floor((bb[6 * n + k] - eps) / cell));
+        const hi = [0, 1, 2].map((k) => Math.floor((bb[6 * n + 3 + k] + eps) / cell));
+        for (let x = lo[0]; x <= hi[0]; x++)
+          for (let y = lo[1]; y <= hi[1]; y++)
+            for (let z = lo[2]; z <= hi[2]; z++) {
+              const kk = key(x, y, z);
+              const l = g.get(kk);
+              if (l) l.push(n);
+              else g.set(kk, [n]);
+            }
+      }
+    }
+    const made: Faces = { c, g, nrm, bb, sign: 0, cell };
+    grids.set(o, made);
+    return made;
+  };
+  const boxesMeet = (a: number, o: number): boolean => [0, 1, 2].every((k) => st.min[3 * a + k] <= st.max[3 * o + k] + eps && st.min[3 * o + k] <= st.max[3 * a + k] + eps);
+  // each body's vertices, gridded coarsely when first asked for: a check against a neighbour reads only
+  // the vertices inside the neighbour's box (a 16-in plate has tens of thousands)
+  const VERT_CELL_IN = 1;
+  const verts = new Map<number, { p: Float64Array; g: Map<number, number[]> | null }>();
+  const vertsOf = (a: number): { p: Float64Array; g: Map<number, number[]> | null } => {
+    const had = verts.get(a);
+    if (had) return had;
+    const p = new Float64Array(3 * (st.n[a] || 0));
+    let n = 0;
+    for (let k = st.runStart[a]; k < st.runStart[a + 1]; k++) {
+      const run = st.runIdx[k];
+      const pos = parts[st.runPart[run]].positions;
+      for (let v = st.runFrom[run]; v < st.runTo[run]; v++, n++) ((p[3 * n] = pos[3 * v]), (p[3 * n + 1] = pos[3 * v + 1]), (p[3 * n + 2] = pos[3 * v + 2]));
+    }
+    let g: Map<number, number[]> | null = null;
+    if (n > 256) {
+      g = new Map();
+      for (let i = 0; i < n; i++) {
+        const kk = key(Math.floor(p[3 * i] / VERT_CELL_IN), Math.floor(p[3 * i + 1] / VERT_CELL_IN), Math.floor(p[3 * i + 2] / VERT_CELL_IN));
+        const l = g.get(kk);
+        if (l) l.push(i);
+        else g.set(kk, [i]);
+      }
+    }
+    const made = { p, g };
+    verts.set(a, made);
+    return made;
+  };
+  const vertsIn = (a: number, lo: readonly number[], hi: readonly number[], f: (x: number, y: number, z: number) => boolean): boolean => {
+    const { p, g } = vertsOf(a);
+    const test = (i: number): boolean => {
+      const x = p[3 * i];
+      const y = p[3 * i + 1];
+      const z = p[3 * i + 2];
+      return x >= lo[0] && y >= lo[1] && z >= lo[2] && x <= hi[0] && y <= hi[1] && z <= hi[2] && f(x, y, z);
+    };
+    if (!g) {
+      for (let i = 0; i < p.length / 3; i++) if (test(i)) return true;
+      return false;
+    }
+    const c0 = [0, 1, 2].map((k) => Math.floor(Math.max(lo[k], st.min[3 * a + k]) / VERT_CELL_IN));
+    const c1 = [0, 1, 2].map((k) => Math.floor(Math.min(hi[k], st.max[3 * a + k]) / VERT_CELL_IN));
+    for (let x = c0[0]; x <= c1[0]; x++)
+      for (let y = c0[1]; y <= c1[1]; y++)
+        for (let z = c0[2]; z <= c1[2]; z++) for (const i of g.get(key(x, y, z)) ?? []) if (test(i)) return true;
+    return false;
+  };
+  // a vertex of `a` on a triangle of `o`; the first one found answers
+  const onIt = (a: number, o: number): boolean => {
+    const F = gridOf(o);
+    const g = F.g;
+    const lo = [0, 1, 2].map((k) => st.min[3 * o + k] - eps);
+    const hi = [0, 1, 2].map((k) => st.max[3 * o + k] + eps);
+    const A: V3 = [0, 0, 0];
+    const B: V3 = [0, 0, 0];
+    const C: V3 = [0, 0, 0];
+    return vertsIn(a, lo, hi, (x, y, z) => {
+      const l = g.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell)));
+      if (!l) return false;
+      for (const t of l) if (onFace(x, y, z, t, F, A, B, C)) return true;
+      return false;
+    });
+  };
+  const pairs = new Map<number, boolean>();
+  const touches = (a: number, o: number): boolean => {
+    if (a === o || a >= N || o >= N || !st.n[a] || !st.n[o] || !boxesMeet(a, o)) return false;
+    const k = a < o ? a * N + o : o * N + a;
+    const had = pairs.get(k);
+    if (had !== undefined) return had;
+    const yes = onIt(a, o) || onIt(o, a);
+    pairs.set(k, yes);
+    return yes;
+  };
+  // the bodies' boxes in a coarse grid
+  let boxGrid: Map<number, number[]> | null = null;
+  const nearCache = new Map<number, number[]>();
+  const near = (b: number): readonly number[] => {
+    const had = nearCache.get(b);
+    if (had) return had;
+    if (!boxGrid) {
+      boxGrid = new Map();
+      for (const o of st.ids) {
+        const lo = [0, 1, 2].map((k) => Math.floor(st.min[3 * o + k] / NEAR_CELL_IN));
+        const hi = [0, 1, 2].map((k) => Math.floor(st.max[3 * o + k] / NEAR_CELL_IN));
+        for (let x = lo[0]; x <= hi[0]; x++)
+          for (let y = lo[1]; y <= hi[1]; y++)
+            for (let z = lo[2]; z <= hi[2]; z++) {
+              const kk = key(x, y, z);
+              const l = boxGrid.get(kk);
+              if (l) l.push(o);
+              else boxGrid.set(kk, [o]);
+            }
+      }
+    }
+    const out = new Set<number>();
+    if (b < N && st.n[b]) {
+      const lo = [0, 1, 2].map((k) => Math.floor((st.min[3 * b + k] - eps) / NEAR_CELL_IN));
+      const hi = [0, 1, 2].map((k) => Math.floor((st.max[3 * b + k] + eps) / NEAR_CELL_IN));
+      for (let x = lo[0]; x <= hi[0]; x++)
+        for (let y = lo[1]; y <= hi[1]; y++)
+          for (let z = lo[2]; z <= hi[2]; z++) for (const o of boxGrid.get(key(x, y, z)) ?? []) if (o !== b && boxesMeet(b, o)) out.add(o);
+    }
+    const list = [...out];
+    nearCache.set(b, list);
+    return list;
+  };
+  const faces = (o: number): Faces => {
+    const F = gridOf(o);
+    if (F.sign === 0) {
+      const c = F.c;
+      let vol = 0;
+      for (let q = 0; q + 8 < c.length; q += 9) vol += c[q] * (c[q + 4] * c[q + 8] - c[q + 5] * c[q + 7]) - c[q + 1] * (c[q + 3] * c[q + 8] - c[q + 5] * c[q + 6]) + c[q + 2] * (c[q + 3] * c[q + 7] - c[q + 4] * c[q + 6]);
+      F.sign = vol < 0 ? -1 : 1;
+    }
+    return F;
+  };
+  const made: ContactIndex = { near, touches, faces, vertsIn };
+  contactCache.set(parts, made);
+  return made;
 }
 
 /** the setup keys a fold depends on: what `orientKey` adds so a new fold re-measures */

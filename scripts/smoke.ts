@@ -40280,6 +40280,24 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     ];
     const rParts = withBodies(rPrisms);
     const rid = (n: string): number => rPrisms.findIndex((p) => p.name === n);
+    // CONTACT ON DEMAND (`contactIndex`, 2026-11-08: the importer froze for 3½ minutes on Offset's robot
+    // in `touchingPairs` over big sets): the same answer as the all-pairs test, for every pair
+    {
+      const all = new Set(rPrisms.map((_, i) => i));
+      const tp = motion.touchingPairs(withBodies(rPrisms), all, motion.CONTACT_IN);
+      const parts2 = withBodies(rPrisms);
+      const ci = motion.contactIndex(parts2);
+      let same = true;
+      const diff: string[] = [];
+      for (const a of all)
+        for (const o of all) {
+          if (a >= o) continue;
+          const want = tp.get(a)?.has(o) ?? false;
+          if (ci.touches(a, o) !== want) (same = false), diff.push(`${rPrisms[a].name}-${rPrisms[o].name}`);
+          if (want && !ci.near(a).includes(o)) (same = false), diff.push(`near ${rPrisms[a].name}-${rPrisms[o].name}`);
+        }
+      check('contact index: every pair touches exactly where touchingPairs says, and is in the other\'s near list', same, JSON.stringify(diff));
+    }
     const rTur = motion.findTurretGroup(rParts, [0, 0, 8], new Set());
     check(
       'turret: the cap of a post beside it, within its reach above the ring but bolted to the post, does not turn with it; the head and a screw in it do',

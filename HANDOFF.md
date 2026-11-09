@@ -1,3 +1,29 @@
+# HANDOFF — 2026-11-09 (The importer froze after an import: contact asked pair by pair)
+
+**State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` stays 9 (what the finders find is unchanged). `npm test` (shared 5163, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.
+
+- **Owner: "It is so laggy once I import and it freezes and i cant click any buttons".** Profiled in
+  Electron with the CDP profiler and long tasks, on Offset's STEP: one 205-s task on the page's thread
+  after the import (227 s of main-thread work in all; Save ready 4 minutes after the model loaded).
+  Nearly all of it was `touchingPairs` over every pair of bodies in a big box: `ridersOf` 104 s (a Box
+  Tube stage with its payload covers most of the back of the robot), the ring test under
+  `findStageRollers` 81 s, the turret's piece filter 18 s, plus `findAll` reading the whole build again
+  for the launcher. The team's robot was 10–12 s.
+- **Fixed (rules in `docs/area/robot-import.md`, Workers):**
+  - `contactIndex`: contact asked pair by pair and remembered per model; a body's triangles (with
+    normals, planes and boxes, so most are turned away before the exact distance) and its vertices are
+    gridded only when first asked about. `ridersOf`, `ringsAbout`, `onTheRing`, `mountedOn`,
+    `liftPayload` and `findIntakeArm` use it, and their floods stop at the first contact that settles
+    them.
+  - `findAll` reads only the launcher (`readLauncher`); the build's turret check skips the piece filter.
+- **Measured after:** Offset: longest task 2.7 s, 9.8 s in all, Save ready 10 s after the model loads.
+  The team's robot: 1.1 s, 3.6 s, ready in 3 s. Nine vendor STEPs through the editor's pipeline find exactly what they found before (groups and builds identical).
+- **Caught in the comparison:** the first `ridersOf` rewrite skipped a body already given up by an
+  earlier cluster instead of giving up its own, and added 12–36 tube bearings to each Box Tube stage.
+  Fixed, and old against new is now identical on every carrier group.
+- **Next:** the moving-part search still runs on the page's thread (a 2.7-s hitch on Offset). It belongs
+  in the measure worker, which already holds the model.
+
 # HANDOFF — 2026-11-08b (A flower ramp the file shows tucked in: Offset's front arms)
 
 **State: on `alpha`, importer only (client); no sim change, no `SIM_PATCH`, no server deploy.** `MOTION_FINDER` 9. `npm test` (shared 5162, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.

@@ -256,6 +256,26 @@ before this rule, a 3.9 M-triangle STL froze the editor for one 3.6 s task and a
 | the bake's mesh half: the robot-local frame, the split into moving parts, the GLB export and its refits | the import worker (`bakeModelHere`: `bakeScene.ts`, `bakeMesh.ts`, `storedGlb.ts`); the two pictures need WebGL and stay, with `compileAsync` first |
 | a share file added to the library | the import worker, at a budget no file reaches (nothing simplified, nothing measured apart); the pictures stay |
 | a room's lighter mesh (`liteMesh`) | the import worker (`liteMeshOff`, a lazy `lite-*.js` there); it was on the main thread, 0.3 s from a 69k float mesh and 0.8 s from a 250k one (Node) |
+| ⚠️ the moving-part search (`findAll`, `readBuild`) | **still the main thread** (see below) |
+
+- ⚠️ **THE MOVING-PART SEARCH IS STILL ON THE PAGE'S THREAD, SO IT MUST STAY CHEAP** (owner,
+  2026-11-08: "It is so laggy once I import and it freezes and i cant click any buttons"). Profiled
+  on Offset's robot (Electron, the CDP profiler, long tasks): one 205-s task after the import, 227 s
+  of main-thread work in all, nearly all of it `touchingPairs` over every pair of bodies in a big box
+  (the riders pass 104 s, the ring test under the intake-stage search 81 s, the turret's piece filter
+  18 s, each `readBuild`), and `findAll` read the whole build again just for the launcher.
+  - **Contact is asked pair by pair** (`contactIndex`, memoised on the parts): each body's triangles
+    are gridded, with their normals, planes and boxes (`faceFacts`, `onFace` turns most away before
+    the exact distance), and its vertices bucketed, only when first asked about; a pair is tested once
+    and remembered, and a flood stops at the first contact that settles it. `ridersOf`, `ringsAbout`,
+    `onTheRing`, `mountedOn`, `liftPayload` and `findIntakeArm` ask it; `touchingPairs` is left for the
+    fold planner, which runs in the measure worker.
+  - **`findAll` reads only the launcher** (`readLauncher`), and the build's turret check skips the
+    piece filter (`findTurret(…, pieces = false)`).
+  - **Measured after:** Offset's longest task 2.7 s, 9.8 s in all, Save ready 10 s after the model
+    loads (it was 227 s); the team's own robot 1.1 s, 3.6 s, ready in 3 s (it was 10–12 s). The
+    search belongs in the measure worker; until it moves, a new finder that scans every pair of a box
+    is the bug this paragraph describes.
 
 - **Identical outputs.** Every move is the same code in another thread, and `npm test` holds each to
   the old result bit for bit: the halves against `measureParts`, `toModelFrame` against the arrays
@@ -810,7 +830,8 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
     `RIDER_PAD_IN`), the bodies in no group are split into clusters by contact.
     - A cluster with a member reaching out of that box is the robot.
     - A cluster wholly inside the box that touches the group is carried, and joins it.
-  - **Cost.** A few seconds on a large CAD at Full detail, once per import.
+  - **Cost.** It was the worst of the freeze (104 s on Offset); asked pair by pair through
+    `contactIndex` and given up at a cluster's first member out of the box, 0.3 s (2026-11-08).
 - **The launcher's feed inside its turret** (`findLauncherFeed`). The flywheel finder takes at most two
   discs within 5 in, and the turret took the rest. Feed rollers inside it turned with it but never
   spun. Now an axle in the turret group parallel to the flywheel's is a `roller` riding the turret when

@@ -13,7 +13,7 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, readLauncher, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -967,7 +967,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // launcher's placed point
     let launcherAt: [number, number, number] | null = null;
     if (shooter && built) {
-      const cad = readBuild(parts, taken()).launcher;
+      const cad = readLauncher(parts, taken());
       const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
       launcherAt = at;
       // the flywheels before the turret: they stand on it, and it would take them (Offset's transfer
