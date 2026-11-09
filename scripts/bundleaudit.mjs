@@ -97,7 +97,8 @@
  *                inlined) and `occt-import-js-*.wasm` (OpenCascade, ~7.6 MB raw). Fetched only when
  *                a STEP file is dropped. Matched by FILENAME.
  *   importworker — the importer's two WORKERS (lane 9): `importWorker-*.js` (parse, weld, simplify
- *                off the main thread), `measureWorker-*.js` (a measurement's orientation half) and
+ *                off the main thread), `measureWorker-*.js` (a measurement's orientation half and the
+ *                moving-part search) and
  *                the import worker's lazy `meshoptDecoder-*.js` and `meshoptEncoder-*.js` (the bake's
  *                stored-mesh writer, fetched on a Save). Fetched when a file is dropped on the
  *                importer. Matched by FILENAME.
@@ -833,7 +834,11 @@ const BASELINE = {
   // from a 250k one (Node), which froze the lobby the first time a room asked.
   // 2026-10-04 (FLOWER plate bands and cuts): 154.05 -> 159.18, raised on purpose. HEAD before it
   // measured 157.80; `measureWorker-*.js` +1.4, the same `computeBands` / `bandCuts` code.
-  importworker: { gzip: 159.18 * 1000 },
+  // 2026-11-09 (the moving-part search off the main thread): 159.18 -> 182.25, raised on purpose.
+  // `measureWorker-*.js` +23: the finders (`findMoving.ts` and the half of `motion.ts` the
+  // measurement never called). On the page's thread the search froze the editor for 2.8 s on a big
+  // robot. The engine keeps its own copy for the no-Worker fallback, so `importer` is unchanged.
+  importworker: { gzip: 182.25 * 1000 },
   // 2026-10-01: NEW. `occt-import-js-*.wasm` 3110.91 (OpenCascade, 7.6 MB raw), `stepWorker-*.js`
   // 21.95 (the worker with occt's glue) and `stepReader-*.js` 0.42. Fetched only when a STEP file is
   // dropped; every other import, and every player who never imports a robot, pays nothing.

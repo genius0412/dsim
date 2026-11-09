@@ -39707,6 +39707,42 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     nudged.measurement !== viaMeasurer.measurement && nudged.measurement.motion === viaMeasurer.measurement.motion && JSON.stringify(nudged.measurement.motion) === JSON.stringify(fm.motion) && remarked.measurement.motion !== viaMeasurer.measurement.motion,
   );
 
+  // ---- the moving-part search, where the measure worker runs it (2026-11-09) -----------------------
+  // The worker searches its own copy: every triangle (`full`) without normals, put in the MODEL frame
+  // the editor's measurement names. It must answer what the editor's own parts would, and so must the
+  // measurer when no worker can start (Node has none: its fallback, a task later).
+  {
+    const { runSearch } = await import('../src/robotImport/findMoving');
+    const { creaseParts, weld } = await import('../src/robotImport/engine/meshOps');
+    const J = (v: unknown): string => JSON.stringify(v);
+    // welded and creased as the reader keeps a Full-detail model: its own vertices, with normals
+    const full = creaseParts(parts.map((p) => ({ ...p, ...weld(p, 1e-3) })));
+    const shown = { ...prepared, full, fullDetail: true };
+    const wheelIn = { wheels: wheelsAt, drivetrain: 'mecanum' as const, wheelDiaIn: 104 / 25.4 };
+    const ms = { kind: 'motion' as const, ...wheelIn, have: [], intakes: [{ edge: 'front' as const, from: -6, to: 6 }], shooter: null, turret: false, rampIntake: true, elementD: 2.8 };
+    const bs = { kind: 'build' as const, ...wheelIn, elementD: 2.8, axles: true };
+    const sm = new Measurer(shown);
+    const n = sm.normalise(base);
+    const bare = full.map((p) => ({ positions: p.positions.slice(), indices: p.indices ? p.indices.slice() : null, color: p.color, name: p.name, body: p.body ? p.body.slice() : null }));
+    const o = geo.orientParts(parts, base, { format: 'stl' }).oriented;
+    const workerParts = geo.toModelFrame(geo.withoutBodies(bare, []), o.sourceToModel, o.folds);
+    const editorM = runSearch(n.shownParts ?? n.modelParts, ms);
+    const workerM = runSearch(workerParts, ms);
+    const editorB = runSearch(n.shownParts ?? n.modelParts, bs);
+    const workerB = runSearch(workerParts, bs);
+    const viaFind = await sm.find(base, ms);
+    check(
+      'moving parts (worker): the search on the worker’s copy (every triangle, no normals, its own model frame) answers what it does on the editor’s parts, the build read too; the measurer with no worker answers the same; the answers survive a structured clone',
+      !!n.shownParts && n.shownParts[0].normals != null && editorM.kind === 'motion' && editorM.motion.length >= 5 &&
+        J(workerM) === J(editorM) && J(workerB) === J(editorB) && J(viaFind) === J(editorM) && J(structuredClone(editorB)) === J(editorB),
+      `${editorM.kind === 'motion' ? editorM.motion.map((g) => g.role).join(',') : editorM.kind} | ${J(workerM) === J(editorM)} ${J(workerB) === J(editorB)} ${J(viaFind) === J(editorM)}`,
+    );
+    sm.dispose();
+    let released = '';
+    await sm.find(base, ms).catch((e: unknown) => (released = e instanceof Error ? e.message : String(e)));
+    check('moving parts (worker): a search asked of a released measurer rejects (the editor drops it), and runs nothing', /released/.test(released), released);
+  }
+
   // ---- saved: the stored mesh is folded, and reopening does not fold it twice ----------------------
   const stored = motion.motionAsStored(setup.motion, fm.motion);
   const sr = stored?.find((g) => g.role === 'ramp');
@@ -40833,8 +40869,8 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
     /update\(\(d\) => followFrame\(d, frameNow\), 'auto'\)/, // the placements following the model frame
     /update\(\(d\) => \(\{ \.\.\.d, step: s \}\), 'auto'\)/, // a step change
     /motion: again, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // rows from an older finder, found again
-    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\), mechAt: \[\.\.\.frame\] \} : \{\}\) \}\), 'auto'\)/, // a new import's mechanisms read from its model
-    /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*'auto',/, // ...and read again after a turn
+    /\.\.\.\(r \? \{ spec: r\.spec, mech: r\.mech \?\? null, cadMech: r\.mech, cadKey: cadMechKey\(r\.spec\), mechAt: \[\.\.\.frame\] \} : \{\}\) \};\n\s*\}, 'auto'\)/, // a new import's mechanisms read from its model (when the worker answers)
+    /cadReread: undefined, \.\.\.\(r \? \{ cadBuild: r\.set,[^\n]*\n\s*\}, 'auto'\)/, // ...and read again after a turn
     /motion: found, motionFinder: MOTION_FINDER \} \} : d\), 'auto'\)/, // the moving parts found
     /triBudget: budget \} \}\), 'auto'\)/, // a Detail change
   ];
@@ -43482,36 +43518,47 @@ function fxImportFixed(): RobotSpec {
     J({ fo, ao }),
   );
 
-  // ---- the editor: the same order, and the moving parts wait for the placements ----
+  // ---- the search: the same order, and the editor's moving parts wait for the placements ----
+  // the search itself is `findMoving.ts`, run in the measure worker (2026-11-09); the editor only asks
   const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').split('\r\n').join('\n');
-  const flyAt = ed.indexOf('findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity)');
+  const fmv = readFileSync('src/robotImport/findMoving.ts', 'utf8').split('\r\n').join('\n');
+  const flyAt = fmv.indexOf('findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity)');
   const waitAt = ed.indexOf('JSON.stringify(defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null)) !== JSON.stringify(doc.mech)) return;');
   check(
-    'the editor looks for the flywheels before the turret (none under its ring), hands the turret the rest, reads the rollers with the overhang left out of the edges, and finds the moving parts only once the placements have defaulted in (source pins)',
+    'the search looks for the flywheels before the turret (none under its ring), hands the turret the rest, reads the rollers with the overhang left out of the edges, and the editor asks for the moving parts only once the placements have defaulted in (source pins)',
     flyAt > 0 &&
-      flyAt < ed.indexOf('findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]))') &&
-      ed.includes('findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? []))') &&
+      flyAt < fmv.indexOf('findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]))') &&
+      fmv.includes('findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? []))') &&
       waitAt > 0 &&
-      waitAt < ed.indexOf('const found = findAll([]);') &&
+      waitAt < ed.indexOf('const s = motionSearch([]);') &&
       ed.includes('[doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]'),
   );
   // a lift's payload is looked for once every other moving part is (they are what it may not push), and
   // before the riders pass, which then sees the payload as the stage's own (owner, 2026-11-07)
-  const payAt = ed.indexOf('const payload = liftPayload(parts, [...have, ...out], tubes);');
+  const payAt = fmv.indexOf('const payload = liftPayload(parts, [...have, ...out], tubes);');
   check(
-    'the editor finds what a lift carries after the turret and a deployed part, before the riders, and puts its rollers on the stage (source pins)',
-    payAt > ed.indexOf('findDeployedGroup(parts, intakes,') &&
-      payAt > ed.indexOf('findTurretGroup(parts, at,') &&
-      payAt < ed.indexOf('ridersOf(parts, rows, foundAt)') &&
-      ed.includes('for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };'),
+    'the search finds what a lift carries after the turret and a deployed part, before the riders, and puts its rollers on the stage (source pins)',
+    payAt > fmv.indexOf('findDeployedGroup(parts, intakes,') &&
+      payAt > fmv.indexOf('findTurretGroup(parts, at,') &&
+      payAt < fmv.indexOf('ridersOf(parts, rows, foundAt)') &&
+      fmv.includes('for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };'),
   );
   // a ramp build with no ramp shown deployed looks for one tucked in (owner, 2026-11-08, Offset's arms)
-  const depAt = ed.indexOf("const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());");
-  const armAt = ed.indexOf('const arm = findIntakeArm(parts, rollers, i.edge, taken());');
+  const depAt = fmv.indexOf("const dep = findDeployedGroup(parts, intakes, s.rampIntake ? 'ramp' : 'fold', taken());");
+  const armAt = fmv.indexOf('const arm = findIntakeArm(parts, rollers, i.edge, taken());');
   check(
-    'the editor looks for a stowed intake arm when a ramp build shows no ramp deployed, and makes it the ramp, folded in the file, on the shaft it swings on (source pins)',
-    depAt > 0 && armAt > depAt && armAt < ed.indexOf('ridersOf(parts, rows, foundAt)') &&
-      ed.includes("out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });"),
+    'the search looks for a stowed intake arm when a ramp build shows no ramp deployed, and makes it the ramp, folded in the file, on the shaft it swings on (source pins)',
+    depAt > 0 && armAt > depAt && armAt < fmv.indexOf('ridersOf(parts, rows, foundAt)') &&
+      fmv.includes("out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });"),
+  );
+  // ⚠️ THE EDITOR RUNS NO FINDER ON THE PAGE'S THREAD: Offset froze it for 205 s, then 2.8 s (2026-11-09)
+  const motionImport = /import \{([^}]*)\} from '\.\.\/motion';/.exec(ed)?.[1] ?? '';
+  const worker = readFileSync('src/robotImport/engine/measureWorker.ts', 'utf8');
+  check(
+    'the editor imports no finder (no find…, readBuild, readLauncher, ridersOf, liftPayload, wheelAxleVotes) and asks the measure worker, which runs runSearch on the parts it holds (source pins)',
+    motionImport.length > 0 && !/\b(find\w+|readBuild|readLauncher|ridersOf|liftPayload|wheelAxleVotes)\b/.test(motionImport) &&
+      /e\.findMoving\(m0 as PreparedModel, doc\.setup, s\)/.test(ed) && /runSearch\(framed\.parts, m\.search\)/.test(worker) && !/\bfindAll\(/.test(ed),
+    motionImport,
   );
 }
 

@@ -256,26 +256,46 @@ before this rule, a 3.9 M-triangle STL froze the editor for one 3.6 s task and a
 | the bake's mesh half: the robot-local frame, the split into moving parts, the GLB export and its refits | the import worker (`bakeModelHere`: `bakeScene.ts`, `bakeMesh.ts`, `storedGlb.ts`); the two pictures need WebGL and stay, with `compileAsync` first |
 | a share file added to the library | the import worker, at a budget no file reaches (nothing simplified, nothing measured apart); the pictures stay |
 | a room's lighter mesh (`liteMesh`) | the import worker (`liteMeshOff`, a lazy `lite-*.js` there); it was on the main thread, 0.3 s from a 69k float mesh and 0.8 s from a 250k one (Node) |
-| ⚠️ the moving-part search (`findAll`, `readBuild`) | **still the main thread** (see below) |
+| the moving-part search (`findMoving`, `readBuild`) | `measureWorker.ts` (`find`, on its own copy of the parts the editor would search; see below) |
 
-- ⚠️ **THE MOVING-PART SEARCH IS STILL ON THE PAGE'S THREAD, SO IT MUST STAY CHEAP** (owner,
-  2026-11-08: "It is so laggy once I import and it freezes and i cant click any buttons"). Profiled
-  on Offset's robot (Electron, the CDP profiler, long tasks): one 205-s task after the import, 227 s
-  of main-thread work in all, nearly all of it `touchingPairs` over every pair of bodies in a big box
-  (the riders pass 104 s, the ring test under the intake-stage search 81 s, the turret's piece filter
-  18 s, each `readBuild`), and `findAll` read the whole build again just for the launcher.
+- ⚠️ **THE MOVING-PART SEARCH RUNS IN THE MEASURE WORKER** (owner, 2026-11-08: "It is so laggy once
+  I import and it freezes and i cant click any buttons"). Profiled on Offset's robot (Electron, the
+  CDP profiler, long tasks): one 205-s task after the import, 227 s of main-thread work in all, nearly
+  all of it `touchingPairs` over every pair of bodies in a big box (the riders pass 104 s, the ring
+  test under the intake-stage search 81 s, the turret's piece filter 18 s, each `readBuild`), and the
+  search read the whole build again just for the launcher. Fixed in two steps:
   - **Contact is asked pair by pair** (`contactIndex`, memoised on the parts): each body's triangles
     are gridded, with their normals, planes and boxes (`faceFacts`, `onFace` turns most away before
     the exact distance), and its vertices bucketed, only when first asked about; a pair is tested once
     and remembered, and a flood stops at the first contact that settles it. `ridersOf`, `ringsAbout`,
-    `onTheRing`, `mountedOn`, `liftPayload` and `findIntakeArm` ask it; `touchingPairs` is left for the
-    fold planner, which runs in the measure worker.
-  - **`findAll` reads only the launcher** (`readLauncher`), and the build's turret check skips the
-    piece filter (`findTurret(…, pieces = false)`).
-  - **Measured after:** Offset's longest task 2.7 s, 9.8 s in all, Save ready 10 s after the model
-    loads (it was 227 s); the team's own robot 1.1 s, 3.6 s, ready in 3 s (it was 10–12 s). The
-    search belongs in the measure worker; until it moves, a new finder that scans every pair of a box
-    is the bug this paragraph describes.
+    `onTheRing`, `mountedOn`, `liftPayload` and `findIntakeArm` ask it. The search reads only the
+    launcher (`readLauncher`), and the build's turret check skips the piece filter
+    (`findTurret(…, pieces = false)`). Offset went to a 2.7-s longest task, 9.8 s in all.
+  - **Then the search left the page's thread** (`findMoving.ts`, 2026-11-09). The editor turns its
+    build into plain flags (`MotionSearch`, `BuildSearch`: the wheel spots, the intake spans, the
+    launcher's point, turret, ramp, an element's size) and asks `findMoving(model, setup, search)`;
+    the measure worker builds the parts the editor would search (every triangle at Full, else the
+    measured ones; `toModelFrame` in the frame the editor's measurement names, less the deleted
+    bodies), keeps them while that frame holds (so the build read and the search after it share one
+    contact index), and answers with plain rows. Normals are not sent: no finder reads them.
+  - **The editor's side is asynchronous.** One search at a time, keyed by its inputs, so an effect that
+    runs again starts no second; an answer lands only if the document is still the one searched (the
+    same model, `orientKey` unchanged, and for Find moving parts the rows the player had), else it is
+    dropped. Save already waits for the build and the moving parts (`autoDone`). The Moving parts
+    panel says "Looking for moving parts…" and holds its Find button meanwhile. A search that fails
+    reads no build, finds no rows, or keeps the rows an older finder found, so the editor never waits
+    on it.
+  - **Fallback:** no `Worker`, or a worker that stopped: the same `runSearch` on this thread, a task
+    later, on `normalise`'s own parts. A search that threw IN the worker is not run again here (it
+    would throw again, after seconds of this thread). `npm test` holds the worker's copy (no normals,
+    its own frame) and the fallback to the editor's answer.
+  - **Measured after:** the production build in offscreen Electron (software GL), the commit before
+    against this one. Offset: longest task 2972 → 604 ms, 10.7 → 5.4 s blocked in all, Save ready
+    10.3 → 9.4 s after the model loads. The team's own robot: 512 ms, 1.6 s, ready in 2 s (1.1 s and
+    3.6 s before, measured on the dev server). What is left is
+    three.js drawing the preview under software GL and `normalise` rebuilding the model frame, not
+    the search. The editor's rows are the headless pipeline's, row for row, on both, and the nine
+    vendor STEPs find exactly what they found before.
 
 - **Identical outputs.** Every move is the same code in another thread, and `npm test` holds each to
   the old result bit for bit: the halves against `measureParts`, `toModelFrame` against the arrays
@@ -302,8 +322,9 @@ before this rule, a 3.9 M-triangle STL froze the editor for one 3.6 s task and a
   terminated. The main thread holds the prepared model and up to six orientations of its measured
   copy; at Full also every triangle (`PreparedModel.full`) and that in the newest orientation's model
   frame only (`NormalisedModel.shownParts`; an older orientation lets its copy go). The measure worker
-  gets the measured copy alone. Two models keep a measure worker (`KEEP_MODELS`), the oldest is
-  released.
+  gets the measured copy, and at Full every triangle too (positions, indices and body ids, no normals),
+  sent before its first search, with one model-frame copy of what it last searched. Two models keep a
+  measure worker (`KEEP_MODELS`), the oldest is released.
 - **A GLB is merged as it is read** (`mergedPartsFromObject`): the colours are grouped first, each
   group's arrays allocated at their final size, every mesh instance written straight into its group,
   and a geometry's arrays let go after its last instance; the file's bytes and the loader's buffer
@@ -670,7 +691,7 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
     starter bots.
 - ⚠️ **A NEW IMPORT'S MOVING PARTS WAIT FOR ITS PLACEMENTS** (2026-10-04). The build read places only
   the launcher (`cadMech`); the intake spans default in an effect later (`defaultMechFor`). The
-  moving parts effect ran in the same render, so on every new import `findAll` saw no intake span:
+  moving parts effect ran in the same render, so on every new import the search saw no intake span:
   no intake rollers, no deployed ramp, and a robot imported with its ramp down stayed "over 18 in"
   until the player pressed Find moving parts. It now returns until `doc.mech` equals what
   `defaultMechFor` would make of it, and `doc.mech` is in its dependencies.
@@ -699,7 +720,7 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
     to fold). A ramp down in front
     moved the front edge out past the roller behind it, so the intake read at the back and the back
     half of the chassis was offered to fold. `findRollerGroups` takes the overhang as `outside` (not
-    counted for the edges), in `readBuild` and `findAll` alike; the overhang's edge wins a roller tie,
+    counted for the edges), in `readBuild` and `findMoving` alike; the overhang's edge wins a roller tie,
     and an overhang at the intake's edge that comes down to within 1 in of the floor makes it BIOBUZZ's
     `ramp` intake ("a ramp at the front").
 - **TURNING THE MODEL READS THE BUILD AGAIN** (`EditorDoc.cadReread`): a units, up or front change moves
@@ -744,12 +765,12 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   40T gear's long hub spans the NeveRest's face, whose four screws are alike round its shaft, knurl
   ridge by knurl ridge (248 slivers a gear, before the rule). A flywheel's through-bolts touch it and
   turn with it (goBILDA's DECODE bot: four M4 × 20 that stood still before).
-- **Rollers at every edge** (`findEdgeRollers`, from the editor's `findAll`): the intake spans' rollers
+- **Rollers at every edge** (`findEdgeRollers`, from `findMoving`): the intake spans' rollers
   first, then those at the other edges that are as long along the edge as an intake roller (at least
   half the robot, `EDGE_ROLLER_SPAN`), so a robot that takes in at both ends turns both whichever end
   the build places its intake at. Without the length rule Offset's slide spools by its back edge were
   offered as intake rollers.
-- **The intake's later stages** (`findStageRollers`, last in `findAll`, `MOTION_FINDER` 6; owner,
+- **The intake's later stages** (`findStageRollers`, last in `findMoving`, `MOTION_FINDER` 6; owner,
   2026-11-06: "You still missed part of the intake/transfer rollers further inside the robot"). An edge
   roller sits within `ROLLER_DEPTH_IN` of its edge, and deeper only a SPOKED axle chained to one was
   found, so a transfer of compliant wheels on plain shafts inside the frame was found nowhere. Now a
@@ -820,7 +841,7 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   fold axis, in no moving part, that the part is bored round. Its vertices stand in a ring just outside
   the rod's radius in all four quarters. With two such rods, it takes the innermost along `u`; the
   other is a crossbar that belongs to the part (it touches only the part; `ridersOf` adds it).
-- ⚠️ **WHAT A MOVING PART CARRIES IS ADDED TO IT** (`ridersOf`, in `findAll` on the found rows; owner,
+- ⚠️ **WHAT A MOVING PART CARRIES IS ADDED TO IT** (`ridersOf`, in `findMoving` on the found rows; owner,
   2026-11-06: "there are floating parts").
   - **The gap.** Each finder chooses members its own way. A turret takes what stands within reach above
     its ring; a deployed part takes the bodies inside one member's box that touch it. What those rules
@@ -837,7 +858,7 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   spun. Now an axle in the turret group parallel to the flywheel's is a `roller` riding the turret when
   it is no motor's, lies wholly in the turret, has a roller's radius and turns on a shaft of at least
   `STAGE_SHAFT_MIN_IN`. `MOTION_FINDER` 7 for all of the above.
-- ⚠️ **WHAT A LIFT CARRIES IS WHAT IT WOULD PUSH UP** (`liftPayload`, in `findAll` after every other
+- ⚠️ **WHAT A LIFT CARRIES IS WHAT IT WOULD PUSH UP** (`liftPayload`, in `findMoving` after every other
   finder and before `ridersOf`; owner, 2026-11-07: "Does the Offset robot work FULLY?"). Offset's FLOWER
   chute (15 in of rollers between its Box Tube's columns) hangs from brackets on the last stages' tops
   and reaches the floor. It is in no stage's box, and it stands on the chassis, so `ridersOf` never saw
@@ -865,7 +886,7 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   Offset's turret (a 3.5-in ring bore) could not; the place buttons are the way to use one.
 - `MOTION_FINDER` 8 for the three above, and the final stage's bottom insert (0.600 in under its
   tube) on that stage (`TUBE_BASE_END_IN` 0.65).
-- ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN** (`findIntakeArm`, in `readBuild` and in `findAll`;
+- ⚠️ **A FLOWER RAMP THE FILE SHOWS TUCKED IN** (`findIntakeArm`, in `readBuild` and in `findMoving`;
   owner, 2026-11-08: "do they not have a flower ramp? I thought they did"). Offset's front rollers ride
   arms swung by servos on the inner roller's shaft, with a wedge on a second pair of arms on that shaft,
   raised inside 18 in. Only a ramp shown deployed past the frame was read, so this was a Ground intake,

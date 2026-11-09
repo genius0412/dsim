@@ -13,7 +13,8 @@ import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/i
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
-import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, readLauncher, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
+import { coaxialBodies, isSpin, MOTION_FINDER, motionAsStored, mountedBodies } from '../motion';
+import type { Found, MotionSearch, Search, WheelInputs } from '../findMoving';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
 import { readShareFile, type SharePayload } from '../shareFile';
@@ -921,114 +922,57 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
    *  the simplified copy measured for the footprint, where a gearbox face can sit 7 mm off and a
    *  Gecko wheel's fins lose their tips (goBILDA's BIOBUZZ mecanum bot, 2026-10-04) */
   const detectParts = (): MeshPart[] => (normalised ? (normalised.shownParts ?? normalised.modelParts) : []);
-  const findWheels = (): MotionGroup[] =>
-    normalised && baseWheels && doc
-      ? findWheelGroups(detectParts(), baseWheels, doc.setup.drive.drivetrain, wheelDiameterMm(doc.setup.drive.wheel) / 25.4)
-      : [];
+  /** what the wheel search reads: where the wheels are and what they are */
+  const wheelInputs = (): WheelInputs | null =>
+    doc ? { wheels: baseWheels, drivetrain: doc.setup.drive.drivetrain, wheelDiaIn: wheelDiameterMm(doc.setup.drive.wheel) / 25.4 } : null;
   /**
-   * EVERY KIND OF MOVING PART the model shows, among the bodies `have` does not hold: the drive wheels
-   * (when there are none yet) and the gears they drive, the intake rollers on the intake spans, any
-   * other spoked roller, flywheels by the launcher, a turret under it (a turreted build), and a part
-   * the file shows deployed past 18 in at an intake edge (BIOBUZZ's ramp, else a folding part).
-   * Suggestions, marked `found`.
+   * EVERY KIND OF MOVING PART the model shows, among the bodies `have` does not hold (`findMoving`):
+   * the search's inputs, with the build turned into the flags it reads
    */
-  const findAll = (have: readonly MotionGroup[]): MotionGroup[] => {
-    if (!normalised || !doc) return [];
-    const parts = detectParts();
-    const out: MotionGroup[] = [];
-    const taken = (): Set<number> => new Set([...have, ...out].flatMap((g) => g.bodies));
-    // a wheel per corner no row has yet (a player's own wheel row keeps its corner); a 6WD's middle
-    // pair has no corner, and the bodies a kept row holds already keep it from coming back twice
-    for (const w of findWheels()) {
-      if (w.corner !== undefined && have.some((g) => g.role === 'wheel' && g.corner === w.corner)) continue;
-      const t = taken();
-      const bodies = w.bodies.filter((b) => !t.has(b));
-      if (bodies.length) out.push({ ...w, bodies });
-    }
-    // the gears the wheels drive (a motor's pinion), each geared to its wheel; their leaders are
-    // indices into the rows before them, which is `[...have, ...out]` as the caller lays it out
-    out.push(...findDriveGears(parts, [...have, ...out], taken()));
-    // box tubes before the rollers: a slide's pulleys and bearings ride on its stages
-    // (their moving stages, numbered where they land in the setup's motion)
-    const tubes = have.some((g) => g.role === 'slide') ? [] : findBoxTubes(parts, taken());
-    out.push(...boxTubeGroups(tubes, have.length + out.length));
-    const intakes = doc.mech?.intakes ?? [];
-    // the edges the rollers are looked for at are the robot's own, not a ramp's the file shows down
-    const over = findOverhang(parts, taken(), 18, intakes.map((i) => i.edge));
-    if (intakes.length) {
-      out.push(...findRollerGroups(parts, intakes, taken(), new Set(over?.bodies ?? [])));
-      // and the intake-sized rollers at the other edges (a robot that takes in at both ends)
-      out.push(...findEdgeRollers(parts, intakes, taken(), new Set(over?.bodies ?? [])));
-    }
-    // spoked axles anywhere else (a transfer column of surgical tubing)
-    out.push(...findSpokedRollers(parts, taken()));
+  const motionSearch = (have: readonly MotionGroup[]): MotionSearch | null => {
+    const w = wheelInputs();
+    if (!normalised || !doc || !w) return null;
     const shooter = doc.mech?.shooter;
-    // where an element is carried to: the flywheel the model shows, where there is one; else the
-    // launcher's placed point
-    let launcherAt: [number, number, number] | null = null;
-    if (shooter && built) {
-      const cad = readLauncher(parts, taken());
-      const at: [number, number, number] = cad ? cad.at : [shooter.x, shooter.y, shooter.z];
-      launcherAt = at;
-      // the flywheels before the turret: they stand on it, and it would take them (Offset's transfer
-      // roller under the ring was offered as its flywheel, 2026-10-04); on a turret, none below its ring
-      const turret = turretBuild(game, built.spec) && !have.some((g) => g.role === 'turret');
-      const ring = turret ? findTurretRing(parts, at, taken()) : null;
-      const wheels = have.some((g) => g.role === 'flywheel') ? [] : findFlywheelGroups(parts, at, taken(), ring ? ring.z0 : -Infinity);
-      if (turret) {
-        const t = findTurretGroup(parts, at, new Set([...taken(), ...wheels.flatMap((g) => g.bodies)]));
-        if (t) out.push(t);
-      }
-      out.push(...wheels);
-    }
-    if (intakes.length && !have.some((g) => g.role === 'ramp' || g.role === 'fold')) {
-      const ramp = game === 'biobuzz' && built && bbIntakeKindOf(built.spec) === 'ramp';
-      const dep = findDeployedGroup(parts, intakes, ramp ? 'ramp' : 'fold', taken());
-      if (dep) out.push(dep);
-      else if (ramp) {
-        // a ramp the file shows tucked in: an arm swinging on an intake roller's shaft (Offset's front)
-        const rollers = [...have, ...out].filter((g) => g.role === 'roller');
-        const flagged = intakes.filter((i) => i.ramp);
-        for (const i of flagged.length ? flagged : intakes) {
-          const arm = findIntakeArm(parts, rollers, i.edge, taken());
-          if (!arm) continue;
-          out.push({ role: 'ramp', bodies: arm.bodies, filePose: 'folded', deployDeg: arm.deployDeg, ...(arm.shaft >= 0 ? { axisBody: arm.shaft } : {}), found: true });
-          break;
-        }
-      }
-    }
-    // what a lift's stages push up as they rise: the payload hung from them (a chute on a Box Tube),
-    // and the rollers it holds ride with it
-    const payload = liftPayload(parts, [...have, ...out], tubes);
-    for (const [gi, add] of payload.carried) {
-      if (gi < have.length) continue;
-      const g = out[gi - have.length];
-      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
-    }
-    for (const [gi, on] of payload.riders) if (gi >= have.length) out[gi - have.length] = { ...out[gi - have.length], rideOn: on };
-    // what a turret, a ramp or a slide carries that its finder missed (it would stay put as it moved)
-    const rows = [...have, ...out];
-    const foundAt = new Set(out.map((_, i) => have.length + i));
-    for (const [gi, add] of ridersOf(parts, rows, foundAt)) {
-      const g = out[gi - have.length];
-      out[gi - have.length] = { ...g, bodies: [...new Set([...g.bodies, ...add])].sort((a, b) => a - b) };
-    }
-    // the rollers that feed the flywheel inside a found turret: out of the turret, riding it
-    const ti = out.findIndex((g) => g.role === 'turret');
-    if (ti >= 0) {
-      const turretRow = out[ti];
-      const others = new Set([...have, ...out].filter((g) => g !== turretRow).flatMap((g) => g.bodies));
-      const feed = findLauncherFeed(parts, turretRow.bodies, [...have, ...out].filter((g) => g.role === 'flywheel'), others);
-      if (feed.length) {
-        const gone = new Set(feed.flatMap((g) => g.bodies));
-        out[ti] = { ...turretRow, bodies: turretRow.bodies.filter((b) => !gone.has(b)) };
-        out.push(...feed);
-      }
-    }
-    // the intake's later stages inside the robot, on the way from a roller found to the launcher; last,
-    // so a turret, a flywheel, a slide and a ramp have their parts first
-    if (intakes.length) out.push(...findStageRollers(parts, [...have, ...out].filter((g) => g.role === 'roller'), taken(), launchElementD(game), launcherAt));
-    return out;
+    return {
+      kind: 'motion',
+      ...w,
+      have: [...have],
+      intakes: doc.mech?.intakes ?? [],
+      shooter: shooter && built ? [shooter.x, shooter.y, shooter.z] : null,
+      turret: !!built && turretBuild(game, built.spec),
+      rampIntake: game === 'biobuzz' && !!built && bbIntakeKindOf(built.spec) === 'ramp',
+      elementD: launchElementD(game),
+    };
+  };
+  /** the search in flight, by its inputs: an effect that runs again while it does starts no second */
+  const searching = useRef<string | null>(null);
+  const [finding, setFinding] = useState(false);
+  /**
+   * SEARCH THE MODEL IN THE MEASURE WORKER (`findMoving.ts`; seconds on a big robot, which froze this
+   * thread, 2026-11-09). `then` gets the answer, or null when the search failed, with a guard that says
+   * whether the document is still the one searched: the same model in the same orientation. An answer
+   * a newer search replaced is dropped.
+   */
+  const search = (s: Search, then: (found: Found | null, current: (d: EditorDoc) => boolean) => void): void => {
+    const e = engRef.current;
+    if (!e || !model || !doc) return;
+    const okey0 = orientKey(doc.setup);
+    const key = `${okey0}|${JSON.stringify(s)}`;
+    if (searching.current === key) return;
+    searching.current = key;
+    setFinding(true);
+    const m0 = model;
+    const current = (d: EditorDoc): boolean => draftRef.current?.model === m0 && orientKey(d.setup) === okey0;
+    const done = (found: Found | null): void => {
+      if (searching.current !== key) return;
+      searching.current = null;
+      setFinding(false);
+      then(found, current);
+    };
+    e.findMoving(m0 as PreparedModel, doc.setup, s).then(done, (err) => {
+      console.warn('[import] the moving-part search failed', err);
+      done(null);
+    });
   };
   // the moving parts are looked for once, on a setup that has never had any, once the placements are
   // in (rollers, flywheels and a turret are looked for by the intake spans and the launcher)
@@ -1037,17 +981,18 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // the placements are in this measurement's frame first (`followFrame`)
     const frame = normalised.measurement.sourceToModel;
     if (!sameFrame(doc.mechAt, frame)) return;
+    const w = wheelInputs();
+    if (!w) return;
     // the model turned before the player changed the build: the build is read again in the new frame
     if (doc.cadReread) {
-      const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const r = buildFromCad(game, doc.spec, readBuild(detectParts(), wheels, launchElementD(game)));
-      update(
-        (d) =>
-          !d.cadReread
-            ? d
-            : { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) },
-        'auto',
-      );
+      search({ kind: 'build', ...w, elementD: launchElementD(game), axles: false }, (f, current) => {
+        const cad = f?.kind === 'build' ? f.cad : null;
+        update((d) => {
+          if (!d.cadReread || !current(d)) return d;
+          const r = cad ? buildFromCad(game, d.spec, cad) : null;
+          return { ...d, cadReread: undefined, ...(r ? { cadBuild: r.set, spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) };
+        }, 'auto');
+      });
       return;
     }
     // rows found by older finders, in a draft read from its CAD file: looked for again, edits kept
@@ -1055,43 +1000,60 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (motion0 !== undefined) {
       if (doc.savedModel || (doc.setup.motionFinder ?? 0) >= MOTION_FINDER || !motion0.some((g) => g.found)) return;
       const kept = keepEditedMotion(motion0);
-      const again = [...kept, ...findAll(kept)];
-      update((d) => (d.setup.motion === motion0 ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d), 'auto');
+      const s = motionSearch(kept);
+      if (!s) return;
+      search(s, (f, current) => {
+        // a search that failed keeps the rows as they were, and is not tried again
+        const again = f?.kind === 'motion' ? [...kept, ...f.motion] : motion0;
+        update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d), 'auto');
+      });
       return;
     }
     // a NEW import's mechanisms are read from its model first (`buildFromCad`): the placements then
     // default in for that build, and this runs again to find the moving parts from them
     if (doc.cadBuild === undefined && !doc.editId && !doc.savedModel) {
-      const wheels = new Set(findWheels().flatMap((g) => g.bodies));
-      const cad = readBuild(detectParts(), wheels, launchElementD(game));
       // a front the geometry left ASSUMED turns to a clear intake (`frontFromBuild`), once; after a
       // turn the build is read again in the new frame
-      if (frontAssumed(doc)) {
-        const axles = m?.wheelSource === 'detected' && baseWheels ? wheelAxleVotes(detectParts(), baseWheels) : { x: 0, y: 0 };
-        const turn = frontFromBuild(cad, axles);
-        if (turn !== null) {
-          const yaw = ((doc.setup.yaw + turn) % 4) as QuarterTurns;
-          update(
-            (d) => ({
-              ...d,
-              setup: turn ? { ...d.setup, yaw, wheels: null } : d.setup,
-              detected: d.detected ? { ...d.detected, yaw, front: 'detected', cue: 'intake' } : d.detected,
-            }),
-            'auto',
-          );
-          if (turn) return;
+      const assumed = frontAssumed(doc);
+      search({ kind: 'build', ...w, elementD: launchElementD(game), axles: assumed && m?.wheelSource === 'detected' }, (f, current) => {
+        const d0 = draftRef.current?.doc;
+        if (!d0 || d0.cadBuild !== undefined || !current(d0)) return;
+        const cad = f?.kind === 'build' ? f.cad : null;
+        if (f?.kind === 'build' && assumed) {
+          const turn = frontFromBuild(f.cad, f.axles);
+          if (turn !== null) {
+            const yaw = ((d0.setup.yaw + turn) % 4) as QuarterTurns;
+            update(
+              (d) => ({
+                ...d,
+                setup: turn ? { ...d.setup, yaw, wheels: null } : d.setup,
+                detected: d.detected ? { ...d.detected, yaw, front: 'detected', cue: 'intake' } : d.detected,
+              }),
+              'auto',
+            );
+            if (turn) return;
+          }
         }
-      }
-      const r = buildFromCad(game, doc.spec, cad);
-      update((d) => (d.cadBuild !== undefined ? d : { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) }), 'auto');
+        // a search that failed reads no build: the placements default in for the one picked
+        update((d) => {
+          if (d.cadBuild !== undefined) return d;
+          const r = cad ? buildFromCad(game, d.spec, cad) : null;
+          return { ...d, cadBuild: r?.set ?? [], ...(r ? { spec: r.spec, mech: r.mech ?? null, cadMech: r.mech, cadKey: cadMechKey(r.spec), mechAt: [...frame] } : {}) };
+        }, 'auto');
+      });
       return;
     }
     // the placements default in first (the effect above, a render later): the build just read placed
     // only the launcher, and the rollers and a deployed ramp are looked for on the intake spans. Found
     // in the same render, a new import's intake rollers and ramp were never looked for (2026-10-04)
     if (!built || !m || JSON.stringify(defaultMechFor(game, built.spec, m.origin, doc.mech ?? doc.cadMech ?? null)) !== JSON.stringify(doc.mech)) return;
-    const found = findAll([]);
-    update((d) => (d.setup.motion === undefined ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
+    const s = motionSearch([]);
+    if (!s) return;
+    search(s, (f, current) => {
+      // a search that failed finds nothing: the player can add the rows, or Find moving parts again
+      const found = f?.kind === 'motion' ? f.motion : [];
+      update((d) => (d.setup.motion === undefined && current(d) ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]);
   /** a moving parts edit, named by the row it added, removed or changed */
@@ -1099,12 +1061,19 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     const prev = motion ?? [];
     update((d) => ({ ...d, setup: { ...d.setup, motion: next } }), motionEdit(prev, next, motionNames(prev)));
   };
-  /** Find moving parts: every row the player has not touched goes, and is looked for again */
+  /** Find moving parts: every row the player has not touched goes, and is looked for again. The rows
+   *  land when the search ends, unless the player changed them meanwhile */
   const refindMotion = (): void => {
-    const kept = keepEditedMotion(motion ?? []);
+    const motion0 = motion;
+    const kept = keepEditedMotion(motion0 ?? []);
+    const s = motionSearch(kept);
+    if (!s) return;
     setActiveMotion(null);
     setHoverMotion(null);
-    update((d) => ({ ...d, setup: { ...d.setup, motion: [...kept, ...findAll(kept)], motionFinder: MOTION_FINDER } }), { label: COPY.edits.findMoving });
+    search(s, (f, current) => {
+      if (f?.kind !== 'motion') return;
+      update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, motion: [...kept, ...f.motion], motionFinder: MOTION_FINDER } } : d), { label: COPY.edits.findMoving });
+    });
   };
   // a selected row is being edited: a click in the preview adds or takes out its parts
   const picking = step === MOVING_STEP && activeMotion !== null && !!motion?.[activeMotion];
@@ -1393,6 +1362,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         }}
         onChange={setMotion}
         onRefind={refindMotion}
+        finding={finding}
         onPlay={(on) => {
           setPlaying(on);
           if (on) setActiveMotion(null);

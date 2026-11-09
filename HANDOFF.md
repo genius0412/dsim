@@ -1,3 +1,29 @@
+# HANDOFF — 2026-11-09b (The moving-part search runs in the measure worker)
+
+**State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` stays 9 (what the search finds is unchanged). `npm test` (shared 5166, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` ALL PASS (52) and the undo probe 24/24 (offscreen, dev server).
+
+- **Follow-up to the freeze fix below** (owner: "Make your own decisions"): the search still cost a
+  3-s hitch on Offset's robot, so it left the page's thread.
+- **What changed (rules in `docs/area/robot-import.md`, Workers):** `findMoving.ts` holds the search
+  (`findAll` moved out of `ImportEditor.tsx`) and the build read behind plain inputs; the measure worker
+  runs it (`find`) on its own copy of the parts the editor would search (every triangle at Full, no
+  normals, `toModelFrame` in the editor's frame). The editor asks asynchronously, one search at a time,
+  and drops an answer when the model or orientation changed; the Moving parts panel says "Looking for
+  moving parts…" meanwhile. No Worker: the same code here, a task later.
+- **Measured** (production build, offscreen Electron, commit before vs this): Offset longest task
+  2972 → 604 ms, 10.7 → 5.4 s blocked, Save ready 9.4 s after load; the team's robot 512 ms, 1.6 s.
+  Rows in the real editor match the headless pipeline row for row on both; nine vendor STEPs are
+  identical to the last baseline, group for group and body for body.
+- **Bundle:** `importworker` baseline 159.18 → 182.25 KB (the finders now ship in the measure worker;
+  the engine keeps its copy for the fallback, so `importer` is unchanged).
+- **Gotcha: never `git worktree remove` a checkout whose `node_modules` is a junction.** Git recursed
+  through it into the shared `aa-depth-24288f/node_modules` and deleted 11 entries (`.bin`, `@babel`,
+  `@dimforge`, `@discord`, `@electron`, …) before a locked file stopped it. Restored from
+  `real-venues-0cef95` (same lockfile, all 53 packages version-checked, file-for-file identical).
+  Delete the junction itself first (`(Get-Item path).Delete()` in PowerShell), then remove the worktree.
+- **Next:** nothing open on the importer's performance. What remains in Offset's profile is the preview
+  drawing under software GL and `normalise` rebuilding the model frame.
+
 # HANDOFF — 2026-11-09 (The importer froze after an import: contact asked pair by pair)
 
 **State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` stays 9 (what the finders find is unchanged). `npm test` (shared 5163, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass; `importpad` (offscreen, dev server) ALL PASS.

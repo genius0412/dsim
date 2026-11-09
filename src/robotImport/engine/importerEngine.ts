@@ -12,11 +12,14 @@
  *   prepareMeasure(model, setup)→ the heavy half of the measurement, in the measure WORKER
  *   normalise(model, setup)     → measurement + MODEL-frame parts, from the cached halves (cheap:
  *                                 re-run on every edit; `measureSession.ts`)
+ *   findMoving(model, setup, s) → the build the model shows, or its moving parts (`findMoving.ts`), in
+ *                                 the measure WORKER
  *   bake({ … })                 → the stored GLB, the top PNG, the thumbnail
  *   createPreview(canvas)       → the orbit view the editor drives with `update`
  * `loadModel` + `simplifyModel` are the same first step on the calling thread (a stored mesh, a
  * share file, the dev harness). Frames and budgets: `docs/area/robot-import.md`.
  */
+import type { Found, Search } from '../findMoving';
 import type { ImportSetup } from '../types';
 import { measurerFor, releaseMeasurer, type NormalisedModel } from './measureSession';
 import type { PreparedModel } from './prepare';
@@ -54,6 +57,11 @@ export function measureReady(model: PreparedModel, setup: ImportSetup): boolean 
 /** measure `setup`'s orientation in the measure worker; resolves when `measureReady` */
 export function prepareMeasure(model: PreparedModel, setup: ImportSetup): Promise<void> {
   return measurerFor(model).prepare(setup);
+}
+
+/** the build or the moving parts `setup`'s measured model shows, searched in the measure worker */
+export function findMoving(model: PreparedModel, setup: ImportSetup, search: Search): Promise<Found> {
+  return measurerFor(model).find(setup, search);
 }
 
 /** drop a model's cached measurements and stop its measure worker */

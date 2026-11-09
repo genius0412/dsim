@@ -326,6 +326,7 @@ export const COPY = {
   motionFoldBy: 'Folds up by',
   motionDeployBy: 'Deploys by',
   motionFind: 'Find moving parts',
+  motionFinding: 'Looking for moving parts…',
   motionPickAxisHint: 'Click the part it turns about or slides along: an axle, a pin, a rail.',
   motionDriveLabel: 'Moved by',
   motionDrives: { intake: 'Intake', shooter: 'Launcher', fire: 'Each shot', ramp: 'Ramp', drive: 'Driving', always: 'Always', place: 'Placing' } as const,

@@ -12,8 +12,12 @@
  * costs the main thread only the arrays' rebuild. `normalise` answers at once from the cache, and
  * computes on this thread only when nobody asked `prepare` first (the dev harness) or a worker
  * cannot start.
+ *
+ * The moving-part search (`find`) runs in the same worker, which holds the model already: on a big
+ * robot it is seconds of work, and on this thread it froze the editor (2026-11-09).
  */
 import { finishMeasure, orientKey, orientParts, toModelFrame, withMotion, withoutBodies, type MeasureOptions, type MeshPart, type OrientedMeasure } from '../geometry';
+import { runSearch, type Found, type Search } from '../findMoving';
 import type { ImportMeasurement, ImportSetup } from '../types';
 import type { MeasureRequest, MeasureResponse } from './measureProtocol';
 import type { PreparedModel } from './prepare';
@@ -55,8 +59,10 @@ export class Measurer {
   private disposed = false;
   private entries = new Map<string, Entry>();
   private waits = new Map<string, Promise<void>>();
-  private calls = new Map<number, { resolve: (o: OrientedMeasure) => void; reject: (e: Error) => void }>();
+  private calls = new Map<number, { resolve: (m: MeasureResponse) => void; reject: (e: Error) => void }>();
   private nextId = 1;
+  /** the worker holds `model.full` (sent before the first search) */
+  private fullSent = false;
   private readonly opts: MeasureOptions;
 
   constructor(readonly model: PreparedModel) {
@@ -137,6 +143,49 @@ export class Measurer {
     return entry.fin;
   }
 
+  /**
+   * THE MOVING-PART SEARCH (`findMoving.ts`) on the parts `normalise(setup)` hands the editor (every
+   * triangle at Full detail), in the measure worker: the same floats, so the same answer. Here, a task
+   * later, only when no worker can start or the worker stopped. Rejects when the measurer is released.
+   */
+  find(setup: ImportSetup, search: Search): Promise<Found> {
+    const here = (): Promise<Found> =>
+      new Promise((resolve, reject) => {
+        setTimeout(() => {
+          if (this.disposed) return reject(new Error('the measurer was released'));
+          try {
+            const n = this.normalise(setup);
+            resolve(runSearch(n.shownParts ?? n.modelParts, search));
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        }, 0);
+      });
+    const entry = this.entries.get(orientKey(setup));
+    const w = entry ? this.workerOrNull() : null;
+    if (!entry || !w) return here();
+    const full = this.model.full;
+    if (full && !this.fullSent) {
+      // positions, indices and body ids only (a search reads no normals), copied as at `init`
+      const copies = full.map((p) => ({ positions: p.positions.slice(), indices: p.indices ? p.indices.slice() : null, color: p.color, name: p.name, body: p.body ? p.body.slice() : null }));
+      w.postMessage({ kind: 'full', parts: copies } satisfies MeasureRequest, transferList(copies));
+      this.fullSent = true;
+    }
+    const frame = { sourceToModel: [...entry.oriented.sourceToModel], folds: entry.oriented.folds, removed: setup.removed ? [...setup.removed] : [] };
+    return this.call(w, (id) => ({ kind: 'find', id, frame, search }))
+      .then((m) => {
+        if (m.kind !== 'found') throw new Error('the measure worker answered a search with a measurement');
+        return m.found;
+      })
+      .catch((err) => {
+        // the worker STOPPED: search here. A search that threw there would throw here too, after
+        // seconds of this thread, so its error is passed on instead
+        if (this.disposed || this.worker) throw err;
+        console.warn('[import] searching off the main thread failed; searching here', err);
+        return here();
+      });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.worker?.terminate();
@@ -161,10 +210,18 @@ export class Measurer {
   private orientOff(setup: ImportSetup): Promise<OrientedMeasure> {
     const w = this.workerOrNull();
     if (!w) return Promise.reject(new Error('no worker'));
+    return this.call(w, (id) => ({ kind: 'orient', id, setup })).then((m) => {
+      if (m.kind !== 'oriented') throw new Error('the measure worker answered a measurement with a search');
+      return m.oriented;
+    });
+  }
+
+  /** post a request to the worker; resolves with its answer, rejects on its error or its end */
+  private call(w: Worker, req: (id: number) => MeasureRequest): Promise<MeasureResponse> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.calls.set(id, { resolve, reject });
-      w.postMessage({ kind: 'orient', id, setup } satisfies MeasureRequest);
+      w.postMessage(req(id));
     });
   }
 
@@ -186,8 +243,8 @@ export class Measurer {
       const call = this.calls.get(m.id);
       if (!call) return;
       this.calls.delete(m.id);
-      if (m.kind === 'oriented') call.resolve(m.oriented);
-      else call.reject(new Error(m.message));
+      if (m.kind === 'error') call.reject(new Error(m.message));
+      else call.resolve(m);
     };
     w.onerror = (e) => {
       e.preventDefault();
@@ -201,16 +258,21 @@ export class Measurer {
     // positions and indices only (normals do not change a measurement), copied: the editor keeps
     // the prepared model for the preview, the bake and the draft
     const parts: MeshPart[] = this.model.parts.map((p) => ({ positions: p.positions.slice(), indices: p.indices ? p.indices.slice() : null, color: p.color, name: p.name, body: p.body ? p.body.slice() : null }));
-    const transfer = new Set<ArrayBuffer>();
-    for (const p of parts) {
-      transfer.add(p.positions.buffer as ArrayBuffer);
-      if (p.indices) transfer.add(p.indices.buffer as ArrayBuffer);
-      if (p.body) transfer.add(p.body.buffer as ArrayBuffer);
-    }
-    w.postMessage({ kind: 'init', parts, opts: this.opts } satisfies MeasureRequest, [...transfer]);
+    w.postMessage({ kind: 'init', parts, opts: this.opts } satisfies MeasureRequest, transferList(parts));
     this.worker = w;
     return w;
   }
+}
+
+/** the buffers of copied parts, to hand to the worker */
+function transferList(parts: readonly MeshPart[]): ArrayBuffer[] {
+  const transfer = new Set<ArrayBuffer>();
+  for (const p of parts) {
+    transfer.add(p.positions.buffer as ArrayBuffer);
+    if (p.indices) transfer.add(p.indices.buffer as ArrayBuffer);
+    if (p.body) transfer.add(p.body.buffer as ArrayBuffer);
+  }
+  return [...transfer];
 }
 
 const live: Measurer[] = [];

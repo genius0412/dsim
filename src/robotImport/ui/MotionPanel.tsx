@@ -31,6 +31,7 @@ export function MotionPanel({
   onActive,
   onChange,
   onRefind,
+  finding,
   onPlay,
 }: {
   /** this build has a deployable ramp (BIOBUZZ's `ramp` intake) */
@@ -48,6 +49,8 @@ export function MotionPanel({
   onChange: (next: MotionGroup[]) => void;
   /** look again for every moving part, keeping the rows the player has edited */
   onRefind: () => void;
+  /** the search is running (in the measure worker): its rows land when it ends */
+  finding: boolean;
   onPlay: (on: boolean) => void;
 }) {
   // the measured part for each group (a group with no parts, or none it could fit, has none)
@@ -83,14 +86,16 @@ export function MotionPanel({
   const anyParts = groups.some((g) => g.bodies.length);
   return (
     <>
-      <p className="ds-hint">{groups.length ? COPY.movingHint : COPY.movingNone}</p>
+      <p className="ds-hint" role="status">
+        {finding ? COPY.motionFinding : groups.length ? COPY.movingHint : COPY.movingNone}
+      </p>
       <div className="ds-import-turns">
         {anyParts ? (
           <button type="button" className={`ds-btn small${playing ? ' primary' : ''}`} aria-pressed={playing} onClick={() => onPlay(!playing)}>
             {playing ? COPY.motionStop : COPY.motionPlay}
           </button>
         ) : null}
-        <button type="button" className="ds-btn ghost small" onClick={onRefind}>
+        <button type="button" className="ds-btn ghost small" disabled={finding} onClick={onRefind}>
           {COPY.motionFind}
         </button>
       </div>
