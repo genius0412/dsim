@@ -12,7 +12,7 @@ import { loadImporterEngine, type ImporterEngine } from '../engineLoader';
 import type { ImportProgress, NormalisedModel, PreparedModel } from '../engine/importerEngine';
 import type { LoadStage } from '../engine/load';
 import { wheelDiameterMm } from '../drive';
-import { bodyColor, defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, withColors, type MeshPart } from '../geometry';
+import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
 import { boxTubeGroups, coaxialBodies, findBoxTubes, liftPayload, findDeployedGroup, findIntakeArm, findDriveGears, findEdgeRollers, findFlywheelGroups, findOverhang, findRollerGroups, findSpokedRollers, findStageRollers, findLauncherFeed, ridersOf, findTurretGroup, findTurretRing, findWheelGroups, isSpin, MOTION_FINDER, motionAsStored, mountedBodies, readBuild, wheelAxleVotes } from '../motion';
 import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
@@ -38,8 +38,6 @@ import {
   rectangleWheels,
   buildFromCad,
   cadMechKey,
-  colorBodies,
-  resetColors,
   deleteBodies,
   frameMoved,
   floatingOffer,
@@ -91,7 +89,6 @@ import {
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
 import { checkImportFiles } from './fileSelection';
 import { libraryChanged, postRobotNotice, takeHandedFiles } from './handoff';
-import { ColorDialog } from './ColorDialog';
 import { ConfirmDialog, DuplicateDialog } from './LibraryDialogs';
 import { MechanismsStep } from './MechanismsStep';
 import { ModelStep } from './ModelStep';
@@ -225,8 +222,6 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   /** the Model step's Delete parts mode, and the bodies selected in it */
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
-  /** the colour picker, open over the selection (`ColorDialog`) */
-  const [coloring, setColoring] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
@@ -782,7 +777,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     if (cur.baked?.stamp === stamp) return cur.baked;
     const r = await e.bake({
       // every triangle at Full detail; what was measured otherwise
-      modelParts: withColors(normalised.shownParts ?? normalised.modelParts, cur.doc.setup.colors),
+      modelParts: normalised.shownParts ?? normalised.modelParts,
       origin: normalised.measurement.origin,
       descriptor: built.spec.imported,
       motion: normalised.measurement.motion,
@@ -920,7 +915,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
     // small parts out, so a body id names another solid at the other detail. The floating parts are
     // offered again once it is read.
-    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined, colors: undefined };
+    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
     const keepMech = doc.mech;
     const keepAt = doc.mechAt;
     // the same file read again: the front as it was found (detected or assumed, and any turn since)
@@ -1319,21 +1314,6 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       (d) => ({ ...d, setup: { ...d.setup, keepFloating: [...new Set([...(d.setup.keepFloating ?? []), ...floatingBodies])].sort((a, b) => a - b) } }),
       { label: COPY.edits.keepFloating },
     );
-  // ---- the parts' colours (`ImportSetup.colors`): drawn and baked, never measured ----
-  const colors = doc?.setup.colors;
-  const colorKey = colors ? JSON.stringify(colors) : '';
-  // keyed on the parts' own arrays and the colours, so the preview rebuilds only when either changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const coloredParts = useMemo(() => (normalised ? withColors(normalised.modelParts, colors) : null), [normalised?.modelParts, colorKey]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const coloredShown = useMemo(() => (normalised?.shownParts ? withColors(normalised.shownParts, colors) : null), [normalised?.shownParts, colorKey]);
-  const colorParts = (bodies: readonly number[], hex: string | null): void => {
-    setColoring(false);
-    if (!bodies.length) return;
-    // the selection goes, as after Delete or Leave out: its tint would hide the colour just picked
-    setSelected([]);
-    update((d) => colorBodies(d, bodies, hex), { label: hex ? COPY.edits.colorParts(bodies.length) : COPY.edits.resetColors });
-  };
   // the mode belongs to the Model step: leaving it ends the mode and drops the selection
   useEffect(() => {
     if (step === 0) return;
@@ -1344,7 +1324,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const deleteRef = useRef<() => void>(() => {});
   deleteRef.current = () => deleteParts(selected);
   useEffect(() => {
-    if (!deletePicking || coloring) return;
+    if (!deletePicking) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const t = e.target as HTMLElement | null;
@@ -1354,7 +1334,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deletePicking, coloring]);
+  }, [deletePicking]);
   /** a click in the preview while selecting: the part joins the selection or leaves it; a click on nothing clears it */
   const onSelectBody = (body: number): void =>
     setSelected((cur) => (body < 0 ? [] : cur.includes(body) ? cur.filter((b) => b !== body) : [...cur, body]));
@@ -1444,8 +1424,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // on Mechanisms, the moving parts on theirs, and all of it on Review
   const previewState = m && normalised
     ? {
-        parts: coloredParts ?? normalised.modelParts,
-        shown: coloredShown,
+        parts: normalised.modelParts,
+        shown: normalised.shownParts ?? null,
         hull: m.hull,
         wheels: step === 0 || step === 1 || step === REVIEW_STEP ? shownWheels : null,
         contacts: step === 0 ? m.wheels.contacts : null,
@@ -1772,11 +1752,6 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                   onRestore: restoreParts,
                   onDeleteFloating: () => deleteParts(floatingBodies),
                   onKeepFloating: keepFloating,
-                  colored: colors ? Object.keys(colors).length : 0,
-                  onColor: () => {
-                    if (selected.length) setColoring(true);
-                  },
-                  onResetColors: () => update(resetColors, { label: COPY.edits.resetColors }),
                 }}
               />
             ) : step === 1 ? (
@@ -1887,16 +1862,6 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             setDialog(null);
             setPhase(null);
           }}
-        />
-      ) : null}
-      {coloring && deletePicking && selected.length && normalised ? (
-        <ColorDialog
-          count={selected.length}
-          initial={bodyColor(normalised.modelParts, selected[0], colors) ?? '#808080'}
-          canReset={!!colors && selected.some((b) => String(b) in colors)}
-          onApply={(hex) => colorParts(selected, hex)}
-          onReset={() => colorParts(selected, null)}
-          onClose={() => setColoring(false)}
         />
       ) : null}
     </>

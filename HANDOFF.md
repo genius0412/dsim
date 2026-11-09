@@ -1,24 +1,4 @@
-# HANDOFF — 2026-11-08d (Recolouring parts: an HSV wheel and hex in Select parts)
-
-**State: branch `importer-identity-pick` (uncommitted on top of 28ac4c5e), importer UI only (client); no sim change, no
-server deploy.** `tsc`, `server:check`, `build` (with `VITE_ROBOT_IMPORT=1`), `uiaudit` (after `uiindex`), `docaudit`,
-`contrast` pass. Smoke: the four new `part colors:` checks and the updated `full detail:` source pin pass; the sharded run
-(6 shards) failed only the three known `imports/cost` sanitise-timing checks (1.05–1.1 ms vs 1 ms, untouched code).
-
-- **Owner:** "in the first menu, where i can select parts to exclude or to delete, i can also edit the color of the
-  parts … a color wheel … hsv wheel … also hex codes". Rules in `docs/area/robot-import.md`, "Recolouring parts".
-- **Model:** `ImportSetup.colors` (body id → `#rrggbb`); `withColors`/`bodyColor`/`parseHex`/`hexToLinear`/`linearToHex`
-  in `geometry.ts`; `colorBodies`/`resetColors` in `editorModel.ts`; dropped by `savedSetup` (baked into the mesh),
-  cleared by a new file and a Detail change, kept by `restoreDoc` across one. Never measured, not in `orientKey`.
-- **UI:** `ColorDialog.tsx` (canvas wheel, Brightness, Hex, Now/New swatches; `.ds-import-color*` in importer.css).
-  Select parts → Color; File colors in the Parts row; Apply drops the selection so the colour shows.
-- **Verified offscreen** (Electron, the STEP fixture, a production build): select a body → Color → wheel click → typed
-  hex → Apply recolours it in the preview ("1 recolored", "Undo: color 1 part"); Undo/Redo; Save robot shows the
-  colour in the robot page picture and the library card; no page errors.
-- **Not covered:** no colour presets/eyedropper; a recolour rebuilds the whole preview mesh (fine at Light, untested on a
-  multi-million-triangle Full model).
-
-# (previous) HANDOFF — 2026-11-08c (Moving parts: pick by identity, box select, Select tool with Delete and Lock)
+# HANDOFF — 2026-11-08c (Moving parts: pick by identity, box select, Select tool with Delete and Lock)
 
 **State: branch `importer-identity-pick` off `alpha`, importer UI only (client); no sim change, no `SIM_PATCH`, no server deploy.** `build` (with `VITE_ROBOT_IMPORT=1`), `tsc`, `uiaudit`, `docaudit`, `contrast` pass; the new smoke checks (identity pick, row select) pass. The full `npm test` was NOT completed: twice the machine ran out of memory (Claude Code reaped the run). The one shared run that finished failed only four `imports/cost` sanitise-timing checks (1.3–2.4 ms vs 1 ms), code this branch does not touch, while another run competed for the CPU. Re-run `npm test` on a quiet machine before merging.
 

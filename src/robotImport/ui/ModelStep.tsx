@@ -37,12 +37,6 @@ export interface PartsControls {
   onRestore: () => void;
   onDeleteFloating: () => void;
   onKeepFloating: () => void;
-  /** bodies with a colour of the player's (`ImportSetup.colors`) */
-  colored: number;
-  /** open the colour picker for the selection */
-  onColor: () => void;
-  /** every body back in its file colour */
-  onResetColors: () => void;
 }
 
 export function ModelStep({
@@ -247,8 +241,8 @@ export function ModelStep({
       <div className="ds-field" id="ri-parts">
         <span className="cap">
           {COPY.parts}
-          {parts.selected || parts.deleted || parts.apart || parts.colored ? (
-            <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted, parts.apart, parts.colored)}</span>
+          {parts.selected || parts.deleted || parts.apart ? (
+            <span>{COPY.partsState(parts.deleting ? parts.selected : 0, parts.deleted, parts.apart)}</span>
           ) : null}
         </span>
         {parts.floating ? (
@@ -278,9 +272,6 @@ export function ModelStep({
           </button>
           {parts.deleting ? (
             <>
-              <button type="button" className="ds-btn small" disabled={!parts.selected} onClick={parts.onColor}>
-                {COPY.colorSelected}
-              </button>
               <button type="button" className="ds-btn small" disabled={!parts.selected} onClick={parts.onLeaveOut}>
                 {COPY.leaveOut}
               </button>
@@ -292,11 +283,6 @@ export function ModelStep({
           {parts.apart ? (
             <button type="button" className="ds-btn ghost small" onClick={parts.onIncludeAll}>
               {COPY.includeAll}
-            </button>
-          ) : null}
-          {parts.colored ? (
-            <button type="button" className="ds-btn ghost small" onClick={parts.onResetColors}>
-              {COPY.colorsReset}
             </button>
           ) : null}
           {parts.deleted ? (

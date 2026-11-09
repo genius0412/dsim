@@ -124,9 +124,7 @@ export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
     setup.removed = current.setup.removed;
     setup.keepFloating = current.setup.keepFloating;
     setup.apart = current.setup.apart;
-    setup.colors = current.setup.colors;
     if (setup.apart === undefined) delete setup.apart;
-    if (setup.colors === undefined) delete setup.colors;
     if (setup.removed === undefined) delete setup.removed;
     if (setup.keepFloating === undefined) delete setup.keepFloating;
   }

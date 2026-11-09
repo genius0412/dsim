@@ -99,8 +99,6 @@ export const COPY = {
     keepFloating: 'keep the floating parts',
     leaveOut: (n: number) => `leave ${n} ${n === 1 ? 'part' : 'parts'} out of the footprint`,
     includeAll: 'include all parts in the footprint',
-    colorParts: (n: number) => `color ${n} ${n === 1 ? 'part' : 'parts'}`,
-    resetColors: 'put back the file colors',
   },
 
   // ---- Model ----
@@ -189,10 +187,8 @@ export const COPY = {
   left: 'Left',
   useDetected: 'Use detected wheels',
   parts: 'Parts',
-  partsState: (selected: number, deleted: number, apart = 0, colored = 0) =>
-    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : '', colored ? `${colored} recolored` : '']
-      .filter(Boolean)
-      .join(', '),
+  partsState: (selected: number, deleted: number, apart = 0) =>
+    [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : ''].filter(Boolean).join(', '),
   floating: (n: number, near: number, far: number) =>
     `${n} ${n === 1 ? 'part floats' : 'parts float'} ${near.toFixed(1)}${far - near >= 0.05 ? ` to ${far.toFixed(1)}` : ''} in away from the robot. Delete ${n === 1 ? 'it' : 'them'}?`,
   floatDelete: 'Delete',
@@ -200,21 +196,10 @@ export const COPY = {
   deleteParts: 'Select parts',
   deleteDone: 'Done',
   deleteSelected: 'Delete selected',
-  colorSelected: 'Color',
-  colorsReset: 'File colors',
-  colorTitle: (n: number) => `Color ${n} ${n === 1 ? 'part' : 'parts'}`,
-  colorWheel: 'Hue and saturation',
-  colorWheelValue: (h: number, s: number) => `Hue ${h} degrees, saturation ${s}%`,
-  colorBrightness: 'Brightness',
-  colorHex: 'Hex',
-  colorWas: 'Now',
-  colorNew: 'New',
-  colorApply: 'Apply',
-  colorReset: 'Use file color',
   leaveOut: 'Leave out of footprint',
   includeAll: 'Include all',
   deleteHint:
-    'Click parts in the preview to select them; click one again to drop it, or click nothing to clear. Drag a box to select many (Ctrl takes them out). Color repaints them. Leave out of footprint keeps a part (a deployed ramp) on the robot but measures the footprint and wheels without it. The Delete key removes them.',
+    'Click parts in the preview to select them; click one again to drop it, or click nothing to clear. Drag a box to select many (Ctrl takes them out). Leave out of footprint keeps a part (a deployed ramp) on the robot but measures the footprint and wheels without it. The Delete key removes them.',
   restoreAll: 'Restore all',
   grabPad: (dpad: string, a: string, b: string) => `Move with ${dpad} or the left stick. ${a} to drop, ${b} to cancel.`,
   grabKeys: 'Arrow keys move it. Hold Shift for small steps. Home puts it back.',
