@@ -364,6 +364,21 @@ export const BB_HIVE_TAGS: Record<Alliance, { north: readonly number[]; south: r
   blue: { north: [42, 43, 44, 45], south: [38, 39, 40, 41] },
 };
 
+/**
+ * THE APRILTAG CLUSTER LAYOUT — §9.9 Fig 9-15 (p75, TU08), dimensions as printed (the drawing
+ * itself is "not to scale"). Used by the 3D sticker (`renderFieldGlb.ts`).
+ *
+ * Across the CELL, each tag's centre from the cluster centreline, ids ascending left to right
+ * seen from below: 2.75 in and 6.5 in either side (pairs 3.75 in apart, 5.5 in between the
+ * inner two). The FTC SDK's `AprilTagGameDatabase` BIOBUZZ cluster has the same numbers.
+ */
+export const BB_TAG_ACROSS_IN: readonly number[] = [-6.5, -2.75, 2.75, 6.5];
+/** the tag row's centreline is 2.75 in above the Reference Hole centreline (Fig 9-15), and the
+ *  holes sit on the sticker's bottom edge, the edge toward the field centre */
+export const BB_TAG_ROW_ABOVE_HOLES_IN = 2.75;
+/** the Reference Hole centreline is 9.938 in from the front (outer face) of the CELL (Fig 9-15) */
+export const BB_TAG_HOLES_FROM_FRONT_IN = 9.938;
+
 /** which CELL faces UP at staging (§10.3.1, Fig 10-2 p83): each HIVE is tilted so the cell
  * that points at a FLOWER is DOWN, which puts red's south cell and blue's north cell up. */
 export const BB_HIVE_UP_STAGED: Record<Alliance, 'north' | 'south'> = { red: 'south', blue: 'north' };

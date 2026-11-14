@@ -371,7 +371,7 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { drawBiobuzzRobot } from '../../src/games/biobuzz/drawRobot';
 import { createWorld as createDecodeWorld } from '../../src/sim/spawn';
 // -- THE PERFORATED CAD SCORING ELEMENTS (2026-09-21), in their own import block --------
-import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
+import { BB_POLLEN_R, BB_TAG_ACROSS_IN, BB_TAG_ROW_ABOVE_HOLES_IN } from '../../src/games/biobuzz/config';
 import { buildBiobuzzElements, setElementDetail, updateBiobuzzElements } from '../../src/games/biobuzz/scene/renderElements';
 import { ELEMENT_RADIUS_TOL_IN } from '../../src/games/biobuzz/scene/renderElementsGlb';
 
@@ -8025,13 +8025,21 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       const keys = new Set(cells.map((c) => c.grid.join('')));
       check('the sixteen bitmaps are all different', keys.size === 16, `${keys.size}`);
 
-      // the manual's own figures, and the one place this pass could not honour Fig 9-15
+      // the manual's own figures (Fig 9-15, p75): tags 2.75 and 6.5 in either side of the
+      // cluster centreline, the row 2.75 in above the Reference Holes on the sticker's bottom edge
       check('a tag is the 3.25in square section 9.9 states', /TAG_SIZE_IN = 3\.25/.test(glbSrc));
       check(
-        'the row pitch clears a tag (Fig 9-15 distilled 2.75in centres would overlap two by half an inch)',
-        /TAG_PITCH_IN = 3\.5/.test(glbSrc),
+        '...measured across the black border (8 cells), as Fig 9-15 dimensions it, not the 10-cell quiet zone',
+        Math.abs(TAG_CELL_IN * 8 - TAG_SIZE_IN) < 1e-9,
+        `${TAG_CELL_IN}in cell`,
       );
-      check('and the pitch is flagged APPROX with the reason', /APPROX -- THE MANUAL'S OWN PITCH CANNOT BE RIGHT|APPROX — THE MANUAL/.test(glbSrc));
+      check(
+        'the tags sit where Fig 9-15 dimensions them: 2.75 and 6.5 in either side of the cluster centre',
+        BB_TAG_ACROSS_IN.join(',') === '-6.5,-2.75,2.75,6.5' && /BB_TAG_ACROSS_IN\[k\]/.test(glbSrc),
+      );
+      check('...the row 2.75 in above the Reference Holes on the sticker\'s bottom edge', BB_TAG_ROW_ABOVE_HOLES_IN === 2.75 && /BB_TAG_ROW_ABOVE_HOLES_IN/.test(glbSrc));
+      const across = BB_TAG_ACROSS_IN.map((x, i, a) => (i ? x - a[i - 1] : Infinity));
+      check('...and no two tags overlap (3.25 in squares)', across.every((d) => d >= 3.25), across.join(','));
 
       // the PLATES are measured, not typed -- the CAD is authoritative for dimensions
       check('the plate rectangles come off the CAD mesh (`facetFrame`), not out of this file', /function facetFrame\(/.test(glbSrc));
@@ -8131,7 +8139,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         pitchIn >= 2 * TAG_CELL_IN,
         `${(pitchIn / TAG_CELL_IN).toFixed(2)} cells per pixel`,
       );
-      // a whole 3.25-in tag lands on ~4.5 px, so a cluster of four is a smudge and not a grid
+      // a whole 3.25-in tag lands on ~3.6 px, so a cluster of four is a smudge and not a grid
       check(
         'a whole tag lands on a handful of pixels',
         TAG_SIZE_IN * TAG_BLEED_PX_PER_IN < 6,
@@ -8478,7 +8486,7 @@ const TAG_LABEL_ROWS = [
 ] as const;
 /** the bleed's shipped tuning, restated here so the checks above test the VALUE rather than
  *  reading the same symbol the renderer does. */
-const TAG_BLEED_PX_PER_IN = 1.4;
+const TAG_BLEED_PX_PER_IN = 1.1;
 const TAG_BLEED_OPACITY_EXPECTED = 0.3;
 const TAG_BLEED_WHITE_EXPECTED = '#f2f4f6';
 const TAG_BLEED_INK_EXPECTED = '#a8b2bc';
