@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { Alliance } from '../../../types';
+import { BB_TAG_ACROSS_IN, BB_TAG_ROW_ABOVE_HOLES_IN } from '../config';
 import { cadCaptureTheta, cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
 
 export interface FieldHiveGroup {
@@ -2235,24 +2236,25 @@ const TAG_LABEL: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', st
 export const TAG_SIZE_IN = 3.25;
 /** §9.9 p74, and what Fig 9-16 letters on the sticker under the cell name. */
 const TAG_FAMILY = '36h11';
-/** one CELL of a 36h11 tag — the tag is 10 of them across, and a DECODER reads one bit per cell.
- *  Exported because the bleed's undecodability is stated against this length. */
-export const TAG_CELL_IN = TAG_SIZE_IN / 10;
-/**
- * ⚠️ APPROX — THE MANUAL'S OWN PITCH CANNOT BE RIGHT AS DISTILLED. `docs/biobuzz-reference.md`
- * §2.2 reads Fig 9-15 as "tags on 2.75-in centres in two pairs 7.0 in apart", and
- * `manual-distilled.md` §9 already flags that line as measured off a drawing rather than stated:
- * 2.75-in centres would overlap two 3.25-in tags by half an inch. 3.5 is the smallest pitch that
- * clears, and it makes the two PAIR centres exactly the 7.0 in the same figure calls out. The
- * row lands 13.75 in wide on the CAD's 17.0005-in plate, 1.63 in clear at each end.
- */
-const TAG_PITCH_IN = 3.5;
+/** one CELL of a 36h11 tag, and a DECODER reads one bit per cell. The 3.25 in is the black
+ *  border, which is 8 cells across (Fig 9-15 dimensions the black square edge to edge); the white
+ *  quiet-zone ring outside it makes the whole tag 10 cells. This used to divide by 10, which
+ *  drew the black square 2.6 in. Exported because the bleed's undecodability is stated against
+ *  this length. */
+export const TAG_CELL_IN = TAG_SIZE_IN / 8;
+/** the whole tag, quiet zone included: 10 cells, 4.0625 in. Neighbours' quiet zones overlap
+ *  (Fig 9-15 leaves 0.5 in between black squares), which is harmless: only black is painted. */
+const TAG_TOTAL_IN = TAG_CELL_IN * 10;
+// THE CLUSTER LAYOUT (where each tag sits on its sticker) is Fig 9-15's, in config.ts:
+// `BB_TAG_ACROSS_IN` across the cell, and the row `BB_TAG_ROW_ABOVE_HOLES_IN` above the Reference
+// Holes, which sit on the sticker's bottom (field-centre) edge. (This used to draw an even 3.5 in
+// pitch, a guess from a misread of the figure, which put the outer tags 1.25 in off.)
 /** px per tag CELL — the tag is drawn on integer cell boundaries so `NearestFilter` keeps the
- * bits square. 12 puts a 3.25-in tag at 120 px. */
+ * bits square. 12 puts the 3.25-in black square at 96 px (120 px with its quiet zone). */
 const TAG_CELL_PX = 12;
 
 function tagClusterTexture(ids: readonly number[], label: string, plateW: number, plateH: number): THREE.CanvasTexture {
-  const pxPerIn = (TAG_CELL_PX * 10) / TAG_SIZE_IN;
+  const pxPerIn = TAG_CELL_PX / TAG_CELL_IN;
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(plateW * pxPerIn);
   canvas.height = Math.round(plateH * pxPerIn);
@@ -2260,16 +2262,18 @@ function tagClusterTexture(ids: readonly number[], label: string, plateW: number
   if (!ctx) throw new Error('tagClusterTexture: no 2d context');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // ⚠️ THE ROW SITS LOW ON THE CANVAS, AND THAT IS THE ORIENTATION RULE, NOT A MARGIN CHOICE.
+  // ⚠️ THE CANVAS BOTTOM IS THE STICKER'S BOTTOM EDGE, AND THAT IS THE ORIENTATION RULE.
   // §9.9 p75: the cluster faces down "with its bottom edge oriented towards the center of the
   // FIELD". The quad this paints has its +y (canvas TOP, v = 1) pointing AWAY from the field
   // centre, so canvas-down IS field-centre-ward and an upright tag's bottom edge already points
-  // the right way. The label takes the wider margin that leaves.
+  // the right way. Fig 9-15: the Reference Holes on that edge, the tag row's centre 2.75 in above
+  // them; the label goes in the band below the tags, where the figure prints it.
   const tagPx = TAG_CELL_PX * 10;
-  const top = Math.round(canvas.height - 0.4 * pxPerIn - tagPx);
+  const rowCentreIn = plateH - BB_TAG_ROW_ABOVE_HOLES_IN; // from the canvas top
+  const top = Math.round(rowCentreIn * pxPerIn - tagPx / 2);
   for (let k = 0; k < ids.length; k++) {
     const cells = apriltag36h11Cells(ids[k]);
-    const left = Math.round((plateW / 2 + (k - (ids.length - 1) / 2) * TAG_PITCH_IN) * pxPerIn - tagPx / 2);
+    const left = Math.round((plateW / 2 + BB_TAG_ACROSS_IN[k]) * pxPerIn - tagPx / 2);
     ctx.fillStyle = '#000000';
     for (let r = 0; r < 10; r++) {
       for (let c = 0; c < 10; c++) {
@@ -2284,14 +2288,16 @@ function tagClusterTexture(ids: readonly number[], label: string, plateW: number
   // not carry. The IDs are on the tags.
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const nameSize = Math.round(0.6 * pxPerIn);
-  const familySize = Math.round(0.4 * pxPerIn);
+  const nameSize = Math.round(0.4 * pxPerIn);
+  const familySize = Math.round(0.28 * pxPerIn);
+  // the middle of the band between the black borders' bottom edge (cell row 9) and the sticker's
+  const band = (top + 9 * TAG_CELL_PX + canvas.height) / 2;
   ctx.fillStyle = '#1b1f24';
   ctx.font = `700 ${nameSize}px system-ui, sans-serif`;
-  ctx.fillText(label, canvas.width / 2, top / 2 - familySize * 0.7);
+  ctx.fillText(label, canvas.width / 2, band - familySize * 0.7);
   ctx.fillStyle = '#3c4450';
   ctx.font = `500 ${familySize}px system-ui, sans-serif`;
-  ctx.fillText(`Tag family: ${TAG_FAMILY}`, canvas.width / 2, top / 2 + nameSize * 0.7);
+  ctx.fillText(`Tag family: ${TAG_FAMILY}`, canvas.width / 2, band + nameSize * 0.7);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.magFilter = THREE.NearestFilter;
@@ -2312,12 +2318,12 @@ function tagClusterTexture(ids: readonly number[], label: string, plateW: number
  * ⚠️ **IT MUST NOT BE DECODABLE FROM THE WRONG SIDE, AND THAT IS ENFORCED AT RASTER TIME, NOT BY
  * TURNING THE OPACITY DOWN.** A faint but crisp copy still carries all 36 bits: a detector
  * thresholds, it does not care how grey the ink is. So the bleed canvas is rasterized at
- * `TAG_BLEED_PX_PER_IN`, a pitch of 0.714 in against a tag CELL of 0.325 — **2.2 cells per
+ * `TAG_BLEED_PX_PER_IN`, a pitch of 0.909 in against a tag CELL of 0.406 — **2.2 cells per
  * pixel**. The bits are averaged away by the rasterizer before the texture exists; there is no
  * resolution at which they come back, and `LinearFilter` on the way up smears what is left.
  * The RENDER lane checks that ratio rather than the opacity, because the ratio is the guarantee.
  */
-const TAG_BLEED_PX_PER_IN = 1.4;
+const TAG_BLEED_PX_PER_IN = 1.1;
 /** how much of the bleed quad shows. Against the crisp sticker's opaque decal this is a whisper;
  *  it is the SECOND line of defence, and the raster pitch above is the first. */
 const TAG_BLEED_OPACITY = 0.3;
@@ -2340,13 +2346,13 @@ function tagBleedTexture(ids: readonly number[], plateW: number, plateH: number)
   // and the dark cells, laid down at the same sub-cell pitch the row is. Each `fillRect` here is
   // a fraction of a pixel wide, so the rasterizer's own coverage blending is what destroys the
   // code; nothing is drawn at bit resolution and then blurred.
-  const tagIn = TAG_SIZE_IN;
+  const tagIn = TAG_TOTAL_IN; // the 10-cell grid, quiet zone included, centred like the sticker's
   const cellIn = TAG_CELL_IN;
-  const topIn = plateH - 0.4 - tagIn;
+  const topIn = plateH - BB_TAG_ROW_ABOVE_HOLES_IN - tagIn / 2;
   ctx.fillStyle = TAG_BLEED_INK;
   for (let k = 0; k < ids.length; k++) {
     const cells = apriltag36h11Cells(ids[k]);
-    const leftIn = plateW / 2 + (k - (ids.length - 1) / 2) * TAG_PITCH_IN - tagIn / 2;
+    const leftIn = plateW / 2 + BB_TAG_ACROSS_IN[k] - tagIn / 2;
     for (let r = 0; r < 10; r++) {
       for (let c = 0; c < 10; c++) {
         if (cells[r * 10 + c] !== 0) continue;
