@@ -29,7 +29,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # the version the game server's Dockerfile builds with
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -38,6 +39,11 @@ jobs:
       - run: npm run build
         env:
           ELECTRON: '1'
+
+      # the LAN host's self-contained server (electron/lanHost.cjs). `build.files` lists
+      # it, and electron-builder packages a missing file without a word, so a release
+      # without this step installs a desktop app whose Host LAN button cannot start.
+      - run: npm run server:bundle
 
       # package for the host OS and upload to this tag's GitHub Release. The release
       # is created as a DRAFT (build.publish.releaseType) so `releases/latest` keeps

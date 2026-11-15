@@ -1,6 +1,5 @@
-const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, net } = require('electron');
 const path = require('path');
-const https = require('https');
 const fs = require('fs');
 const lanHost = require('./lanHost.cjs');
 
@@ -137,30 +136,46 @@ async function loadApp(win) {
   }
 }
 
-// A short HEAD probe so a truly-offline launch falls back to the bundle FAST
-// instead of waiting out a TCP timeout. Resolves true only on an actual HTTP
-// response from the site (any < 500 status = reachable).
-function siteReachable() {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => {
-      if (!done) {
-        done = true;
-        resolve(v);
-      }
-    };
-    const req = https.request(
+/**
+ * IS THE LIVE SITE REACHABLE? A HEAD probe, so a truly-offline launch falls back to the
+ * bundle fast. Any status < 500 counts as reachable.
+ *
+ * ⚠️ IT GOES THROUGH CHROMIUM'S NETWORK STACK (`net.fetch`), THE ONE `loadURL` USES. It used
+ * to be Node's `https`, which ignores the system proxy (and its PAC script) and the Windows
+ * certificate store. On a school or office network with a proxy or TLS inspection, the probe
+ * failed while the site opened fine in a browser, and the app fell back to the copy bundled
+ * in the installer: v0.1.3 shipped a July 2026 build with no BIOBUZZ, and players reported the
+ * app "not having BIOBUZZ 3D". Asking the stack that will load the page means the two agree.
+ *
+ * `PROBE_MS` bounds only a network that connects and then stalls: with no network at all
+ * `net.isOnline()` answers at once. It was 2.5 s; the splash covers the wait now, and a slow
+ * first TLS handshake is not a reason to show a months-old build.
+ */
+const PROBE_MS = 5000;
+
+/** `net.fetch` with a deadline. Rejects on timeout like any other network failure. */
+async function fetchWithin(url, init, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    return await net.fetch(url, { ...init, signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function siteReachable() {
+  if (!net.isOnline()) return false;
+  try {
+    const res = await fetchWithin(
       `${SITE}/version.json`,
-      { method: 'HEAD', timeout: 2500, headers: { 'User-Agent': 'DSIM-desktop' } },
-      (res) => {
-        res.resume();
-        finish(res.statusCode > 0 && res.statusCode < 500);
-      },
+      { method: 'HEAD', headers: { 'User-Agent': 'DSIM-desktop' } },
+      PROBE_MS,
     );
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => finish(false));
-    req.end();
-  });
+    return res.status > 0 && res.status < 500;
+  } catch {
+    return false;
+  }
 }
 
 // ---- persisted preferences (userData) -----------------------------------
@@ -236,31 +251,17 @@ function cmpSemver(a, b) {
   return 0;
 }
 
-function fetchLatestTag() {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      LATEST_API,
-      { headers: { 'User-Agent': 'DSIM-desktop', Accept: 'application/vnd.github+json' }, timeout: 8000 },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`GitHub ${res.statusCode}`));
-          return;
-        }
-        let body = '';
-        res.on('data', (c) => (body += c));
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(body).tag_name || '');
-          } catch (e) {
-            reject(e);
-          }
-        });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-  });
+/** the latest release's tag. Through `net.fetch` for the reason `siteReachable` is: on a
+ * network that needs the system proxy, Node's `https` never reached GitHub, so the players
+ * most in need of a new build were the ones never told about it. */
+async function fetchLatestTag() {
+  const res = await fetchWithin(
+    LATEST_API,
+    { headers: { 'User-Agent': 'DSIM-desktop', Accept: 'application/vnd.github+json' } },
+    8000,
+  );
+  if (res.status !== 200) throw new Error(`GitHub ${res.status}`);
+  return (await res.json()).tag_name || '';
 }
 
 /** { current, latest, updateAvailable } — or throws on network failure. */
