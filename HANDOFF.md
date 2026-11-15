@@ -1,3 +1,31 @@
+# HANDOFF — 2026-11-15 (Desktop app opened a July build: no BIOBUZZ, no 3D)
+
+**State: on `alpha` (desktop shell + release workflow only; no client, sim or server change). Cherry-picked onto
+branch `desktop-0.1.4-main` (worktree `.claude/worktrees/desktop-0.1.4-main`), NOT pushed to `main`, NOT tagged.**
+
+- **Report: users say the DSIM app does not have BIOBUZZ 3D.** The web has it (main serves it, the
+  production server advertises `bb3d`), and the shell loads the live site, so a normal launch has it too.
+  The gap is the FALLBACK: `siteReachable()` probed with Node's `https`, which ignores the system proxy/PAC and
+  the Windows certificate store. On a school or office network the probe failed while the site opened in a
+  browser, and the app loaded the copy bundled in the installer. The only release is v0.1.3 (2026-07-24):
+  bundle build `11cba15`, DECODE + Chain Reaction, no BIOBUZZ.
+- **Fixed in `electron/main.cjs`:** the probe and the update check use `net.fetch` (Chromium's stack, the one
+  `loadURL` uses). Probe deadline 5 s (was 2.5). Verified hidden/offscreen: with a local CONNECT proxy as
+  `--proxy-server`, `net.fetch` goes through it and Node `https` to the same URL does not; with a dead proxy the
+  shell still falls back to the bundle; normally it loads www.playdsim.com and `dsim.check()` answers.
+- **`.github/workflows/release.yml`** now runs `npm run server:bundle` (`dist-server/lan.mjs`, the desktop LAN
+  host, is in `build.files` and CI never built it) and Node 22. `package.json` 0.1.4.
+- **Packaged locally** (`electron-builder --win --dir --publish never` on the main branch): the asar holds build
+  `831f00e1`, BIOBUZZ, the 3D physics, the field GLBs and `lan.mjs`. Offline, that bundle starts a BIOBUZZ free
+  drive in 3D at 60 fps (`fetch` of `file://` GLBs works in Electron 43; only the photo HDRI falls back).
+- ⚠️ **v0.1.3 users keep the old shell until they reinstall.** It is a thin shell, but the probe lives in it.
+  Shell work no desktop user has yet: the sponsor splash, LAN hosting, the Google sign-in pop-up, unlimited FPS.
+
+## Next steps
+1. **Owner's go-ahead:** push `desktop-0.1.4-main` to `main`, then `git tag v0.1.4 && git push origin v0.1.4`.
+   The workflow builds Windows/macOS/Linux and publishes the release; `/download/*` then serves 0.1.4.
+2. Tell desktop players to reinstall from playdsim.com/download (the July shell never prompts on a proxied network).
+
 # HANDOFF — 2026-11-09c (A flower ramp no longer carries the intake rollers)
 
 **State: on `alpha`, importer only (client); no sim change, no server deploy.** `MOTION_FINDER` 10. `npm test` (shared 5170, BIOBUZZ 6334), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` and `bundleaudit:importer` pass (`importer` baseline 106.20 → 110.24: the commit before measured 110.09, this adds 0.15). importpad and the undo probe were not rerun (the change is in the finders, which smoke covers).
