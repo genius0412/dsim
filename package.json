@@ -1,7 +1,7 @@
 {
   "name": "2ddecodesim",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "DSIM: an online 2D driving simulator for FIRST Tech Challenge.",
   "author": "genius0412",
   "type": "module",
@@ -45,7 +45,8 @@
     "server:check": "tsc -p tsconfig.server.json",
     "typecheck:nozenith": "tsc -p tsconfig.nozenith.json",
     "electron": "electron .",
-    "dist": "set ELECTRON=1&& npm run build && npm run server:bundle && electron-builder --win",
+    "desktop:bundle": "esbuild electron/updater-entry.cjs --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/updater.cjs --log-level=warning",
+    "dist": "set ELECTRON=1&& npm run build && npm run server:bundle && npm run desktop:bundle && electron-builder --win",
     "dbtest": "tsx scripts/dbtest.ts",
     "sync:alpha": "tsx scripts/sync-alpha-db.ts",
     "adminharness": "tsx scripts/adminharness.ts",
@@ -69,7 +70,9 @@
     "files": [
       "dist/**/*",
       "dist-server/lan.mjs",
+      "dist-electron/updater.cjs",
       "electron/**/*",
+      "!electron/updater-entry.cjs",
       "!node_modules/**/*"
     ],
     "directories": {
@@ -141,6 +144,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3",
+    "electron-updater": "6.8.11",
     "esbuild": "^0.25.12",
     "meshoptimizer": "1.1.1",
     "occt-import-js": "0.0.23",

@@ -239,11 +239,59 @@ if (UNLIMITED_FPS_ACTIVE) {
   app.commandLine.appendSwitch('disable-gpu-vsync');
 }
 
-// ---- update check -------------------------------------------------------
-// We compare this app's version to the latest GitHub release tag. Actual install
-// is a one-click trip to the download page — we deliberately do NOT auto-INSTALL:
-// Squirrel.Mac auto-update needs a code-signed app and this build is unsigned, so
-// check-and-notify behaves identically on Windows, macOS, and Linux.
+// ---- updates ------------------------------------------------------------
+/**
+ * THE APP UPDATES ITSELF (owner, 2026-11-16: "make sure that we never have to release a new
+ * version again. No matter what we do"). `.github/workflows/release.yml` publishes a release
+ * on every push to main that changes what ships in the app; this downloads it in the
+ * background and installs it when the player closes the app. The next launch is the new shell
+ * AND a new bundled offline copy. Nobody tags, uploads or reinstalls anything.
+ *
+ * WHERE IT CANNOT INSTALL, `updater` stays null and the app keeps the old behaviour: a notice
+ * and the download page.
+ *  - macOS: Squirrel.Mac refuses an update to an unsigned app, and this build is unsigned
+ *    (`mac.identity: null`). Fixing that needs an Apple Developer ID.
+ *  - the portable exe: nothing is installed, so there is nothing to install over.
+ *  - an unpackaged run (`npm run electron`): there is no release to compare it to.
+ *
+ * It is electron-updater, bundled into `dist-electron/updater.cjs` by `npm run desktop:bundle`
+ * because the package ships no node_modules. Its requests go through Electron's `net`, so the
+ * system proxy applies (see `siteReachable`), and it checks the release's sha512 before
+ * installing. The NSIS uninstaller skips `deleteAppDataOnUninstall` when it runs as part of an
+ * update, so settings and the sign-in survive one.
+ */
+const UPDATE_EVERY_MS = 4 * 60 * 60 * 1000;
+let updater = null;
+/** the version downloaded and waiting for the app to close, or null */
+let readyVersion = null;
+
+function loadUpdater() {
+  if (!app.isPackaged || process.platform === 'darwin' || process.env.PORTABLE_EXECUTABLE_DIR) return null;
+  if (process.platform === 'linux' && !process.env.APPIMAGE) return null;
+  try {
+    const { autoUpdater } = require(path.join(__dirname, '..', 'dist-electron', 'updater.cjs'));
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.logger = null;
+    autoUpdater.on('update-downloaded', (info) => {
+      readyVersion = info.version;
+    });
+    // a failed check or download is simply tried again at the next check
+    autoUpdater.on('error', () => {});
+    return autoUpdater;
+  } catch {
+    return null; // a package built without the bundle still has the notice-and-download path
+  }
+}
+
+/** quit now and install the downloaded update, then relaunch. False when nothing is ready. */
+function installUpdate() {
+  if (!updater || !readyVersion) return false;
+  // after this reply reaches the renderer: quitAndInstall closes every window, its own included
+  setImmediate(() => updater.quitAndInstall(true, true));
+  return true;
+}
+
 function cmpSemver(a, b) {
   const pa = String(a).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
   const pb = String(b).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
@@ -264,14 +312,39 @@ async function fetchLatestTag() {
   return (await res.json()).tag_name || '';
 }
 
-/** { current, latest, updateAvailable } — or throws on network failure. */
+/**
+ * `{ current, latest, updateAvailable, mode, ready }`, or throws on a network failure.
+ * `mode` is `'auto'` where this app installs updates itself and `'manual'` where it can only
+ * point at the download page. `ready`: an update is downloaded and installs when the app closes.
+ * In `'auto'` mode the check also STARTS the download.
+ */
 async function checkLatest() {
   const current = app.getVersion();
+  if (updater) {
+    const r = await updater.checkForUpdates();
+    // the download runs on after this returns; a failure there is the 'error' event's business
+    r?.downloadPromise?.catch(() => {});
+    const latest = r?.updateInfo?.version || null;
+    return {
+      current,
+      latest,
+      updateAvailable: !!latest && cmpSemver(latest, current) > 0,
+      mode: 'auto',
+      ready: !!readyVersion && cmpSemver(readyVersion, current) > 0,
+    };
+  }
   const latest = (await fetchLatestTag()).replace(/^v/, '');
-  return { current, latest: latest || null, updateAvailable: !!latest && cmpSemver(latest, current) > 0 };
+  return {
+    current,
+    latest: latest || null,
+    updateAvailable: !!latest && cmpSemver(latest, current) > 0,
+    mode: 'manual',
+    ready: false,
+  };
 }
 
-/** interactive (menu/launch) path: native dialog + optional open-download. */
+/** the menu item (`interactive`) and the background checks. The background path never opens a
+ * dialog in `'auto'` mode: the update installs when the app closes. */
 async function promptUpdate(interactive) {
   let r;
   try {
@@ -280,8 +353,37 @@ async function promptUpdate(interactive) {
     if (interactive) {
       dialog.showMessageBox({
         type: 'warning',
-        message: 'Could not check for updates',
-        detail: 'Please try again later, or visit playdsim.com.',
+        message: 'Couldn’t check for updates.',
+        detail: 'Check your connection and try again, or get the latest version at playdsim.com/download.',
+        buttons: ['OK'],
+      });
+    }
+    return;
+  }
+  if (r.mode === 'auto') {
+    if (!interactive) return;
+    if (r.ready) {
+      const { response } = await dialog.showMessageBox({
+        type: 'info',
+        message: `DSIM ${readyVersion} is ready to install.`,
+        detail: 'Restart now, or it installs the next time you close DSIM.',
+        buttons: ['Restart now', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (response === 0) installUpdate();
+    } else if (r.updateAvailable) {
+      dialog.showMessageBox({
+        type: 'info',
+        message: `Downloading DSIM ${r.latest}.`,
+        detail: 'It installs the next time you close DSIM.',
+        buttons: ['OK'],
+      });
+    } else {
+      dialog.showMessageBox({
+        type: 'info',
+        message: 'You’re up to date.',
+        detail: `DSIM ${r.current} is the latest version.`,
         buttons: ['OK'],
       });
     }
@@ -310,6 +412,7 @@ async function promptUpdate(interactive) {
 // ---- renderer bridge (see electron/preload.cjs) -------------------------
 ipcMain.handle('dsim:version', () => app.getVersion());
 ipcMain.handle('dsim:check', () => checkLatest()); // in-app UI: returns the result, no dialog
+ipcMain.handle('dsim:installUpdate', () => installUpdate());
 ipcMain.handle('dsim:getAuto', () => getAutoCheck());
 ipcMain.handle('dsim:setAuto', (_e, v) => {
   setAutoCheck(v);
@@ -453,10 +556,18 @@ app.whenReady().then(() => {
   // reachability probe and the site load behind it
   showSplash();
   createWindow();
+  updater = loadUpdater();
   // quiet check shortly after launch, only if auto-check is enabled
   setTimeout(() => {
     if (getAutoCheck()) promptUpdate(false);
   }, 3000);
+  // and again while a long session stays open. Only where the app installs updates itself:
+  // the manual path's check is a dialog, and one every four hours is nagging.
+  if (updater) {
+    setInterval(() => {
+      if (getAutoCheck()) promptUpdate(false);
+    }, UPDATE_EVERY_MS);
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

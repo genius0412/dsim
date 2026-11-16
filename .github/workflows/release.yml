@@ -1,29 +1,88 @@
 name: Release desktop build
 
-# Build the desktop app for Windows, macOS, and Linux and publish them to a
-# GitHub Release whenever a version tag is pushed (e.g.
-# `git tag v0.1.0 && git push --tags`). electron-builder uploads assets under the
-# stable names DSIM-Setup.exe / DSIM-Portable.exe / DSIM-mac.dmg /
-# DSIM-linux.AppImage, which the Download page links to via
-# releases/latest/download/<asset>. Uses the built-in GITHUB_TOKEN — no secrets
-# to configure (macOS build is unsigned: `mac.identity: null`).
+# THE DESKTOP APP RELEASES ITSELF (owner, 2026-11-16: "make sure that we never have to release a
+# new version again. No matter what we do"). Every push to main that changes what ships inside
+# the app builds Windows, macOS and Linux and publishes a GitHub Release, and the installed app
+# downloads it in the background and installs it when the player closes it (electron/main.cjs,
+# `loadUpdater`). Nobody bumps a version, pushes a tag or uploads anything.
+#
+#  - VERSION: 0.2.<run number>, set on the build only. package.json keeps 0.2.0 for local builds.
+#    Windows caps each part of a file version at 65535, so the number has to stay small.
+#  - The release is a DRAFT, pinned to the built commit, until all three builds have uploaded,
+#    so `releases/latest` (the Download page and every updater) never points at a release with
+#    an asset missing. A failed build leaves its draft behind; the next run deletes it.
+#  - Assets keep the stable names DSIM-Setup.exe / DSIM-Portable.exe / DSIM-mac.dmg /
+#    DSIM-linux.AppImage that `/download/<asset>` proxies, plus the latest*.yml and .blockmap
+#    files the updater reads (the blockmaps make an update a partial download).
+#  - The newest 15 automatic releases are kept. An update downloads only the blocks that
+#    changed when the installed version's release still exists, and the whole installer when it
+#    does not.
+#  - Run it by hand (Actions > Release desktop build > Run workflow) on any other branch for a
+#    dry run: it builds all three and publishes nothing.
+#
+# Uses the built-in GITHUB_TOKEN. macOS is unsigned (`mac.identity: null`), so Mac users are told
+# about an update and sent to the download page instead of getting it installed.
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    # what does NOT ship inside the app. Ignoring rather than listing on purpose: a new folder
+    # the app starts to depend on still triggers a release.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'cm.pdf'
+      - 'fly.toml'
+      - 'fly.alpha.toml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'router/**'
+      - 'api/**'
+      - 'vercel.json'
+      - 'skills-lock.json'
+      - '.claude/**'
+      - '.agents/**'
+      - '.serena/**'
+      - '.impeccable/**'
+      - 'scripts/fly-deploy.sh'
   workflow_dispatch: {}
+
+# one release at a time; a push during a run waits, and a later push replaces a waiting one
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  PUBLISH: ${{ github.ref == 'refs/heads/main' }}
+  VERSION: 0.2.${{ github.run_number }}
+
 jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open the draft release on this commit
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create "v$VERSION" --repo "${{ github.repository }}" --draft
+          --target "${{ github.sha }}" --title "DSIM $VERSION"
+          --notes "Desktop build of ${{ github.sha }}. Installed apps update themselves."
+
   build:
+    needs: draft
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # the private Zenith tarballs, when the repository has the secret (docs/area/autos.md).
+      # Without it the bundled offline copy is built with the stand-ins and has no autonomous.
+      HAS_ZENITH: ${{ secrets.ZENITH_VENDOR_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,35 +92,63 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Fetch the Zenith tarballs
+        if: env.HAS_ZENITH == 'true' && hashFiles('scripts/fetch-zenith.mjs') != ''
+        env:
+          ZENITH_VENDOR_REPO: ${{ secrets.ZENITH_VENDOR_REPO }}
+          ZENITH_VENDOR_TOKEN: ${{ secrets.ZENITH_VENDOR_TOKEN }}
+        run: node scripts/fetch-zenith.mjs
+
       - run: npm ci
+
+      - name: Stamp the version
+        run: npm version "${{ env.VERSION }}" --no-git-tag-version --allow-same-version
 
       # web bundle with the relative base the Electron shell needs under file://
       - run: npm run build
         env:
           ELECTRON: '1'
+          ZENITH_REQUIRED: ${{ env.HAS_ZENITH == 'true' && '1' || '0' }}
 
-      # the LAN host's self-contained server (electron/lanHost.cjs). `build.files` lists
-      # it, and electron-builder packages a missing file without a word, so a release
-      # without this step installs a desktop app whose Host LAN button cannot start.
+      # the LAN host's self-contained server (electron/lanHost.cjs). `build.files` lists it,
+      # and electron-builder skips a listed file that does not exist, so a release without this
+      # step installs a desktop app whose Host LAN button cannot start.
       - run: npm run server:bundle
 
-      # package for the host OS and upload to this tag's GitHub Release. The release
-      # is created as a DRAFT (build.publish.releaseType) so `releases/latest` keeps
-      # serving the PREVIOUS version while the three OS jobs upload — no window where
-      # a download 404s because its asset isn't up yet.
-      - run: npx electron-builder --publish always
+      # electron-updater, bundled for the same reason (the package ships no node_modules).
+      # Without it the app cannot update itself, and nothing else would say so.
+      - run: npm run desktop:bundle
+
+      - name: Package and upload to the draft
+        if: env.PUBLISH == 'true'
+        run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Flip the draft live ONLY after all three OS builds have uploaded, so every
-  # platform's asset appears atomically. Still fully automatic — no manual gate.
+      - name: Package only (dry run)
+        if: env.PUBLISH != 'true'
+        run: npx electron-builder --publish never
+
+  # Flip the draft live ONLY after all three OS builds have uploaded, so every platform's asset
+  # appears at once, then prune.
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
     steps:
-      - env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
+      - run: gh release edit "v$VERSION" --repo "$REPO" --draft=false --latest
+
+      - name: Delete stale drafts and all but the newest 15 automatic releases
+        run: |
+          gh release list --repo "$REPO" --limit 200 --json tagName,isDraft,createdAt > releases.json
+          # drafts other than this run's: a run that failed part-way. Runs never overlap
+          # (`concurrency`), so no other draft can still be in use.
+          jq -r --arg v "v$VERSION" '.[] | select(.isDraft and .tagName != $v) | .tagName' releases.json |
+            while read -r t; do gh release delete "$t" --repo "$REPO" --yes; done
+          # only the automatic ones (v0.2.*); the hand-made v0.1.x releases are left alone
+          jq -r '[.[] | select((.isDraft | not) and (.tagName | startswith("v0.2.")))]
+                 | sort_by(.createdAt) | reverse | .[15:] | .[].tagName' releases.json |
+            while read -r t; do gh release delete "$t" --repo "$REPO" --yes --cleanup-tag; done

@@ -633,7 +633,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/importer.css:324 | 246 |
+| `.ds-hint` | src/ui/importer.css:324 | 247 |
 | `.ds-hint-caption` | src/ui/shell.css:4830 | 1 |
 
 ## `ds-homestats` — 2
@@ -792,7 +792,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1026 | 401 |
+| `.ds-btn` | src/ui/shell.css:1026 | 402 |
 
 ## `ds-checkline` — 1
 

@@ -32,13 +32,34 @@ export interface DesktopPerfState {
   active: boolean;
 }
 
+/**
+ * What `check()` answers. `mode` and `ready` arrived with the self-updating shell (0.2); an older
+ * shell leaves them out, which reads as `'manual'` and not ready.
+ *  - `mode: 'auto'`: the app downloads updates itself and installs them when it closes.
+ *  - `mode: 'manual'`: it can only point at the download page (macOS, the portable exe).
+ *  - `ready`: an update is downloaded and waiting; `installUpdate()` applies it now.
+ */
+export interface DesktopUpdateCheck {
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  mode?: 'auto' | 'manual';
+  ready?: boolean;
+}
+
 export interface DesktopBridge {
   isDesktop: true;
   version(): Promise<string>;
-  check(): Promise<{ current: string; latest: string | null; updateAvailable: boolean }>;
+  check(): Promise<DesktopUpdateCheck>;
   getAutoCheck(): Promise<boolean>;
   setAutoCheck(v: boolean): Promise<boolean>;
   openDownload(): Promise<void>;
+  /**
+   * QUIT, INSTALL THE DOWNLOADED UPDATE AND RELAUNCH (`dsim:installUpdate`). Resolves false when
+   * nothing is downloaded. OPTIONAL for the reason `lan` is: shells before 0.2 cannot update
+   * themselves at all.
+   */
+  installUpdate?(): Promise<boolean>;
   /**
    * HOST A LAN GAME. OPTIONAL, because a desktop build older than this feature has a
    * preload that never defined it — and the desktop app loads the LIVE site whenever it is

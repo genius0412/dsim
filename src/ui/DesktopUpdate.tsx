@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react';
-import { desktop } from '../desktop';
+import { desktop, type DesktopUpdateCheck } from '../desktop';
 import { ToggleRow } from './OptRow';
 
 /**
  * Desktop-app panel: build version, a manual "Check for updates" button, and an
- * "auto-check" toggle. Renders nothing on the web (no `window.dsim`). Actual
- * install is a one-click trip to the download page — silent auto-install needs a
- * code-signed macOS build, which this unsigned build can't do.
+ * "auto-check" toggle. Renders nothing on the web (no `window.dsim`).
+ *
+ * From shell 0.2 the app installs its own updates (`electron/main.cjs`, `loadUpdater`): a check
+ * starts the download, and a downloaded update installs when the app closes or on "Restart to
+ * update". Where it cannot (macOS is unsigned, the portable exe, any shell before 0.2) the check
+ * answers `mode: 'manual'` or nothing at all, and the panel offers the download page as before.
  */
 export function DesktopUpdate() {
   const d = desktop();
   const [version, setVersion] = useState<string | null>(null);
   const [autoCheck, setAutoCheck] = useState(true);
   const [checking, setChecking] = useState(false);
-  const [result, setResult] = useState<{ latest: string | null; updateAvailable: boolean } | null>(null);
+  const [result, setResult] = useState<DesktopUpdateCheck | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -61,10 +64,17 @@ export function DesktopUpdate() {
           <button className="ds-btn" onClick={check} disabled={checking}>
             {checking ? 'Checking…' : 'Check for updates'}
           </button>
-          {result?.updateAvailable && (
-            <button className="ds-btn primary" onClick={() => void d.openDownload()}>
-              Download v{result.latest} ↓
+          {result?.ready && d.installUpdate ? (
+            <button className="ds-btn primary" onClick={() => void d.installUpdate?.()}>
+              Restart to update
             </button>
+          ) : (
+            result?.updateAvailable &&
+            result.mode !== 'auto' && (
+              <button className="ds-btn primary" onClick={() => void d.openDownload()}>
+                Download v{result.latest} ↓
+              </button>
+            )
           )}
         </div>
 
@@ -74,6 +84,9 @@ export function DesktopUpdate() {
         {error && <p className="ds-hint err">Couldn’t reach the update server. Try again.</p>}
         {result && !result.updateAvailable && (
           <p className="ds-hint ok">You’re on the latest version.</p>
+        )}
+        {result?.updateAvailable && result.mode === 'auto' && !result.ready && (
+          <p className="ds-hint">Downloading v{result.latest}. It installs when you close DSIM.</p>
         )}
       </div>
     </div>

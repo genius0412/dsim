@@ -653,6 +653,30 @@ say, and anything that honours it over the CSP blocks the activity. Every browse
 `X-Frame-Options` but NOT `frame-ancestors` is too old to run this app at all — the physics is
 WebAssembly and the bundle is ESM — so nothing real loses cover.
 
+## 2b. Desktop app — releases itself (2026-11-16)
+
+⚠️ **A PUSH TO `main` PUBLISHES A DESKTOP RELEASE** unless it only touches what the app does not
+ship (`paths-ignore` in `.github/workflows/release.yml`: docs, markdown, Fly/router/Vercel files).
+CI builds Windows, macOS and Linux as `v0.2.<run number>`, publishes, and keeps the newest 15.
+Installed apps (0.2 and later) download it in the background and install it when the player closes
+the app. Nobody tags or uploads anything, and there is no version to bump.
+
+- **Dry run:** Actions > Release desktop build > Run workflow on any branch other than `main`
+  builds all three and publishes nothing.
+- **What updates itself:** the Windows installer and the Linux AppImage. macOS is unsigned, so a
+  Mac player is told and sent to the download page; so is the portable exe. Silent Mac updates
+  need an Apple Developer ID (`mac.identity`).
+- **Zenith:** with the repository secrets `ZENITH_VENDOR_REPO` + `ZENITH_VENDOR_TOKEN` the bundled
+  offline copy has autonomous; without them it builds with the stand-ins.
+- **Shells before 0.2 cannot update themselves.** v0.1.3 (July 2026) is told by its own launch check
+  once a newer release exists. A v0.1.3 that fell back to its bundled copy (a proxied network) is
+  told by the server instead: `server/desktopNotice.ts` answers its presence poll with a reinstall
+  banner. That needs the production server deployed.
+- The shell's updater is electron-updater, bundled by `npm run desktop:bundle` into
+  `dist-electron/updater.cjs` (the package ships no node_modules). Verified 2026-11-16 with a
+  test-identity NSIS install: 0.2.0 found 0.2.1 on a local feed, downloaded it, and installed it
+  silently on quit.
+
 ## 3. Local dev
 
 ```bash

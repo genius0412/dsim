@@ -71,6 +71,7 @@ import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
 import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { WakeTally } from './wakeLog';
+import { desktopBundleNotice } from './desktopNotice';
 import { dbEnabled } from './db/pool';
 import { isStagedRoomCode, type PendingMatch } from './matchTypes';
 import { claimCompetitionRoom, competitionOfArchived, isCompetitionRoomCode, setCompetitionLive } from './competitions';
@@ -2961,7 +2962,9 @@ const httpServer = createServer((req, res) => {
     // (and block starting new games) on EVERY page — even disconnected ones
     // like Home/solo where no WebSocket delivers `serverNotice`.
     const live = legacyNotice();
-    const notice = live ? { kind: live.kind, message: live.message, until: live.until } : null;
+    const notice = live
+      ? { kind: live.kind, message: live.message, until: live.until }
+      : desktopBundleNotice(req.headers, new URL(req.url ?? '/', 'http://x').searchParams);
     const respond = (
       online: number,
       signedIn: number,

@@ -6,7 +6,7 @@ import type { AccessGroup, BannerKind, ListedRoom, LiveRoom, RecentRecord, Lockd
 import type { ReportedUser, ReportRow } from '../report';
 import type { FiledReport, Notice } from '../notices';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
-import { gameServerHttpUrl, lanActive, lanServerHttpUrl, setLanFromServer } from './env';
+import { appBuild, gameServerHttpUrl, lanActive, lanServerHttpUrl, setLanFromServer } from './env';
 import { tabHosting } from '../lan/hosting';
 // (not in the smoke import graph: this file reads `./env` at load already)
 import { importerEnabled } from '../seasonVisibility';
@@ -532,6 +532,15 @@ export function roomTakesImportVisuals(): Promise<boolean> {
 }
 
 /**
+ * THE DESKTOP APP'S BUNDLED COPY NAMES ITS BUILD (`bundle=`), and only it. The server answers a
+ * bundled copy that does NOT, which can only be one from before the self-updating shell (the July
+ * 2026 v0.1.3 installer), with a notice to reinstall: that copy cannot be changed, and the
+ * presence poll is the one thing it still reads (see `desktopBundleNotice` in server/index.ts).
+ */
+const BUNDLE_QUERY =
+  typeof location !== 'undefined' && location.protocol === 'file:' ? `bundle=${encodeURIComponent(appBuild())}` : '';
+
+/**
  * Live presence: who's online + how deep each ranked queue is, so a player can
  * see it BEFORE queueing. Cheap JSON off the same host; poll it (usePresence).
  *
@@ -542,7 +551,8 @@ export function roomTakesImportVisuals(): Promise<boolean> {
  * one - ranked queue depth - and leave it off for the ambient chip.
  */
 export function fetchPresence(full = false): Promise<Presence> {
-  return getJson<Presence>(`/api/presence${full ? '?full=1' : ''}`).then((p) => {
+  const query = [full ? 'full=1' : '', BUNDLE_QUERY].filter(Boolean).join('&');
+  return getJson<Presence>(`/api/presence${query ? `?${query}` : ''}`).then((p) => {
     /* THE LAN ENTRY POINTS ARE LIT FROM HERE, not from the build (src/net/env.ts
        `setLanFromServer`). It goes in `fetchPresence` rather than in `serverCaps` because
        this is the single funnel every presence read passes through - `usePresence` polls it

@@ -6,11 +6,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('dsim', {
   isDesktop: true,
   version: () => ipcRenderer.invoke('dsim:version'),
-  // check now (no native dialog) → { current, latest, updateAvailable }
+  // check now (no native dialog) → { current, latest, updateAvailable, mode, ready }
   check: () => ipcRenderer.invoke('dsim:check'),
   getAutoCheck: () => ipcRenderer.invoke('dsim:getAuto'),
   setAutoCheck: (v) => ipcRenderer.invoke('dsim:setAuto', !!v),
   openDownload: () => ipcRenderer.invoke('dsim:openDownload'),
+  // quit, install the downloaded update and relaunch → false when none is downloaded
+  installUpdate: () => ipcRenderer.invoke('dsim:installUpdate'),
   /**
    * GOOGLE SIGN-IN IN A POP-UP WINDOW (see `dsim:oauth` in main.cjs). Resolves `{ verifier }`,
    * `{ error }` or `{ cancelled: true }`. Absent on an older desktop build, which keeps the
