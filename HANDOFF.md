@@ -1,3 +1,40 @@
+# HANDOFF — 2026-11-16 (The desktop app releases and updates itself)
+
+**State: on `alpha`. Client, shell, CI and one server function. NOT on `main`, nothing released,
+server not deployed.** `build`, `server:check`, `docaudit`, `uiaudit` pass (`uiindex` regenerated:
+two usage counts). No sim change, so `npm test` was not run.
+
+- **Owner: "make sure that we never have to release a new version again. No matter what we do."**
+- **Shell (`electron/main.cjs`, `loadUpdater`):** electron-updater, bundled by `npm run
+  desktop:bundle` into `dist-electron/updater.cjs` (`build.files` ships no node_modules). Checks at
+  launch and every 4 h, downloads in the background, installs on quit; Help > Check for Updates
+  offers "Restart now". macOS (unsigned), the portable exe and unpackaged runs keep the old
+  notice-and-download path. The Account > Desktop app panel shows "Restart to update" when ready.
+- **CI (`.github/workflows/release.yml`):** every push to `main` outside `paths-ignore` builds all
+  three OSes as `v0.2.<run number>`, publishes, deletes stale drafts and keeps the newest 15.
+  A dispatch on another branch is a dry run. `package.json` is 0.2.0; CI stamps the real number.
+- **The July bundle (v0.1.3's offline copy, build 11cba15):** cannot change, but it polls
+  `/api/presence` and shows `notice`. `server/desktopNotice.ts` answers it (and only it: no
+  `Origin` + `Sec-Fetch-Site: cross-site` + Electron UA + no `bundle=`) with a reinstall banner. New
+  bundled copies send `bundle=<build>` (`fetchPresence`). **Needs the production server deployed.**
+- **Verified:** test-identity NSIS 0.2.0 installed silently, the real `main.cjs` (hidden harness)
+  found 0.2.1 on a local feed, downloaded it and installed it silently on quit (installed exe
+  0.2.1, no relaunch, no window); test app uninstalled after. The installed v0.1.3 shell, forced
+  onto its bundle, sent exactly the headers the rule matches and showed the banner. The rule stays
+  silent for the live site, browsers, Discord (same-origin or headers stripped), new bundles, curl.
+- ⚠️ **Promoting alpha to `main` now publishes a desktop release that installs itself on every
+  0.2+ desktop.** `docs/deploy.md` §2b. Branch `desktop-0.1.4-main` (the 2026-11-15 plan) is
+  superseded and deleted.
+
+## Next steps
+1. Promote alpha to `main` as usual: the first automatic release follows. v0.1.3 users then get
+   their shell's own "new version" dialog, or the server banner once production is deployed.
+2. Deploy the production server for the July-bundle banner (owner runs it).
+3. Optional: repository secrets `ZENITH_VENDOR_REPO`/`ZENITH_VENDOR_TOKEN` so the bundled offline
+   copy has autonomous; an Apple Developer ID for silent Mac updates.
+
+---
+
 # HANDOFF — 2026-11-15 (Desktop app opened a July build: no BIOBUZZ, no 3D)
 
 **State: on `alpha` (desktop shell + release workflow only; no client, sim or server change). Cherry-picked onto
