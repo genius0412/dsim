@@ -10,6 +10,8 @@
  * lengths; every chunk after it is copied byte for byte, which keeps their alignment.
  */
 import type { GameId, RobotSpec } from '../types';
+import { ULTRAPLANETARY_MAX_STAGES } from './drive';
+import { MAX_HULL_VERTS } from './geometry';
 import { shareModelRefusal } from './shareModelCheck';
 import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionRole } from './types';
 
@@ -138,6 +140,77 @@ export function isMotionList(v: unknown): boolean {
   );
 }
 
+const posNum = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const WHEEL_KINDS = ['catalogue', 'custom'];
+const DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'];
+const TUNE_KEYS = ['topSpeed', 'accel', 'turnRate', 'aimTurn', 'shotInterval', 'spinUp', 'intakeTime', 'reload', 'turretSlew', 'rampDeployS'];
+/** the largest simplified budget the editor ever wrote (400k was "Maximum" once); 0 is Full */
+const MAX_TRI_BUDGET = 1_000_000;
+
+const isWheelChoice = (w: unknown): boolean =>
+  isObj(w) && WHEEL_KINDS.includes(w.kind as string) && (w.kind === 'catalogue' ? typeof w.id === 'string' : posNum(w.diameterMm));
+
+const isMotorChoice = (m: unknown): boolean => {
+  if (!isObj(m)) return false;
+  switch (m.kind) {
+    case 'gobilda':
+      return typeof m.ratio === 'string';
+    case 'revHdHex':
+      return Array.isArray(m.cartridges) && m.cartridges.length <= ULTRAPLANETARY_MAX_STAGES && m.cartridges.every((c) => c === 3 || c === 4 || c === 5);
+    case 'revCoreHex':
+      return true;
+    case 'neverest':
+      return m.model === 'orbital20' || m.model === 'orbital3.7';
+    case 'custom':
+      return posNum(m.freeRpm);
+    default:
+      return false;
+  }
+};
+
+/**
+ * Is `v` the drivetrain a setup carries (`DriveSetup`)? It is REQUIRED: `buildSpec` reads the motor, the
+ * wheel, the gearing and the mass of it on every render of the editor, and one without them threw there,
+ * so the page for that robot was replaced by the error card each time it was opened. Every choice known,
+ * every number finite and above zero.
+ */
+export function isDriveSetup(v: unknown): boolean {
+  return (
+    isObj(v) &&
+    DRIVETRAINS.includes(v.drivetrain as string) &&
+    isMotorChoice(v.motor) &&
+    posNum(v.externalRatio) &&
+    isWheelChoice(v.wheel) &&
+    posNum(v.massLb) &&
+    (v.tankWheel === undefined || isWheelChoice(v.tankWheel)) &&
+    (v.tankExternalRatio === undefined || posNum(v.tankExternalRatio)) &&
+    (v.zeroPower === undefined || v.zeroPower === 'coast')
+  );
+}
+
+/**
+ * Is `v` a setup as the editor writes it (`ImportSetup`)? A share file is another player's, stored as it
+ * came and opened in the editor, which reads these fields without looking: the drivetrain (required),
+ * the detail, the hull's vertex count, the wheels, the tuning, the lists of bodies. Each one present is
+ * held to what the editor writes, and an absent optional one is left absent. `units`, `up` and `yaw` are
+ * not looked at: both ways in replace them (`ImportEditor.tsx`). Extra fields are not looked at either.
+ */
+export function isImportSetup(v: unknown): boolean {
+  if (!isObj(v) || !isDriveSetup(v.drive)) return false;
+  const pt = (p: unknown): boolean => isObj(p) && Number.isFinite(p.x) && Number.isFinite(p.y);
+  return (
+    (v.hullMaxVerts === undefined || (Number.isInteger(v.hullMaxVerts) && (v.hullMaxVerts as number) >= 3 && (v.hullMaxVerts as number) <= MAX_HULL_VERTS)) &&
+    (v.wheels === undefined || v.wheels === null || (Array.isArray(v.wheels) && v.wheels.length === 4 && v.wheels.every(pt))) &&
+    oneOf(v.wheelLayout, ['rect', 'free']) &&
+    oneOf(v.bands, [true, false]) &&
+    (v.triBudget === undefined || (typeof v.triBudget === 'number' && Number.isFinite(v.triBudget) && v.triBudget >= 0 && v.triBudget <= MAX_TRI_BUDGET)) &&
+    (v.motionFinder === undefined || (Number.isInteger(v.motionFinder) && (v.motionFinder as number) >= 0)) &&
+    (v.tune === undefined || (isObj(v.tune) && TUNE_KEYS.every((k) => num((v.tune as Record<string, unknown>)[k])))) &&
+    (v.removed === undefined || isBodyList(v.removed)) &&
+    (v.keepFloating === undefined || isBodyList(v.keepFloating))
+  );
+}
+
 /** the `asset.extras.dsim` block of a GLB, validated for shape (the spec is coerced by the caller) */
 export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -159,6 +232,10 @@ export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult 
   if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', 'Couldn’t read this robot’s setup: its name is missing or too long.');
   if ((dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) || (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion))) {
     return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts is damaged.');
+  }
+  // the rest of the setup: the drivetrain above all, which the editor reads on every render
+  if (!isImportSetup(dsim.setup)) {
+    return fail('bad-payload', 'Couldn’t read this robot’s setup: its drivetrain or its settings are missing or damaged. Ask for it to be exported from DSIM again.');
   }
   // THE MODEL IS STORED AS IT IS, so it is held to what DSIM's exporters write (`shareModelCheck.ts`)
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

@@ -38,6 +38,8 @@ import {
   slimWorld,
   roomCapacity,
   mergeRoomSettings,
+  runLengthAllowed,
+  BB3D_REFUSAL,
   type RoomSettings,
   type RoomWatcher,
   DEFAULT_ROOM_CONFIG,
@@ -1517,6 +1519,16 @@ export class Room {
       client.send({ t: 'error', message: refusal });
       return;
     }
+    /**
+     * THE RUN-LENGTH CHECK, repeated for the same reason. The door asks `runLengthAllowed` before
+     * the join's awaits (token, lockdown, suspension, profile); a host who makes the room auto-only
+     * during them passes `changeSettings`, which counts only who is already inside, and a build
+     * without `'autoOnly'` was then seated predicting a full match the room never runs.
+     */
+    if (!runLengthAllowed(this.settings, client.caps)) {
+      client.send({ t: 'error', message: BB3D_REFUSAL });
+      return;
+    }
     // the first client to land defines the room's release channel (custom/record
     // rooms are single-channel by construction — the matchmaker segregates ranked).
     // NOT a competition room's: its result belongs to the competition on this server's
@@ -1631,6 +1643,11 @@ export class Room {
     const refusal = importAdmission(this.importState(), { imported: false, caps: client.caps });
     if (refusal) {
       client.send({ t: 'error', message: refusal });
+      return;
+    }
+    // `changeSettings` counts watchers too, so the run-length check `add` repeats is repeated here
+    if (!runLengthAllowed(this.settings, client.caps)) {
+      client.send({ t: 'error', message: BB3D_REFUSAL });
       return;
     }
     client.player.name = this.uniqueName(client.player.name, client.id);
@@ -2193,6 +2210,11 @@ export class Room {
       const refusal = importAdmission(this.importState(), { imported: false, caps });
       if (refusal) {
         send({ t: 'error', message: refusal });
+        return null;
+      }
+      // the rejoin door asks this of a mirror that can be a message behind; the room asks it of itself
+      if (!runLengthAllowed(this.settings, caps)) {
+        send({ t: 'error', message: BB3D_REFUSAL });
         return null;
       }
       c.caps = caps;

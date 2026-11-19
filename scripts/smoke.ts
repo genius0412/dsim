@@ -18022,11 +18022,13 @@ const forceRoomToPost = (room: Room): void => {
   // the AUTO buzzer and ends there. The replay is format 5, the whole net total is the AUTO split, and
   // matchStart tells every client.
   {
-    const { coerceRoomSettings } = await import('../src/net/protocol');
+    const { coerceRoomSettings, AUTO_ONLY_CAP } = await import('../src/net/protocol');
     let seen: MatchOutcome | null = null;
     const sent: unknown[] = [];
     const room = new Room('smoke-auto-only', () => {}, { kind: 'record', record: 'solo', game: 'decode', settings: coerceRoomSettings('record', 'solo', { runLength: 'auto' }) }, (o) => { seen = o; });
     const c = solo('a1');
+    // a build that can play an auto-only run: the room itself refuses one that cannot (`Room.add`)
+    c.caps = [AUTO_ONLY_CAP];
     c.send = (m: unknown) => { sent.push(m); };
     room.add(c);
     room.onMessage('a1', { t: 'start' });
@@ -36319,7 +36321,9 @@ function impPlayCheck(g: GameId): void {
       JSON.stringify(errs),
     );
     const withSetup = (s: object): string => {
-      const r = share.readShareFile(share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'biobuzz', spec: {}, setup: s, name: 'x' } } } }));
+      // a setup carries its drivetrain (required since a share file without one threw in the editor), so these
+      // rows, which are about `apart` and `motion`, start from the default one
+      const r = share.readShareFile(share.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'biobuzz', spec: {}, setup: { drive: setup.drive, ...s }, name: 'x' } } } }));
       return r.ok ? 'ok' : r.error;
     };
     const goodMotion = [
@@ -42927,7 +42931,9 @@ function fxImportFixed(): RobotSpec {
       triangleCount(reopened.parts) === triangleCount(srcParts) && reopened.parts.every((p) => !!p.body) && new Set(reopened.parts.flatMap((p) => [...p.body!])).size === new Set(srcParts.flatMap((p) => [...p.body!])).size,
     );
     const spec = { name: 'Quantised' } as unknown as import('../src/types').RobotSpec;
-    const shared = share.writeShareFile(glb, { game: 'biobuzz', spec, setup: {} as never, name: 'Quantised' });
+    // a real setup: `readShareFile` holds the whole of it to what the editor writes, the drivetrain above all
+    const { defaultImportSetup } = await import('../src/robotImport/geometry');
+    const shared = share.writeShareFile(glb, { game: 'biobuzz', spec, setup: defaultImportSetup(), name: 'Quantised' });
     const readBack = share.readShareFile(shared);
     const sharedModel = await loadModel([new File([shared], 'quantised.dsim.glb')]);
     check(
@@ -42937,7 +42943,7 @@ function fxImportFixed(): RobotSpec {
     // ---- a share file's MODEL is held to what DSIM's exporters write (`shareModelCheck.ts`): it is
     // stored as it is and the 3D scene's loader reads it, so anything else is the sender's to use
     {
-      const floatShare = share.readShareFile(share.writeShareFile(float, { game: 'biobuzz', spec, setup: {} as never, name: 'Float' }));
+      const floatShare = share.readShareFile(share.writeShareFile(float, { game: 'biobuzz', spec, setup: defaultImportSetup(), name: 'Float' }));
       check('share model: the compressed stored mesh and the float one saved before it are both accepted', readBack.ok && floatShare.ok, floatShare.ok ? '' : floatShare.message);
       const dvs = new DataView(shared.buffer, shared.byteOffset, shared.byteLength);
       const binAt = 20 + dvs.getUint32(12, true);
@@ -45008,6 +45014,57 @@ function fxImportFixed(): RobotSpec {
 }
 
 /**
+ * A REPLAY FROM A NEWER PATCH IS A DRIFT, AND `SIM_PATCH` IS THE NEWEST GATE (2026-11-18).
+ * A `SIM_PATCH` keeps an OLDER replay exact on a newer build. The other way round nothing asked:
+ * a build handed a replay stamped past its own patch ran without the rule and called it exact.
+ * And the number itself is one line in config.ts that an alpha-into-main merge conflicts on:
+ * resolved to main's lower value, every new replay is stamped below the gates the code has, they
+ * all read "off", and no other check notices.
+ */
+{
+  const R = await import('../src/sim/replay');
+  const Cfg = await import('../src/config');
+  const stamped = (patch: number | undefined, sim: number | undefined = Cfg.SIM_VERSION) =>
+    ({ format: 2, balanceVersion: Cfg.BALANCE_VERSION, sim, setups: [], ...(patch === undefined ? {} : { patch }) });
+  const at = (patch: number | undefined, sim?: number) => R.replayRefusal(stamped(patch, sim), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION);
+  check(
+    'replay patch: this build’s own patch, an older one and an absent one are exact, as before',
+    at(Cfg.SIM_PATCH) === null && at(1) === null && at(undefined) === null &&
+      R.replayFidelity(stamped(Cfg.SIM_PATCH), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION) === 'ok',
+  );
+  check(
+    'replay patch: one stamped past this build’s patch is `newer`: it plays, as a drift, never as exact',
+    at(Cfg.SIM_PATCH + 1) === 'newer' &&
+      R.replayFidelity(stamped(Cfg.SIM_PATCH + 1), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION) === 'drift' &&
+      R.replayPlayable(stamped(Cfg.SIM_PATCH + 1), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION),
+    String(at(Cfg.SIM_PATCH + 1)),
+  );
+  check('replay patch: a different SIM_VERSION is still named first', at(Cfg.SIM_PATCH + 1, Cfg.SIM_VERSION - 1) === 'behaviour');
+  check('replay patch: the same replay is exact on the build that has the patch', R.replayRefusal(stamped(9), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION, 9) === null && R.replayRefusal(stamped(9), Cfg.BALANCE_VERSION, Cfg.SIM_VERSION, 8) === 'newer');
+
+  const { readdirSync } = await import('node:fs');
+  const gates: { n: number; at: string }[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(p);
+      else if (/\.tsx?$/.test(e.name)) {
+        const src = readFileSync(p, 'utf8');
+        for (const m of src.matchAll(/simPatchAtLeast\([^,()]+,\s*(\d+)\)|\.simPatch >= (\d+)/g)) gates.push({ n: Number(m[1] ?? m[2]), at: p });
+      }
+    }
+  };
+  walk('src');
+  const newest = gates.reduce((a, g) => (g.n > a.n ? g : a), { n: 0, at: '' });
+  check('sim patch: the gates were found (the next check is not vacuous)', gates.length >= 20, String(gates.length));
+  check(
+    'sim patch: SIM_PATCH is the newest gate the code has (a lower value stamps every new replay below rules it was recorded with)',
+    newest.n === Cfg.SIM_PATCH,
+    `SIM_PATCH ${Cfg.SIM_PATCH}, newest gate ${newest.n} in ${newest.at}`,
+  );
+}
+
+/**
  * A SEASON ROLL NAMES ITS GAME (2026-11-18). Periods are per game and the server reads a missing
  * `game` as DECODE. The console sent none, so START NEW SEASON, START NEW ACT and the replay purge
  * always acted on DECODE, and the confirm sentence did not say so.
@@ -45029,6 +45086,402 @@ function fxImportFixed(): RobotSpec {
       admin.includes('fetchSeasons(seasonGame)') && admin.includes('`${seasonGameName}: ${target}`') && admin.includes('`every ARCHIVED ${seasonGameName} season`'),
   );
   check('admin seasons: the announcement a roll publishes says whose boards rolled', server.includes('`Fresh ${seasonFor(adminGame).name} leaderboards and ranked ratings are live.'));
+}
+
+/**
+ * AN AUTO-ONLY ROOM ASKS THE RUN-LENGTH QUESTION ITSELF (`Room.add`, `addSpectator`, `reattach`).
+ * The door asks `runLengthAllowed` before the join's awaits; a host who turns the room auto-only
+ * inside them passes `changeSettings`, which counts only who is already in, so the room has to
+ * refuse the late arrival itself, as it does an import it cannot play.
+ */
+{
+  const { coerceRoomSettings, BB3D_REFUSAL } = await import('../src/net/protocol');
+  const NEWC = ['autoOnly', 'rooms2', 'rooms3'];
+  const mkc = (id: string, caps: string[] | undefined, out: ServerMsg[]): Client => ({
+    id, send: (m: ServerMsg) => { out.push(m); }, connected: true, disconnectAt: 0, caps,
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+  });
+  const refused = (out: ServerMsg[]): boolean =>
+    out.some((m) => m.t === 'error' && m.message === BB3D_REFUSAL) && !out.some((m) => m.t === 'welcome');
+  const hs: ServerMsg[] = [];
+  const room = new Room('runlen-late', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' }) });
+  room.add(mkc('h', NEWC, hs));
+  check('run length late: the host turns the lobby auto-only (nobody inside lacks the cap)', room.changeSettings({ runLength: 'auto' }) === null);
+  const old: ServerMsg[] = [];
+  room.add(mkc('old', ['bb3d'], old));
+  const roster = [...hs].reverse().find((m): m is Extract<ServerMsg, { t: 'roster' }> => m.t === 'roster');
+  check('⚠️ run length late: a build without autoOnly that passed the door before the change is refused by the room, not seated',
+    refused(old) && !!roster && !roster.players.some((p) => p.clientId === 'old'), JSON.stringify(old.map((m) => m.t)));
+  const fresh: ServerMsg[] = [];
+  room.add(mkc('new', NEWC, fresh));
+  check('run length late: ...a build with the cap is seated as before', fresh.some((m) => m.t === 'welcome'));
+  const wOld: ServerMsg[] = [];
+  room.addSpectator(mkc('w-old', ['bb3d'], wOld));
+  check('run length late: ...and an old build is not admitted as a watcher either', refused(wOld));
+  const token = hs.find((m): m is Extract<ServerMsg, { t: 'welcome' }> => m.t === 'welcome')?.seatToken;
+  const back: ServerMsg[] = [];
+  const nc = room.reattach('h', (m) => { back.push(m); }, undefined, undefined, token, false, ['bb3d']);
+  check('⚠️ run length late: a seat taken back by a build without autoOnly is refused', nc === null && back.some((m) => m.t === 'error' && m.message === BB3D_REFUSAL));
+  check('run length late: ...and taken back by one with it, as before', typeof room.reattach('h', () => {}, undefined, undefined, token, false, NEWC) === 'number');
+  const full = new Room('runlen-full', () => {}, { kind: 'versus', settings: coerceRoomSettings('versus', undefined, { preset: 'casual-2v2' }) });
+  const legacy: ServerMsg[] = [];
+  full.add(mkc('l', undefined, legacy));
+  check('run length late: a full-length room still seats a client with no caps at all', legacy.some((m) => m.t === 'welcome'));
+
+  /*
+   * SETTINGS KEEP, RULE 6 (`keepNewerFieldsFromOlderClient`): a save from production's build (no
+   * caps) arrives without every setting and bind newer than it, and without a robot's plate font
+   * and BIOBUZZ intake feed / reject. Hand-built blobs, the shapes `coerceSettings` writes.
+   */
+  {
+    const { keepImportsFromOlderClient } = await import('../src/net/settingsKeep');
+    type Blob = Record<string, any>;
+    const spec = { name: 'R', drivetrain: 'mecanum', length: 18, width: 18, bbMech: { launcher: { kind: 'turret' }, intake: { kind: 'sweeper' } } };
+    const stored: Blob = {
+      game: 'biobuzz', runLength: 'auto', pace: 'pb', communityToasts: false, audio: { volume: { master: 1, penalty: 0.2 } },
+      spec: { ...spec, plateFont: 'racing', bbMech: { ...spec.bbMech, intake: { kind: 'sweeper', feed: 'mixed', reject: 'bar' } } },
+      bindings: {
+        keys: { fire: [' '], bbNectar: ['n'], bbReverse: ['n'], flyPreset: ['9'] },
+        pad: { curve: 1.5, turnCurve: 1.5, buttons: { fire: [7], bbBar: [4] }, combos: { fire: [], bbBar: [[4, 5]] } },
+        modes: { park: 'hold' },
+      },
+    };
+    // production's save of the same account: what it cannot read is gone, and its player gave 9 to Shoot
+    const prod: Blob = {
+      game: 'biobuzz', audio: { volume: { master: 1 } }, spec,
+      bindings: { keys: { fire: ['9'], bbNectar: ['n'] }, pad: { curve: 2, buttons: { fire: [7] }, combos: { fire: [] } } },
+    };
+    const out = keepImportsFromOlderClient(stored, prod) as Blob;
+    check('settings keep 6: run length, pace, the community toasts and the penalty volume come back',
+      out.runLength === 'auto' && out.pace === 'pb' && out.communityToasts === false && out.audio.volume.penalty === 0.2 && out.audio.volume.master === 1);
+    check('settings keep 6: hold / toggle comes back', out.bindings.modes?.park === 'hold');
+    check('settings keep 6: a newer action\'s bind comes back, a key the player already shared included (pad buttons with their combos)',
+      out.bindings.keys.bbReverse?.join() === 'n' && out.bindings.pad.buttons.bbBar?.join() === '4' && JSON.stringify(out.bindings.pad.combos.bbBar) === '[[4,5]]');
+    check('settings keep 6: ...but not over a key production gave another action of the same game (Shoot on 9): that choice stands',
+      out.bindings.keys.flyPreset === undefined && out.bindings.keys.fire.join() === '9');
+    check('settings keep 6: an unsplit turn curve is not brought back, so it follows the curve production saved',
+      out.bindings.pad.turnCurve === undefined && out.bindings.pad.curve === 2);
+    check('settings keep 6: a split one is', (keepImportsFromOlderClient({ ...stored, bindings: { ...stored.bindings, pad: { ...stored.bindings.pad, turnCurve: 3 } } }, prod) as Blob).bindings.pad.turnCurve === 3);
+    check('settings keep 1: the robot comes back whole with its plate font and intake feed / reject when production sent it minus them',
+      out.spec === stored.spec);
+    check('settings keep 1: ...and a robot production changed stands',
+      (keepImportsFromOlderClient(stored, { ...prod, spec: { ...spec, length: 17 } }) as Blob).spec.length === 17);
+    const plain: Blob = { game: 'decode', bindings: { keys: { fire: [' '] }, pad: { curve: 1, turnCurve: 1, buttons: { fire: [7] } } } };
+    check('settings keep 6: nothing newer stored, nothing carried (the save itself is returned)', keepImportsFromOlderClient(plain, prod) === prod);
+    check('settings keep 6: the server runs it for a save with no caps only (inside keepImportsFromOlderClient)',
+      /keepsImports\(caps\) \? settings : keepImportsFromOlderClient\(stored, settings\)/.test(readFileSync('server/db/repo.ts', 'utf8')) &&
+        /incoming = keepNewerFieldsFromOlderClient\(stored, incoming\)/.test(readFileSync('src/net/settingsKeep.ts', 'utf8')));
+  }
+}
+
+/**
+ * ---- CLIENT LANE: a boot that cannot end blank, Shift + punctuation binds, share-file setups, draft writes ----
+ *
+ * INPUT-02: `;` (Reverse) and `'` (NECTAR bar) arrive as `:` and `"` while Shift (Intake) is held, and
+ * binds are the unshifted character. UIPLAY-03: `initPhysics()` rejecting left the boot screen up for
+ * good. IMPORTER-ENGINE-01: a share file's `setup` was stored with only `apart` and `motion` checked, so
+ * one without a `drive` threw in the editor's render. IMPUI-02: a draft write that failed only logged.
+ */
+{
+  // ---- INPUT-02: a Shift-turned key is held as the key it was printed on, and never sticks -------------
+  const { DEFAULT_BINDINGS } = await import('../src/input/bindings');
+  const rig = (): { kb: Keyboard; send: (type: 'keydown' | 'keyup', key: string, code: string, extra?: Record<string, unknown>) => void } => {
+    const kb = new Keyboard();
+    const listeners: Record<string, ((e: unknown) => void)[]> = {};
+    const realWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      addEventListener: (t: string, fn: (e: unknown) => void) => {
+        (listeners[t] ??= []).push(fn);
+      },
+      removeEventListener: () => {},
+    };
+    kb.attach();
+    (globalThis as { window?: unknown }).window = realWindow;
+    return {
+      kb,
+      send: (type, key, code, extra = {}) => {
+        for (const fn of listeners[type] ?? []) {
+          fn({ key, code, repeat: false, metaKey: false, target: { tagName: 'CANVAS', isContentEditable: false }, preventDefault: () => {}, ...extra });
+        }
+      },
+    };
+  };
+  const rev = DEFAULT_BINDINGS.keys.bbReverse[0];
+  const bar = DEFAULT_BINDINGS.keys.bbBar[0];
+  {
+    const { kb, send } = rig();
+    send('keydown', 'Shift', 'ShiftLeft', { shiftKey: true });
+    send('keydown', ':', 'Semicolon', { shiftKey: true });
+    check(
+      '⚠️ input: with Shift down, `:` on the Semicolon key is held AND pressed as the default Reverse bind',
+      rev === ';' && kb.held(rev) && kb.justPressed(rev) && kb.held('shift'),
+      `default Reverse is ${JSON.stringify(rev)}; held=${kb.held(rev)}`,
+    );
+    send('keyup', ':', 'Semicolon', { shiftKey: true });
+    check('input: the keyup as `:` lets go of both halves', !kb.held(';') && !kb.held(':'));
+  }
+  {
+    // Shift let go BEFORE the key: the keydown was `:`, the keyup is `;`
+    const { kb, send } = rig();
+    send('keydown', 'Shift', 'ShiftLeft', { shiftKey: true });
+    send('keydown', ':', 'Semicolon', { shiftKey: true });
+    send('keyup', 'Shift', 'ShiftLeft', { shiftKey: false });
+    send('keyup', ';', 'Semicolon', { shiftKey: false });
+    check(
+      '⚠️ input: a keydown as `:` and a keyup as `;` (Shift released first) leaves nothing held',
+      !kb.held(';') && !kb.held(':') && !kb.held('shift'),
+      `held ; ${kb.held(';')} : ${kb.held(':')}`,
+    );
+  }
+  {
+    // the other way round: down as `;`, Shift pressed over it, up as `:`
+    const { kb, send } = rig();
+    send('keydown', ';', 'Semicolon');
+    send('keydown', 'Shift', 'ShiftLeft', { shiftKey: true });
+    send('keyup', ':', 'Semicolon', { shiftKey: true });
+    send('keyup', 'Shift', 'ShiftLeft');
+    check('⚠️ input: a keydown as `;` and a keyup as `:` (Shift pressed after) leaves nothing held', !kb.held(';') && !kb.held(':') && !kb.held('shift'));
+    // a held key under Shift, repeating: the repeat is `:` and the release still finds both
+    send('keydown', ';', 'Semicolon');
+    send('keydown', ':', 'Semicolon', { shiftKey: true, repeat: true });
+    send('keyup', ';', 'Semicolon');
+    check('input: a key that repeats as `:` under Shift is still let go by one keyup', !kb.held(';') && !kb.held(':'));
+  }
+  {
+    const { kb, send } = rig();
+    send('keydown', '"', 'Quote', { shiftKey: true });
+    send('keydown', '!', 'Digit1', { shiftKey: true });
+    check(
+      'input: `"` on the Quote key is the default NECTAR bar bind, and `!` on Digit1 is `1` (the bar fallbacks and Place POLLEN too)',
+      bar === "'" && kb.held(bar) && kb.held('1'),
+      `default bar is ${JSON.stringify(bar)}`,
+    );
+    send('keyup', '"', 'Quote');
+    send('keyup', '1', 'Digit1');
+    check('input: and both let go', !kb.held(bar) && !kb.held('1') && !kb.held('"') && !kb.held('!'));
+  }
+  {
+    // another layout: `code` names a different character there, and no phantom `;` appears
+    const { kb, send } = rig();
+    send('keydown', 'ö', 'Semicolon');
+    send('keydown', 'Ö', 'Semicolon', { shiftKey: true });
+    check('input: a layout whose Semicolon key types another letter never gains a `;`', kb.held('ö') && !kb.held(';'));
+    send('keyup', 'ö', 'Semicolon');
+    check('input: ...and still lets go', !kb.held('ö'));
+    // plain letters and shifted letters are unchanged
+    send('keydown', 'W', 'KeyW', { shiftKey: true });
+    check('input: Shift+W is still `w`', kb.held('w'));
+    send('keyup', 'w', 'KeyW');
+    check('input: ...and let go', !kb.held('w'));
+  }
+
+  // ---- UIPLAY-03: a physics engine that does not load ends on a card, not on the boot screen ------------
+  {
+    const main = readFileSync('src/main.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      '⚠️ boot: a rejected `initPhysics()` is handled — it sets the failure and still mounts',
+      /Promise\.all\(\[initPhysics\(\), lanReady, statusOrTimeout\]\)\.then\(\s*\(\) => \{[\s\S]*?\},[\s\S]*?\(err: unknown\) => \{[\s\S]*?bootFailed = true;\s*bumpBoot\(\);\s*mount\(\);/.test(main),
+      'src/main.tsx — with no handler, mount() never ran and the boot screen stayed up forever',
+    );
+    check(
+      'boot: the gate shows the failure card in place of the app, and the boot screen leaves for it',
+      /\) : bootFailed \? \(\s*<StartFailed \/>\s*\) : ready \? \(/.test(main) && /const showing = closed \? !asking : ready \|\| bootFailed;/.test(main),
+      'src/main.tsx Root',
+    );
+    let html = '';
+    try {
+      const { renderToStaticMarkup } = await import('react-dom/server');
+      const { createElement } = await import('react');
+      const { StartFailed } = await import('../src/ui/AppBoundary');
+      html = renderToStaticMarkup(createElement(StartFailed));
+    } catch (e) {
+      html = `threw: ${(e as Error).message}`;
+    }
+    check(
+      'boot: the failure card says what failed, that it reloads, and has the one button',
+      /role="alert"/.test(html) && /Couldn’t start the simulator\./.test(html) && /WebAssembly/.test(html) && (html.match(/<button/g) ?? []).length === 1 && />Reload</.test(html),
+      html.slice(0, 120),
+    );
+  }
+
+  // ---- IMPORTER-ENGINE-01: a share file's setup is what the editor writes, or the file is refused -------
+  {
+    const geo = await import('../src/robotImport/geometry');
+    const drv = await import('../src/robotImport/drive');
+    const shr = await import('../src/robotImport/shareFile');
+    const base = geo.defaultImportSetup();
+    const verdict = (setup: unknown): string => {
+      const r = shr.readShareFile(shr.buildGlb({ asset: { version: '2.0', extras: { dsim: { format: 'dsim-robot', v: 1, game: 'biobuzz', spec: {}, setup, name: 'x' } } } }));
+      return r.ok ? 'ok' : r.error;
+    };
+    const withDrive = (d: unknown): unknown => ({ ...base, drive: d });
+    const noDrive = { ...base } as Partial<typeof base>;
+    delete noDrive.drive;
+    const goodDrives = [
+      base.drive,
+      { ...base.drive, drivetrain: 'butterfly', tankWheel: { kind: 'custom', diameterMm: 90 }, tankExternalRatio: 1.5, zeroPower: 'coast' },
+      { ...base.drive, motor: { kind: 'revHdHex', cartridges: [4, 5] } },
+      { ...base.drive, motor: { kind: 'revHdHex', cartridges: [] } },
+      { ...base.drive, motor: { kind: 'revCoreHex' } },
+      { ...base.drive, motor: { kind: 'neverest', model: 'orbital3.7' } },
+      { ...base.drive, motor: { kind: 'custom', freeRpm: 400 }, wheel: { kind: 'custom', diameterMm: 96 } },
+    ];
+    const rpmOk = goodDrives.every((d) => Number.isFinite(drv.driveRpmFor(d as typeof base.drive).rpm));
+    check(
+      'robot import: share file — every drivetrain the editor writes is accepted, and its rpm is a number',
+      goodDrives.every((d) => verdict(withDrive(d)) === 'ok') && rpmOk && verdict(base) === 'ok',
+      JSON.stringify(goodDrives.map((d) => verdict(withDrive(d)))),
+    );
+    const badDrives: unknown[] = [
+      undefined,
+      null,
+      'mecanum',
+      {},
+      { ...base.drive, drivetrain: 'hover' },
+      { ...base.drive, motor: undefined },
+      { ...base.drive, motor: {} },
+      { ...base.drive, motor: { kind: 'laser' } },
+      { ...base.drive, motor: { kind: 'revHdHex' } },
+      { ...base.drive, motor: { kind: 'revHdHex', cartridges: [3, 4, 5, 3] } },
+      { ...base.drive, motor: { kind: 'revHdHex', cartridges: [7] } },
+      { ...base.drive, motor: { kind: 'neverest', model: 'x' } },
+      { ...base.drive, motor: { kind: 'custom', freeRpm: 0 } },
+      { ...base.drive, motor: { kind: 'custom', freeRpm: null } },
+      { ...base.drive, wheel: undefined },
+      { ...base.drive, wheel: { kind: 'custom', diameterMm: -4 } },
+      { ...base.drive, wheel: { kind: 'catalogue' } },
+      { ...base.drive, externalRatio: 0 },
+      { ...base.drive, externalRatio: null },
+      { ...base.drive, massLb: null },
+      { ...base.drive, massLb: '30' },
+      { ...base.drive, tankWheel: {} },
+      { ...base.drive, zeroPower: 'brake' },
+    ];
+    const badVerdicts = badDrives.map((d) => verdict(withDrive(d)));
+    check(
+      '⚠️ robot import: share file — a missing or damaged drivetrain is refused (it threw in the editor’s render)',
+      verdict(noDrive) === 'bad-payload' && badVerdicts.every((v) => v === 'bad-payload'),
+      JSON.stringify({ noDrive: verdict(noDrive), badVerdicts }),
+    );
+    const w4 = [{ x: 5, y: 5 }, { x: 5, y: -5 }, { x: -5, y: 5 }, { x: -5, y: -5 }];
+    const goodRest = [
+      { wheels: w4, wheelLayout: 'free' },
+      { wheels: null, wheelLayout: 'rect', bands: false },
+      { triBudget: 0 },
+      { triBudget: geo.LIGHT_TRI_BUDGET, hullMaxVerts: 6, motionFinder: 3 },
+      { tune: { topSpeed: 60, accel: 90, rampDeployS: 0.4 } },
+      { removed: [1, 4], keepFloating: [2], apart: [3] },
+    ].map((p) => verdict({ ...base, ...p }));
+    const badRest = [
+      { triBudget: Number.MAX_SAFE_INTEGER },
+      { triBudget: -1 },
+      { triBudget: '250000' },
+      { triBudget: null },
+      { hullMaxVerts: 2 },
+      { hullMaxVerts: 17 },
+      { hullMaxVerts: 5.5 },
+      { wheels: w4.slice(0, 3) },
+      { wheels: [...w4.slice(0, 3), { x: 1, y: null }] },
+      { wheels: 'detect' },
+      { wheelLayout: 'diag' },
+      { bands: 'yes' },
+      { motionFinder: -1 },
+      { tune: { topSpeed: 'fast' } },
+      { tune: [] },
+      { removed: [3, 1] },
+      { keepFloating: ['a'] },
+    ].map((p) => verdict({ ...base, ...p }));
+    check(
+      'robot import: share file — the detail, hull, wheels, layout, tuning and body lists are held to what the editor writes',
+      goodRest.every((v) => v === 'ok') && badRest.every((v) => v === 'bad-payload'),
+      JSON.stringify({ goodRest, badRest }),
+    );
+    const edSrc = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'robot import: a refused setup is shown as the file’s own sentence, not as "not a STEP file"',
+      /res\.error === 'bad-model' \|\| res\.error === 'bad-payload'\) \{\s*setError\(\{ text: res\.message \}\);/.test(edSrc),
+      'src/robotImport/ui/ImportEditor.tsx onFiles — and the wrong-game path reads the same checked payload',
+    );
+  }
+
+  // ---- IMPUI-02: a draft that stops being written is said, once, and said again when it recovers ---------
+  {
+    const g = globalThis as unknown as { indexedDB?: unknown; window?: unknown };
+    const had = 'indexedDB' in g;
+    const prevIdb = g.indexedDB;
+    const prevWin = g.window;
+    let quota = true;
+    const db: Record<string, unknown> = {
+      objectStoreNames: { contains: () => true },
+      close: () => {},
+      transaction: () => {
+        const tx: Record<string, unknown> = { objectStore: () => ({ put: () => {}, delete: () => {} }) };
+        setTimeout(() => {
+          if (quota) {
+            tx.error = { name: 'QuotaExceededError' };
+            (tx.onerror as (() => void) | undefined)?.();
+          } else (tx.oncomplete as (() => void) | undefined)?.();
+        }, 0);
+        return tx;
+      },
+    };
+    g.indexedDB = {
+      open: () => {
+        const req: Record<string, unknown> = { result: db };
+        setTimeout(() => (req.onsuccess as (() => void) | undefined)?.(), 0);
+        return req;
+      },
+    };
+    g.window = { setTimeout: () => 1, clearTimeout: () => {} };
+    const store = await import('../src/robotImport/ui/draftStore');
+    const heard: (string | null)[] = [];
+    const off = store.onDraftSaveFailure((e) => heard.push(e));
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 30));
+    const draft = { doc: { key: 'decode:client-lane', v: 1 }, model: {}, modelStored: false, baked: null } as unknown as Parameters<typeof store.keepDraft>[0];
+    try {
+      store.keepDraft(draft);
+      store.flushDraft('decode:client-lane');
+      await wait();
+      store.keepDraft(draft);
+      store.flushDraft('decode:client-lane');
+      await wait();
+      check(
+        '⚠️ drafts: a write that fails on a full device is reported, once, not once per edit',
+        JSON.stringify(heard) === '["quota"]' && draft.modelStored === false,
+        JSON.stringify(heard),
+      );
+      const late: (string | null)[] = [];
+      store.onDraftSaveFailure((e) => late.push(e))();
+      check('drafts: an editor that mounts while writes are failing is told at once', JSON.stringify(late) === '["quota"]', JSON.stringify(late));
+      quota = false;
+      store.keepDraft(draft);
+      store.flushDraft('decode:client-lane');
+      await wait();
+      check('drafts: the first write that lands says so, and the model is then stored', JSON.stringify(heard) === '["quota",null]' && draft.modelStored === true, JSON.stringify(heard));
+    } finally {
+      off();
+      // the library caches its open connection; a version change is how it is made to forget the stub
+      (db.onversionchange as (() => void) | undefined)?.();
+      if (had) g.indexedDB = prevIdb;
+      else delete g.indexedDB;
+      g.window = prevWin;
+    }
+    const { COPY } = await import('../src/robotImport/ui/copy');
+    const full = COPY.draftNotSaved(true);
+    const other = COPY.draftNotSaved(false);
+    check(
+      'drafts: both sentences are Couldn’t + the cost (a reload loses it) + a next step',
+      full.startsWith('Couldn’t') && other.startsWith('Couldn’t') && /reload/.test(full) && /reload/.test(other) && /Save the robot/.test(full) && /Save the robot/.test(other) && /storage space/.test(full) && !/storage/.test(other),
+    );
+    const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+    check(
+      'drafts: the editor subscribes, and the status line says it ahead of the step title, only once a model is read',
+      /onDraftSaveFailure\(\(e\) => setDraftFull\(e === null \? null : e === 'quota'\)\)/.test(ed) &&
+        /const draftNote = hasModel && draftFull !== null \? COPY\.draftNotSaved\(draftFull\) : null;/.test(ed) &&
+        (ed.match(/actionError \?\? draftNote \?\? /g) ?? []).length === 2,
+      'src/robotImport/ui/ImportEditor.tsx',
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -37,6 +37,33 @@ export function reloadHome(): void {
   window.location.reload();
 }
 
+/**
+ * THE PHYSICS ENGINE DID NOT LOAD (`main.tsx`). Nothing renders until `initPhysics()` has answered, so a
+ * rejection (a browser or mode that refuses WebAssembly) left the boot screen up for good: the mark and
+ * a sweeping bar, no message, nothing to press. A render error has a card; so does this. It names the
+ * likely cause and reloads, which is also all a transient failure needs.
+ */
+export function StartFailed() {
+  return (
+    <main className="ds-closed" role="alert" aria-labelledby="ds-start-fail-title">
+      <div className="ds-closed-card">
+        <h1 id="ds-start-fail-title" className="ds-closed-title">
+          Couldn’t start the simulator.
+        </h1>
+        <p className="ds-closed-msg">
+          The physics engine didn’t load. Reload the page. If it keeps happening, this browser may be blocking WebAssembly
+          (Lockdown Mode does): try another browser.
+        </p>
+        <div className="ds-closed-actions">
+          <button type="button" className="ds-btn primary" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export class AppBoundary extends Component<Props, State> {
   state: State = { failed: false, key: this.props.resetKey };
 

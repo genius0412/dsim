@@ -605,6 +605,11 @@ const friendsOf = (table: Record<string, string[]>) => async (u: string): Promis
     /git merge-base --is-ancestor "\$head" origin\/main/.test(lf) && /git status --porcelain --untracked-files=no/.test(lf) &&
       /if \[ "\$ALPHA" -eq 0 \]; then\n\s+require_main_tree \|\| exit 1/.test(lf));
   check('deploy guard: --check stops before anything is deployed', /if \[ "\$CHECK" -eq 1 \]; then\n[^\n]*\n\s+exit 0\nfi/.test(lf) && lf.indexOf('if [ "$CHECK" -eq 1 ]') < lf.indexOf('if [ "$ROUTER" -eq 1 ]'));
+  // the listing after the deploy is a pipeline in a command substitution: unguarded, a flake there
+  // ended the script silently with every satellite left on fly.toml's size
+  check('deploy: the machine listing is tried twice, and a second failure is said and fails the script',
+    /if ! ids=\$\(satellite_ids\); then\n[^\n]*trying once more[^\n]*\n\s+sleep[^\n]*\n\s+if ! ids=\$\(satellite_ids\); then\n\s+list_rc=1/.test(lf) &&
+      /if \[ "\$list_rc" -ne 0 \]; then\n\s+exit 1\nfi/.test(lf) && lf.includes('COULD NOT BE LISTED'));
   const announce = readFileSync(new URL('./announce-deploy.sh', import.meta.url), 'utf8');
   check('deploy guard: announce-deploy.sh asks before it tells anyone a restart is coming',
     announce.indexOf('fly-deploy.sh" --check') > 0 && announce.indexOf('fly-deploy.sh" --check') < announce.indexOf('/api/admin/announce'));

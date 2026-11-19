@@ -2547,7 +2547,8 @@ async function matchRoute(
       return { note: colour ? `${label}: ${name} is shown a ${colour} card.` : `${label}: ${name}’s card is withdrawn.` };
     }
     case 'note': {
-      await db.setMatchStatus(match.id, match.status, note);
+      // the note alone: never a status, which this request read before its other queries
+      await db.setMatchNote(match.id, note);
       // the note is shown publicly beside the result, so who wrote what is in the public trail
       await db.addLog(comp.id, user.userId, 'match.note', { match: match.id, label, note });
       return {};

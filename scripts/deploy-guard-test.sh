@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# THE PRODUCTION DEPLOY GUARD, EXERCISED. `bash scripts/deploy-guard-test.sh` (a few seconds).
+# fly-deploy.sh, EXERCISED WITHOUT A DEPLOY. `bash scripts/deploy-guard-test.sh` (a few seconds).
 #
-# fly-deploy.sh refuses to deploy production from anything but a clean commit on main
-# (`require_main_tree`). This runs its `--check` in throwaway repositories for every case the
-# rule has: main, a detached release worktree, a rollback, an unpushed commit, another branch,
-# uncommitted and untracked files, the override, and the two cross-wired app names.
+# 1. THE PRODUCTION GUARD. The script refuses to deploy production from anything but a clean
+#    commit on main (`require_main_tree`). Its `--check` is run in throwaway repositories for
+#    every case the rule has: main, a detached release worktree, a rollback, an unpushed commit,
+#    another branch, uncommitted and untracked files, the override, the two cross-wired app names.
+# 2. THE RE-SHRINK AFTER A LISTING FLAKE. After the deploy the script lists the machines to put
+#    each satellite back on its own size. That listing is retried once, and a second failure is
+#    said out loud and fails the script, instead of ending it silently with every satellite left
+#    on fly.toml's size.
 #
-# `fly` is a stub that fails loudly, first on PATH: a case that got past the check and reached a
-# deploy shows as FLY CALLED and fails. Nothing here can touch a real app. Run it after any change
-# to the top of fly-deploy.sh; `npm run test:mm` only holds that the guard is still asked first.
+# `fly` is a stub, first on PATH. In part 1 it fails loudly: a case that got past the check and
+# reached a deploy shows as FLY CALLED. In part 2 it plays a deploy that works and a listing
+# that fails as many times as the case asks. Nothing here can touch a real app. Run it after any
+# change to fly-deploy.sh; `npm run test:mm` only holds that the guard is still asked first.
 set -u
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/fly-deploy.sh"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin"
+mkdir -p "$T/bin" "$T/stub"
 printf '#!/usr/bin/env bash\necho "FLY CALLED: $*"\nexit 99\n' > "$T/bin/fly"
 chmod +x "$T/bin/fly"
 export PATH="$T/bin:$PATH"
@@ -67,6 +72,51 @@ run "production's config onto the alpha app is refused" 1 "FLY_APP names the alp
 mkdir -p "$T/plain" && cd "$T/plain" || exit 2
 run "a directory that is not a git checkout is refused" 1 "not a git checkout" bash "$SCRIPT" --check
 
+# ---- 2. the re-shrink after a listing flake ------------------------------------------------------
+# The whole production path, against a stub: `deploy` works, `machine list` fails the first
+# FAIL_LISTS times and then answers one satellite (ord) and the primary (iad), and every
+# `machine update` is written down.
+cat > "$T/bin/fly" <<'STUB'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  "deploy "*) echo "stub deploy"; exit 0 ;;
+  "machine list")
+    n=$(cat "$FLY_STUB_DIR/lists" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$FLY_STUB_DIR/lists"
+    if [ "$n" -le "${FAIL_LISTS:-0}" ]; then echo "api flake" >&2; exit 1; fi
+    echo '[{"id":"m-ord","region":"ord","state":"started"},{"id":"m-iad","region":"iad","state":"started"}]' ;;
+  "machine update") echo "$3" >> "$FLY_STUB_DIR/updates"; exit 0 ;;
+  *) echo "FLY CALLED: $*"; exit 99 ;;
+esac
+STUB
+chmod +x "$T/bin/fly"
+cd "$T/work" || exit 2
+rm -f untracked.txt
+# the script fetches the vendored tarballs first; here that is a file that does nothing
+mkdir -p scripts && echo "// stub" > scripts/fetch-zenith.mjs
+git add scripts/fetch-zenith.mjs && git commit -q -m fetch 2>/dev/null && git push -q origin main
+
+flake() { # name, listing failures, wanted exit code, a pattern, the machines that must be updated
+  local name="$1" failing="$2" want="$3" pat="$4" updated="$5"
+  rm -f "$T/stub/lists" "$T/stub/updates"
+  local out rc got
+  out=$(FLY_STUB_DIR="$T/stub" FAIL_LISTS="$failing" FLY_LIST_RETRY_S=0 bash "$SCRIPT" 2>&1)
+  rc=$?
+  got=""
+  [ -f "$T/stub/updates" ] && got=$(tr '\n' ' ' < "$T/stub/updates")
+  if [ "$rc" -eq "$want" ] && echo "$out" | grep -q -- "$pat" && [ "$got" = "$updated" ] && ! echo "$out" | grep -q "FLY CALLED"; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name (exit $rc, wanted $want; updated '$got', wanted '$updated') :: $(echo "$out" | tr '\n' ' ' | tail -c 260)"
+    fails=$((fails + 1))
+  fi
+}
+
+flake "the listing answers: the satellite is re-shrunk, the primary is left alone" 0 0 "ord (m-ord) ->" "m-ord "
+flake "the listing fails once: it is tried again, and the satellite is re-shrunk" 1 0 "trying once more" "m-ord "
+flake "the listing fails twice: nothing is re-shrunk, the script says so and fails" 2 1 "COULD NOT BE LISTED" ""
+
 echo
-[ "$fails" -eq 0 ] && echo "ALL PASS (12 cases)" || echo "$fails FAILED"
+[ "$fails" -eq 0 ] && echo "ALL PASS (15 cases)" || echo "$fails FAILED"
 exit "$fails"

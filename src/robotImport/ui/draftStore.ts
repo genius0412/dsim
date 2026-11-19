@@ -8,7 +8,7 @@
  * loses nothing either. A save or a discard deletes both.
  */
 import type { PreparedModel } from '../engine/importerEngine';
-import { deleteDraft, getDraft, putDraft, type DraftRecord } from '../library';
+import { deleteDraft, getDraft, putDraft, type DraftRecord, type LibraryError } from '../library';
 import type { EditorHistory } from './editorHistory';
 import type { EditorDoc } from './editorModel';
 
@@ -59,13 +59,47 @@ export function keepDraft(d: LiveDraft): void {
   );
 }
 
+/**
+ * WHY THE LAST DRAFT WRITE FAILED, or null while writes land. A draft is one transaction (the document
+ * and, the first time, the model), so a full device (`quota`) keeps NEITHER, and every later edit tries
+ * again and fails the same way. The write used to log and nothing else: the player edited for as long as
+ * they liked, then lost it all on a reload (a mobile tab discarded) with nothing said beforehand. The
+ * editor subscribes (`onDraftSaveFailure`) and says so.
+ */
+let failure: LibraryError | null = null;
+const failureListeners = new Set<(e: LibraryError | null) => void>();
+
+/**
+ * Be told when drafts stop being written (`LibraryError`) and when they start again (null). Told ONCE
+ * per change, not once per failed write, and told the current state on subscribing: the editor
+ * unmounts for a test drive and comes back to a store that is still failing. Returns the unsubscribe.
+ */
+export function onDraftSaveFailure(fn: (e: LibraryError | null) => void): () => void {
+  failureListeners.add(fn);
+  if (failure) fn(failure);
+  return () => {
+    failureListeners.delete(fn);
+  };
+}
+
+function setFailure(next: LibraryError | null): void {
+  if (next === failure) return;
+  failure = next;
+  failureListeners.forEach((f) => f(next));
+}
+
 async function persist(key: string): Promise<void> {
   const d = live.get(key);
   if (!d || !d.model) return;
   const record = { ...d.doc, updated: Date.now() } as unknown as DraftRecord;
   const r = await putDraft(record, d.modelStored ? undefined : d.model);
-  if (r.ok) d.modelStored = true;
-  else console.warn('[import] draft not saved', r.message);
+  if (r.ok) {
+    d.modelStored = true;
+    setFailure(null);
+  } else {
+    console.warn('[import] draft not saved', r.message);
+    setFailure(r.error);
+  }
 }
 
 /** write now (the editor is leaving) */

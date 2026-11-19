@@ -222,6 +222,11 @@ competition's results are final** (`matchRoute` refuses everything but a note): 
 were written once from them. The waitlist is capped at the capacity, and nobody comes off it once
 qualifications start (they would hold a place and have no matches).
 
+⚠️ **A NOTE WRITES THE NOTE ALONE** (`setMatchNote`, 2026-11-18). It went through a status write
+handed the status this request read before its other queries, so a result landing in between was
+put back to `called`, and a reset back to `done` with no result. A write that changes one column
+names that column and no other. `npm run dbtest` stages the race at the pool.
+
 **A moderator's misscore correction does not reach a competition match.** `/api/admin/match`
 refuses it with "<label> of <name> is corrected by its referees, from the match desk." and the
 replay rail says the same: the archived row and the competition's result would disagree.

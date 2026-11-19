@@ -2010,12 +2010,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     // THE RECORDS FEED: new No.1s and top-3 scores over a time frame (`server/recentRecords.ts`).
     // Public like the leaderboard it is drawn from; `window` is the board's own vocabulary
     // (season / day / week / month; `all` is the whole season here, a feed has no lifetime view).
+    // ALWAYS THE CURRENT SEASON: no client sends `?season=`, and honouring it let an anonymous
+    // caller mint a cached full-board replay per integer it tried (the feed's cache is keyed on it).
     if (url.pathname === '/api/records/recent') {
       const window = coerceWindow(url.searchParams.get('window'));
       const { start } = windowBounds(window, new Date());
       const n = Math.floor(Number(url.searchParams.get('limit') ?? 30) || 30);
-      const rows = dbEnabled ? await recentRecords({ game, balanceVersion: season, since: start, limit: n }) : [];
-      return json(200, { season, game, window, windowStart: start, rows }), true;
+      const current =
+        seasonParam === null ? season : dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : BALANCE_VERSION;
+      const rows = dbEnabled ? await recentRecords({ game, balanceVersion: current, since: start, limit: n }) : [];
+      return json(200, { season: current, game, window, windowStart: start, rows }), true;
     }
 
     if (url.pathname === '/api/elo') {

@@ -23,7 +23,7 @@ import { defaultMechFor, mechHandlesFor, mechRobotToModel, validateMechFor } fro
 import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAssets } from '../../render/importedAssets';
 import { COPY } from './copy';
 import { DrivetrainStep } from './DrivetrainStep';
-import { dropDraft, flushDraft, keepDraft, liveDraft, restoreDraft, type LiveDraft } from './draftStore';
+import { dropDraft, flushDraft, keepDraft, liveDraft, onDraftSaveFailure, restoreDraft, type LiveDraft } from './draftStore';
 import type { DropError, Phase } from './DropZone';
 import {
   baseName,
@@ -504,8 +504,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             return;
           }
           // a model DSIM did not write is not stored, and is not offered to the editor either:
-          // the sentence says what was found
-          if (res.error === 'bad-model') {
+          // the sentence says what was found. A setup it did not write (a missing drivetrain, a
+          // damaged list) is refused the same way: the file IS a DSIM robot, so "not a STEP file"
+          // would say the wrong thing
+          if (res.error === 'bad-model' || res.error === 'bad-payload') {
             setError({ text: res.message });
             return;
           }
@@ -540,6 +542,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     },
     [checkFiles],
   );
+
+  /** the draft is not reaching this device (`draftStore.ts`): null while it is, else whether the device is full */
+  const [draftFull, setDraftFull] = useState<boolean | null>(null);
+  useEffect(() => onDraftSaveFailure((e) => setDraftFull(e === null ? null : e === 'quota')), []);
 
   // ---- boot: a handed file, the live draft, the stored draft, a library robot, or empty ----
   useEffect(() => {
@@ -1252,6 +1258,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   if (!doc) return <div className="ds-loading">{restoring ? COPY.restoring : COPY.loading}</div>;
 
   const hasModel = !!m;
+  const draftNote = hasModel && draftFull !== null ? COPY.draftNotSaved(draftFull) : null;
   const stepCounts = [0, 0, 0, 0];
   const stepBlocks = [0, 0, 0, 0];
   for (const it of items) {
@@ -1497,13 +1504,14 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
               <h2 className={`ds-panel-title notice${blocked ? ' error' : ''}`} role="status">
-                {actionError ?? (busy ? COPY.working : measuring ? COPY.phase.measure : reviewSummary(items))}
+                {actionError ?? draftNote ?? (busy ? COPY.working : measuring ? COPY.phase.measure : reviewSummary(items))}
               </h2>
             ) : (
               // a measurement past `MEASURING_NOTICE_MS` takes the title's place, as a status does on
-              // the Controls screen: the slot keeps its line, so nothing below it moves
-              <h2 className={`ds-panel-title${measuringLong ? ' notice' : ''}`} role={measuringLong ? 'status' : undefined}>
-                {actionError ?? (measuringLong ? COPY.phase.measure : COPY.steps[step])}
+              // the Controls screen: the slot keeps its line, so nothing below it moves. So does a
+              // draft that is not being kept (`draftNote`), which a reload would lose
+              <h2 className={`ds-panel-title${measuringLong || draftNote ? ' notice' : ''}`} role={measuringLong || draftNote ? 'status' : undefined}>
+                {actionError ?? draftNote ?? (measuringLong ? COPY.phase.measure : COPY.steps[step])}
               </h2>
             )}
           </div>

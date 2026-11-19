@@ -205,6 +205,11 @@ export const COPY = {
   tryAgain: 'Try again',
   previewOff: 'Couldn’t start the 3D preview on this device. Showing the footprint.',
   bakeFailed: 'Couldn’t prepare the model. Try again, or reload the page.',
+  /** the draft is no longer being written to this device, so a reload would lose the import (`draftStore.ts`) */
+  draftNotSaved: (full: boolean) =>
+    full
+      ? 'Couldn’t keep this import on this device: it is out of storage space for DSIM, so a reload would lose it. Save the robot, or delete an imported robot to make room.'
+      : 'Couldn’t keep this import on this device, so a reload would lose it. Save the robot to keep your work.',
 
   // ---- preview ----
   cameras: [

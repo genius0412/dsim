@@ -18,7 +18,7 @@ import { CHUNK_RELOAD_KEY } from './storageKeys';
 import { optionalChunkFailed } from './optionalChunks';
 import { appBuild, probePrimary } from './net/env';
 import { dismissBoot } from './ui/screenFade';
-import { AppBoundary } from './ui/AppBoundary';
+import { AppBoundary, StartFailed } from './ui/AppBoundary';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -88,6 +88,8 @@ const statusRead = loadSiteStatus();
 const statusOrTimeout = Promise.race([statusRead, new Promise<void>((r) => setTimeout(r, BOOT_WAIT_MS))]);
 
 let bootReady = false;
+/** the physics engine did not load (`initPhysics()` rejected): the gate shows `StartFailed` in place of the app */
+let bootFailed = false;
 /**
  * A BUILD BAKED CLOSED (the alpha) KEEPS THE BOOT SCREEN UP WHILE IT ASKS. It mounts at once, and
  * before the first answer every viewer reads as closed, so a tester saw "Alpha is closed · Checking
@@ -131,7 +133,7 @@ function Root() {
   const closed = isClosed(site) && !shell.inMatch;
   // the first answer is not in yet, on a build that starts closed: stay on the boot screen
   const asking = closed && gateWait && !site.loaded;
-  const showing = closed ? !asking : ready;
+  const showing = closed ? !asking : ready || bootFailed;
   useEffect(() => {
     if (showing) dismissBoot();
   }, [showing]);
@@ -139,6 +141,8 @@ function Root() {
     <StrictMode>
       {closed ? (
         asking ? null : <ClosedScreen />
+      ) : bootFailed ? (
+        <StartFailed />
       ) : ready ? (
         <>
           {/* a throw anywhere in the app is a card with a way Home, never an empty page (`AppBoundary`) */}
@@ -180,8 +184,21 @@ if (BUILD_CLOSED) mount();
 void statusRead.then(() => {
   if (isClosed(getSiteState())) mount();
 });
-Promise.all([initPhysics(), lanReady, statusOrTimeout]).then(() => {
-  bootReady = true;
-  bumpBoot();
-  mount();
-});
+Promise.all([initPhysics(), lanReady, statusOrTimeout]).then(
+  () => {
+    bootReady = true;
+    bumpBoot();
+    mount();
+  },
+  // A REJECTION IS A SCREEN, NOT A SILENCE. `initPhysics()` is the one input that can reject (the other
+  // two are caught or timed), and with nothing handling it `mount()` never ran: the boot screen stayed
+  // up for good, the mark and its bar, with no message and nothing to press. Mount the failure card; the
+  // boot screen fades off it like off any first screen. A site closed since (`Root`) still gets its own.
+  (err: unknown) => {
+    // eslint-disable-next-line no-console
+    console.warn('[app] Couldn’t load the physics engine.', err);
+    bootFailed = true;
+    bumpBoot();
+    mount();
+  },
+);

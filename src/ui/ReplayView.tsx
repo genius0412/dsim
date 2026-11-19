@@ -105,6 +105,8 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
   unstamped: () =>
     'Recorded before DSIM tracked which sim version produced a replay, so there is no way to ' +
     'tell whether it would play back correctly.',
+  // never the stale screen (a newer patch is a drift): here because this table names every reason
+  newer: () => 'Recorded by a newer build of DSIM than this one. Reload the page to watch it.',
   tank: () =>
     'Recorded in an early format that had nowhere to store tank drive input, so the robot ' +
     'would not move.',
@@ -117,10 +119,16 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
  * are different admissions. Every one of them ends on the same sentence: the leaderboard
  * figure is the authority, so nothing here can restate a record.
  */
-const DRIFT_TEXT: Record<'behaviour' | 'unstamped', (r: Replay) => string> = {
+const DRIFT_TEXT: Record<'behaviour' | 'unstamped' | 'newer', (r: Replay) => string> = {
   behaviour: (r) =>
     `Recorded on sim v${r.sim}; this build runs v${SIM_VERSION}. It plays, but the ending may ` +
     'not land on exactly the saved score. The leaderboard figure is the real one.',
+  // the one drift the player can end themselves: this tab (or the desktop app's bundled copy) is
+  // behind the build that recorded it
+  newer: () =>
+    'Recorded by a newer build of DSIM than this one, with a rule this build does not have. It ' +
+    'plays, but the ending may not land on exactly the saved score. Reload the page to get the ' +
+    'current build. The leaderboard figure is the real one.',
   unstamped: () =>
     'Recorded before DSIM tracked which sim version produced a replay. It plays, but the ' +
     'ending may not land on exactly the saved score. The leaderboard figure is the real one.',
@@ -178,7 +186,7 @@ export function ReplayView({
   const [refusal, setRefusal] = useState<ReplayRefusal | null>(null);
   /** set when the replay PLAYS but the sim has moved under it, so the note can name which of
    *  the two “the sim moved” reasons it is. Null while it re-simulates exactly. */
-  const [drift, setDrift] = useState<'behaviour' | 'unstamped' | null>(null);
+  const [drift, setDrift] = useState<'behaviour' | 'unstamped' | 'newer' | null>(null);
   /** a real-time canvas capture is running; playback controls are locked while it is */
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -345,7 +353,7 @@ export function ReplayView({
         setStatus('stale');
         return;
       }
-      setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
+      setDrift(why === 'behaviour' || why === 'unstamped' || why === 'newer' ? why : null);
       ensurePhysics(r).then(
         () => {
           if (dead) return;

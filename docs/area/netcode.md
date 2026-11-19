@@ -91,6 +91,11 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   settings). CLIENT cap `'autoOnly'` is checked at the join/spectate/rejoin doors (`runLengthAllowed`,
   same sentence as `BB3D_REFUSAL`); SERVER cap `'autoOnly'` is what a client checks before asking, since an
   older server would drop the field and run a FULL match. LAN rooms have no run length.
+  ⚠️ **THE ROOM ASKS IT AGAIN** (2026-11-18), in `Room.add`, `addSpectator` and `reattach` (when
+  caps are given), as it asks the import question: the join door asks before the join's awaits,
+  and a host who turned the lobby auto-only inside them passed `changeSettings` (it counts only who
+  is already in), so a build without the cap was seated predicting a full match. Smoke "run length
+  late:".
   Host messages `roomSettings`, `moveMember`, `unlockRoom` (cap `'rooms2'`, the
   client gates on `serverCaps()`; an older server ignores them) are refused in a staged/ranked room
   (`hostControlRefusal`: a host there could demote an opponent and have them charged a no-show) and
@@ -701,6 +706,16 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     `fieldCentric: false` and assert the robot MOVED and SCORED). And `worldHash` covers robots,
     balls, scores and counts but **NOT `match.phase` or `phaseTimeLeft`**, so two runs that
     started the match 200 ticks apart hash identically — compare the clock too.
+- ⚠️ **A REPLAY STAMPED PAST THIS BUILD'S `SIM_PATCH` IS A DRIFT** (`'newer'`, `replayRefusal`;
+  2026-11-18). A patch gates a rule on the replay's own stamp, which keeps an OLDER replay exact on
+  a newer build. Nothing asked the other way round: a build at patch 14 handed a replay stamped 15
+  ran without the rule it does not have, and the viewer called it exact and the pace line trusted
+  it. That is every replay a newer build records, opened in a tab left open across a deploy, in the
+  desktop app's bundled copy, or on production once it shares a database with a branch a patch
+  ahead. It plays, with a note that says to reload. ⚠️ **`SIM_PATCH` MUST BE THE NEWEST GATE THE
+  CODE HAS**: the constant is one line that an alpha-into-main merge conflicts on, and resolved to
+  the lower number every new replay is stamped below rules it was recorded with. Smoke "sim
+  patch:" reads every `simPatchAtLeast(…, n)` under `src/` and fails on a mismatch.
 - ⚠️ **ANY CHANGE TO WHAT `step()` PRODUCES CHANGES EVERY REPLAY RECORDED BEFORE IT**, a scoring
   or membership rule included: a replay is inputs, so one element behaving differently turns the
   rest of the match into a different game. Measure it (re-simulate stored replays against their

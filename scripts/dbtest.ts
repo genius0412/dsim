@@ -1674,6 +1674,42 @@ async function main(): Promise<void> {
       await repo.saveSettingsFromClient('set-first', older(fresh), undefined);
       check('settings: an older build\'s FIRST save is stored as sent', canon(await repo.getUserSettings('set-first')) === canon(older(fresh)));
 
+      // PRODUCTION'S BUILD (no caps) rebuilds the blob from the fields it knows: these are what its
+      // `coerceSettings` drops from an alpha blob (measured against origin/main, 2026-11-18)
+      {
+        await repo.ensureProfile('set-prod', 'Prod');
+        const alphaBlob = json(fresh);
+        alphaBlob.runLength = 'auto';
+        alphaBlob.communityToasts = false;
+        alphaBlob.pace = 'wr';
+        const b = alphaBlob.bindings as { modes?: unknown; keys: Record<string, unknown>; pad: Record<string, unknown> & { buttons: Record<string, unknown> } };
+        b.modes = { intake: 'toggle' };
+        b.pad.turnCurve = 2.5;
+        b.keys.bbReverse = ['n'];
+        b.pad.buttons.bbBar = [12];
+        await repo.saveSettingsFromClient('set-prod', alphaBlob, ['robotImport', 'importTune', 'zeroPower']);
+        const prodSave = json(alphaBlob);
+        for (const k of ['runLength', 'communityToasts', 'pace']) delete prodSave[k];
+        const pb = prodSave.bindings as typeof b;
+        delete pb.modes;
+        delete pb.pad.turnCurve;
+        delete pb.keys.bbReverse;
+        delete pb.pad.buttons.bbBar;
+        await repo.saveSettingsFromClient('set-prod', prodSave, undefined);
+        const kept = await read('set-prod');
+        check('settings: a save from production\'s build keeps what it cannot read (run length, toasts, pace, hold/toggle, the turn curve, the newer binds)',
+          kept.runLength === 'auto' && kept.communityToasts === false && kept.pace === 'wr' && kept.bindings.modes?.intake === 'toggle' &&
+            kept.bindings.pad.turnCurve === 2.5 && kept.bindings.keys.bbReverse.join() === 'n' && kept.bindings.pad.buttons.bbBar.join() === '12',
+          JSON.stringify({ rl: kept.runLength, modes: kept.bindings.modes, tc: kept.bindings.pad.turnCurve, rev: kept.bindings.keys.bbReverse }));
+        // ...while a build that knows them and dropped one on purpose is stored as sent
+        const reset = json(await repo.getUserSettings('set-prod'));
+        delete (reset.bindings as typeof b).modes;
+        delete reset.runLength;
+        await repo.saveSettingsFromClient('set-prod', reset, ['robotImport', 'importTune', 'zeroPower']);
+        const after = await read('set-prod');
+        check('settings: ...and a current build that cleared them is stored as sent (nothing comes back)', after.bindings.modes === undefined && after.runLength === undefined);
+      }
+
       const apiSrc = readFileSync(join(ROOT, 'server/api.ts'), 'utf8');
       const route = apiSrc.slice(apiSrc.indexOf("url.pathname === '/api/user/settings'"));
       check('settings: the route writes through saveSettingsFromClient with the body\'s caps (not saveUserSettings)',
@@ -6451,6 +6487,30 @@ async function main(): Promise<void> {
       r.ok && !!clean && !!dqd && dqd.rp === clean.rp - 2 && dqd.wins === clean.wins - 1 && dqd.losses === clean.losses + 1 && dqd.played === clean.played,
       JSON.stringify({ clean, dqd }));
     await post(L, 'match', org, { action: 'note', match: M5.id, note: 'Pinning, per the head referee.' });
+    {
+      // THE RACE, staged at the pool: the note request reads M5 as `called`, and the room's result
+      // lands (status `done`) between that read and the note's own write
+      await db.query(`update competition_matches set status = 'called' where id = $1`, [M5.id]);
+      const poolMod = await import('../server/db/pool');
+      const base = poolMod.pool!;
+      poolMod.setPoolForTests({
+        query: (async (text: string, params?: unknown[]) => {
+          if (/^\s*update competition_matches set\b[^]*\bnote = /.test(text)) {
+            await base.query(`update competition_matches set status = 'done' where id = $1`, [M5.id]);
+          }
+          return base.query(text, params);
+        }) as typeof base.query,
+        connect: () => base.connect(),
+      });
+      try {
+        await post(L, 'match', org, { action: 'note', match: M5.id, note: 'Pinning, per the head referee. Upheld.' });
+      } finally {
+        poolMod.setPoolForTests(base);
+      }
+      m = await match(M5.id);
+      check('⚠️ competition: a referee’s note never writes a status (a result that lands while it is saved stays done)',
+        m.status === 'done' && m.note === 'Pinning, per the head referee. Upheld.', JSON.stringify({ status: m.status, note: m.note }));
+    }
     await post(L, 'entries', org, { action: 'note', entry: culprit, note: 'Watch the pinning.' });
     const kinds = (await db.query<{ kind: string }>(`select kind from competition_log where competition_id = $1`, [lid])).rows.map((x) => x.kind);
     const unlogged = [
@@ -7348,11 +7408,61 @@ async function main(): Promise<void> {
     await db.query(`delete from records where user_id = 'fd-b' and mode = 'solo' and balance_version = $1`, [BV]);
     const cached = await repo.recentRecords({ game: G, balanceVersion: BV, since: '2026-10-05T00:00:00Z', limit: 30 });
     check('feed/db: an answer is reused for a short while (one read per window, not per visitor)', cached.length === windowed.length);
+    // a new No.1 inside the window AFTER the answer was cached: a different `limit` must not see it
+    await rec('fd-d', 400, '2026-10-08T10:00:00Z');
+    const sliced = await repo.recentRecords({ game: G, balanceVersion: BV, since: '2026-10-05T00:00:00Z', limit: 1 });
+    check('feed/db: another `limit` is a slice of the cached answer, not a full read of its own',
+      sliced.length === 1 && sliced[0].userId === windowed[0]?.userId && sliced[0].mode === windowed[0]?.mode, JSON.stringify(sliced));
+    {
+      // counted at the pool, each query held 5 ms so the three requests genuinely overlap
+      const poolMod = await import('../server/db/pool');
+      const base = poolMod.pool!;
+      let feedReads = 0;
+      poolMod.setPoolForTests({
+        query: (async (text: string, params?: unknown[]) => {
+          if (/order by r\.created_at asc, r\.id asc/.test(text)) feedReads++;
+          await new Promise((r) => setTimeout(r, 5));
+          return base.query(text, params);
+        }) as typeof base.query,
+        connect: () => base.connect(),
+      });
+      try {
+        repo.resetRecentRecordsCacheForTests();
+        const three = await Promise.all([30, 5, 1].map((limit) => repo.recentRecords({ game: G, balanceVersion: BV, since: null, limit })));
+        check('feed/db: concurrent misses on one board share one read (two selects: solo and duo), each sliced to its limit',
+          feedReads === 2 && three[1].length === Math.min(5, three[0].length) && three[2].length === 1, `reads=${feedReads}`);
+      } finally {
+        poolMod.setPoolForTests(base);
+      }
+    }
+    repo.resetRecentRecordsCacheForTests();
+    for (let i = 0; i < 70; i++) {
+      await repo.recentRecords({ game: G, balanceVersion: BV, since: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString() });
+    }
+    check('feed/db: the cache holds at most 64 answers however many windows are asked for',
+      repo.recentRecordsCacheSizeForTests() <= 64, String(repo.recentRecordsCacheSizeForTests()));
+    {
+      const apiSrc = readFileSync(join(ROOT, 'server/api.ts'), 'utf8');
+      const route = apiSrc.slice(apiSrc.indexOf("url.pathname === '/api/records/recent'")).slice(0, 900);
+      check('feed/db: the route reads the CURRENT season, never `?season=` (one cache entry per integer a caller tries)',
+        /currentSeasonNumber\(BALANCE_VERSION, game\)/.test(route) && /balanceVersion: current\b/.test(route) && !/balanceVersion: season\b/.test(route));
+    }
     repo.resetRecentRecordsCacheForTests();
     const cleared = await repo.recentRecords({ game: G, balanceVersion: BV, since: null, limit: 30 });
     check('feed/db: a moderator clearing a player’s records removes them from the feed on its own',
       !cleared.some((f) => f.userId === 'fd-b' && f.mode === 'solo'));
     check('feed/db: another game has an empty feed of its own', (await repo.recentRecords({ game: 'decode', balanceVersion: BV, since: null })).length === 0);
+    // an auto-only run stores its AUTO points as `score`: off the board, so off the feed
+    await db.query(
+      `insert into records (user_id, mode, drivetrain, score, auto_score, run_length, balance_version, game, created_at)
+       values ('fd-c', 'solo', 'tank', 900, 900, 'auto', $1, $2, '2026-10-09T10:00:00Z')`,
+      [BV, G],
+    );
+    repo.resetRecentRecordsCacheForTests();
+    const autoFeed = await repo.recentRecords({ game: G, balanceVersion: BV, since: null, limit: 30 });
+    check('feed: an auto-only run is not listed (the board and the world-record check read full runs only)',
+      !autoFeed.some((f) => f.score === 900) && autoFeed.some((f) => f.userId === 'fd-d' && f.score === 400 && f.rank === 1),
+      JSON.stringify(autoFeed.map((f) => `${f.username}:${f.score}:${f.rank}`)));
   }
 
   /*

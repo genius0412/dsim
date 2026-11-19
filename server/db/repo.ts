@@ -3083,7 +3083,19 @@ export async function recordLeaderboard(opts: {
 const FEED_ROWS_MAX = 200_000;
 /** how long a feed answer is reused: a busy hub costs one read per window, not one per visitor */
 const FEED_TTL_MS = 30_000;
-const feedCache = new Map<string, { at: number; val: RecentRecord[] }>();
+/** how many rows one feed answer holds; a request's `limit` is a slice of it */
+const FEED_LIMIT_MAX = 50;
+/** a ceiling on the cache's keys, past which the oldest goes */
+const FEED_KEYS_MAX = 64;
+/**
+ * ONE ANSWER PER BOARD AND WINDOW, SHARED WHILE IT IS BEING READ. The key used to carry the
+ * request's `limit`, so `?limit=1..50` was fifty full replays of one board, each up to 200k rows
+ * sorted on the socket thread; the map was never pruned, and concurrent misses each read the
+ * table. Now the key is game x season x window start, the answer is computed at
+ * `FEED_LIMIT_MAX` and sliced per request, the PROMISE is cached so a miss in flight is joined
+ * rather than repeated, and a failed read is dropped so the next request retries.
+ */
+const feedCache = new Map<string, { at: number; val: Promise<RecentRecord[]> }>();
 
 /**
  * The Records feed: new No.1s and top-3 scores of one game's current season, solo and duo, since
@@ -3102,11 +3114,26 @@ export async function recentRecords(opts: {
   limit?: number;
 }): Promise<RecentRecord[]> {
   const game = g(opts.game);
-  const limit = Math.min(50, Math.max(1, opts.limit ?? 30));
-  const key = `${game}:${opts.balanceVersion}:${opts.since ?? ''}:${limit}`;
+  const limit = Math.min(FEED_LIMIT_MAX, Math.max(1, opts.limit ?? 30));
+  const key = `${game}:${opts.balanceVersion}:${opts.since ?? ''}`;
+  const now = Date.now();
   const hit = feedCache.get(key);
-  if (hit && Date.now() - hit.at < FEED_TTL_MS) return hit.val;
+  if (hit && now - hit.at < FEED_TTL_MS) return (await hit.val).slice(0, limit);
 
+  for (const [k, v] of feedCache) if (now - v.at >= FEED_TTL_MS) feedCache.delete(k);
+  while (feedCache.size >= FEED_KEYS_MAX) feedCache.delete(feedCache.keys().next().value as string);
+  const val = readRecentRecords(game, opts.balanceVersion, opts.since);
+  feedCache.set(key, { at: now, val });
+  val.catch(() => {
+    if (feedCache.get(key)?.val === val) feedCache.delete(key);
+  });
+  return (await val).slice(0, limit);
+}
+
+/** one feed answer, `FEED_LIMIT_MAX` rows; `recentRecords` caches it */
+async function readRecentRecords(game: Game, balanceVersion: number, since: string | null): Promise<RecentRecord[]> {
+  const limit = FEED_LIMIT_MAX;
+  const opts = { balanceVersion, since };
   const phys = await boardPhysics(game, opts.balanceVersion);
   const entries: ((ReturnType<typeof feedFromRows>)[number] & { mode: 'solo' | 'duo' })[] = [];
   for (const mode of ['solo', 'duo'] as const) {
@@ -3116,11 +3143,15 @@ export async function recentRecords(opts: {
       params.push(phys);
       physFilter = `and r.physics = $${params.length}`;
     }
+    // FULL RUNS ONLY, like the board and `isNewWorldRecord`: an auto-only run stores its AUTO
+    // points in `score`, so a 30-point auto run read here as a quiet board's new No.1 while the
+    // board a visitor lands on did not list it and the world-record check did not announce it
     const rows = await q<{ id: string; userId: string; partnerId: string | null; score: number; createdAt: string | Date; replayId: string | null }>(
       `select r.id, r.user_id as "userId", r.partner_id as "partnerId", r.score,
               r.created_at as "createdAt", r.replay_id as "replayId"
          from records r
-        where r.balance_version = $1 and r.mode = $2 and r.game = $3 and r.score is not null ${physFilter}
+        where r.balance_version = $1 and r.mode = $2 and r.game = $3 and r.score is not null
+          and r.run_length = 'full' ${physFilter}
         order by r.created_at asc, r.id asc
         limit ${FEED_ROWS_MAX}`,
       params,
@@ -3164,13 +3195,17 @@ export async function recentRecords(opts: {
       replayId: e.replayId,
     });
   }
-  feedCache.set(key, { at: Date.now(), val: out });
   return out;
 }
 
 /** test seam: forget cached feed answers so the next call reads the table */
 export function resetRecentRecordsCacheForTests(): void {
   feedCache.clear();
+}
+
+/** test seam: how many feed answers are held */
+export function recentRecordsCacheSizeForTests(): number {
+  return feedCache.size;
 }
 
 export async function personalBest(

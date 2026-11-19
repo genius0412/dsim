@@ -665,8 +665,13 @@ before deploying. `--alpha` is not asked. `--check` runs the question and stops,
 - `DEPLOY_ANY_TREE=1 ./scripts/fly-deploy.sh` overrides it and says so in the output.
 - `FLY_APP=dsim-alpha` without `--alpha`, and `FLY_ALPHA_APP=dohun-sim-decode` with it, are
   refused: each would put one environment's config on the other's app.
-- `bash scripts/deploy-guard-test.sh` runs the twelve cases in throwaway repositories with a stub
-  `fly`. Run it after changing the top of the script.
+- **The re-shrink survives a listing flake** (2026-11-18). After the deploy the script lists the
+  machines to put each satellite back on its own size. That listing was unguarded under
+  `set -euo pipefail`, so an API flake there ended the script with nothing printed and every
+  satellite on `fly.toml`'s size and `MAX_ROOMS` 24. It is tried twice now; a second failure prints
+  "THE MACHINES COULD NOT BE LISTED" and the script exits non-zero. Re-run it.
+- `bash scripts/deploy-guard-test.sh` runs the guard's twelve cases and the listing's three in
+  throwaway repositories with a stub `fly`. Run it after changing the script.
 
 ## 2b. Desktop app — releases itself (2026-11-16)
 

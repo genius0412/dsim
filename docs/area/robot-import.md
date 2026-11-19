@@ -48,7 +48,7 @@ per deployment, in two halves over one rule. **Do not open it on production with
 | `types.ts` | nothing but types | main-safe |
 | `drive.ts` | `src/sim/drivetrain`, `src/config` | main-safe, DOM-free |
 | `geometry.ts` | `src/types` | main-safe, DOM-free |
-| `shareFile.ts` | `shareModelCheck.ts` | main-safe, no three |
+| `shareFile.ts` | `shareModelCheck.ts`, `drive.ts` (the cartridge cap), `geometry.ts` (the hull cap) | main-safe, no three |
 | `shareModelCheck.ts` | nothing | the allowlist a share file's model is held to; pure, in `shareFile`'s chunk |
 | `library.ts` | `storageKeys`, IndexedDB `decodesim.robots` | main-safe, no three; a READ never creates the database (`dbExists`) |
 | `libraryIds.ts` | types only | main-safe (the robot page and the lobby read it) |
@@ -1372,6 +1372,21 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   once. A draft is deleted on save, on Discard, and with its robot; `listDrafts` prunes any older
   than `DRAFT_MAX_AGE_MS` (30 days). The robot page's add card turns into Resume import while
   one exists.
+  ⚠️ **A draft write that fails is said** (`draftStore.ts` `onDraftSaveFailure`). A draft is one
+  transaction, so a full device keeps neither the document nor the model, and every later edit fails
+  the same way; it used to log and nothing else, so "a reload loses nothing" was false exactly when
+  storage was short. The editor is told once per change (failing, then recovered), and on mounting
+  while failing (a test drive comes back to a store that is still failing). The status line shows
+  `COPY.draftNotSaved` ahead of the step title, once a model is read, until a write lands.
+- ⚠️ **A share file's `setup` is judged as a whole** (`isImportSetup`, `shareFile.ts`). Only `apart`
+  and `motion` were checked, the rest stored as another player's file wrote it, so a file without a
+  `drive` was added to the library and then threw in `buildSpec` on every render of the editor, and the
+  error boundary replaced the page each time that robot was opened (the wrong-game "set it up for"
+  path hands `drive` on from the same payload). The `drive` is REQUIRED (known drivetrain, motor and
+  wheel choices, finite positive ratio and mass); the detail, hull vertex count, wheels, layout, bands,
+  tuning and body lists are held to what the editor writes when present, and an absent optional one
+  stays absent. `units`, `up` and `yaw` are not read: both ways in replace them. A refusal is
+  `bad-payload`, and `ImportEditor` shows its own sentence rather than "not a STEP file".
 - ⚠️ **Review blocks what `coerceImported` would refuse.** A spec whose import `coerceImported`
   drops (a side under `IMPORT_MIN_SIDE`, an area under `IMPORT_MIN_AREA`, a sliver) saves fine
   and then plays as its parametric fallback with no word said. `reviewItems` blocks whenever the

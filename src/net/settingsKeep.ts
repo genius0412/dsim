@@ -35,14 +35,16 @@
  * the same way (alpha's coercer, 2026-10-02): the three shooter fields are dropped, and `intake:
  * 'none'` comes back as the sloped preset with the length clamped to its 13.5–15 in and the width
  * raised to its 14.5 in floor (`olderReading`), so that rewrite is compared as "not read", not as
- * a change.
+ * a change. Production's build (no caps) also drops `plateFont` and a BIOBUZZ intake's `feed` /
+ * `reject` (`bbMech.intake` comes back as `{ kind }`), so those are `carriesNew` too (2026-11-18).
  *
- * DOM-free, no runtime imports beyond the game list: the server (`server/db/repo.ts`) and the smoke
+ * DOM-free, no runtime imports beyond the game list and the bindings' action table: the server (`server/db/repo.ts`) and the smoke
  * suite read it, and the client reads the capability.
  */
 import { GAME_IDS, isGameId } from '../games/types';
 import type { GameId } from '../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE, ROBOT_MIN_WIDTH, SWERVE_MIN_WIDTH } from '../config';
+import { ACTION_GAMES } from '../input/bindings';
 
 /** the body field a settings save carries (`{ settings, caps }`) when the build keeps imports */
 export const SETTINGS_KEEPS_IMPORTS = 'robotImport';
@@ -74,7 +76,11 @@ const isImported = (spec: unknown): boolean => isObj(spec) && isObj(spec.importe
 /** does this robot carry something an older build cannot read back (see the header)? */
 const carriesNew = (spec: unknown): boolean =>
   isObj(spec) &&
-  (isObj(spec.imported) || spec.launcher !== undefined || spec.hoodDeg !== undefined || spec.flywheel !== undefined || spec.intake === 'none' || spec.zeroPower !== undefined);
+  (isObj(spec.imported) || spec.launcher !== undefined || spec.hoodDeg !== undefined || spec.flywheel !== undefined || spec.intake === 'none' || spec.zeroPower !== undefined ||
+    spec.plateFont !== undefined || bbIntakeChoice(spec));
+/** a BIOBUZZ robot's intake FEED or opponent-NECTAR choice (2026-10-24), which production's coercer drops */
+const bbIntakeChoice = (spec: Obj): boolean =>
+  isObj(spec.bbMech) && isObj(spec.bbMech.intake) && (spec.bbMech.intake.feed !== undefined || spec.bbMech.intake.reject !== undefined);
 
 const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 /**
@@ -83,11 +89,17 @@ const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.
  * size is clamped to that preset's range (alpha's `coerceSpec`, measured 2026-10-02).
  */
 function olderReading(stored: Obj): Obj {
-  if (stored.intake !== 'none') return stored;
+  let read = stored;
+  // a BIOBUZZ intake's feed and reject: production's coercer rebuilds `bbMech.intake` as `{ kind }`
+  if (bbIntakeChoice(stored)) {
+    const mech = stored.bbMech as Obj;
+    read = { ...read, bbMech: { ...mech, intake: { kind: (mech.intake as Obj).kind } } };
+  }
+  if (stored.intake !== 'none') return read;
   const p = INTAKE_PRESETS.sloped;
   const floor = Math.max(stored.drivetrain === 'swerve' ? SWERVE_MIN_WIDTH : ROBOT_MIN_WIDTH, p.minWidth);
   return {
-    ...stored,
+    ...read,
     intake: 'sloped',
     length: Math.min(Math.max(num(stored.length, p.maxLength), p.minLength), p.maxLength),
     width: Math.min(Math.max(num(stored.width, floor), floor), ROBOT_MAX_SIZE),
@@ -136,11 +148,14 @@ function sliceOf(blob: Obj, g: GameId): Obj | null {
 /**
  * The blob to store for a settings save from a build that does NOT keep imports: `incoming` with the
  * account's imported robots (and their last standard robots) carried over from `stored` by the
- * three rules in the header. Returns `incoming` itself when nothing is carried; never mutates
- * either argument.
+ * three rules in the header, and the newer settings and binds by rule 6
+ * (`keepNewerFieldsFromOlderClient`). Returns `incoming` itself when nothing is carried; never
+ * mutates either argument.
  */
 export function keepImportsFromOlderClient(stored: unknown, incoming: Obj): Obj {
   if (!isObj(stored)) return incoming;
+  // the same build predates every setting and bind in rule 6, so they are carried first
+  incoming = keepNewerFieldsFromOlderClient(stored, incoming);
   let out: Obj | null = null;
   const own = (): Obj => (out ??= { ...incoming, ...(isObj(incoming.loadouts) ? { loadouts: { ...incoming.loadouts } } : {}) });
   const inActive = activeGame(incoming);
@@ -225,4 +240,114 @@ export function keepZeroPowerFromOlderClient(stored: unknown, incoming: Obj): Ob
     else (o.loadouts as Obj)[g] = { ...((o.loadouts as Obj)[g] as Obj), ...patch };
   }
   return out ?? incoming;
+}
+
+/** the top-level settings production's build does not read (`coerceSettings` on `main`, 2026-11-18) */
+const NEWER_SETTINGS = ['runLength', 'communityToasts', 'pace', 'paceReplays'] as const;
+/** the actions production's bindings do not know; each lives in the main maps (season-only, folded there) */
+const NEWER_ACTIONS = ['flyPreset', 'bbReverse', 'bbBar'] as const;
+
+/**
+ * Did the older build give an entry of `list` to another action that plays in a game `a` plays in?
+ * Only an entry that action did not already hold in the stored map counts: a key the player shared
+ * on purpose is the player's, not a choice the older build made.
+ */
+function bindClash(a: string, list: unknown[], map: Obj, storedMap: Obj): boolean {
+  const gamesOf = (x: string): readonly GameId[] => (ACTION_GAMES as Record<string, readonly GameId[] | undefined>)[x] ?? GAME_IDS;
+  const games = gamesOf(a);
+  return Object.entries(map).some(([o, v]) => {
+    if (o === a || !Array.isArray(v) || !gamesOf(o).some((g) => games.includes(g))) return false;
+    const had = storedMap[o];
+    return v.some((x) => list.includes(x) && !(Array.isArray(had) && had.includes(x)));
+  });
+}
+
+/**
+ * 6. **What production's build cannot read back** (2026-11-18). Both deployments sign in to one
+ * account and the alpha's row is a copy of production's, so a save from a build with NO settings
+ * caps (production's `main`, and alpha builds from before the import) arrives rebuilt from the
+ * fields that build knows. Every field below is one it does not know, so its absence is "not read",
+ * never "cleared": the stored value is carried over. A build that knows a field writes it or prunes
+ * it on purpose, which is why this runs only for a save with no caps (`saveSettingsFromClient`).
+ *  · `runLength`, `communityToasts`, `pace`, `paceReplays`, and `audio.volume.penalty`;
+ *  · `bindings.modes` (hold or toggle);
+ *  · `bindings.pad.turnCurve`, only where the player split it from `curve`: an unsplit one follows
+ *    the curve the older build saved, as it does when it is absent;
+ *  · the binds of `flyPreset`, `bbReverse` and `bbBar` (keys, and the pad's buttons and combos as
+ *    one), unless the older build gave one of those keys or buttons to another action of a game
+ *    the action plays in: that later choice stands, and the action is left absent, where the
+ *    bindings merge seats it on its default or a free fallback.
+ * A robot field it does not know is rules 1 and 3 (`carriesNew`). Never mutates either argument.
+ */
+export function keepNewerFieldsFromOlderClient(stored: unknown, incoming: Obj): Obj {
+  if (!isObj(stored)) return incoming;
+  const out: Obj = { ...incoming };
+  let changed = false;
+  for (const k of NEWER_SETTINGS) {
+    if (out[k] === undefined && stored[k] !== undefined) {
+      out[k] = stored[k];
+      changed = true;
+    }
+  }
+  const stVol = isObj(stored.audio) && isObj(stored.audio.volume) ? stored.audio.volume : null;
+  if (stVol && stVol.penalty !== undefined && isObj(out.audio) && isObj(out.audio.volume) && out.audio.volume.penalty === undefined) {
+    out.audio = { ...out.audio, volume: { ...out.audio.volume, penalty: stVol.penalty } };
+    changed = true;
+  }
+  const sb = stored.bindings;
+  const ib = out.bindings;
+  if (isObj(sb) && isObj(ib)) {
+    const b: Obj = { ...ib };
+    let bChanged = false;
+    if (b.modes === undefined && isObj(sb.modes)) {
+      b.modes = sb.modes;
+      bChanged = true;
+    }
+    if (isObj(sb.keys) && isObj(b.keys)) {
+      let keys: Obj | null = null;
+      for (const a of NEWER_ACTIONS) {
+        const list = sb.keys[a];
+        if (b.keys[a] !== undefined || !Array.isArray(list) || bindClash(a, list, b.keys, sb.keys)) continue;
+        (keys ??= { ...b.keys })[a] = list;
+      }
+      if (keys) {
+        b.keys = keys;
+        bChanged = true;
+      }
+    }
+    const sp = sb.pad;
+    if (isObj(sp) && isObj(b.pad)) {
+      const pad: Obj = { ...b.pad };
+      let padChanged = false;
+      if (pad.turnCurve === undefined && typeof sp.turnCurve === 'number' && sp.turnCurve !== sp.curve) {
+        pad.turnCurve = sp.turnCurve;
+        padChanged = true;
+      }
+      if (isObj(sp.buttons) && isObj(pad.buttons)) {
+        const buttons: Obj = { ...pad.buttons };
+        const combos: Obj = isObj(pad.combos) ? { ...pad.combos } : {};
+        for (const a of NEWER_ACTIONS) {
+          const list = sp.buttons[a];
+          if (buttons[a] !== undefined || !Array.isArray(list) || bindClash(a, list, pad.buttons as Obj, sp.buttons)) continue;
+          buttons[a] = list;
+          const ch = isObj(sp.combos) ? sp.combos[a] : undefined;
+          if (combos[a] === undefined && Array.isArray(ch)) combos[a] = ch;
+          padChanged = true;
+        }
+        if (padChanged) {
+          pad.buttons = buttons;
+          if (isObj(pad.combos) || Object.keys(combos).length) pad.combos = combos;
+        }
+      }
+      if (padChanged) {
+        b.pad = pad;
+        bChanged = true;
+      }
+    }
+    if (bChanged) {
+      out.bindings = b;
+      changed = true;
+    }
+  }
+  return changed ? out : incoming;
 }

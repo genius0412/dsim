@@ -82,6 +82,16 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   pad press cancels. The screen
   used to let you REPLACE a slot and never ADD one, which with sixteen buttons and twelve pad
   actions meant every rebind cascaded into an UNBOUND somewhere else.
+- ⚠️ **A KEY HELD UNDER SHIFT IS ALSO THE KEY IT WAS PRINTED ON** (`keysOfStroke`, `keyboard.ts`).
+  Binds are the unshifted character and `e.key` is not: Shift is the default Intake, so a driver
+  holding it pressed `;` (Reverse) or `'` (the NECTAR bar) and the browser said `:` and `"`, which no
+  bind names, so neither did anything until Shift was let go. A keydown whose `key` is the US shifted
+  character of its `code` (`:` on `Semicolon`, `!` on `Digit1`, ...) is held and pressed as BOTH, so a
+  bind stored as `:` keeps working. `codeKey` keeps the LIST per physical key, and the release lets go
+  of all of it whichever way the keyup arrives (`:` after Shift went down over a held `;`, `;` after
+  Shift was let go first): nothing sticks. Any other layout is left as it comes, since there `code`
+  names a different character and a `;` would be a phantom. Non-Latin layouts are a separate gap
+  (their binds are letters this never sees).
 - **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
   held together fire one action (`RT + D-UP` for a lift), the way real drive-team code reads
   `gamepad.dpad_up && gamepad.right_trigger > 0.5`. Capture commits on the first RELEASE, so a
@@ -761,6 +771,11 @@ worktree that did it; frame sheets in HANDOFF's 2026-11-02 section).
   screen (faded out, hidden, off screen, or under the stage) for 3 s it finishes the shell's
   fades, removes a boot screen that never left and resets the scroll; 2 s later, still blank, it
   goes Home, once per page. Both log a warning (`[app]`, `[shell]`). Smoke: "blank page:".
+  **A physics engine that does not load is a card too** (`StartFailed`, `AppBoundary.tsx`): nothing
+  mounts until `initPhysics()` answers, so a rejection (a browser or mode that refuses WebAssembly) left
+  the boot screen up for good, with no message and nothing to press. `main.tsx` handles the rejection:
+  `bootFailed` mounts the card (named cause, one Reload button) and the boot screen fades off it like
+  off any first screen; a site closed in the meantime still gets the closed screen first. Smoke: "boot:".
 - ⚠️ **THE FIRST PLAY CLICK** (owner, same day: "Extreme lag when clicking play for the first time").
   Profiled: every card on Play carries a BIOBUZZ 3D picture, made on first sight, and with no builder
   turntable to borrow the batch made a scene of its own at the PLAYER's tier. On Ultra that scene built

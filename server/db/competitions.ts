@@ -1025,11 +1025,13 @@ export async function competitionMatchOf(archivedMatchId: string): Promise<{ id:
   return rows[0] ? { id: Number(rows[0].id), competitionId: rows[0].competition_id } : null;
 }
 
-export async function setMatchStatus(id: number, status: CompMatchStatus, note?: string | null): Promise<boolean> {
-  const rows = await q<{ id: string }>(
-    `update competition_matches set status = $2${note !== undefined ? ', note = $3' : ''} where id = $1 returning id`,
-    note !== undefined ? [id, status, note] : [id, status],
-  );
+/**
+ * A referee's public note on a match, and nothing else. Its only caller used to be a status write
+ * (`set status = $2, note = $3`) handed the status read at the start of the request, so a result
+ * landing in between was put back to `called`, and a reset back to `done` with no result.
+ */
+export async function setMatchNote(id: number, note: string | null): Promise<boolean> {
+  const rows = await q<{ id: string }>(`update competition_matches set note = $2 where id = $1 returning id`, [id, note]);
   return rows.length > 0;
 }
 

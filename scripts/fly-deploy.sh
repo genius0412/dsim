@@ -265,7 +265,14 @@ fly deploy --remote-only --ha=false -a "$APP" "$@" || deploy_rc=$?
 [ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
 echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]}, MAX_ROOMS=$SATELLITE_MAX_ROOMS_DEDICATED dedicated / $SATELLITE_MAX_ROOMS shared)"
-ids=$(fly machine list -a "$APP" --json | node -e '
+# ⚠️ THE LISTING IS GUARDED LIKE THE DEPLOY ABOVE AND THE UPDATES BELOW, AND TRIED TWICE. It is a
+# pipeline in a command substitution, so under `set -euo pipefail` a non-zero `fly machine list`
+# (the same API flake the deploy line is guarded against) ended the script right here with nothing
+# printed, after every machine had been rolled to fly.toml's size and MAX_ROOMS 24: the failure
+# this wrapper exists to prevent, with the exit code as its only sign.
+list_rc=0
+satellite_ids() {
+  fly machine list -a "$APP" --json | node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const want = new Set(process.argv.slice(1));
   // Fly keeps destroyed rows in this JSON after a replace. Drop them BEFORE both uses
@@ -283,7 +290,16 @@ ids=$(fly machine list -a "$APP" --json | node -e '
   for (const [r, n] of byRegion)
     if (n > 1) console.error(`!! ${r} has ${n} machines — ONE PER REGION is load-bearing: two players sharing a room code can land in different rooms, silently. Destroy the extra (docs/deploy.md).`);
   for (const m of live) if (want.has(m.region)) console.log(`${m.region} ${m.id}`);
-' "${SATELLITES[@]}")
+' "${SATELLITES[@]}"
+}
+if ! ids=$(satellite_ids); then
+  echo "!! could not list the machines; trying once more in ${FLY_LIST_RETRY_S:-15}s"
+  sleep "${FLY_LIST_RETRY_S:-15}"
+  if ! ids=$(satellite_ids); then
+    list_rc=1
+    ids=""
+  fi
+fi
 
 while read -r region id; do
   [ -z "$id" ] && continue
@@ -326,11 +342,18 @@ if [ "$update_rc" -ne 0 ]; then
   echo "!! AT LEAST ONE SATELLITE WAS NOT RE-SHRUNK (see above). A machine left on fly.toml's"
   echo "   [[vm]] is running shared-cpu-4x AND MAX_ROOMS 24 — costly, and oversubscribed."
 fi
+if [ "$list_rc" -ne 0 ]; then
+  echo "!! THE MACHINES COULD NOT BE LISTED, SO NO SATELLITE WAS RE-SHRUNK. Each one is on fly.toml's"
+  echo "   [[vm]] with MAX_ROOMS 24 until this script runs again. Check: fly machine list -a $APP"
+fi
 if [ "$deploy_rc" -ne 0 ]; then
   echo "!! VM sizes re-applied, but 'fly deploy' had exited $deploy_rc — CHECK THE DEPLOY."
   echo "   Often a transient API flake with the rollout actually complete; confirm every"
   echo "   machine shares one IMAGE and is 1/1: fly machine list -a $APP"
   exit "$deploy_rc"
+fi
+if [ "$list_rc" -ne 0 ]; then
+  exit 1
 fi
 
 echo "==> done. verify: fly machine list -a $APP"

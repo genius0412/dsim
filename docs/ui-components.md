@@ -198,14 +198,14 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-closed` | src/ui/shell.css:10257 | 18 |
+| `.ds-closed` | src/ui/shell.css:10257 | 23 |
 | `.ds-closed-access` | src/ui/shell.css:10310 | 1 |
-| `.ds-closed-actions` | src/ui/shell.css:10302 | 2 |
+| `.ds-closed-actions` | src/ui/shell.css:10302 | 3 |
 | `.ds-closed-brand` | src/ui/shell.css:10280 | 1 |
-| `.ds-closed-card` | src/ui/shell.css:10268 | 2 |
-| `.ds-closed-msg` | src/ui/shell.css:10297 | 1 |
+| `.ds-closed-card` | src/ui/shell.css:10268 | 3 |
+| `.ds-closed-msg` | src/ui/shell.css:10297 | 2 |
 | `.ds-closed-note` | src/ui/shell.css:10319 | 4 |
-| `.ds-closed-title` | src/ui/shell.css:10290 | 4 |
+| `.ds-closed-title` | src/ui/shell.css:10290 | 5 |
 | `.ds-closed-word` | src/ui/shell.css:10285 | 1 |
 
 ## `ds-dl` — 9
@@ -792,7 +792,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:1026 | 402 |
+| `.ds-btn` | src/ui/shell.css:1026 | 403 |
 
 ## `ds-checkline` — 1
 

@@ -233,7 +233,7 @@ export class ReplayRecorder {
  *  • `tank`       — a FORMAT-1 replay of a tank-steered robot, whose drive input the
  *                    container had nowhere to store.
  */
-export type ReplayRefusal = 'future' | 'balance' | 'behaviour' | 'unstamped' | 'tank';
+export type ReplayRefusal = 'future' | 'balance' | 'behaviour' | 'unstamped' | 'newer' | 'tank';
 
 /**
  * WHAT, if anything, differs between that container and this build — the ONE authority.
@@ -262,16 +262,27 @@ export type ReplayRefusal = 'future' | 'balance' | 'behaviour' | 'unstamped' | '
  * SIM_VERSION 0 and as an exact match on one running 0, which is what it has always done.
  * Splitting it out changes only whether the viewer can say "recorded before we tracked this"
  * instead of naming a version the recorder never claimed.
+ *
+ * ⚠️ **`newer`: A PATCH THIS BUILD DOES NOT HAVE IS A DRIFT TOO.** A `SIM_PATCH` gates a rule on
+ * the replay's own stamp (`simPatchAtLeast`), which keeps an OLDER replay exact on a newer build.
+ * It does nothing the other way round: a build at patch 14 handed a replay stamped 15 turns on
+ * every gate it knows, never runs the rule it does not have, and nothing here read `patch`, so the
+ * viewer called it exact and the pace line trusted it. That is every replay a newer build records,
+ * opened in a tab left open across a deploy, in the desktop app's bundled copy, or on production
+ * once it shares a database with a branch a patch ahead. An older or absent stamp is not this:
+ * the gates handle those exactly.
  */
 export function replayRefusal(
-  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups' | 'patch'>,
   balanceVersion: number,
   simVersion: number,
+  simPatch: number = C.SIM_PATCH,
 ): ReplayRefusal | null {
   if (r.format > REPLAY_FORMAT) return 'future';
   if (r.balanceVersion !== balanceVersion) return 'balance';
   if (r.format < 2 && r.setups.some((s) => tankSteered(s.spec.drivetrain))) return 'tank';
   if ((r.sim ?? 0) !== simVersion) return r.sim === undefined ? 'unstamped' : 'behaviour';
+  if ((r.patch ?? 0) > simPatch) return 'newer';
   return null;
 }
 
@@ -303,18 +314,20 @@ export function replayRefusal(
  */
 export type ReplayFidelity = 'ok' | 'drift' | 'stale';
 
-/** the two situations that are a DRIFT rather than a refusal — both of them "the sim moved" */
+/** the situations that are a DRIFT rather than a refusal — all of them "the sim moved" */
 const DRIFT_REASONS: ReadonlySet<ReplayRefusal> = new Set<ReplayRefusal>([
   'behaviour',
   'unstamped',
+  'newer',
 ]);
 
 export function replayFidelity(
-  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups' | 'patch'>,
   balanceVersion: number,
   simVersion: number,
+  simPatch: number = C.SIM_PATCH,
 ): ReplayFidelity {
-  const why = replayRefusal(r, balanceVersion, simVersion);
+  const why = replayRefusal(r, balanceVersion, simVersion, simPatch);
   if (!why) return 'ok';
   return DRIFT_REASONS.has(why) ? 'drift' : 'stale';
 }
@@ -326,11 +339,12 @@ export function replayFidelity(
  * starts to drift is exactly when saving it matters most.
  */
 export function replayPlayable(
-  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups' | 'patch'>,
   balanceVersion: number,
   simVersion: number,
+  simPatch: number = C.SIM_PATCH,
 ): boolean {
-  return replayFidelity(r, balanceVersion, simVersion) !== 'stale';
+  return replayFidelity(r, balanceVersion, simVersion, simPatch) !== 'stale';
 }
 
 /** drivetrains commanded through the TANK AXES — the ones a format-1 replay lost. Butterfly

@@ -26,6 +26,49 @@ function typingInto(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * THE SHIFTED CHARACTER EACH DIGIT AND PUNCTUATION KEY TYPES ON A US LAYOUT (`KeyboardEvent.code` →
+ * [unshifted, shifted]). Shift is the default Intake, so the driver holding it presses `;` (Reverse)
+ * or `'` (the NECTAR bar) and the browser reports `:` and `"`, which no bind names: both did nothing
+ * until Shift was let go. Binds are the unshifted character, so a press that arrives as the shifted
+ * one is also registered as the key it was printed on.
+ *
+ * Only an event whose `key` IS the shifted character of its `code` is rewritten. On any other layout
+ * `code` names a different character (German `Semicolon` is `ö`), so a `key` that does not match
+ * the US pair is left exactly as it came: that layout keeps today's behaviour and never gains a
+ * phantom `;`.
+ */
+const US_SHIFT: Readonly<Record<string, readonly [string, string]>> = {
+  Digit1: ['1', '!'],
+  Digit2: ['2', '@'],
+  Digit3: ['3', '#'],
+  Digit4: ['4', '$'],
+  Digit5: ['5', '%'],
+  Digit6: ['6', '^'],
+  Digit7: ['7', '&'],
+  Digit8: ['8', '*'],
+  Digit9: ['9', '('],
+  Digit0: ['0', ')'],
+  Minus: ['-', '_'],
+  Equal: ['=', '+'],
+  BracketLeft: ['[', '{'],
+  BracketRight: [']', '}'],
+  Backslash: ['\\', '|'],
+  Semicolon: [';', ':'],
+  Quote: ["'", '"'],
+  Comma: [',', '<'],
+  Period: ['.', '>'],
+  Slash: ['/', '?'],
+  Backquote: ['`', '~'],
+};
+
+/** every lowercased key one keystroke stands for: its own `key`, plus the unshifted one when Shift turned it */
+export function keysOfStroke(key: string, code: string | undefined): string[] {
+  const k = key.toLowerCase();
+  const pair = code ? US_SHIFT[code] : undefined;
+  return pair && key === pair[1] ? [k, pair[0]] : [k];
+}
+
 /** tracks held keys and edge-triggered presses */
 export class Keyboard {
   private down = new Set<string>();
@@ -48,8 +91,12 @@ export class Keyboard {
    * firing, until the window lost focus. The same happens to any digit or punctuation bind and
    * to a keyboard-layout switch mid-press. The release is therefore matched by the PHYSICAL key,
    * and falls back to `key` only for an event that carries no `code`.
+   *
+   * It holds a LIST because one press can stand for two keys: Shift turns `;` into `:`, and the
+   * press is held as both (`keysOfStroke`). The release lets go of every one of them, whichever
+   * of the two the keyup arrives as (Shift let go first, or pressed after the key).
    */
-  private codeKey = new Map<string, string>();
+  private codeKey = new Map<string, string[]>();
   /**
    * keys that went down while ⌘ was held. macOS sends NO keyup for a key released while Meta is
    * down, so these are let go when Meta is — the only release they will ever get.
@@ -70,12 +117,18 @@ export class Keyboard {
       this.releaseAll();
       return;
     }
-    const k = e.key.toLowerCase();
-    if (!e.repeat) this.pressed.add(k);
-    this.down.add(k);
-    if (e.code) this.codeKey.set(e.code, k);
-    if (e.metaKey && k !== 'meta') this.underMeta.add(k);
-    if (this.preventKeys.has(k)) {
+    const keys = keysOfStroke(e.key, e.code);
+    // a repeat of a press that was already registered as a pair must not drop the unshifted half
+    // (Shift went down after the key, so the first press was `;` and this one is `:`): merge
+    const held = e.code ? this.codeKey.get(e.code) : undefined;
+    const all = held ? [...new Set([...held, ...keys])] : keys;
+    for (const k of keys) {
+      if (!e.repeat) this.pressed.add(k);
+    }
+    for (const k of keys) this.down.add(k);
+    if (e.code) this.codeKey.set(e.code, all);
+    for (const k of keys) if (e.metaKey && k !== 'meta') this.underMeta.add(k);
+    if (keys.some((k) => this.preventKeys.has(k))) {
       e.preventDefault();
     }
   };
@@ -87,9 +140,11 @@ export class Keyboard {
     const k = e.key.toLowerCase();
     const wentDownAs = e.code ? this.codeKey.get(e.code) : undefined;
     if (e.code) this.codeKey.delete(e.code);
-    this.down.delete(k);
-    if (wentDownAs !== undefined) this.down.delete(wentDownAs);
-    this.underMeta.delete(k);
+    // the keyup's own `key` (and its unshifted twin) as well as everything the press went down as
+    for (const j of [...keysOfStroke(e.key, e.code), ...(wentDownAs ?? [])]) {
+      this.down.delete(j);
+      this.underMeta.delete(j);
+    }
     if (k === 'meta') {
       for (const held of this.underMeta) this.down.delete(held);
       this.underMeta.clear();

@@ -63,7 +63,7 @@ the instant THAT game counts AUTO at (Chain `autoEnd`; BIOBUZZ and DECODE by `te
 they book the transition as AUTO), the fouls handed over at the same instant come off AUTO, and
 TELEOP is the rest; a run whose net total is 0 (a void) is 0 in both. A row from before 0062 has
 null splits and stays off the Auto/TeleOp boards, and `personalBest`/`recordRank`/the awards stay
-Total/Season. **`run_length` (0063)**: an auto-only run (`replays.run_length`, `records.run_length`, default `'full'`) is read ONLY by the Auto board (`category=auto` reads every row); every other reader — Total, TeleOp, `personalBest`, `recordRank`, `getUserStats` — filters `run_length = 'full'`, inside `best`. `persistMatch` reads it off the REPLAY, stores `auto_score = score`, and returns no PB/rank reveal for it. History/recent feeds still list auto-only rows unlabelled. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
+Total/Season. **`run_length` (0063)**: an auto-only run (`replays.run_length`, `records.run_length`, default `'full'`) is read ONLY by the Auto board (`category=auto` reads every row); every other reader — Total, TeleOp, `personalBest`, `recordRank`, `getUserStats` — filters `run_length = 'full'`, inside `best`. `persistMatch` reads it off the REPLAY, stores `auto_score = score`, and returns no PB/rank reveal for it. The records feed (`recentRecords`) reads full runs only, like the board and `isNewWorldRecord` (2026-11-18: a 30-point auto run was a quiet board's "new No.1" there). Match history still lists auto-only rows unlabelled. The category column is a closed map (`CATEGORY_COLUMN`), never request text.
 Windows roll over at **08:00 UTC** (day; Monday week; the 1st for month, `server/boardWindow.ts`),
 computed by the SERVER; they sit inside the current season, so one era. `all` (lifetime) drops the
 season filter but keeps ONE physics inside `best` (the live era, or `era=2d|3d` for a game with
@@ -489,6 +489,13 @@ username is dropped (still counted for the ranks behind it); a moderator clearin
 them from it; handles, usernames and replay ids are already public on every board. If it is ever measured
 too slow, the escape hatch is a `rank_at_time` column written in `submitRecord`, a migration and a separate
 decision. **A server change: needs a deploy.**
+⚠️ **THE FEED'S CACHE IS ONE ANSWER PER BOARD AND WINDOW** (2026-11-18). The route is public and a
+miss replays up to 200k rows per mode on the socket thread (measured 2.4 s at 200k). The key carried
+`limit` and the route honoured `?season=`, so a caller looping `limit=1..50` or counting up seasons
+minted a full replay per value, the map was never pruned, and concurrent misses each read the
+table. Now the key is game × season × window start, the answer is computed at 50 and sliced per
+request, the in-flight PROMISE is what is cached (a failed read is dropped), the map holds at most
+64 keys, and the route always reads the current season. `npm run dbtest` "feed/db:".
 
 **THE HOMEPAGE COUNTS GAMES AT THE SOURCE, NOT FROM `records`/`matches`** (owner, 2026-09-25:
 count custom, practice, LAN and Discord games too). `play_counts` (migration 0050) is a counter
@@ -529,6 +536,18 @@ build without it keeps the stored `imported.tune` when the robot is otherwise th
 gets the stored `zeroPower` back on the active robot, the last standard robot and each saved
 robot (paired by position) that came back as the stored one minus the field
 (`keepZeroPowerFromOlderClient`); `carriesNew` lists it too, so a build with no caps at all keeps it.
+⚠️ **PRODUCTION'S BUILD SAVES TO THE SAME ROW** (2026-11-18). Production's `main` sends no caps, and
+its `coerceSettings` drops everything newer than it: `runLength`, `communityToasts`, `pace`,
+`paceReplays`, `audio.volume.penalty`, `bindings.modes`, `pad.turnCurve`, the binds of `flyPreset`,
+`bbReverse` and `bbBar`, a robot's `plateFont` and a BIOBUZZ intake's `feed` / `reject` (measured by
+running origin/main's coercer over an alpha blob). A save with no caps now carries each back from the
+stored blob when it arrives without it (`keepNewerFieldsFromOlderClient`, rule 6, inside
+`keepImportsFromOlderClient`), since that build cannot have cleared a field it does not know: a bind
+production gave to another action of the same game stands, and a turn curve the player never split
+follows production's curve. The robot fields are `carriesNew`, so rule 1 restores the robot whole.
+Saved robots are not covered. A new client-only setting is lost the same way until it is added to
+that list or given a cap. `npm run dbtest` "settings: a save from production's build"; smoke
+"settings keep 6:".
 ⚠️ **THE FLAG COULD NOT LIVE IN `profiles.settings`.** That blob is client-shaped,
 client-validated and opaque to the server — nothing in SQL reads it — so a privacy bit stored
 there would be enforced only by asking the client, which is not enforcement. It is a real column,
