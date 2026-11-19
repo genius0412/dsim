@@ -122,6 +122,15 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   the vendored schema's `FORMAT_VERSIONS` gets DSIM's own line ("saved by a newer Zenith (file
   format N), and this DSIM reads up to format M. Reload DSIM; …"), never Zenith's "this build of
   Zenith".
+- ⚠️ **AND BOUNDED PATH: 10,000 in** (`AUTO_PATH_MAX_IN`, `refuseLongPaths` in `load.ts`, 2026-11-18).
+  Zenith's schema takes any number for a coordinate and its planner samples every 2 in with no cap,
+  so a 70-byte file with a pose 100,000 in away planned for 0.8 s, two million inches for 23 s, and
+  `1e999` (Infinity once JSON reads it) never returned: on the room's thread at match start, for
+  every room sharing it. The sum of every leg's control polygon (never shorter than the curve) is
+  read off `resolve`'s tree BEFORE `planAuto`: in `parseAutoText` for the poses in the file, so the
+  lobby refuses it, and again in `loadZenithAuto` with the waypoints inlined. 10,000 in plans in
+  0.1 s. A wait's length costs nothing to plan. AUTO lane: "an auto with a pose 100,000 in away",
+  "a waypoint far off the field".
 - **SOLO AND CUSTOM ROOMS; NEVER RANKED OR RECORD** (owner, 2026-09-25). Solo: `GameView` loads
   the chunk for Solo practice and Free Drive (the tutorial never gets a seat). Custom rooms: the
   lobby sends the active auto once in `{ t: 'zenithAuto' }` (never on the roster, which carries

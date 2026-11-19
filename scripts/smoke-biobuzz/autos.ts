@@ -781,6 +781,26 @@ export function autoChecks(check: Check): void {
     });
     room.onMessage('au-b', { t: 'zenithAuto', auto: { auto: '{"formatVersion":3}' } });
     check('AUTO room: a malformed auto is refused in the lobby', bad.some((m) => m.t === 'error'));
+    // A POSE FAR OFF THE FIELD IS REFUSED IN THE LOBBY TOO. Zenith's planner samples every 2 in of
+    // path and its schema takes any number, so 100,000 in was 0.8 s of the room's thread at match
+    // start and 1e999 (Infinity once JSON has read it) never came back.
+    const farAuto = (x: string): string =>
+      JSON.stringify({
+        ...probeAuto('BLUE'),
+        steps: [{ id: 'far', kind: 'path', segments: [{ kind: 'line', from: 'current', to: { xIn: 12345.5, yIn: 45 } }], heading: { mode: 'tangent' } }],
+      }).replace('12345.5', x);
+    const refusalOf = (auto: string): string => {
+      const from = bad.length;
+      room.onMessage('au-b', { t: 'zenithAuto', auto: { auto } });
+      const err = bad.slice(from).find((m) => m.t === 'error');
+      return err?.t === 'error' ? err.message : '(accepted)';
+    };
+    const farSaid = refusalOf(farAuto('100000'));
+    check('AUTO room: an auto with a pose 100,000 in away is refused in the lobby, with the length it asked for',
+      /add up to 99,938 in, and DSIM plays up to 10,000 in/.test(farSaid), farSaid);
+    const infSaid = refusalOf(farAuto('1e999'));
+    check('AUTO room: ...and one whose coordinate JSON reads as Infinity is refused, not planned forever', /too large to be a place on the field/.test(infSaid), infSaid);
+    check('AUTO room: ...and the routine the lane drives is still accepted', refusalOf(JSON.stringify(probeAuto('BLUE'))) === '(accepted)');
   }
 
   // ── the robot file DSIM hands Zenith is DSIM's own: no number is carried over from a team ─
@@ -867,6 +887,15 @@ export function autoChecks(check: Check): void {
     check('AUTO hud: a file the seat cannot load reads AUTO OFF before and during AUTO', autoHudLine({ auto: off, phase: 'pre' }) === 'AUTO OFF' && autoHudLine({ auto: off, phase: 'auto' }) === 'AUTO OFF');
     check('AUTO hud: ...and not once the driver has the robot', autoHudLine({ auto: off, phase: 'teleop' }) === null);
     check('AUTO hud: the pre-match panel says why the auto is off', pre?.tone === 'err' && pre.text.startsWith('Auto off: ') && pre.text.includes(off.error ?? '(no error)'), pre?.text);
+    // a far pose can also arrive through the waypoints file, which only the full load reads
+    const byRef = JSON.stringify({
+      ...probeAuto('BLUE'),
+      steps: [{ id: 'far', kind: 'path', segments: [{ kind: 'line', from: 'current', to: { ref: 'away' } }], heading: { mode: 'tangent' } }],
+    });
+    const awayAt = JSON.stringify({ formatVersion: 1, waypoints: { away: { xIn: 61.6, yIn: 500_000, headingRad: 0 } } });
+    const farSeat = createAutoSeat(BIOBUZZ_SIM.createWorld('match', 3, [setup(0, 'blue', {}, 2)], undefined, '2d'), 0, { auto: byRef, waypoints: awayAt }, adapter);
+    check('AUTO: a waypoint far off the field stops the load before the plan, and the seat says why',
+      farSeat.loaded === null && /add up to [\d,]+ in, and DSIM plays up to 10,000 in/.test(farSeat.status().error ?? ''), farSeat.status().error ?? '(loaded)');
     // a RED file whose start is BLUE's anchor, played by BLUE: mirrored into RED's half
     const wrong = stage(
       zen({

@@ -89,6 +89,53 @@ export interface LoadedAuto {
 const TANK_MIN_LEG_IN = 2;
 
 /**
+ * THE MOST PATH ONE AUTO MAY ASK THE PLANNER FOR, in inches: about seventy field lengths, several
+ * times what a robot can drive in AUTO, and 0.1 s to plan.
+ *
+ * Zenith's schema takes any number for a coordinate and its planner samples every 2 in of path
+ * with no cap of its own. A 70-byte file with one pose 100,000 in away planned for 0.8 s, two
+ * million inches for 23 s, and `1e999` (which JSON reads as Infinity) never returns. The plan runs
+ * on whichever thread loads the file: a player's tab, or the room's thread on the server, which
+ * loads it at match start for every room sharing that thread (`Room.startMatch`).
+ */
+export const AUTO_PATH_MAX_IN = 10_000;
+
+/** the part of Zenith's resolved step tree this reads: each path leg's control polygon */
+interface ResolvedLegs {
+  segments?: readonly { pointsIn: readonly { xIn: number; yIn: number }[] }[];
+  children?: readonly ResolvedLegs[];
+}
+
+/**
+ * Refuse a routine whose paths are longer than `AUTO_PATH_MAX_IN`, BEFORE it is planned. Measured
+ * on the control polygon (start, control points, end), which is never shorter than the curve, off
+ * `resolve`'s tree, where every `"current"` and waypoint is already a pose. A coordinate that is
+ * not finite makes the sum not finite, and is refused by the same comparison.
+ */
+function refuseLongPaths(steps: readonly ResolvedLegs[]): void {
+  let total = 0;
+  const walk = (list: readonly ResolvedLegs[]): void => {
+    for (const s of list) {
+      for (const seg of s.segments ?? []) {
+        for (let i = 1; i < seg.pointsIn.length; i++) {
+          const a = seg.pointsIn[i - 1];
+          const b = seg.pointsIn[i];
+          total += Math.sqrt((b.xIn - a.xIn) ** 2 + (b.yIn - a.yIn) ** 2);
+        }
+      }
+      if (s.children) walk(s.children);
+    }
+  };
+  walk(steps);
+  if (total <= AUTO_PATH_MAX_IN) return;
+  throw new AutoLoadError(
+    Number.isFinite(total)
+      ? `This auto’s paths add up to ${Math.round(total).toLocaleString('en-US')} in, and DSIM plays up to ${AUTO_PATH_MAX_IN.toLocaleString('en-US')} in. Check its poses for one far off the field.`
+      : 'This auto has a pose with a coordinate too large to be a place on the field.',
+  );
+}
+
+/**
  * THE RUNNING ROUTINE FOR A ROBOT THAT CANNOT STRAFE: every path leg long enough to have a
  * direction is headed along it. `tangentReversed` where the heading the file plans at the leg's
  * start points more than 90° off the direction of travel, i.e. the author drew the robot backing
@@ -237,7 +284,10 @@ export function parseAutoText(text: string): Auto {
   try {
     const json = parseJson(text, 'auto file');
     refuseNewer(json, 'auto');
-    return loadAuto(json);
+    const auto = loadAuto(json);
+    // the poses written in the file itself; `loadZenithAuto` asks again with the waypoints in
+    refuseLongPaths(resolve(auto).steps);
+    return auto;
   } catch (e) {
     if (e instanceof AutoLoadError) throw e;
     throw new AutoLoadError(sentence('This is not a Zenith auto file: ', describe(e)));
@@ -292,6 +342,8 @@ export function loadZenithAuto(
   // after did.
   let inFile = written;
   let fileResolved = resolve(inFile);
+  // with every waypoint inlined; the mirror and a tank's re-heading keep each leg's length
+  refuseLongPaths(fileResolved.steps);
   let filePlan = planAuto(fileResolved, robot, field);
   let reheaded: string[] = [];
   if (adapter.holonomic?.(spec) === false) {
