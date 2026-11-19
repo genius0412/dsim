@@ -1,3 +1,16 @@
+# HANDOFF — 2026-11-18c (Five of the audit's mediums: season roll, competition reads, invite loop, deploy guard, release token)
+
+**State: on `alpha`. Server, client, deploy script and CI. `dsim-alpha` redeploy and the release dry run: see the last two bullets. Nothing on `main`.** `npm test` (5181 + 6338), `dbtest`, `test:comp` (1368), `test:mm` (242), `test:workers` (188), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass.
+
+- **Owner:** "Do it": the five mediums I named as worth taking first.
+- **A season roll names its game** (`Admin.tsx`, `adminStartSeason`, `adminPurgeReplays`). The console sent no `game` and the server reads none as DECODE, so START NEW SEASON, START NEW ACT and the replay purge always acted on DECODE. The card has a game select with no default now, the buttons wait for it, both confirms name it, and the roll's announcement says whose boards rolled. Not clicked in the console (it needs an admin sign-in); typechecked and pinned in smoke ("admin seasons:"). `docs/area/accounts.md`.
+- **A schedule the competition cannot hold is refused, not cut** (`QUAL_MATCHES_MAX` 1,600, `drawQuals`, `drawSwiss`). The match read stopped at 2,000 without saying so and now fails loudly past it. The entry read is capped at 1,000 with withdrawn rows last, so a cap can no longer hide the people registering now. `docs/area/competitions.md`.
+- **Entering is not a loop** (`registerRoute`): 3 entries per account per competition in 10 minutes, the same partner told once in that window, and a block in either direction refuses the invite in the sentence a suspension gets.
+- **Production is deployed from a clean commit on `main`, and the script checks** (`require_main_tree`, `fly-deploy.sh`). It asks the commit, not the branch name, so a detached release worktree and a rollback pass; `DEPLOY_ANY_TREE=1` overrides; `--check` asks and stops, and `announce-deploy.sh` asks before it announces. The capacity routine's `ship.mjs` deploys from a detached worktree after its push, which passes. `bash scripts/deploy-guard-test.sh` runs the twelve cases. `docs/deploy.md` 2a.
+- **The desktop release's build jobs hold no write token** (`release.yml`): read-only workflow, `build` checks out without credentials and packages with `--publish never`, a new `collect` job checks every asset, and `publish` uploads them with `gh`. ⚠️ The publish path cannot be run off `main`: the first push to `main` that carries this is its first real run. Watch that run; if `collect` fails on a missing file the release is not published and nothing else is harmed.
+- **Slip, no harm:** while testing the guard I ran `fly-deploy.sh --alpha --check` before the edit had applied (the edit script had stopped on the files' CRLF endings). The old script passed `--check` to `fly deploy`, which refused the unknown flag. Nothing deployed: the alpha machine's image was unchanged.
+- **Still open from the audit:** the other 32 mediums and the lows, in the report.
+
 # HANDOFF — 2026-11-18b (The audit's three open highs: Escape in a room, Back out of a match, a share file's model)
 
 **State: on `alpha`. Client only: no server change, no deploy beyond Vercel.** `npm test` (5178 + 6338), `build`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass.
