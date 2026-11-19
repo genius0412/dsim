@@ -1,3 +1,17 @@
+# HANDOFF — 2026-11-18 (Alpha audit: the staged-room door, the move map, AUTO path length, desktop links)
+
+**State: on `alpha`. Server, desktop shell and AUTO loader. `dsim-alpha` NOT redeployed. Nothing on `main`.** `npm test` (5173 + 6338), `test:workers` (188), `test:comp` (1365), `test:mm` (234), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass; `scripts/compe2e.ts` 30 of 30. No sim change.
+
+- **Owner:** audit everything on `alpha` since the last merge to `main`, and the existing features; fix what is critical, report the rest.
+- **How:** 15 read-only lanes over the 640 commits since `0942857b` (security, netcode, database, competitions, importer engine and UI, shared sim, BIOBUZZ sim, scene, both halves of the UI, controls and AUTO, desktop, build and deploy, a mechanical sweep), and every suite once before and once after. The report and each lane's file are in `scratch/alpha-audit/` of the worktree that ran it and were sent to the owner; they are not in the repository, which is public.
+- **A STAGED ROOM SEATS ITS ROSTER ONLY** (`joinRoom`, `server/index.ts`). A called competition match's code is on the public page and nothing asked who was joining; such a room starts only when the sockets connected equal the roster, so one extra seat cancelled the match and could forfeit an alliance. Ranked pairings come through the same door. `stagedClaims` makes a join that races the claim wait for the roster. Rules in `docs/area/netcode.md` and `competitions.md`.
+- **`Room.moveMember` asks the roster before it remembers an id** (`moveAt` kept every client string, 64 KiB a frame, for the life of the room).
+- **An AUTO file's paths are capped at 10,000 in before the plan** (`AUTO_PATH_MAX_IN`, `src/auto/load.ts`): a pose 100,000 in away planned for 0.8 s on the room's thread and `1e999` never returned. `docs/area/autos.md`.
+- **The desktop shell opens only `https:` and `mailto:` links** (`openLink`, `electron/main.cjs`); it handed any scheme to the OS. Ships with a desktop release. `docs/area/sponsor.md`.
+- **Checks added:** smoke "a move naming nobody in the room is not remembered", "staged door:" (two, pinned in source; the "match gone" pin moved with the claim block), AUTO lane "a pose 100,000 in away", "Infinity", "a waypoint far off the field"; `compe2e.ts` sends a signed-out stranger and a signed-in non-driver in first.
+- **Next:** port the staged door to `main` (ranked rooms there have the same gap) and deploy production on the owner's word; the three High items and the owner decisions in the report; the merge notes in it (`SIM_PATCH` must stay alpha's 14 and the 3D wall gate `>= 3` when alpha merges).
+- **Gotcha:** `compe2e.ts` is in no suite (five minutes at real time). Run it after any change to the join path's staged branch.
+
 # HANDOFF — 2026-11-16 (The desktop app releases and updates itself)
 
 **State: on `alpha`. Client, shell, CI and one server function. NOT on `main`, nothing released,
