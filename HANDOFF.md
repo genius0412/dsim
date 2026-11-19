@@ -1,3 +1,21 @@
+# HANDOFF — 2026-11-18d (Eleven more of the audit's mediums: feed, notes, run length, settings, replays, deploy, boot, keys, share files, drafts)
+
+**State: on `alpha`. Server and client. `dsim-alpha` redeploy: see the State line of the commit after this one. Nothing on `main`.** `npm test` (5227 + 6338), `dbtest`, `test:comp` (1368), `test:mm` (243), `test:workers` (188), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass. `bash scripts/deploy-guard-test.sh` 15 of 15.
+
+- **Owner:** "Yes, next batch" (the confirmed mediums, after the first five).
+- **How:** two fix agents on disjoint files (server on opus, client on sonnet) plus two fixes by the coordinator, each diff reviewed, every suite run once on the whole.
+- **Records feed** (`recentRecords`, `server/db/repo.ts`): full runs only (`run_length = 'full'`), so an auto-only run is no longer a "new No.1"; the cache is keyed per board and window (not per `limit`), holds the promise so misses in flight are joined, is pruned and capped at 64; the route ignores `?season=`. `docs/area/accounts.md`.
+- **A referee's note writes the note only** (`setMatchNote`): it wrote back the status read at the start of the request, so a result landing in between went back to `called`.
+- **The room asks about run length itself** (`Room.add`, `addSpectator`, `reattach`): a host turning the room auto-only during a join's database waits seated a build without `autoOnly`. ⚠️ A test client added straight to an auto-only room needs the cap now (`c.caps = [AUTO_ONLY_CAP]`).
+- **Production's client no longer drops what it cannot read** (`keepNewerFieldsFromOlderClient`, `src/net/settingsKeep.ts`, rule 6): a save with no caps keeps `runLength`, `communityToasts`, `pace`, `paceReplays`, the penalty volume, `bindings.modes`, a split turn curve, and the binds of `flyPreset` / `bbReverse` / `bbBar` from the stored row. ⚠️ A future client-only setting needs adding to that list or a cap of its own. Not covered: saved robots carrying `plateFont` or intake feed/reject still lose them on a production save.
+- **A replay stamped past this build's `SIM_PATCH` is a drift** (`'newer'`, `replayRefusal`), with a note that says to reload; and smoke "sim patch:" fails when `SIM_PATCH` is not the newest gate under `src/` (the alpha-into-main merge conflicts on that line). `docs/area/netcode.md`.
+- **The deploy's re-shrink survives a listing flake** (`satellite_ids`, `fly-deploy.sh`): tried twice, a second failure is printed and fails the script.
+- **A physics load that fails shows a card** (`StartFailed`, `main.tsx`), not the boot screen for ever. Not seen in a browser (it needs WebAssembly to fail); pinned and rendered in smoke.
+- **Shift no longer swallows `;` and `'`** (`keysOfStroke`, `src/input/keyboard.ts`): a press that arrives as the shifted character is also held as the key it was printed on, and the release lets go of both.
+- **A share file's whole setup is checked** (`isImportSetup`, `shareFile.ts`), the drivetrain above all: a missing `drive` crashed the importer page for that robot. ⚠️ A share file with no `drive` is refused now; the editor has always written one. A library record that already holds a bad setup still throws when opened.
+- **A draft that cannot be saved says so** (`onDraftSaveFailure`, `draftStore.ts`).
+- **Still open:** 21 mediums (10 confirmed, 11 suspected) and the lows, in the report.
+
 # HANDOFF — 2026-11-18c (Five of the audit's mediums: season roll, competition reads, invite loop, deploy guard, release token)
 
 **State: on `alpha`. Server, client, deploy script and CI. DEPLOYED to `dsim-alpha` 2026-11-19 04:05Z (11-18 23:05 EST; one machine, ord, `/health` 200). The release workflow is NOT verified on GitHub: the dry run was refused because the account is locked for a billing issue, which also stops every desktop release. Nothing on `main`.** `npm test` (5181 + 6338), `dbtest`, `test:comp` (1368), `test:mm` (242), `test:workers` (188), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass.
