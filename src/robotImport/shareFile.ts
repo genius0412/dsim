@@ -10,6 +10,7 @@
  * lengths; every chunk after it is copied byte for byte, which keeps their alignment.
  */
 import type { GameId, RobotSpec } from '../types';
+import { shareModelRefusal } from './shareModelCheck';
 import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionRole } from './types';
 
 const MAGIC = 0x46546c67; // 'glTF'
@@ -41,7 +42,8 @@ export type ShareReadError =
   | 'bad-json'
   | 'not-dsim'
   | 'newer-version'
-  | 'bad-payload';
+  | 'bad-payload'
+  | 'bad-model';
 
 export type ShareReadResult =
   | { ok: true; payload: SharePayload; json: Record<string, unknown> }
@@ -157,6 +159,13 @@ export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult 
   if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', 'Couldn’t read this robot’s setup: its name is missing or too long.');
   if ((dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) || (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion))) {
     return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts is damaged.');
+  }
+  // THE MODEL IS STORED AS IT IS, so it is held to what DSIM's exporters write (`shareModelCheck.ts`)
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const binBytes = parsed.restAt + 8 <= parsed.total && dv.getUint32(parsed.restAt + 4, true) === CHUNK_BIN ? dv.getUint32(parsed.restAt, true) : 0;
+  const why = shareModelRefusal(parsed.json, binBytes, parsed.total);
+  if (why) {
+    return fail('bad-model', `Couldn’t add this robot: its 3D model holds something DSIM’s export does not write (${why}). Ask for it to be exported from DSIM again.`);
   }
   return {
     ok: true,

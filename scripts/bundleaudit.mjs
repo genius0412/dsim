@@ -886,7 +886,11 @@ const BASELINE = {
   // the footprint), and its review +0.78: a zip that holds a STEP (`fileSelection.ts`), the staged
   // Detail kept on the tile with Keep current model, the Review warning for left-out parts, and the
   // share file's `apart`/`motion` validation (`shareFile-*.js` 1.38 -> 1.81).
-  importerui: { gzip: 40.82 * 1000 },
+  // 2026-11-18: 43.01, was 40.82 (+2.19): `shareModelCheck.ts` in `shareFile-*.js` (1.81 -> 4.00),
+  // the allowlist a share file's model is held to before it is stored (docs/area/robot-import.md,
+  // "A SHARE FILE'S MODEL IS HELD TO WHAT DSIM WRITES"). The route measures 45.00: the other +1.99
+  // is drift since the last raise, inside the tolerance and not folded in.
+  importerui: { gzip: 43.01 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

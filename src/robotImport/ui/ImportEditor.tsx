@@ -503,6 +503,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             setError({ text: COPY.newer, extra: { label: COPY.setUpAgain, run: () => void readModel(files) } });
             return;
           }
+          // a model DSIM did not write is not stored, and is not offered to the editor either:
+          // the sentence says what was found
+          if (res.error === 'bad-model') {
+            setError({ text: res.message });
+            return;
+          }
         } catch (err) {
           console.warn('[import] share check failed', err);
           setError({ text: COPY.notStep(files[0].name) });

@@ -42934,6 +42934,40 @@ function fxImportFixed(): RobotSpec {
       'stored mesh: a share file of it reads (payload) and opens (every triangle), as the robot page and the editor read it',
       readBack.ok && readBack.payload.name === 'Quantised' && triangleCount(sharedModel.parts) === triangleCount(srcParts),
     );
+    // ---- a share file's MODEL is held to what DSIM's exporters write (`shareModelCheck.ts`): it is
+    // stored as it is and the 3D scene's loader reads it, so anything else is the sender's to use
+    {
+      const floatShare = share.readShareFile(share.writeShareFile(float, { game: 'biobuzz', spec, setup: {} as never, name: 'Float' }));
+      check('share model: the compressed stored mesh and the float one saved before it are both accepted', readBack.ok && floatShare.ok, floatShare.ok ? '' : floatShare.message);
+      const dvs = new DataView(shared.buffer, shared.byteOffset, shared.byteLength);
+      const binAt = 20 + dvs.getUint32(12, true);
+      const bin = shared.subarray(binAt + 8, binAt + 8 + dvs.getUint32(binAt, true));
+      type Gltf = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+      const tampered = (edit: (j: Gltf) => void): string => {
+        const j = structuredClone(readBack.ok ? readBack.json : {}) as Gltf;
+        edit(j);
+        const r = share.readShareFile(share.buildGlb(j, bin));
+        return r.ok ? 'ok' : `${r.error}: ${r.message}`;
+      };
+      const untouched = tampered(() => {});
+      const cases: [string, (j: Gltf) => void][] = [
+        ['an image with a URL', (j) => { j.images = [{ uri: 'https://example.invalid/x.png' }]; }],
+        ['a texture on a material', (j) => { j.materials[0].pbrMetallicRoughness.baseColorTexture = { index: 0 }; }],
+        ['a buffer with a URL', (j) => { j.buffers[0].uri = 'https://example.invalid/x.bin'; }],
+        ['an extension on a node (GPU instancing)', (j) => { j.nodes[1].extensions = { EXT_mesh_gpu_instancing: { attributes: {} } }; }],
+        ['an extension DSIM does not write', (j) => { j.extensionsUsed.push('KHR_draco_mesh_compression'); }],
+        ['a compressed view that decodes to more than its view', (j) => { j.bufferViews[0].extensions.EXT_meshopt_compression.count = 1_000_000_000; }],
+        ['a fallback buffer larger than the file could decode to', (j) => { j.buffers[1].byteLength = 2 ** 40; }],
+        ['a node that is its own child', (j) => { j.nodes[0].children = [0]; }],
+        ['a camera', (j) => { j.cameras = [{ type: 'perspective' }]; }],
+      ];
+      const kept = cases.filter(([, edit]) => !tampered(edit).startsWith('bad-model: '));
+      check(
+        'share model: rebuilt untouched it is still accepted; an image or buffer URL, a texture, a node or file extension DSIM does not write, a compressed view or fallback sized past the file, a node cycle and a camera are each refused',
+        untouched === 'ok' && kept.length === 0,
+        `untouched ${untouched}; not refused: ${kept.map(([n]) => n).join(', ') || 'none'}`,
+      );
+    }
     const oldModel = await loadModel([new File([float], 'old.glb')]);
     check('stored mesh: an old float stored mesh still opens in the editor, every triangle and body', triangleCount(oldModel.parts) === triangleCount(srcParts) && oldModel.parts.every((p) => !!p.body));
 

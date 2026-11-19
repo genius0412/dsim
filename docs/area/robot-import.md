@@ -48,7 +48,8 @@ per deployment, in two halves over one rule. **Do not open it on production with
 | `types.ts` | nothing but types | main-safe |
 | `drive.ts` | `src/sim/drivetrain`, `src/config` | main-safe, DOM-free |
 | `geometry.ts` | `src/types` | main-safe, DOM-free |
-| `shareFile.ts` | nothing | main-safe, no three |
+| `shareFile.ts` | `shareModelCheck.ts` | main-safe, no three |
+| `shareModelCheck.ts` | nothing | the allowlist a share file's model is held to; pure, in `shareFile`'s chunk |
 | `library.ts` | `storageKeys`, IndexedDB `decodesim.robots` | main-safe, no three; a READ never creates the database (`dbExists`) |
 | `libraryIds.ts` | types only | main-safe (the robot page and the lobby read it) |
 | `engineLoader.ts` | one dynamic `import()` | main-safe |
@@ -1068,6 +1069,20 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
   the stored mesh's own bodies. `readShareFile` refuses an `apart` that is not ascending body ids, and a
   `motion` with an unknown role or choice, a number that is not finite, or a `follows`/`rideOn` that is
   not another row (`isBodyList`, `isMotionList`).
+- ⚠️ **A SHARE FILE'S MODEL IS HELD TO WHAT DSIM WRITES** (`shareModelCheck.ts`, called by
+  `readShareFile`; 2026-11-18). The file is stored byte for byte as the library's mesh and the 3D
+  scene hands it to three's GLTFLoader on every match, and only its `asset.extras.dsim` block was
+  checked. A CAD goes through the bake, which keeps geometry and colours and nothing else; a share
+  file did not, so an image with a `uri` was a request made from this browser each time the robot
+  was drawn, and `EXT_mesh_gpu_instancing` or a meshopt view sized past its data were the sender's to
+  use. An ALLOWLIST of both writers' output (the compressed stored mesh with its two extensions on
+  buffer views and the fallback buffer only; the float one saved before): every object's keys are
+  listed, no `uri`, no images, textures, samplers, skins, animations or cameras, compressed views
+  decode to exactly their view and to no more than `shareDecodeCap`, the node graph is a forest, and
+  at most `SHARE_MAX_TRIANGLES` are drawn. `extras` is not looked into. Refused as `bad-model` with
+  the reason in the sentence, and not offered to the editor. ⚠️ **A NEW FEATURE IN EITHER WRITER
+  NEEDS ITS KEY HERE**, or every share file made after it is refused; smoke "share model:" reads
+  both writers' real output and fails first.
 
 ### The drop box, before a file is read
 
