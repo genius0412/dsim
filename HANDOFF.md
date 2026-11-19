@@ -1,6 +1,6 @@
 # HANDOFF — 2026-11-18 (Alpha audit: the staged-room door, the move map, AUTO path length, desktop links)
 
-**State: on `alpha`. Server, desktop shell and AUTO loader. `dsim-alpha` NOT redeployed. Nothing on `main`.** `npm test` (5173 + 6338), `test:workers` (188), `test:comp` (1365), `test:mm` (234), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass; `scripts/compe2e.ts` 30 of 30. No sim change.
+**State: on `alpha`. Server, desktop shell and AUTO loader. DEPLOYED to `dsim-alpha` 2026-11-19 03:00Z (11-18 22:00 EST; one machine, ord, `/health` 200). Nothing on `main`, production untouched.** `npm test` (5173 + 6338), `test:workers` (188), `test:comp` (1365), `test:mm` (234), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass; `scripts/compe2e.ts` 30 of 30. No sim change.
 
 - **Owner:** audit everything on `alpha` since the last merge to `main`, and the existing features; fix what is critical, report the rest.
 - **How:** 15 read-only lanes over the 640 commits since `0942857b` (security, netcode, database, competitions, importer engine and UI, shared sim, BIOBUZZ sim, scene, both halves of the UI, controls and AUTO, desktop, build and deploy, a mechanical sweep), and every suite once before and once after. The report and each lane's file are in `scratch/alpha-audit/` of the worktree that ran it and were sent to the owner; they are not in the repository, which is public.
