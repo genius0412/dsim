@@ -2158,7 +2158,8 @@ const httpServer = createServer((req, res) => {
               kind: bumpAct ? 'act' : 'season',
               title: label,
               tagline: bumpAct ? 'A NEW ACT BEGINS' : 'A NEW SEASON BEGINS',
-              body: 'Fresh leaderboards and ranked ratings are live. Set a new record and climb from the top.',
+              // the announcement goes to every game's players, so it says whose boards rolled
+              body: `Fresh ${seasonFor(adminGame).name} leaderboards and ranked ratings are live. Set a new record and climb from the top.`,
             }).catch((e) => console.error('[admin] announcement failed:', e));
           }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });

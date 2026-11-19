@@ -1080,7 +1080,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-select` | src/ui/shell.css:2872 | 35 |
+| `.ds-select` | src/ui/shell.css:2872 | 36 |
 
 ## `ds-server` — 1
 

@@ -45007,5 +45007,29 @@ function fxImportFixed(): RobotSpec {
   );
 }
 
+/**
+ * A SEASON ROLL NAMES ITS GAME (2026-11-18). Periods are per game and the server reads a missing
+ * `game` as DECODE. The console sent none, so START NEW SEASON, START NEW ACT and the replay purge
+ * always acted on DECODE, and the confirm sentence did not say so.
+ */
+{
+  const text = (p: string): string => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+  const api = text('src/net/api.ts');
+  const admin = text('src/ui/Admin.tsx');
+  const server = text('server/index.ts');
+  check(
+    'admin seasons: the roll and the purge take the game first and always send it, DECODE included',
+    /export async function adminStartSeason\(\n  game: GameId,/.test(api) && /export async function adminPurgeReplays\(game: GameId, season\?: number\)/.test(api) &&
+      (api.match(/const params = new URLSearchParams\(\{ game \}\);/g) ?? []).length === 2,
+  );
+  check(
+    'admin seasons: the console has no default game, its three buttons wait for one, and both confirms name it',
+    /useState<GameId \| ''>\(''\)/.test(admin) && (admin.match(/disabled=\{seasonBusy \|\| !seasonGame\}/g) ?? []).length === 3 &&
+      admin.includes('adminStartSeason(seasonGame, seasonName, { newAct })') && admin.includes('adminPurgeReplays(seasonGame)') &&
+      admin.includes('fetchSeasons(seasonGame)') && admin.includes('`${seasonGameName}: ${target}`') && admin.includes('`every ARCHIVED ${seasonGameName} season`'),
+  );
+  check('admin seasons: the announcement a roll publishes says whose boards rolled', server.includes('`Fresh ${seasonFor(adminGame).name} leaderboards and ranked ratings are live.'));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

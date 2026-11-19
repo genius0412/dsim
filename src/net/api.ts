@@ -1775,19 +1775,24 @@ export async function adminCancelNotice(): Promise<boolean> {
   return res.ok;
 }
 
-/** archive the live boards and open a fresh period; `newAct` opens a new ACT
- * (else a new season in the current act). Returns the new balance_version. */
+/** archive ONE GAME's live boards and open a fresh period; `newAct` opens a new ACT
+ * (else a new season in the current act). Returns the new balance_version.
+ *
+ * ⚠️ `game` IS REQUIRED AND ALWAYS SENT, DECODE included. Periods are per game, and the server
+ * reads an absent `game` as DECODE: the console sent none, so a roll meant for BIOBUZZ archived
+ * DECODE's boards. Unlike the read URLs (`needsGameParam`), nothing here is implicit. */
 export async function adminStartSeason(
+  game: GameId,
   name?: string,
   opts?: { newAct?: boolean },
 ): Promise<number | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ game });
   if (name && name.trim()) params.set('name', name.trim());
   if (opts?.newAct) params.set('act', 'new');
-  const qs = params.toString() ? `?${params.toString()}` : '';
+  const qs = `?${params.toString()}`;
   const res = await fetchAuthed(token, base + '/api/admin/season/start' + qs, {
     method: 'POST',
     });
@@ -1796,13 +1801,16 @@ export async function adminStartSeason(
   return data.season ?? null;
 }
 
-/** delete the replays of an archived season (omit `season` to purge every one
- * before the live season). Boards stay; those runs just stop being watchable. */
-export async function adminPurgeReplays(season?: number): Promise<number | null> {
+/** delete the replays of ONE GAME's archived season (omit `season` to purge every one
+ * before the live season). Boards stay; those runs just stop being watchable. `game` is always
+ * sent, for the reason `adminStartSeason` gives. */
+export async function adminPurgeReplays(game: GameId, season?: number): Promise<number | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const q = season != null ? '?season=' + season : '';
+  const params = new URLSearchParams({ game });
+  if (season != null) params.set('season', String(season));
+  const q = `?${params.toString()}`;
   const res = await fetchAuthed(token, base + '/api/admin/season/purge-replays' + q, {
     method: 'POST',
     });

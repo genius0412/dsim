@@ -368,6 +368,13 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   keeps only their best place there (owner, 2026-11-01: A+B #1 and A+C #2 ⇒ A is #1, C is #2).
   **Act 0 is never paid**, ranked or records. Duo awards start with the first season to close
   after 2026-11-01; earlier closed seasons were paid solo-only and stay claimed.
+- ⚠️ **A ROLL NAMES ITS GAME** (2026-11-18). Periods are per game, and `/api/admin/season/start` and
+  `/season/purge-replays` read a missing `game` as DECODE. The console sent none, so START NEW
+  SEASON, START NEW ACT and the replay purge always acted on DECODE, with a confirm that named no
+  game. `adminStartSeason(game, …)` and `adminPurgeReplays(game, …)` take it first and always send
+  it (DECODE included, unlike the read URLs); the Acts and seasons card has a game select with NO
+  default, its three buttons wait for a pick, and both confirm sentences name the game. The
+  announcement a roll publishes goes to every game's players, so its body says whose boards rolled.
 - **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
   `reward_periods` (a season is closed once `currentSeasonNumber` is past it; an act once a seasons
   row exists in a later act). It runs at every boot on every machine and after every

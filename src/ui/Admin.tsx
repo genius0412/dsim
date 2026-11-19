@@ -180,6 +180,10 @@ export function Admin({
   const [seasonName, setSeasonName] = useState('');
   const [seasonStatus, setSeasonStatus] = useState<string | null>(null);
   const [seasonBusy, setSeasonBusy] = useState(false);
+  // NO DEFAULT GAME. These three archive or delete one game's boards and replays, and the server
+  // reads a missing game as DECODE, which is what every roll from here used to hit.
+  const [seasonGame, setSeasonGame] = useState<GameId | ''>('');
+  const seasonGameName = SEASONS.find((s) => s.key === seasonGame)?.name ?? '';
 
   // moderation — leaderboard records
   const [recGame, setRecGame] = useState<GameId>('decode');
@@ -282,12 +286,13 @@ export function Admin({
   };
 
   const startSeason = async (newAct: boolean): Promise<void> => {
+    if (!seasonGame) return;
     const what = newAct ? 'ACT' : 'season';
     // NAME THE PERIOD THIS CREATES, so the moderator is not confirming blind: the next
     // Act/Season number off the live one, plus the custom title if one was typed. If the
     // season list will not load, the sentence still carries the title and the kind.
     const title = seasonName.trim();
-    const list = await fetchSeasons().catch(() => null);
+    const list = await fetchSeasons(seasonGame).catch(() => null);
     const live = list?.seasons.find((s) => s.season === list.current);
     const target = live
       ? `Act ${newAct ? live.act + 1 : live.act} · Season ${newAct ? 1 : live.seasonNo + 1}` +
@@ -296,37 +301,38 @@ export function Admin({
     if (
       !confirmed(
         'Start',
-        target,
-        'The live leaderboards are archived; old boards stay viewable.' +
+        `${seasonGameName}: ${target}`,
+        `The live ${seasonGameName} leaderboards are archived; old boards stay viewable.` +
           (newAct ? ' A new act resets the season count to 1.' : ''),
       )
     )
       return;
     setSeasonBusy(true);
-    const season = await adminStartSeason(seasonName, { newAct });
+    const season = await adminStartSeason(seasonGame, seasonName, { newAct });
     setSeasonBusy(false);
     setSeasonStatus(
       season != null
-        ? `Started a new ${what}. New runs now score onto it; older periods are archived but still viewable.`
+        ? `Started a new ${seasonGameName} ${what}. New runs now score onto it; older periods are archived but still viewable.`
         : adminFail(`start the new ${what.toLowerCase()}`),
     );
   };
 
   const purgeReplays = async (): Promise<void> => {
+    if (!seasonGame) return;
     if (
       !confirmed(
         'Delete the replays of',
-        'every ARCHIVED season',
+        `every ARCHIVED ${seasonGameName} season`,
         'Boards stay; those runs stop being watchable. This frees storage and cannot be undone.',
       )
     )
       return;
     setSeasonBusy(true);
-    const freed = await adminPurgeReplays();
+    const freed = await adminPurgeReplays(seasonGame);
     setSeasonBusy(false);
     setSeasonStatus(
       freed != null
-        ? `Purged ${freed} archived-season replay${freed === 1 ? '' : 's'}.`
+        ? `Purged ${freed} archived ${seasonGameName} replay${freed === 1 ? '' : 's'}.`
         : adminFail('purge the replays'),
     );
   };
@@ -668,6 +674,15 @@ export function Admin({
           period each one creates (design review 10-15) */}
       <h2 className="ds-h2 adm-sec">Acts and seasons</h2>
       <div className="admin-card">
+        <div className="admin-field">
+          <span>Game</span>
+          <select className="ds-select" aria-label="Game to roll" value={seasonGame} onChange={(e) => setSeasonGame(e.target.value as GameId | '')}>
+            <option value="">Choose a game</option>
+            {SEASONS.map((g) => (
+              <option key={g.key} value={g.key}>{g.name}</option>
+            ))}
+          </select>
+        </div>
         <label className="admin-field col">
           <span>Custom title (optional)</span>
           <input
@@ -682,7 +697,7 @@ export function Admin({
         <div className="admin-buttons">
           <button
             className="ds-btn"
-            disabled={seasonBusy}
+            disabled={seasonBusy || !seasonGame}
             title="Resets the boards within the current act. Past periods stay viewable in the leaderboard’s picker."
             onClick={() => startSeason(false)}
           >
@@ -690,7 +705,7 @@ export function Admin({
           </button>
           <button
             className="ds-btn"
-            disabled={seasonBusy}
+            disabled={seasonBusy || !seasonGame}
             title="Rolls the act, restarts the season count at 1 and plays the “A NEW ACT” cinematic."
             onClick={() => startSeason(true)}
           >
@@ -698,7 +713,7 @@ export function Admin({
           </button>
           {/* irreversible, unlike the two beside it: a new period archives the old one, a
               purge deletes its replays for good */}
-          <button className="ds-btn danger" disabled={seasonBusy} onClick={purgeReplays}>
+          <button className="ds-btn danger" disabled={seasonBusy || !seasonGame} onClick={purgeReplays}>
             PURGE ARCHIVED REPLAYS
           </button>
         </div>
