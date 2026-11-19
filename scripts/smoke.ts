@@ -44930,5 +44930,48 @@ function fxImportFixed(): RobotSpec {
   );
 }
 
+/**
+ * ESCAPE GOES TO ONE SURFACE, AND BACK OUT OF A MATCH CLEARS WHAT THE START STAGED (2026-11-18).
+ * Every `useEscape` used to add its own window listener and all of them ran: closing the friends
+ * sheet, the Setup drawer or the builder with Escape also left the room under it. And browser Back
+ * out of a match is a `popstate`, which skipped `exitGame`, so the next Solo practice opened the
+ * tutorial, the importer's test drive or the touch-layout editor.
+ */
+{
+  const { holdEscape, escapePressed } = await import('../src/ui/useEscape');
+  const ran: string[] = [];
+  const room = { fn: (): void => void ran.push('room') };
+  const sheet = { fn: (): void => void ran.push('sheet') };
+  const leaveRoom = holdEscape(room);
+  escapePressed();
+  const closeSheet = holdEscape(sheet);
+  escapePressed();
+  room.fn = (): void => void ran.push('room again'); // a re-render hands the room a new handler
+  escapePressed();
+  closeSheet();
+  escapePressed();
+  leaveRoom();
+  const idle = escapePressed();
+  check(
+    'escape: a press reaches the surface opened last and no other; a new handler keeps its place; closing gives the key back',
+    JSON.stringify(ran) === JSON.stringify(['room', 'sheet', 'sheet', 'room again']) && idle === false,
+    ran.join(', '),
+  );
+  const text = (p: string): string => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+  const lobby = text('src/ui/Lobby.tsx');
+  const roomScreen = text('src/ui/RoomScreen.tsx');
+  check(
+    'escape: in a room it is the builder’s Done while the builder is up, and the Setup drawer is a useDialog that closes itself',
+    lobby.includes('useEscape(building ? () => setBuilding(false) : onCancel);') &&
+      roomScreen.includes('{props.drawerOpen && <SetupDrawer onClose={props.onCloseDrawer}>') &&
+      /function SetupDrawer\(\{ onClose, children \}[^\n]*\{\s*const ref = useDialog<HTMLElement>\(onClose\);/.test(roomScreen),
+  );
+  const app = text('src/ui/App.tsx');
+  check(
+    'back out of a match: leaving the game screen by any route clears the tutorial, the test drive, the layout editor and the competition return',
+    /useEffect\(\(\) => \{\s*const was = leftScreenRef\.current;\s*leftScreenRef\.current = screen;\s*if \(was !== 'game' \|\| screen === 'game'\) return;\s*setTutorialRun\(false\);\s*setTestDrive\(null\);\s*setEditMobileLayout\(false\);\s*compReturnRef\.current = null;\s*\}, \[screen\]\);/.test(app),
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

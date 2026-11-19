@@ -2060,6 +2060,23 @@ export function App() {
    *  the match starts from the play screen, cleared on the way out. */
   const compReturnRef = useRef<string | null>(null);
   testDriveRef.current = testDrive;
+  /**
+   * LEAVING THE MATCH SCREEN WITHOUT MENU. Browser Back, the phone's back gesture and Forward are
+   * a `popstate`, which only swaps `screen`: what a start had staged for that one mount stayed
+   * set, and the NEXT Solo practice mounted `GameView` as the tutorial, as the importer's test
+   * drive or with the touch-layout editor open. `exitGame` clears the same four before it
+   * navigates, so after MENU this runs to no effect. The session is not touched here.
+   */
+  const leftScreenRef = useRef(screen);
+  useEffect(() => {
+    const was = leftScreenRef.current;
+    leftScreenRef.current = screen;
+    if (was !== 'game' || screen === 'game') return;
+    setTutorialRun(false);
+    setTestDrive(null);
+    setEditMobileLayout(false);
+    compReturnRef.current = null;
+  }, [screen]);
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
   // are untouched (this only guards the start actions). Info notices don't block.

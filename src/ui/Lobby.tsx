@@ -507,7 +507,10 @@ export function Lobby({
     preloadRoomView(roomGame);
   }, [roomGame]);
 
-  useEscape(onCancel); // Esc leaves the lobby, same as ← Back
+  // Esc leaves the lobby, same as ← Back. In the builder that button is "← Done", so Esc is too:
+  // it used to leave the ROOM from there. The Setup drawer and the Invite sheet take their own
+  // Escape before this one (`RoomScreen`'s `SetupDrawer`, `useEscape`'s stack).
+  useEscape(building ? () => setBuilding(false) : onCancel);
 
   // The other half of the connecting signal: the FIRST attempt neither drops nor opens for
   // a while (a cold Fly machine, a suspended iframe waking up), and `onDown` above fires

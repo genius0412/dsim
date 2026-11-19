@@ -1248,6 +1248,21 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   reader of the markup sees them — and it moves focus in on open (first control, else the card:
   give it `tabIndex={-1}`), traps Tab, calls `onClose` on Escape (omit it for a dialog that must
   be answered, like `TermsGate`), and hands focus back on close. Do not hand-roll a trap.
+- ⚠️ **ONE ESCAPE, ONE SURFACE** (`src/ui/useEscape.ts`, 2026-11-18). Every enabled `useEscape` is on
+  one stack and a press runs the LAST one alone. Each call used to add its own `window` listener and
+  all of them ran, so the Escape that closed the friends sheet also left the room, the ranked screen,
+  the record run or the LAN panel under it, and a host who leaves gives the room up. A handler that
+  is a new arrow every render keeps its place (the stack holds a ref); only `enabled` moves it. A
+  `useDialog` still goes first, because it listens on `document` and consumes the key. In a room:
+  the Setup drawer is a `useDialog` (`SetupDrawer`, `RoomScreen.tsx`; it claimed `aria-modal` with no
+  focus handling and no Escape), and with the builder up Escape is its "← Done". Smoke: "escape:".
+- ⚠️ **LEAVING THE MATCH SCREEN WITHOUT MENU CLEARS WHAT THE START STAGED** (`App.tsx`, same day).
+  Browser Back, the phone's back gesture and Forward are a `popstate`, which only swaps `screen` and
+  never ran `exitGame`: `tutorialRun`, `testDrive`, `editMobileLayout` and `compReturnRef` stayed set,
+  and the next Solo practice mounted `GameView` as the tutorial, the importer's test drive or the
+  touch-layout editor. One effect keyed on `screen` clears the four whenever the screen leaves
+  `game`; `exitGame` clears the same ones, so after MENU it does nothing. It does not touch the
+  session: a Back during an online match still leaves the socket open (open, reported 2026-11-18).
 - **`.ds-title h1` is `.ds-h1`'s type.** It was 26→40 against 26→38 — the same heading on two
   page shells, two clamps, visible only by navigating between them.
 - **A NAME CLAMPS; IT DOES NOT BREAK ITS ROW.** `.lb-name-h` / `.lb-at` are nowrap ellipses

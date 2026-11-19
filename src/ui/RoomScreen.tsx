@@ -5,6 +5,7 @@ import { SupporterBadge } from './SupporterBadge';
 import { BadgeMarks } from './BadgeMark';
 import { botLabel } from './SoloSetup';
 import { canTakeSeat, seatMap, settingsLine, shrinkState, type PendingSeat, type Seat, type SeatTo } from './lobbyRules';
+import { useDialog } from './useDialog';
 import './room.css';
 
 /**
@@ -399,21 +400,32 @@ export function RoomScreen(props: RoomScreenProps) {
           </button>
         )}
       </footer>
-      {props.drawerOpen && (
-        <>
-          <div className="rm-scrim" onClick={props.onCloseDrawer} aria-hidden="true" />
-          <aside className="rm-drawer" role="dialog" aria-modal="true" aria-label="Your setup">
-            <div className="rm-drawer-h">
-              <h2 className="ds-dialog-title">Your setup</h2>
-              <button type="button" className="ds-btn primary" onClick={props.onCloseDrawer}>
-                Done
-              </button>
-            </div>
-            <div className="rm-drawer-body">{props.drawer}</div>
-          </aside>
-        </>
-      )}
+      {props.drawerOpen && <SetupDrawer onClose={props.onCloseDrawer}>{props.drawer}</SetupDrawer>}
     </div>
+  );
+}
+
+/**
+ * THE SETUP DRAWER IS A DIALOG, so it is `useDialog`'s: focus goes in, Tab stays in, and Escape
+ * closes it and is consumed. It claimed `role="dialog" aria-modal` with none of that, and its
+ * Escape reached the room's own handler, which is Leave. Its own component because the hook
+ * runs for as long as the element is mounted.
+ */
+function SetupDrawer({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  const ref = useDialog<HTMLElement>(onClose);
+  return (
+    <>
+      <div className="rm-scrim" onClick={onClose} aria-hidden="true" />
+      <aside ref={ref} className="rm-drawer" role="dialog" aria-modal="true" aria-label="Your setup" tabIndex={-1}>
+        <div className="rm-drawer-h">
+          <h2 className="ds-dialog-title">Your setup</h2>
+          <button type="button" className="ds-btn primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+        <div className="rm-drawer-body">{children}</div>
+      </aside>
+    </>
   );
 }
 
