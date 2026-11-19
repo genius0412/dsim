@@ -432,6 +432,8 @@ export interface MatchParticipant {
 /** everything the persistence layer needs when a match reaches phase 'post' */
 /** the host may move the same member at most this often */
 const MOVE_COOLDOWN_MS = 300;
+/** `moveAt` is swept of spent cooldowns from this many entries; a room seats far fewer members */
+const MOVE_AT_MAX = 32;
 /** one reaction a second per socket (`react`): a held key is not a stream */
 const REACT_EVERY_MS = 1000;
 /** how long a finished custom room shows its results before it returns to its lobby by itself
@@ -1017,12 +1019,19 @@ export class Room {
     const refusal = this.hostControlRefusal();
     if (refusal || !this.settings) return refusal;
     if (alliance !== 'red' && alliance !== 'blue') return null;
+    if (typeof memberId !== 'string') return null;
+    const human = this.clients.get(memberId);
+    const bot = this.bots.find((b) => b.id === memberId);
+    // ⚠️ THE ROSTER IS ASKED BEFORE `moveAt` IS WRITTEN. The id is the client's own string: stored
+    // first, every frame with a new id kept up to 64 KiB for the life of the room (2,000 frames,
+    // 8 s at the message rate limit, held 120 MB), and a lobby that keeps talking is never idle.
+    if (!human && !bot) return null;
     // a double-click or a macro is not two moves: repeated actions on one member are spaced out
     const now = Date.now();
-    if (typeof memberId === 'string' && now - (this.moveAt.get(memberId) ?? 0) < MOVE_COOLDOWN_MS) return null;
-    if (typeof memberId === 'string') this.moveAt.set(memberId, now);
-    const human = typeof memberId === 'string' ? this.clients.get(memberId) : undefined;
-    const bot = typeof memberId === 'string' ? this.bots.find((b) => b.id === memberId) : undefined;
+    if (now - (this.moveAt.get(memberId) ?? 0) < MOVE_COOLDOWN_MS) return null;
+    // members come and go, so the entries a cooldown no longer reads are dropped as the map grows
+    if (this.moveAt.size >= MOVE_AT_MAX) for (const [id, at] of this.moveAt) if (now - at >= MOVE_COOLDOWN_MS) this.moveAt.delete(id);
+    this.moveAt.set(memberId, now);
     const was = human?.player.alliance ?? bot?.alliance;
     if (!was || was === alliance) return null;
     // "Drivers pick a side" means exactly that: the host cannot put a human on the other alliance.

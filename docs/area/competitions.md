@@ -76,6 +76,14 @@ is refused with "draw it again". Entries left out at the start become `withdrawn
   shape too, so a gone call is REFUSED (`match_gone`) rather than opened as an empty custom room.
   A failure AFTER the claim gives it back (`unclaimRoom`): the join path retries a read that
   throws, and a retry that found its own claim would refuse the match as over.
+- ⚠️ **ONLY THE ROSTER TAKES A SEAT** (`joinRoom`, `server/index.ts`, 2026-11-18). The code is on the
+  public competition page and nothing asked who was joining. The room starts only when the sockets
+  connected equal the roster, so one stranger's seat cancelled the match at the deadline, and
+  `competitionCallFailed` then forfeited an alliance or wrote a no-show against a driver kept out
+  of a full room. A join that is signed out, or signed in and not one of the match's drivers, is
+  refused once the token is read. A stranger's join can still be the one that claims the call; the
+  room is not abandonable, so it stays for its drivers. Watching is unchanged.
+  `scripts/compe2e.ts` sends both strangers in first and leaves them connected.
 - ⚠️ **THE ROOM HOLDS ITS SEATS WHILE IT WAITS** (`Room.detach`, phase `connecting`), clean close or
   not. A staged room used to drop a seat that closed before the strategy window, and with the last
   seat the ROOM — so a driver who reloaded the join screen, or went back to the competition page,

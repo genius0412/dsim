@@ -136,7 +136,7 @@ async function main(): Promise<void> {
   const { WebSocket } = await import('ws');
   const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
   type Seat = { ws: InstanceType<typeof WebSocket>; got: Map<string, any[]> }; // eslint-disable-line @typescript-eslint/no-explicit-any
-  const open = (who: 'p1' | 'p2', room: string): Promise<Seat> =>
+  const open = (who: 'p1' | 'p2' | 'admin' | null, room: string): Promise<Seat> =>
     new Promise((resolve) => {
       const ws = new WebSocket(`ws://localhost:${GAME_PORT}/?room=${room}`);
       const got = new Map<string, any[]>(); // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -159,22 +159,14 @@ async function main(): Promise<void> {
           JSON.stringify({
             t: 'join',
             room,
-            authToken: tok[who],
+            authToken: who ? tok[who] : undefined,
             caps: ['strategy', 'startpose', 'game', 'seat'],
-            player: { name: who === 'p1' ? 'Ada' : 'Grace', teamName: '', teamNumber: 0, alliance: 'red', startIndex: 0, ready: false, spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS },
+            player: { name: who === 'p1' ? 'Ada' : who === 'p2' ? 'Grace' : 'Stranger', teamName: '', teamNumber: 0, alliance: 'red', startIndex: 0, ready: false, spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS },
           }),
         );
         resolve({ ws, got });
       });
     });
-  // the first driver arrives, leaves (a reload, a trip back to the page) and comes back: the room
-  // must hold the seat while it waits, not empty itself and leave the call claimed with no room
-  const early = await open('p1', called.roomCode);
-  await sleep(1500);
-  early.ws.close();
-  await sleep(1500);
-  const a = await open('p1', called.roomCode);
-  const b = await open('p2', called.roomCode);
   const waitFor = async (s: Seat, t: string, ms: number): Promise<any> => { // eslint-disable-line @typescript-eslint/no-explicit-any
     const until = Date.now() + ms;
     while (Date.now() < until) {
@@ -184,6 +176,25 @@ async function main(): Promise<void> {
     }
     return null;
   };
+  // THE CODE IS PUBLIC (it is on the competition page), so a stranger can use it. Signed out or
+  // signed in, they get no seat. They arrive first, so theirs is the join that claims the call, and
+  // they stay connected through the match: the room must still be there for its drivers, and a
+  // refused socket that counted as a driver would stop it starting.
+  const anonSeat = await open(null, called.roomCode);
+  const anonErr = await waitFor(anonSeat, 'error', 10_000);
+  check('e2e: a signed-out join of a called match gets no seat', /Sign in/.test(anonErr?.message ?? '') && !anonSeat.got.has('welcome'), JSON.stringify(anonErr));
+  const outsider = await open('admin', called.roomCode);
+  const outErr = await waitFor(outsider, 'error', 10_000);
+  check('e2e: ...nor does a signed-in account that is not one of its drivers',
+    /drivers it was called for/.test(outErr?.message ?? '') && !outsider.got.has('welcome'), JSON.stringify(outErr));
+  // the first driver arrives, leaves (a reload, a trip back to the page) and comes back: the room
+  // must hold the seat while it waits, not empty itself and leave the call claimed with no room
+  const early = await open('p1', called.roomCode);
+  await sleep(1500);
+  early.ws.close();
+  await sleep(1500);
+  const a = await open('p1', called.roomCode);
+  const b = await open('p2', called.roomCode);
   const strat = await waitFor(a, 'strategyStart', 15_000);
   check('e2e: the strategy window opens, and says which competition and match', strat?.competition?.slug === slug && strat?.competition?.label === 'Q1', JSON.stringify(strat));
   const ms = await waitFor(a, 'matchStart', 30_000);

@@ -598,6 +598,15 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   de-duplicated per room before Postgres; `update` bursts collapse into one leading and one
   trailing roster broadcast (`UPDATE_ROSTER_MIN_MS`); a room whose tick throws continuously is
   stopped. All refusals are plain `error` messages every client already renders.
+  ⚠️ **A STAGED ROOM SEATS ITS ROSTER AND NOBODY ELSE** (`joinRoom`, 2026-11-18): a ranked pairing
+  or a competition call starts only when the sockets connected equal the roster, so one extra seat
+  (a called match's code is public; a ranked player's second, signed-out socket) cancelled it. The
+  join is refused unless its verified user id is on the roster, after the claim has settled
+  (`stagedClaims`: a join racing the one that created the room waits for the roster rather than
+  being judged against none). `handleSeat` comes through `joinRoom`; watching and `rejoin` do not.
+  ⚠️ **A CLIENT'S STRING IS NOT A MAP KEY UNTIL THE ROSTER KNOWS IT**: `moveMember` stored every
+  `id` it was sent in `moveAt` before looking the member up, 64 KiB a frame for the life of the
+  room (2,000 frames held 120 MB). It asks the roster first and sweeps spent cooldowns.
 - **THE ONE-GAME REFUSAL CARRIES `code: 'active_game'`.** It is one of the few a client can act
   on, so the record launcher offers the way back into that match instead of a dead card; the
   sentence stays self-sufficient and the launcher matches on it too, because most of the fleet

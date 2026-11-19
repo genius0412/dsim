@@ -11169,7 +11169,19 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const idx = readFileSync('server/index.ts', 'utf8').replace(/\r\n/g, '\n');
     check(
       'match gone: a created room with no staged row under a matchmaker code is refused, not opened empty',
-      /\} else if \(isStagedRoomCode\(code\)\) \{[\s\S]{0,1600}?code: 'match_gone'[\s\S]{0,300}?abandon\(\);\s*\n\s*return;/.test(idx),
+      /if \(!pending && isStagedRoomCode\(code\)\) \{[\s\S]{0,1600}?code: 'match_gone'[\s\S]{0,300}?abandon\(\);\s*\n\s*return;/.test(idx),
+    );
+    // THE STAGED DOOR (2026-11-18): such a room starts only when the sockets connected equal its
+    // roster, so a seat for anyone else cancels the match. `scripts/compe2e.ts` plays it against
+    // the real server; these hold the shape in the suite.
+    check(
+      'staged door: a join that is not on the roster is refused, after the claim has settled and before it is seated',
+      /if \(dbEnabled && isStagedRoomCode\(code\)\) \{[\s\S]{0,300}?await claiming;[\s\S]{0,300}?if \(!r\.stagedFor\(user\?\.userId \?\? ''\)\) \{[\s\S]{0,1600}?abandon\(\);\s*\n\s*return;/.test(idx) &&
+        idx.indexOf("if (!r.stagedFor(user?.userId ?? '')) {\n        const comp") < idx.indexOf('if (!r.canJoin()) {'),
+    );
+    check(
+      'staged door: the read it waits on is registered before the first await and settled in a finally',
+      /stagedClaims\.set\(code, claiming\);[\s\S]{0,900}?\} finally \{\s*rosterIn\(\);/.test(idx) && idx.indexOf('stagedClaims.set(code, claiming)') < idx.indexOf('pending = await take()'),
     );
     check(
       'match gone: a join that throws still answers an unseated socket',
@@ -19341,6 +19353,12 @@ const recordDrive: CommandSource = (tick) => {
   check('settings: ...and a move clears that member ready', !a.player.ready);
   room.onMessage('a', { t: 'moveMember', id: 'h', alliance: 'blue' });
   check('settings: a guest cannot move anybody', h.player.alliance === 'red');
+  // the id in a move is the client's own string: one that names nobody must not be remembered
+  const moveAt = (room as unknown as { moveAt: Map<string, number> }).moveAt;
+  const heldBefore = moveAt.size;
+  for (let i = 0; i < 500; i++) room.onMessage('h', { t: 'moveMember', id: `nobody-${i}`, alliance: 'blue' });
+  check('settings: a move naming nobody in the room is not remembered (the cooldown map holds members only)',
+    heldBefore === 1 && moveAt.size === 1, `${heldBefore} -> ${moveAt.size}`);
   room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 3 } } });
   check('settings: a side cannot shrink below who is on it', room.settings?.perAlliance.red === 2 && errs(seen.h).some((e) => /Move 1 player off red/.test(e)), JSON.stringify(room.settings));
   room.onMessage('h', { t: 'roomSettings', patch: { perAlliance: { red: 1, blue: 1 } } });

@@ -190,6 +190,13 @@ enforceLanPolicy();
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, RoomHandle>();
 /**
+ * A STAGED CODE WHOSE ROSTER IS STILL BEING READ, by the join that created its room. A second
+ * join for the same code skips the claim (the room exists) and can reach the roster check in
+ * `joinRoom` first; it waits on this, so a driver is never judged against a roster that has not
+ * arrived. Settled and removed whether the claim found a match, found none or threw.
+ */
+const stagedClaims = new Map<string, Promise<void>>();
+/**
  * LAN rendezvous, kept deliberately apart from `rooms`.
  *
  * A LAN match has no `Room` on this server — the authoritative room runs in the host's tab
@@ -3681,17 +3688,33 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         isCompetitionRoomCode(code) ? claimCompetitionRoom(code) : takePendingMatch(code);
       let pending: PendingMatch | null = null;
       let unread = false;
-      try {
-        pending = await take().catch(() => take());
-      } catch (e) {
-        unread = true;
-        console.error(`[admit] couldn't read the staged match for ${code}:`, e);
+      // registered before the first await, so a join racing this one finds it (`stagedClaims`)
+      let rosterIn: () => void = () => {};
+      if (isStagedRoomCode(code)) {
+        const claiming = new Promise<void>((resolve) => {
+          rosterIn = resolve;
+        });
+        stagedClaims.set(code, claiming);
+        void claiming.then(() => {
+          if (stagedClaims.get(code) === claiming) stagedClaims.delete(code);
+        });
       }
-      if (pending) {
-        // a room on a worker answers once the roster is in, so every read below sees it
-        const applied = r.applyPending(pending);
-        if (applied instanceof Promise) await applied;
-      } else if (isStagedRoomCode(code)) {
+      try {
+        try {
+          pending = await take().catch(() => take());
+        } catch (e) {
+          unread = true;
+          console.error(`[admit] couldn't read the staged match for ${code}:`, e);
+        }
+        if (pending) {
+          // a room on a worker answers once the roster is in, so every read below sees it
+          const applied = r.applyPending(pending);
+          if (applied instanceof Promise) await applied;
+        }
+      } finally {
+        rosterIn();
+      }
+      if (!pending && isStagedRoomCode(code)) {
         /**
          * A MATCHMAKER CODE WITH NO ROOM AND NO ROW IS A MATCH THAT IS OVER. Its room was
          * cancelled (the join grace or the strategy window ran out) or its machine restarted,
@@ -3785,6 +3808,56 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (closed || room) {
       abandon();
       return;
+    }
+    /**
+     * A STAGED ROOM SEATS ITS ROSTER AND NOBODY ELSE (a competition call or a ranked pairing).
+     *
+     * Nothing asked. A called match's code is on the public competition page, so anyone, signed
+     * out included, could take a seat in it. A staged room starts only when the sockets connected
+     * equal the roster (`maybeBeginRanked`, `onStrategyDeadline`), so one extra seat cancelled the
+     * match at the deadline, and `competitionCallFailed` then forfeited an alliance or wrote a
+     * no-show against a driver who was kept out of a full room. In a ranked room a second,
+     * signed-out socket from one of the two players cancelled the pairing with nobody charged.
+     *
+     * After the token is read (the roster is keyed by verified user id) and after the claim has
+     * settled, whichever join made it. `handleSeat` comes through here, so a watcher cannot step
+     * into a seat either; watching and `rejoin` are other doors and are unchanged. A stranger whose
+     * join created the room is refused the same way: a room that has claimed its match is not
+     * abandonable, so it stays and waits out its own grace for the real drivers.
+     * `dbEnabled` because without a database nothing is ever staged and such a code is a plain room.
+     */
+    if (dbEnabled && isStagedRoomCode(code)) {
+      const claiming = stagedClaims.get(code);
+      if (claiming) {
+        await claiming;
+        if (closed || room) {
+          abandon();
+          return;
+        }
+      }
+      if (!r.stagedFor(user?.userId ?? '')) {
+        const comp = isCompetitionRoomCode(code);
+        if (rooms.get(code) !== theRoom) {
+          // the join that made this room found no match behind the code and gave the room back;
+          // it was told `match_gone`, and so is everyone who was waiting on its read
+          send({
+            t: 'error',
+            code: 'match_gone',
+            message: comp ? 'That call is over. Check the competition page for your next match.' : 'That match was cancelled before it started.',
+          });
+          return;
+        }
+        console.warn(`[admit] refused room ${code}: ${user ? 'not on the staged roster' : 'signed out at a staged room'}`);
+        send({
+          t: 'error',
+          message:
+            !user ? 'Sign in to join this match.'
+            : comp ? 'This match is for the drivers it was called for. You can watch it from the competition page.'
+            : 'This match is between other players.',
+        });
+        abandon();
+        return;
+      }
     }
     // MAINTENANCE: refuse new games while the window is biting. Enforced HERE, not
     // only in the client's start guard — the lockdown exists to protect a migration
