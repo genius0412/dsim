@@ -1,3 +1,16 @@
+# HANDOFF — 2026-11-18b (The audit's three open highs: Escape in a room, Back out of a match, a share file's model)
+
+**State: on `alpha`. Client only: no server change, no deploy beyond Vercel.** `npm test` (5178 + 6338), `build`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass.
+
+- **Owner:** "Yes, fix them": the three High findings the audit below left open.
+- **One Escape, one surface** (`src/ui/useEscape.ts`). Every `useEscape` added its own window listener and all of them ran, so closing the friends sheet, the room's Setup drawer or its builder with Escape also left the room. The hook is a stack now and a press runs the surface enabled last. The Setup drawer is a `useDialog` (`SetupDrawer`); with the builder up Escape is its Done. `docs/area/ui.md`, "ONE ESCAPE, ONE SURFACE".
+- **Back out of a match** (`App.tsx`). A `popstate` only swapped `screen`, so `tutorialRun`, `testDrive`, `editMobileLayout` and `compReturnRef` stayed set and the next Solo practice opened the tutorial, the test drive or the layout editor. One effect clears the four when the screen leaves `game`. It does not touch the session.
+- **A share file's model** (`src/robotImport/shareModelCheck.ts`, from `readShareFile`). The file is stored as it is and the scene's GLTFLoader reads it; only its DSIM block was checked. It is held to an allowlist of both writers' output now and refused as `bad-model`. ⚠️ A new feature in `storedGlb.ts` or `floatGlb.ts` needs its key there, or every share made after it is refused; smoke "share model:" reads both writers' real files. `bundleaudit` importerui 40.82 → 43.01 KB gz (the check).
+- **Checked in the browser** (dev build, a local game server on 8787): tutorial, Back, Solo practice is a practice match; in a room Escape closes the Setup drawer and stays, closes the builder and stays, and a plain Escape still leaves. Not checked: the friends sheet over a room (it needs a signed-in account); smoke "escape:" holds the order.
+- **Seen, not chased:** 176 `THREE.GLTFLoader: Couldn't load texture blob:` console errors on the dev build while the tab was in the background and moved Home, Play and a room quickly. Likely a stage disposed before its textures arrived; not reproduced on a visible page.
+- **Still open from the audit:** a Back during an online match leaves the session's socket open (the report's UIPLAY-04), and its medium and low lists.
+- **Gotcha:** the Browser pane was hidden, so the page did not paint, and `useStageWatch` sent it Home after 5 s every time. Drive a hidden page inside one script call, or show the pane.
+
 # HANDOFF — 2026-11-18 (Alpha audit: the staged-room door, the move map, AUTO path length, desktop links)
 
 **State: on `alpha`. Server, desktop shell and AUTO loader. DEPLOYED to `dsim-alpha` 2026-11-19 03:00Z (11-18 22:00 EST; one machine, ord, `/health` 200). Nothing on `main`, production untouched.** `npm test` (5173 + 6338), `test:workers` (188), `test:comp` (1365), `test:mm` (234), `build`, `server:check`, `typecheck:nozenith`, `bundleaudit`, `uiaudit`, `docaudit` pass; `scripts/compe2e.ts` 30 of 30. No sim change.
