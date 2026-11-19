@@ -359,6 +359,19 @@ export function drawBalanced(
  *
  * The seed only shuffles who sits where on the circle.
  */
+/**
+ * THE MOST QUALIFICATION MATCHES ONE COMPETITION HOLDS. The largest Balanced or Swiss schedule the
+ * settings allow is 1,536 (256 entries, 12 matches each), so those always fit. A round robin is
+ * n(n-1)/2 a cycle and does not: it fits up to 57 entries over one cycle, 40 over two, 33 over three.
+ */
+export const QUAL_MATCHES_MAX = 1600;
+
+/** matches in a round robin of `entries` over `cycles`, without drawing it */
+export function roundRobinMatches(entries: number, cycles: number): number {
+  const n = Math.max(0, Math.floor(entries));
+  return ((n * (n - 1)) / 2) * Math.max(0, Math.floor(cycles));
+}
+
 export function drawRoundRobin(entries: number[], cycles: number, seed: number): DrawnMatch[] {
   const p = entries.length;
   if (p < 2) throw new Error('Needs at least 2 entries.');

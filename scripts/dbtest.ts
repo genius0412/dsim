@@ -7242,6 +7242,65 @@ async function main(): Promise<void> {
     check('competition rp: ...and the next start freezes the table of the settings as saved (regional: 21 / 42 / 22)',
       r.ok && raceTable?.bonus?.map((x) => `${x.id}:${x.threshold}`).join() === 'movement:21,goal:42,pattern:22',
       `${said(r)} ${JSON.stringify(raceTable)}`);
+
+    // ---- ENTERING IS NOT A LOOP (2026-11-18). A captain's withdraw of a pending duo deletes the
+    // entry, so register and withdraw in a loop sent the named partner an invitation every time.
+    const ip: Who[] = [];
+    for (let i = 1; i <= 3; i++) ip.push(await person(`cmi-p${i}`, `cmip${i}`));
+    const inv = await create(org, { name: 'DB Invite Limit', game: 'decode', format: '2v2', teamMode: 'duo', capacity: 4, settings: { checkIn: false } });
+    await post(inv.slug, 'status', org, { to: 'published' });
+    const tries: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const reg = await post(inv.slug, 'register', ip[0], { partner: '@cmip2' });
+      tries.push(reg.ok ? String(reg.note) : String(reg.code));
+      if (reg.ok) await post(inv.slug, 'withdraw', ip[0]);
+    }
+    const invited = await told(ip[1].userId, 'competition.invite', inv.slug);
+    check('competition: register and withdraw in a loop tells the partner ONCE, and the fourth entry in ten minutes is refused',
+      invited.length === 1 && /^Invitation sent/.test(tries[0]) && /already has your invitation/.test(tries[1]) &&
+        /already has your invitation/.test(tries[2]) && tries[3] === '429',
+      JSON.stringify({ invited: invited.length, tries }));
+    // a block in either direction reads as the sentence a suspension gets, and sends nothing
+    await repo.blockUser(ip[2].userId, ip[1].userId);
+    const byBlocked = await post(inv.slug, 'register', ip[1], { partner: '@cmip3' });
+    const byBlocker = await post(inv.slug, 'register', ip[2], { partner: '@cmip2' });
+    check('competition: a partner who blocked the captain, or whom the captain blocked, cannot be named, in one sentence, and is not told',
+      !byBlocked.ok && byBlocked.code === 409 && !byBlocker.ok && byBlocker.code === 409 && byBlocked.error === byBlocker.error &&
+        (await told(ip[2].userId, 'competition.invite', inv.slug)).length === 0 && invited.length === (await told(ip[1].userId, 'competition.invite', inv.slug)).length,
+      `${said(byBlocked)} / ${said(byBlocker)}`);
+
+    // ---- A SCHEDULE PAST WHAT A COMPETITION HOLDS IS REFUSED, NOT CUT (2026-11-18). The match read
+    // stopped at 2,000 without saying so, and a round robin of 64 entries is 2,016.
+    const big = await create(org, {
+      name: 'DB Big Robin',
+      game: 'decode',
+      format: '1v1',
+      capacity: 64,
+      settings: { quals: { kind: 'roundRobin', matchesPerEntry: 3 }, playoffs: { enabled: false }, checkIn: false },
+    });
+    for (let i = 1; i <= 34; i++) {
+      const who = await person(`cmb-p${i}`, `cmbp${i}`);
+      await cdb.insertEntry({ competitionId: big.id, userId: who.userId, partnerId: null, name: who.handle, number: null, status: 'registered' });
+    }
+    const tooLong = await post(big.slug, 'schedule', org, { action: 'draw' });
+    check('competition: a round robin of 34 entries over 3 cycles (1,683 matches) is refused with both numbers, and nothing is drawn',
+      !tooLong.ok && tooLong.code === 409 && /1,683 qualification matches, and a competition holds up to 1,600/.test(tooLong.error ?? '') && (await quals(big.id)).length === 0,
+      said(tooLong));
+    await post(big.slug, 'update', org, { settings: { quals: { kind: 'roundRobin', matchesPerEntry: 1 } } });
+    const fits = await post(big.slug, 'schedule', org, { action: 'draw' });
+    check('competition: ...and one cycle (561) draws, every match read back', fits.ok && (await quals(big.id)).length === 561, said(fits));
+
+    // the entry read is capped, so what a cap can cut must be rows nothing counts: withdrawn ones
+    const ord = await create(org, { name: 'DB Entry Order', game: 'decode', format: '1v1', capacity: 4, settings: { checkIn: false } });
+    const ordP: Who[] = [];
+    for (let i = 1; i <= 3; i++) ordP.push(await person(`cmo-p${i}`, `cmop${i}`));
+    const first = await cdb.insertEntry({ competitionId: ord.id, userId: ordP[0].userId, partnerId: null, name: 'First', number: null, status: 'registered' });
+    const leftRow = await cdb.insertEntry({ competitionId: ord.id, userId: ordP[1].userId, partnerId: null, name: 'Left', number: null, status: 'withdrawn' });
+    const newest = await cdb.insertEntry({ competitionId: ord.id, userId: ordP[2].userId, partnerId: null, name: 'Newest', number: null, status: 'registered' });
+    const capped = (await cdb.listEntries(ord.id, undefined, 2)).map((e) => e.id);
+    check('competition: a capped entry read keeps the newest registration and drops the withdrawn row, not the other way round',
+      JSON.stringify(capped) === JSON.stringify([first, newest]) && (await cdb.listEntries(ord.id)).length === 3, JSON.stringify(capped));
+    check('competition: the row a returning captain left is found without the list', (await cdb.withdrawnEntryOf(ord.id, ordP[1].userId)) === leftRow && (await cdb.withdrawnEntryOf(ord.id, ordP[0].userId)) === null);
   }
 
   // ---- THE RECORDS FEED (server/recentRecords.ts, repo.recentRecords) --------------------------

@@ -15,7 +15,7 @@
  *
  * Kept out of `npm test` on purpose: a red `npm test` must keep meaning "physics broke".
  */
-import { drawBalanced, drawRoundRobin, drawSwissRound, scheduleQuality } from '../src/competition/schedule';
+import { QUAL_MATCHES_MAX, drawBalanced, drawRoundRobin, drawSwissRound, roundRobinMatches, scheduleQuality } from '../src/competition/schedule';
 import { computeRankings, effectiveDq, matchRp, seedOrder, tbValue } from '../src/competition/rankings';
 import { applySelection, selectionState, serpentineAlliances, type Selection } from '../src/competition/selection';
 import { bracketState, buildBracket, seedPositions } from '../src/competition/bracket';
@@ -273,6 +273,20 @@ const throws = (f: () => unknown): string | null => {
   check('comp roundrobin: same seed ⇒ identical', J(drawRoundRobin(ids(9), 2, 5)) === J(drawRoundRobin(ids(9), 2, 5)));
   check('comp roundrobin: different seed ⇒ different', J(drawRoundRobin(ids(9), 1, 5)) !== J(drawRoundRobin(ids(9), 1, 6)));
   check('comp roundrobin: 1 entry is refused', throws(() => drawRoundRobin([1], 1, 1)) === 'Needs at least 2 entries.');
+  // the count the server refuses a schedule on is the count the draw makes, without drawing it
+  check(
+    'comp roundrobin: roundRobinMatches is the size of the draw, at every size and cycle count tried',
+    [2, 3, 9, 16, 33].every((n) => [1, 2, 3].every((c) => roundRobinMatches(n, c) === drawRoundRobin(ids(n), c, 7).length)),
+  );
+  check(
+    'comp roundrobin: the cap (1,600) takes 57 entries over one cycle, 40 over two and 33 over three, and one more of each is over; 64 entries are 2,016',
+    QUAL_MATCHES_MAX === 1600 &&
+      roundRobinMatches(57, 1) <= 1600 && roundRobinMatches(58, 1) > 1600 &&
+      roundRobinMatches(40, 2) <= 1600 && roundRobinMatches(41, 2) > 1600 &&
+      roundRobinMatches(33, 3) <= 1600 && roundRobinMatches(34, 3) > 1600 &&
+      roundRobinMatches(64, 1) === 2016,
+  );
+  check('comp balanced / swiss: the largest schedule the settings allow (256 entries, 12 matches each: 1,536) is under the cap', (256 * 12) / 2 <= QUAL_MATCHES_MAX);
 }
 
 // =============================================================================================

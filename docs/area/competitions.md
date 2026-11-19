@@ -60,6 +60,30 @@ entered; capacity, the qualification settings and the ranking-point scheme (`set
 `qualification`; a custom scheme's points and tiebreakers at `selection`; the playoff settings at
 `playoffs`. The editor merges `rp` one level deep, so a partial edit keeps the stored scheme.
 
+⚠️ **A SCHEDULE THE COMPETITION CANNOT HOLD IS REFUSED, NOT CUT** (2026-11-18). Every read of a
+competition's matches is capped (`MATCH_READ_MAX`, 2,000), and it used to stop there without
+saying so: a round robin of 64 entries is 2,016 matches, so its last matches were never played, and
+past that the playoff matches fell off the read (qualifications sort first) and each series' next
+match was inserted again on every pass. A draw is refused over `QUAL_MATCHES_MAX` (1,600,
+`src/competition/schedule.ts`) with both numbers in the sentence: `drawQuals` counts a round robin
+before drawing it (`roundRobinMatches`), and `drawSwiss` counts the rounds so far. Balanced and
+Swiss never reach it (256 entries, 12 matches each is 1,536); a round robin fits 57 entries over one
+cycle, 40 over two, 33 over three. The read now fails loudly past its cap instead of returning part.
+⚠️ **THE ENTRY READ IS CAPPED TOO, WITH WITHDRAWN ROWS LAST** (`listEntries`, `ENTRY_READ_MAX` 1,000).
+Ordered by registration alone, what fell off past the cap was the people registering now, and the
+capacity and "already entered" checks stopped seeing them. Entries that count are bounded (the
+capacity, and the waitlist at the capacity again); withdrawn rows are not, one per account that ever
+entered. A returning captain's old row is asked for directly (`withdrawnEntryOf`).
+
+⚠️ **ENTERING IS NOT A LOOP** (`registerRoute`, 2026-11-18). A captain's withdraw of a pending duo
+deletes the entry, so register and withdraw in a loop sent the named partner a new invitation, a
+pop-up, every time, without limit. One account enters one competition at most 3 times in 10 minutes
+(`REGISTER_MAX`, counted off the log's own `entry.register` lines, so it holds across machines), and
+the same partner is TOLD once in that window (`invitedRecently`, read off their inbox): a later
+register still makes the entry, which their first invitation opens. A partner with a block on the
+captain in either direction (`friend_blocks`) cannot be named, in the sentence a suspension gets, as
+a friend request does not say which it was.
+
 **Starting qualifications needs a schedule drawn for exactly the entries that will play**
 (registered, and checked in when check-in is required); an entry list that changed after the draw
 is refused with "draw it again". Entries left out at the start become `withdrawn`.

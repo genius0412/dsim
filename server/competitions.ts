@@ -22,6 +22,7 @@ import { dbEnabled, type Tx } from './db/pool';
 import * as db from './db/competitions';
 import {
   addNotices,
+  blockedEitherWay,
   ensureProfile,
   getProfile,
   getSuspension,
@@ -55,7 +56,7 @@ import { computeRankings, effectiveDq, matchRp, seedOrder } from '../src/competi
 import { cmTable, coerceFacts, effectiveRanking, unreachableBonus } from '../src/competition/manual';
 import { applySelection, selectionState, serpentineAlliances, type Selection } from '../src/competition/selection';
 import { bracketState, buildBracket, type BracketState } from '../src/competition/bracket';
-import { drawBalanced, drawRoundRobin, drawSwissRound } from '../src/competition/schedule';
+import { QUAL_MATCHES_MAX, drawBalanced, drawRoundRobin, drawSwissRound, roundRobinMatches } from '../src/competition/schedule';
 import { matchLabel } from '../src/competition/wire';
 import { CALL_FAILED, type CallFailure } from '../src/competition/copy';
 import type {
@@ -1156,6 +1157,7 @@ async function drawSwiss(
     for (const e of pool) if (!inRound.has(e.id)) byes.push(e.id);
   }
   const { matches: drawn, bye } = drawSwissRound(round, ranking, played, colors, comp.rngSeed + round, byes);
+  refuseLongSchedule(quals.length + drawn.length, 'This competition has played its rounds.');
   if (bye !== null && query) {
     const e = entries.find((x) => x.id === bye);
     await db.addLog(comp.id, 'system', 'schedule.bye', { round, entry: bye, name: e ? nameOfEntry(e) : null, users: e ? usersOf(e) : [] }, true, query);
@@ -1757,9 +1759,23 @@ async function writeSelection(comp: db.CompRow, actions: SelectionAction[]): Pro
 
 // ---------------------------------------------------------------------- registration
 
+/**
+ * ENTERING IS NOT A LOOP. A captain's withdraw of a pending duo deletes the entry, so the next
+ * register made a new one and sent the named partner a new invitation: register and withdraw in a
+ * loop was an unlimited stream of pop-ups at any account, and of log lines. So one account enters
+ * one competition at most `REGISTER_MAX` times in `REGISTER_WINDOW_MIN` minutes (a typo and a
+ * change of partner fit), and the same partner is TOLD once in that window: a later register still
+ * makes the entry, which their first invitation opens.
+ */
+const REGISTER_MAX = 3;
+const REGISTER_WINDOW_MIN = 10;
+
 async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<string, unknown>): Promise<Record<string, unknown>> {
   const closed = registrationOpen(comp);
   if (closed) refuse(409, closed);
+  if ((await db.recentLogCount(comp.id, user.userId, 'entry.register', REGISTER_WINDOW_MIN)) >= REGISTER_MAX) {
+    refuse(429, 'You’ve entered this competition a few times in a row. Try again in a few minutes.');
+  }
   const gate = emailGateRefusal(user);
   if (gate) refuse(403, gate);
   const susp = await getSuspension(user.userId);
@@ -1778,6 +1794,9 @@ async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<strin
     if (found.ok) {
       if (found.userId === user.userId) refuse(400, 'Your partner has to be somebody else.');
       if ((await getSuspension(found.userId)).until) refuse(409, 'That player can’t play online right now.');
+      // a block in either direction, in the sentence a suspension gets: saying which it is would
+      // tell the captain they were blocked (`sendFriendRequest` keeps the same silence)
+      if (await blockedEitherWay(user.userId, found.userId)) refuse(409, 'That player can’t play online right now.');
       partnerId = found.userId;
       partnerName = found.username ? `@${found.username}` : found.handle;
     }
@@ -1788,12 +1807,14 @@ async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<strin
     const entries = await db.listEntries(comp.id, query);
     const taken = (uid: string): db.EntryRow | undefined =>
       entries.find((e) => e.status !== 'withdrawn' && (e.userId === uid || e.partnerId === uid));
-    const old = entries.find((e) => e.userId === user.userId && e.status === 'withdrawn');
+    // asked directly: the list is capped with withdrawn rows last, so it may not hold this one
+    const oldId = await db.withdrawnEntryOf(comp.id, user.userId, query);
+    const old = oldId === null ? undefined : { id: oldId };
     if (taken(user.userId)) refuse(409, 'You’re already entered.');
     if (partnerId && taken(partnerId)) refuse(409, `${partnerName} is already entered.`);
     const full = entries.filter((e) => e.status === 'registered').length >= locked!.capacity;
-    // THE WAITLIST IS CAPPED AT THE CAPACITY: past that nobody realistic gets in, and the entry
-    // list (`listEntries`, hard-capped at 600 rows) must stay whole for these very checks
+    // THE WAITLIST IS CAPPED AT THE CAPACITY: past that nobody realistic gets in, and it keeps the
+    // entries that count inside what `listEntries` returns (`ENTRY_READ_MAX`, withdrawn rows last)
     if (full && entries.filter((e) => e.status === 'waitlist' || e.status === 'pending').length >= locked!.capacity) {
       refuse(409, 'The competition and its waitlist are full.');
     }
@@ -1815,7 +1836,11 @@ async function registerRoute(comp: db.CompRow, user: AuthedUser, b: Record<strin
   // the entry id rides along so `deleteAccount` can find this line's name to scrub
   await db.addLog(comp.id, user.userId, 'entry.register', { entry, status, name: teamName || me!.handle, users: [user.userId] }, false);
   if (partnerId) {
-    await notify([{ userId: partnerId, kind: 'competition.invite', game: comp.game, data: noticeData(comp, { from: `@${me!.username}` }) }]);
+    const from = `@${me!.username}`;
+    if (await db.invitedRecently(partnerId, comp.slug, from, REGISTER_WINDOW_MIN)) {
+      return { status, note: `${partnerName} already has your invitation. You’re entered once they accept.` };
+    }
+    await notify([{ userId: partnerId, kind: 'competition.invite', game: comp.game, data: noticeData(comp, { from }) }]);
     return { status, note: `Invitation sent to ${partnerName}. You’re entered once they accept.` };
   }
   return {
@@ -2179,16 +2204,29 @@ async function entriesRoute(
 
 // ---------------------------------------------------------------------- schedule
 
+/**
+ * A SCHEDULE LONGER THAN THE COMPETITION CAN HOLD IS REFUSED, NOT CUT (`QUAL_MATCHES_MAX`). Every
+ * read of a competition's matches is capped (`MATCH_READ_MAX`), and a draw past the cap used to be
+ * stored whole and read in part.
+ */
+function refuseLongSchedule(matches: number, instead: string): void {
+  if (matches <= QUAL_MATCHES_MAX) return;
+  refuse(409, `That schedule is ${matches.toLocaleString('en-US')} qualification matches, and a competition holds up to ${QUAL_MATCHES_MAX.toLocaleString('en-US')}. ${instead}`);
+}
+
 async function drawQuals(comp: db.CompRow, st: CompState, eligible: db.EntryRow[]): Promise<number> {
   const ids = eligible.map((e) => e.id).sort((a, b) => a - b);
   const per = entriesPerAlliance(comp.format, comp.teamMode);
   const s = st.settings.quals;
   // a fresh seed per draw, from the competition's: re-drawing gives a different schedule
   const seed = (comp.rngSeed + Date.now()) % 2147483647;
+  // a round robin is counted BEFORE it is drawn: 256 entries over three cycles is 97,920 matches
+  if (s.kind === 'roundRobin') refuseLongSchedule(roundRobinMatches(ids.length, s.matchesPerEntry), 'Use fewer cycles, or Balanced or Swiss qualifications.');
   const drawn =
     s.kind === 'roundRobin'
       ? drawRoundRobin(ids, s.matchesPerEntry, seed)
       : drawBalanced(ids, per, s.matchesPerEntry, s.minGap, seed);
+  refuseLongSchedule(drawn.length, 'Lower the matches per entry.');
   await db.tx(async (query) => {
     await query(`delete from competition_matches where competition_id = $1 and stage = 'qual'`, [comp.id]);
     await db.insertMatches(comp.id, 'qual', drawn.map((d, i) => ({ round: d.round, number: i + 1, series: null, red: d.red, blue: d.blue })), query);

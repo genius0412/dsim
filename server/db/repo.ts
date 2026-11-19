@@ -7729,6 +7729,16 @@ export async function blockUser(callerId: string, targetId: string): Promise<boo
   });
 }
 
+/** is there a block between these two accounts, in either direction? */
+export async function blockedEitherWay(a: string, b: string): Promise<boolean> {
+  const rows = await q(
+    `select 1 from friend_blocks
+      where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1) limit 1`,
+    [a, b],
+  );
+  return rows.length > 0;
+}
+
 export async function unblockUser(callerId: string, targetId: string): Promise<boolean> {
   const del = await q(
     `delete from friend_blocks where blocker_id = $1 and blocked_id = $2 returning 1`,

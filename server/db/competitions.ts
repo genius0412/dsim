@@ -445,12 +445,35 @@ const entrySelect = (): string => `
     left join profiles p on p.user_id = e.user_id
     left join profiles pp on pp.user_id = e.partner_id`;
 
-export async function listEntries(competitionId: string, query: Tx = q): Promise<EntryRow[]> {
+/**
+ * THE MOST ENTRY ROWS ONE READ RETURNS. Entries that count are bounded: registered up to the
+ * capacity (256), and waitlisted or invited up to the capacity again (`registerRoute`). Withdrawn
+ * rows are kept and are not, one per account that ever entered.
+ */
+export const ENTRY_READ_MAX = 1000;
+
+/**
+ * A competition's entries, in the order they registered, WITHDRAWN ONES LAST. The read is capped,
+ * and it was ordered by registration alone: past the cap (600) the newest rows fell off, and the
+ * newest are the people registering now, so the capacity and "already entered" checks in
+ * `registerRoute` stopped seeing them. With withdrawn rows last, what a cap can cut is only rows
+ * nothing counts. `max` is for the check that holds this.
+ */
+export async function listEntries(competitionId: string, query: Tx = q, max = ENTRY_READ_MAX): Promise<EntryRow[]> {
   const rows = await query<EntryDbRow>(
-    `${entrySelect()} where e.competition_id = $1 order by e.registered_at, e.id limit 600`,
-    [competitionId],
+    `${entrySelect()} where e.competition_id = $1 order by (e.status = 'withdrawn'), e.registered_at, e.id limit $2`,
+    [competitionId, max],
   );
   return rows.map(entryOf);
+}
+
+/** the withdrawn row this account left as captain, asked directly: the capped list may not hold it */
+export async function withdrawnEntryOf(competitionId: string, userId: string, query: Tx = q): Promise<number | null> {
+  const rows = await query<{ id: string }>(
+    `select id from competition_entries where competition_id = $1 and user_id = $2 and status = 'withdrawn' order by id limit 1`,
+    [competitionId, userId],
+  );
+  return rows.length ? Number(rows[0].id) : null;
 }
 
 /** the entry a user holds in a competition, as captain or as partner (or invited partner) */
@@ -686,11 +709,24 @@ const MATCH_SELECT = `
     from competition_matches m
     left join competition_match_slots s on s.match_id = m.id`;
 
+/**
+ * THE MOST MATCHES A COMPETITION HOLDS, and so the most one read returns. Qualifications are
+ * refused past `QUAL_MATCHES_MAX` (1,600) when they are drawn, and the largest playoff (sixteen
+ * alliances, double elimination, best of five) is under 200. The read used to stop at 2,000
+ * WITHOUT SAYING SO: a round robin of 64 entries is 2,016 matches, so its last matches were never
+ * played, and past that every playoff match fell off the read (`stage desc` puts qualifications
+ * first) and `afterResult` inserted each series' next match again on every pass.
+ */
+export const MATCH_READ_MAX = 2000;
+
 export async function listMatches(competitionId: string, query: Tx = q): Promise<MatchRow[]> {
   const rows = await query<MatchDbRow>(
-    `${MATCH_SELECT} where m.competition_id = $1 group by m.id order by m.stage desc, m.number limit 2000`,
+    `${MATCH_SELECT} where m.competition_id = $1 group by m.id order by m.stage desc, m.number limit ${MATCH_READ_MAX + 1}`,
     [competitionId],
   );
+  // unreachable while the draw's cap holds; if it ever is not, fail the read rather than run an
+  // event on part of its schedule
+  if (rows.length > MATCH_READ_MAX) throw new Error(`competition ${competitionId} has more than ${MATCH_READ_MAX} matches`);
   return rows.map(matchOf);
 }
 
@@ -1075,6 +1111,31 @@ export async function addLog(
     `insert into competition_log (competition_id, actor, kind, data, public) values ($1,$2,$3,$4::jsonb,$5)`,
     [competitionId, actor, kind, JSON.stringify(data), isPublic],
   );
+}
+
+/** how many log lines of `kind` this actor wrote in a competition in the last `minutes` */
+export async function recentLogCount(competitionId: string, actor: string, kind: string, minutes: number): Promise<number> {
+  const rows = await q<{ n: string }>(
+    `select count(*) as n from competition_log
+      where competition_id = $1 and at > now() - ($4::int * interval '1 minute') and actor = $2 and kind = $3`,
+    [competitionId, actor, kind, minutes],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Has `userId` been sent this competition's invitation by `from` in the last `minutes`? Read off
+ * the inbox itself (`player_notices`, which goes with the account), so nothing new is stored.
+ */
+export async function invitedRecently(userId: string, slug: string, from: string, minutes: number): Promise<boolean> {
+  const rows = await q(
+    `select 1 from player_notices
+      where user_id = $1 and created_at > now() - ($4::int * interval '1 minute') and kind = 'competition.invite'
+        and data ->> 'slug' = $2 and data ->> 'from' = $3
+      limit 1`,
+    [userId, slug, from, minutes],
+  );
+  return rows.length > 0;
 }
 
 export async function listLog(competitionId: string, withPrivate: boolean, limit = 60): Promise<LogRow[]> {
