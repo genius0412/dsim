@@ -23,15 +23,78 @@ set -euo pipefail
 
 ALPHA=0
 ROUTER=0
+CHECK=0
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --alpha) ALPHA=1 ;;
     --router) ROUTER=1 ;;
+    --check) CHECK=1 ;;
     *) ARGS+=("$arg") ;;
   esac
 done
 set -- ${ARGS+"${ARGS[@]}"}
+
+# PRODUCTION IS BUILT FROM A COMMIT ON main, WITH NOTHING UNCOMMITTED, OR NOT AT ALL.
+#
+# `fly deploy` builds the files in this directory, whatever branch they are. With no flag this
+# script deploys production, and the usual checkout is alpha: on 2026-09-13 a hotfix deploy ran
+# there and shipped eight unreviewed commits, and alpha's migrations apply to the production
+# database when the server boots. Only prose said "deploy from a main worktree".
+#
+# Asked of the COMMIT, not the branch name: a release worktree is often detached at origin/main,
+# and an older commit of main is a rollback. So HEAD must be origin/main or one of its ancestors
+# (push before deploying), and tracked files must match it, because the image is built from the
+# files. `--alpha` is not asked: the preview is deployed from feature branches on purpose.
+# DEPLOY_ANY_TREE=1 overrides, and says so. `--check` runs this and stops (announce-deploy.sh
+# asks before it tells every player a restart is coming).
+require_main_tree() {
+  if [ "${DEPLOY_ANY_TREE:-0}" = "1" ]; then
+    echo "!! DEPLOY_ANY_TREE=1: PRODUCTION from $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?') @ $(git rev-parse --short HEAD 2>/dev/null || echo '?'), not checked against main"
+    return 0
+  fi
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "!! refused: this is not a git checkout, so there is no telling what it would deploy to PRODUCTION."
+    return 1
+  fi
+  git fetch -q origin main 2>/dev/null || true
+  if ! git rev-parse -q --verify origin/main >/dev/null; then
+    echo "!! refused: there is no origin/main here to check this tree against."
+    return 1
+  fi
+  local head branch dirty
+  head=$(git rev-parse HEAD)
+  branch=$(git rev-parse --abbrev-ref HEAD)
+  if ! git merge-base --is-ancestor "$head" origin/main; then
+    echo "!! refused: this tree is $branch @ ${head:0:8}, which is not a commit on origin/main."
+    echo "   Production is main. Deploy from a main worktree, after pushing; --alpha deploys the preview."
+    echo "   DEPLOY_ANY_TREE=1 overrides this."
+    return 1
+  fi
+  dirty=$(git status --porcelain --untracked-files=no)
+  if [ -n "$dirty" ]; then
+    echo "!! refused: tracked files here have uncommitted changes, and the image is built from the files:"
+    echo "$dirty" | head -10
+    echo "   Commit them or drop them. DEPLOY_ANY_TREE=1 overrides this."
+    return 1
+  fi
+  return 0
+}
+if [ "$ALPHA" -eq 0 ]; then
+  require_main_tree || exit 1
+  # each environment's app name can be overridden, but not with the OTHER environment's
+  if [ "${FLY_APP:-}" = "dsim-alpha" ]; then
+    echo "!! refused: FLY_APP names the alpha app, and without --alpha this deploys fly.toml (production's config) onto it."
+    exit 1
+  fi
+elif [ "${FLY_ALPHA_APP:-}" = "dohun-sim-decode" ]; then
+  echo "!! refused: FLY_ALPHA_APP names the PRODUCTION app, and --alpha deploys fly.alpha.toml (SERVER_CHANNEL=alpha) onto it."
+  exit 1
+fi
+if [ "$CHECK" -eq 1 ]; then
+  echo "==> ok to deploy $([ "$ALPHA" -eq 1 ] && echo 'the alpha preview' || echo 'PRODUCTION') from $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?') @ $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+  exit 0
+fi
 
 # THE PRIMARY ROUTER (router/, src/net/primaryHost.ts): a separate tiny app, pinned to the game
 # app's primary region (iad; ord for alpha), that fly-replays every request to the game app's

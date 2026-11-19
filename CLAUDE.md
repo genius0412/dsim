@@ -171,9 +171,9 @@ future session read it.
 Full protocol in `docs/deploy.md`; the netcode half in `docs/area/netcode.md`. These four stay
 here because getting them wrong is expensive and none of them is obvious from the code.
 
-- **Production is `main`.** `scripts/fly-deploy.sh` builds from whatever tree it runs in, so
-  running it in the usual checkout (branch `alpha`) ships alpha. Deploy from a `main` worktree,
-  and say which branch you are deploying when you ask.
+- **Production is `main`.** `scripts/fly-deploy.sh` refuses production from a tree that is not
+  a clean commit on `main` (it shipped alpha once). Deploy from a `main` worktree, and say
+  which branch you are deploying when you ask.
 - ⚠️ **NEVER a bare `flyctl deploy`.** `fly.toml` expresses only ONE `[[vm]]` size, so a bare
   deploy re-applies `shared-cpu-4x` to EVERY machine and silently upsizes the cheap satellites.
   Use `./scripts/fly-deploy.sh`; verify with `fly machine list -a dohun-sim-decode`.

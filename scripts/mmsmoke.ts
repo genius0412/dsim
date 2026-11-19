@@ -592,6 +592,45 @@ const friendsOf = (table: Record<string, string[]>) => async (u: string): Promis
   const capDedicated = Number(/^SATELLITE_MAX_ROOMS_DEDICATED=(\d+)/m.exec(sh)?.[1] ?? NaN);
   check('fleet: dedicated-core satellites declare a MAX_ROOMS between the shared cap and 24',
     capDedicated >= cap && capDedicated < 24, `${capDedicated} vs shared ${cap}`);
+
+  // ---- PRODUCTION IS BUILT FROM A CLEAN COMMIT ON main (2026-11-18) ---------------------------
+  // With no flag the script deploys production from whatever tree it runs in, and the usual
+  // checkout is alpha. `bash scripts/deploy-guard-test.sh` runs the rule's twelve cases in
+  // throwaway repositories; these hold that it is still asked, first, and of the right thing.
+  const lf = sh.replace(/\r\n/g, '\n');
+  const asked = lf.indexOf('require_main_tree || exit 1');
+  check('deploy guard: production asks the tree before the router deploy, the Zenith fetch and every fly deploy',
+    asked > 0 && asked < lf.indexOf('if [ "$ROUTER" -eq 1 ]') && asked < lf.indexOf('node scripts/fetch-zenith.mjs') && asked < lf.indexOf('fly deploy --remote-only'));
+  check('deploy guard: it asks the COMMIT (an ancestor of origin/main) and the tracked files, and only without --alpha',
+    /git merge-base --is-ancestor "\$head" origin\/main/.test(lf) && /git status --porcelain --untracked-files=no/.test(lf) &&
+      /if \[ "\$ALPHA" -eq 0 \]; then\n\s+require_main_tree \|\| exit 1/.test(lf));
+  check('deploy guard: --check stops before anything is deployed', /if \[ "\$CHECK" -eq 1 \]; then\n[^\n]*\n\s+exit 0\nfi/.test(lf) && lf.indexOf('if [ "$CHECK" -eq 1 ]') < lf.indexOf('if [ "$ROUTER" -eq 1 ]'));
+  const announce = readFileSync(new URL('./announce-deploy.sh', import.meta.url), 'utf8');
+  check('deploy guard: announce-deploy.sh asks before it tells anyone a restart is coming',
+    announce.indexOf('fly-deploy.sh" --check') > 0 && announce.indexOf('fly-deploy.sh" --check') < announce.indexOf('/api/admin/announce'));
+
+  // ---- THE DESKTOP RELEASE'S BUILD JOBS HOLD NO WRITE TOKEN (2026-11-18) -----------------------
+  // The builds are unsigned, so who can write a release is all that stands between it and every
+  // installed app. Read as text: the suite has no YAML parser, and the shape is what matters.
+  const rel = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const job = (name: string): string => {
+    const from = rel.indexOf(`\n  ${name}:\n`);
+    if (from < 0) return '';
+    const rest = rel.slice(from + 1);
+    const next = rest.slice(1).search(/\n  [a-z]+:\n/);
+    return next < 0 ? rest : rest.slice(0, next + 1);
+  };
+  check('release: the workflow is read-only, and only draft and publish may write',
+    /\npermissions:\n  contents: read\n/.test(rel) && ['draft', 'publish'].every((j) => /\n    permissions:\n      contents: write\n/.test(job(j))) &&
+      ['build', 'collect'].every((j) => job(j).length > 0 && !/permissions:/.test(job(j))));
+  check('release: the build job checks out without credentials, never publishes and is handed no token',
+    /persist-credentials: false/.test(job('build')) && /electron-builder --publish never/.test(job('build')) &&
+      !/--publish always/.test(rel) && !/GITHUB_TOKEN|GH_TOKEN/.test(job('build')) && !/GITHUB_TOKEN|GH_TOKEN/.test(job('collect')));
+  check('release: the jobs that may write run no code from the repository (no checkout, no npm, no node)',
+    ['draft', 'publish'].every((j) => !/actions\/checkout|\bnpm\b|\bnpx\b|\bnode\b/.test(job(j))));
+  check('release: every asset is checked before the publish job, on a dry run too',
+    /needs: collect/.test(job('publish')) && !/\n    if:/.test(job('collect')) &&
+      ['DSIM-Setup.exe', 'DSIM-Portable.exe', 'DSIM-mac.dmg', 'DSIM-linux.AppImage', 'latest.yml', 'latest-linux.yml'].every((f) => job('collect').includes(f)));
   // TWO checks, not one, because DECLARING the variable and PASSING it are separate
   // failures and only the first is visible in a diff: a `SATELLITE_MAX_ROOMS=6` that no
   // command line reads looks exactly like a working cap and silently leaves every

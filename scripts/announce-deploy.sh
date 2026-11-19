@@ -26,6 +26,11 @@ MSG="${1:-Server updating shortly — you will be reconnected automatically}"
 WAIT="${2:-300}"
 : "${ADMIN_SECRET:?set ADMIN_SECRET (matches the Fly secret) to authorize the announce}"
 
+# ASKED BEFORE ANYBODY IS TOLD. The deploy refuses a tree that is not a clean commit on main
+# (fly-deploy.sh, `require_main_tree`); refusing after the countdown would have put a restart
+# banner on every screen for a restart that never comes.
+"$(dirname "$0")/fly-deploy.sh" --check
+
 echo "==> announcing restart in $((WAIT / 60))m${WAIT}s to every connected client"
 # -G + --data-urlencode builds a correctly-encoded query string; -X POST keeps it
 # a POST (the endpoint reads query params, not a body). --fail => non-2xx aborts.

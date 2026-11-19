@@ -653,6 +653,21 @@ say, and anything that honours it over the CSP blocks the activity. Every browse
 `X-Frame-Options` but NOT `frame-ancestors` is too old to run this app at all — the physics is
 WebAssembly and the bundle is ESM — so nothing real loses cover.
 
+## 2a. Production is deployed from a clean commit on `main`, and the script checks (2026-11-18)
+
+`./scripts/fly-deploy.sh` with no flag deploys production from the files in the directory it runs
+in. It now refuses unless HEAD is `origin/main` or one of its ancestors and no tracked file has
+uncommitted changes (`require_main_tree`). It asks the COMMIT, not the branch name: a release
+worktree detached at `origin/main` passes, and so does an older commit of main (a rollback). Push
+before deploying. `--alpha` is not asked. `--check` runs the question and stops, and
+`announce-deploy.sh` runs it before it tells players a restart is coming.
+
+- `DEPLOY_ANY_TREE=1 ./scripts/fly-deploy.sh` overrides it and says so in the output.
+- `FLY_APP=dsim-alpha` without `--alpha`, and `FLY_ALPHA_APP=dohun-sim-decode` with it, are
+  refused: each would put one environment's config on the other's app.
+- `bash scripts/deploy-guard-test.sh` runs the twelve cases in throwaway repositories with a stub
+  `fly`. Run it after changing the top of the script.
+
 ## 2b. Desktop app — releases itself (2026-11-16)
 
 ⚠️ **A PUSH TO `main` PUBLISHES A DESKTOP RELEASE** unless it only touches what the app does not
@@ -662,7 +677,14 @@ Installed apps (0.2 and later) download it in the background and install it when
 the app. Nobody tags or uploads anything, and there is no version to bump.
 
 - **Dry run:** Actions > Release desktop build > Run workflow on any branch other than `main`
-  builds all three and publishes nothing.
+  builds all three, checks every asset is there (`collect`) and publishes nothing.
+- ⚠️ **The build jobs hold no write token** (2026-11-18). The builds are unsigned, so who can write a
+  release is the whole of an update's integrity. The workflow is `contents: read`; `build` checks
+  out with `persist-credentials: false`, packages with `--publish never` and uploads its files as
+  artifacts; only `draft` and `publish` (which run `gh` and no repository code) have
+  `contents: write`. Keep it that way: a step that runs `npm` or a script from the tree does not
+  belong in those two jobs. Signing the Windows build is what would let the updater check the
+  publisher itself.
 - **What updates itself:** the Windows installer and the Linux AppImage. macOS is unsigned, so a
   Mac player is told and sent to the download page; so is the portable exe. Silent Mac updates
   need an Apple Developer ID (`mac.identity`).

@@ -18,10 +18,19 @@ name: Release desktop build
 #    changed when the installed version's release still exists, and the whole installer when it
 #    does not.
 #  - Run it by hand (Actions > Release desktop build > Run workflow) on any other branch for a
-#    dry run: it builds all three and publishes nothing.
+#    dry run: it builds all three, checks every asset is there, and publishes nothing.
 #
 # Uses the built-in GITHUB_TOKEN. macOS is unsigned (`mac.identity: null`), so Mac users are told
 # about an update and sent to the download page instead of getting it installed.
+#
+# ⚠️ THE JOBS THAT RUN THE BUILD HOLD NO WRITE TOKEN (2026-11-18). The builds are unsigned, so the
+# only thing between a release and every installed app is who can write that release: an update's
+# sha512 comes from the same release as the installer, and it installs silently when the app
+# closes. `contents: write` used to be the whole workflow's, the checkout left the token in
+# .git/config, and `npm ci` then ran every dependency's install scripts beside it; the packaging
+# step was handed it again as GH_TOKEN. Now the workflow is read-only, `build` checks out without
+# credentials, packages with `--publish never` and hands its files over as artifacts, and only
+# `draft` and `publish`, which run `gh` and nothing from the repository, may write.
 
 on:
   push:
@@ -52,8 +61,9 @@ concurrency:
   group: desktop-release
   cancel-in-progress: false
 
+# read-only; `draft` and `publish` ask for more (see the note above)
 permissions:
-  contents: write
+  contents: read
 
 env:
   PUBLISH: ${{ github.ref == 'refs/heads/main' }}
@@ -62,6 +72,8 @@ env:
 jobs:
   draft:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Open the draft release on this commit
         if: env.PUBLISH == 'true'
@@ -85,6 +97,9 @@ jobs:
       HAS_ZENITH: ${{ secrets.ZENITH_VENDOR_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # nothing in this job pushes or uploads to the repository
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -119,26 +134,70 @@ jobs:
       # Without it the app cannot update itself, and nothing else would say so.
       - run: npm run desktop:bundle
 
-      - name: Package and upload to the draft
-        if: env.PUBLISH == 'true'
-        run: npx electron-builder --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Package only (dry run)
-        if: env.PUBLISH != 'true'
+      # never uploads: this job has no token to upload with. The update files (latest*.yml, the
+      # blockmaps) are written beside the installers either way.
+      - name: Package
         run: npx electron-builder --publish never
 
-  # Flip the draft live ONLY after all three OS builds have uploaded, so every platform's asset
-  # appears at once, then prune.
-  publish:
+      - name: Hand the build to the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 3
+          # installers are compressed already
+          compression-level: 0
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.blockmap
+            release/latest*.yml
+
+  # Every asset the Download page and the updater read, checked BEFORE anything is published, and
+  # on a dry run too, so a build that stops writing one is found on a branch and not by a release.
+  collect:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: assets
+          merge-multiple: true
+
+      - name: Every asset is here
+        run: |
+          ls -l assets
+          missing=0
+          for f in DSIM-Setup.exe DSIM-Portable.exe DSIM-mac.dmg DSIM-linux.AppImage latest.yml latest-linux.yml; do
+            if [ ! -s "assets/$f" ]; then echo "::error::missing $f"; missing=1; fi
+          done
+          # without it an update is the whole installer instead of the blocks that changed
+          [ -s assets/DSIM-Setup.exe.blockmap ] || echo "::warning::no DSIM-Setup.exe.blockmap"
+          exit "$missing"
+
+  # Upload, then flip the draft live ONLY once every platform's files are on it, so they all
+  # appear at once, then prune.
+  publish:
+    needs: collect
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: assets
+          merge-multiple: true
+
+      - name: Upload every build to the draft
+        run: gh release upload "v$VERSION" assets/* --repo "$REPO" --clobber
+
       - run: gh release edit "v$VERSION" --repo "$REPO" --draft=false --latest
 
       - name: Delete stale drafts and all but the newest 15 automatic releases
