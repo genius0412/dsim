@@ -7,6 +7,25 @@ const SITE = 'https://www.playdsim.com';
 const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest';
 
 /**
+ * A LINK FROM A PAGE GOES TO THE OS ONLY AS https: OR mailto:.
+ *
+ * `shell.openExternal` hands its argument to ShellExecute, which runs whatever is registered for
+ * the scheme: `file:` (a UNC path included) opens or launches the target, and `ms-*:`,
+ * `search-ms:` and the rest start their handlers. The URL comes from `window.open` in a window
+ * that loads the live site, so any frame or third-party script in it can supply one. Every link
+ * the app itself opens is https, or mailto on the legal pages.
+ */
+function openLink(url) {
+  let scheme = '';
+  try {
+    scheme = new URL(String(url)).protocol;
+  } catch {
+    return;
+  }
+  if (scheme === 'https:' || scheme === 'mailto:') shell.openExternal(url);
+}
+
+/**
  * THE SPLASH. See electron/splash.html for what it says and why.
  *
  * Startup here is slow in a way a web page's is not: `siteReachable()` probes for
@@ -83,7 +102,7 @@ function createWindow() {
   // sign-in as a full-page redirect, and blocking it would break auth there. A
   // current one asks for a pop-up instead (`dsim:oauth` below).
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openLink(url);
     return { action: 'deny' };
   });
 
@@ -483,7 +502,7 @@ ipcMain.handle('dsim:oauth', (e, opts) => {
     pop.webContents.on('did-navigate', (_ev, target) => atCallback(null, target));
     // a link inside the provider's page ("Help", "Privacy") goes to the real browser
     pop.webContents.setWindowOpenHandler(({ url: u }) => {
-      shell.openExternal(u);
+      openLink(u);
       return { action: 'deny' };
     });
     pop.on('closed', () => finish({ cancelled: true }));

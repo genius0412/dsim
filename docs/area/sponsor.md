@@ -89,3 +89,11 @@ the same exchange a returning web redirect ends in. Three things that look wrong
 A shell older than this has no `oauth` and keeps the in-window redirect. ⚠️ **It ships with a
 DESKTOP RELEASE**: the site half deploys with Vercel, but `main.cjs` and `preload.cjs` are inside
 the installed app.
+
+⚠️ **A LINK FROM A PAGE REACHES THE OS ONLY AS `https:` OR `mailto:`** (`openLink`, `main.cjs`,
+2026-11-18). Both `setWindowOpenHandler`s (the main window's and the sign-in pop-up's) handed
+whatever URL the page gave to `shell.openExternal`, which runs the scheme's handler: `file:` (a
+UNC path included), `ms-*:`, `search-ms:`. The window loads the live site and every script on it.
+Every link the app opens is https, or mailto on the legal pages. It ships with a desktop release
+too. Still open: the main window has no navigation allowlist, because the account-link flow
+navigates it to GitHub and Discord.
