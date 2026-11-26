@@ -1,3 +1,14 @@
+# HANDOFF — 2026-11-26b (Pad picker hardening; the Xbox report)
+
+**State: on `alpha`. Client only, no server change, so no `dsim-alpha` deploy is needed (it runs 55ca7fd5). Nothing on `main`: production still reads the first controller slot.** `npm test` (5281 + 6338), `tsc`, `docaudit` pass.
+
+- **Owner, for context:** one reporter has an Xbox controller that works on other websites. That is a standard-mapped pad, so it is the first-slot bug (a1b59cde), not the stick axes. The port of a1b59cde to `main` was put to the owner; no answer yet.
+- **A read-only pass over everything else that could leave a standard pad dead found no other block on the sticks** (touch gating, the desktop shell, the button mask, hold/toggle, chords and focus checks were read and ruled out). Still possible, by how the reporter plays: inside the Discord Activity (the host decides whether an embedded page may read gamepads); buttons only (A is unbound by default, and Turn with triggers pauses Shoot and Intake); sticks only (Chrome lists a pad after a button press, and nothing in DSIM says so).
+- **`listed()` swallows a throwing `getGamepads()`** (`padSelect.ts`): in an embed that withholds the gamepad feature it throws, every frame, from the game loop, where an exception stops the loop. It reads as no pads now.
+- **A latched second device no longer locks the player's pad out** (`PAD_INSIST_EVENTS` 3, `PAD_INSIST_MS` 1500): a held button stops protecting a pad that has been silent for 1.5 s from a pad that gives three events inside 1.5 s. Six new "pad pick:" checks.
+- **Built by a sonnet agent to an exact brief; diff reviewed.**
+- **Offered, not built:** a "controller not detected, press a button" hint, and the pad Start hint on the touch layout's pre-match screen.
+
 # HANDOFF — 2026-11-26 (Stick axes: a gamepad the browser gives no standard mapping)
 
 **State: on `alpha`. Client, plus one server line (`settingsKeep` rule 6). `dsim-alpha` DEPLOYED from 55ca7fd5 on 2026-11-26 05:35Z (00:35 EST): one machine in ord, started, checks 1/1, image `deployment-01M8B5K3NKSXWSCJGRBSZNG2V6`, `/health` 200. Nothing on `main`.** `npm test` (5275 + 6338), `build`, `bundleaudit`, `server:check`, `typecheck:nozenith`, `uiaudit`, `docaudit` pass; `scripts/padsticks.cjs` 11 of 11 and `scripts/padpick.cjs` 6 of 6.
