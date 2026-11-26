@@ -1,6 +1,6 @@
 # HANDOFF — 2026-11-26 (Stick axes: a gamepad the browser gives no standard mapping)
 
-**State: on `alpha`. Client, plus one server line (`settingsKeep` rule 6). `dsim-alpha` deploy: see the State line of the next HANDOFF commit; if there is none, it is not deployed. Nothing on `main`.** `npm test` (5275 + 6338), `build`, `bundleaudit`, `server:check`, `typecheck:nozenith`, `uiaudit`, `docaudit` pass; `scripts/padsticks.cjs` 11 of 11 and `scripts/padpick.cjs` 6 of 6.
+**State: on `alpha`. Client, plus one server line (`settingsKeep` rule 6). `dsim-alpha` DEPLOYED from 55ca7fd5 on 2026-11-26 05:35Z (00:35 EST): one machine in ord, started, checks 1/1, image `deployment-01M8B5K3NKSXWSCJGRBSZNG2V6`, `/health` 200. Nothing on `main`.** `npm test` (5275 + 6338), `build`, `bundleaudit`, `server:check`, `typecheck:nozenith`, `uiaudit`, `docaudit` pass; `scripts/padsticks.cjs` 11 of 11 and `scripts/padpick.cjs` 6 of 6.
 
 - **Owner:** "Yes, build it" (cause 2 of the 2026-11-25 gamepad report).
 - **What it is** (`PadBindings.sticks`, `src/input/padAxes.ts`): which raw axis is each stick axis, with a flip each, for a pad whose `Gamepad.mapping` is not `'standard'`. Such a pad often has a trigger on axis 2 resting at -1, which DSIM read as the turn stick: the robot spun, or never turned. Controls ▸ Driving ▸ Gamepad has a **Stick axes** row; the capture is four pushes. Rules: `docs/area/ui.md`, "STICK AXES".
