@@ -14,7 +14,10 @@
  * stop gives none and can only ever be the fallback. Rules, in order:
  *   1. the current pad stays while it is in the list;
  *   2. another pad takes over on an event of its own, unless the current one is BUSY (a button it
- *      was seen to press is still down, or it gave an event inside `PAD_BUSY_MS`);
+ *      was seen to press is still down, or it gave an event inside `PAD_BUSY_MS`). A held button
+ *      does not protect a pad that has been silent for `PAD_INSIST_MS` from a pad that INSISTS
+ *      (its last `PAD_INSIST_EVENTS` events all inside `PAD_INSIST_MS`): a latched switch on a
+ *      throttle would otherwise keep the player's real pad out for ever;
  *   3. a current pad that leaves the list reads as no pad for `PAD_DROPOUT_GRACE_MS` (a Bluetooth
  *      pad can vanish for a frame, and `GamepadInput` holds its last sample through that), unless
  *      another pad gives an event first;
@@ -44,6 +47,9 @@ export interface PadLike {
 export const PAD_WAKE_AXIS = 0.5;
 /** how long after its last input event a pad still counts as in use (ms) */
 export const PAD_BUSY_MS = 400;
+/** a challenger insists when its last `PAD_INSIST_EVENTS` input events all fall inside `PAD_INSIST_MS` */
+export const PAD_INSIST_EVENTS = 3;
+export const PAD_INSIST_MS = 1500;
 /**
  * HOW LONG A PAD MAY VANISH BEFORE IT COUNTS AS UNPLUGGED (ms). `getGamepads()` can report no
  * connected pad for a single frame (seen on Bluetooth pads); see `GamepadInput.sample`.
@@ -61,6 +67,8 @@ interface Slot {
   /** each axis where it last counted */
   anchor: number[];
   lastEvent: number;
+  /** the times of the last `PAD_INSIST_EVENTS` input events, oldest first */
+  recent: number[];
   /** a button was down when the pad was first seen */
   wokeDown: boolean;
   standard: boolean;
@@ -98,9 +106,19 @@ export class PadPicker {
     const cur = live.get(this.current);
     if (cur) {
       this.lostAt = -1;
-      if (fresh.length > 0 && !fresh.includes(this.current) && !this.busy(this.current, now)) {
-        this.current = this.best(fresh);
-        return live.get(this.current) ?? null;
+      if (fresh.length > 0 && !fresh.includes(this.current)) {
+        if (!this.busy(this.current, now)) {
+          this.current = this.best(fresh);
+          return live.get(this.current) ?? null;
+        }
+        const cs = this.slots.get(this.current);
+        if (cs && now - cs.lastEvent >= PAD_INSIST_MS) {
+          const pushy = fresh.filter((k) => this.insists(k, now));
+          if (pushy.length > 0) {
+            this.current = this.best(pushy);
+            return live.get(this.current) ?? null;
+          }
+        }
       }
       return cur;
     }
@@ -119,7 +137,7 @@ export class PadPicker {
     const id = p.id ?? '';
     let s = this.slots.get(key);
     if (!s || s.id !== id) {
-      s = { id, down: [], watched: new Set(), anchor: [], lastEvent: -Infinity, wokeDown: false, standard: p.mapping === 'standard' };
+      s = { id, down: [], watched: new Set(), anchor: [], lastEvent: -Infinity, recent: [], wokeDown: false, standard: p.mapping === 'standard' };
       for (let i = 0; i < p.buttons.length; i++) {
         s.down[i] = isDown(p.buttons[i]);
         if (s.down[i]) s.wokeDown = true;
@@ -144,8 +162,18 @@ export class PadPicker {
         s.anchor[i] = v;
       }
     }
-    if (event) s.lastEvent = now;
+    if (event) {
+      s.lastEvent = now;
+      s.recent.push(now);
+      if (s.recent.length > PAD_INSIST_EVENTS) s.recent.shift();
+    }
     return event;
+  }
+
+  /** did this pad give its last `PAD_INSIST_EVENTS` events all inside `PAD_INSIST_MS` of now? */
+  private insists(key: number, now: number): boolean {
+    const s = this.slots.get(key);
+    return !!s && s.recent.length >= PAD_INSIST_EVENTS && now - s.recent[0] <= PAD_INSIST_MS;
   }
 
   private busy(key: number, now: number): boolean {
@@ -180,8 +208,15 @@ export class PadPicker {
  *  mode all ask it, so they read the same pad. The always-mounted `PadNavLayer` keeps it fed. */
 const picker = new PadPicker();
 
-const listed = (): ArrayLike<Gamepad | null> =>
-  typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+const listed = (): ArrayLike<Gamepad | null> => {
+  try {
+    return typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+  } catch {
+    // a cross-origin embed whose host withholds the gamepad feature throws a SecurityError here, and
+    // this runs every frame from the game loop, where an exception stops the loop: read as no pads
+    return [];
+  }
+};
 
 /** the pad the player is using, or null */
 export function activePad(now: number = typeof performance !== 'undefined' ? performance.now() : Date.now()): Gamepad | null {

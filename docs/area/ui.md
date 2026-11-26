@@ -106,7 +106,11 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   current pad that drops out reads as NO pad for the 100 ms dropout grace, so `GamepadInput` holds
   its last sample and does not fall onto the other device. With no event yet: a pad with a button
   down when first seen, then the standard mapping, then the lowest slot. One pad connected behaves
-  as before. **Never call `navigator.getGamepads()` from a reader**; `npm test` pins the four files.
+  as before. `listed()` swallows a throwing `getGamepads()` (a `SecurityError` in a cross-origin
+  embed whose host withholds the gamepad feature) and reads no pads, because it runs every frame
+  and an exception there stops the game loop. A busy pad is not safe for ever: a device latched
+  with a button down (a throttle's toggle) would lock the real pad out, so a pad that gives
+  3 events inside 1.5 s takes over from a current pad that has itself been silent for 1.5 s. **Never call `navigator.getGamepads()` from a reader**; `npm test` pins the four files.
   `PadNavLayer` drops its button history and re-reads the glyph family when the pad changes;
   `scripts/padpick.cjs` (offscreen Electron, a generic device in slot 0 and an Xbox pad in slot 1)
   holds that the layer follows the pad that is pressed.

@@ -317,7 +317,7 @@ import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { GamepadInput, padButtonDown, shape as padShape, shapeStick, triggerTravel } from '../src/input/gamepad';
-import { PAD_BUSY_MS, PAD_DROPOUT_GRACE_MS, PadPicker, resetPadPicker } from '../src/input/padSelect';
+import { PAD_BUSY_MS, PAD_DROPOUT_GRACE_MS, PAD_INSIST_MS, activePad, anyPadConnected, nonStandardPad, padInSlot, PadPicker, resetPadPicker } from '../src/input/padSelect';
 import { StickCapture, coerceStickMap, sticksOf } from '../src/input/padAxes';
 import {
   awardBadge,
@@ -45773,6 +45773,91 @@ function fxImportFixed(): RobotSpec {
       off();
       setPadNavPrefs(was);
     }
+  }
+}
+
+// A THROWING `getGamepads()` AND THE INSIST ESCAPE (`src/input/padSelect.ts`).
+{
+  const mkPad = (index: number, down: number[] = []) => ({
+    connected: true,
+    index,
+    id: `pad ${index}`,
+    mapping: 'standard',
+    axes: [0, 0, 0, 0],
+    buttons: Array.from({ length: 17 }, (_, i) => {
+      const d = down.includes(i);
+      return { pressed: d, value: d ? 1 : 0 };
+    }),
+  });
+  {
+    const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+    const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+    Object.defineProperty(nav, 'getGamepads', {
+      value: () => {
+        throw new Error('SecurityError');
+      },
+      configurable: true,
+      writable: true,
+    });
+    resetPadPicker();
+    try {
+      let threw = false;
+      let a: unknown = 1, c: unknown = 1, n: unknown = 1, s: unknown = 1, sample: { connected: boolean } | null = null;
+      try {
+        a = activePad();
+        c = anyPadConnected();
+        n = nonStandardPad();
+        s = padInSlot(0);
+        sample = new GamepadInput().sample(DEFAULT_BINDINGS.pad);
+      } catch {
+        threw = true;
+      }
+      check('pad pick: a throwing getGamepads reads as no pad: activePad, anyPadConnected, nonStandardPad and padInSlot',
+        !threw && a === null && c === false && n === null && s === null, `threw ${threw} ${String(a)} ${String(c)} ${String(n)} ${String(s)}`);
+      check('pad pick: ...and GamepadInput.sample is not connected and does not throw', !threw && sample?.connected === false);
+    } finally {
+      if (had) Object.defineProperty(nav, 'getGamepads', had);
+      else delete nav.getGamepads;
+      resetPadPicker();
+    }
+  }
+  // slot 0 becomes current by a press whose button then stays down
+  const scene = () => {
+    const p = new PadPicker();
+    p.pick([mkPad(0), mkPad(1)], 0);
+    p.pick([mkPad(0, [7]), mkPad(1)], 16);
+    return p;
+  };
+  {
+    const p = scene();
+    const t0 = 16 + PAD_INSIST_MS;
+    const one = p.pick([mkPad(0, [7]), mkPad(1, [0])], t0)?.index;
+    const two = p.pick([mkPad(0, [7]), mkPad(1)], t0 + 100)?.index;
+    const three = p.pick([mkPad(0, [7]), mkPad(1, [0])], t0 + 200)?.index;
+    check('pad pick: a latched current pad: two quick events on the other pad do not take over, the third does',
+      one === 0 && two === 0 && three === 1, `${one} ${two} ${three}`);
+  }
+  {
+    const p = scene();
+    const t0 = 16 + PAD_INSIST_MS;
+    const one = p.pick([mkPad(0, [7]), mkPad(1, [0])], t0)?.index;
+    const two = p.pick([mkPad(0, [7]), mkPad(1)], t0 + 800)?.index;
+    const three = p.pick([mkPad(0, [7]), mkPad(1, [0])], t0 + PAD_INSIST_MS + 100)?.index;
+    check('pad pick: three events spread over more than 1.5 s do not take over from a held button', one === 0 && two === 0 && three === 0, `${one} ${two} ${three}`);
+  }
+  {
+    const p = scene();
+    const t0 = 16 + PAD_INSIST_MS;
+    p.pick([mkPad(0, [7]), mkPad(1, [0])], t0);
+    p.pick([mkPad(0, [7]), mkPad(1)], t0 + 100);
+    const own = p.pick([mkPad(0, [7, 5]), mkPad(1)], t0 + 150)?.index;
+    const three = p.pick([mkPad(0, [7, 5]), mkPad(1, [0])], t0 + 200)?.index;
+    check('pad pick: a current pad still giving events is not displaced by three quick events on the other pad', own === 0 && three === 0, `${own} ${three}`);
+  }
+  {
+    const p = scene();
+    const one = p.pick([mkPad(0, [7]), mkPad(1, [0])], 5000)?.index;
+    check('pad pick: one event on another pad still does not take over from a held button', one === 0, `slot ${one}`);
   }
 }
 
