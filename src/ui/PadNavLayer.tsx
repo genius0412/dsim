@@ -23,6 +23,7 @@ import {
   type PadFamily,
   type PadNavDir,
 } from '../input/padNav';
+import { activePad, anyPadConnected } from '../input/padSelect';
 
 /**
  * PAD NAVIGATION — the DOM half.
@@ -160,9 +161,10 @@ export function PadNavLayer(): JSX.Element | null {
   // ---- connection ------------------------------------------------------------------
   useEffect(() => {
     const scan = (): void => {
-      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-      const pad = pads.find((p) => p && p.connected) ?? null;
-      setConnected(!!pad);
+      // connected is ANY pad (the loop below must run to see which one gets used); the glyph
+      // family is the pad being read, and the loop corrects it when that changes
+      setConnected(anyPadConnected());
+      const pad = activePad();
       if (pad) setFamily(padFamily(pad.id));
     };
     scan();
@@ -215,6 +217,8 @@ export function PadNavLayer(): JSX.Element | null {
     let raf = 0;
     const held = new Map<string, Held>();
     let prevButtons: boolean[] = [];
+    /** the slot of the pad `prevButtons` describes */
+    let padSlot = -1;
 
     /** fire on the press and then on the repeat schedule, for a key that is down */
     const edge = (key: string, down: boolean, now: number, profile = PAD_NAV_REPEAT): boolean => {
@@ -353,10 +357,23 @@ export function PadNavLayer(): JSX.Element | null {
 
     const poll = (): void => {
       raf = requestAnimationFrame(poll);
-      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-      const pad = pads.find((p) => p && p.connected) ?? null;
-      if (!pad) return;
       const now = performance.now();
+      const pad = activePad(now);
+      if (!pad) return;
+      /* THE PAD BEING READ CHANGED (`padSelect.ts`): the button history belongs to the other
+         device, so it is dropped and the press that brought this pad forward counts as a press.
+         A new glyph family restarts this effect, which reads the buttons with the right
+         confirm / back on its first frame. */
+      if (pad.index !== padSlot) {
+        padSlot = pad.index;
+        prevButtons = [];
+        held.clear();
+        const fam = padFamily(pad.id);
+        if (fam !== family) {
+          setFamily(fam);
+          return;
+        }
+      }
       const btn = (i: number): boolean => {
         const b = pad.buttons[i];
         return !!b && (b.pressed || b.value > 0.5);

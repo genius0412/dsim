@@ -10,6 +10,7 @@ import {
   suspendPadNav,
   type PadGlyphs,
 } from '../../input/padNav';
+import { activePad } from '../../input/padSelect';
 
 /**
  * GRAB MODE: how a controller moves a drag handle (lane 4 spec §5).
@@ -78,9 +79,8 @@ export function useHandleGrab(): {
     let prevBack = true;
     const poll = (): void => {
       raf = requestAnimationFrame(poll);
-      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-      const pad = pads.find((p) => p && p.connected) ?? null;
       const now = performance.now();
+      const pad = activePad(now);
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       if (!pad) return;
@@ -131,9 +131,7 @@ export function useHandleGrab(): {
     glyphs,
     start(key, cb) {
       cbRef.current = cb;
-      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-      const pad = pads.find((p) => p && p.connected) ?? null;
-      setGlyphs(PAD_GLYPHS[padFamily(pad?.id)]);
+      setGlyphs(PAD_GLYPHS[padFamily(activePad()?.id)]);
       setGrabbed(key);
     },
     stop() {

@@ -48,6 +48,7 @@ import {
 import { PadCapture } from '../input/padChords';
 import { padButtonDown } from '../input/gamepad';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
+import { activePad } from '../input/padSelect';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import { visibleSeasons } from '../seasonVisibility';
@@ -277,8 +278,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     let first = true;
     const poll = (): void => {
       raf = requestAnimationFrame(poll);
-      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-      const pad = pads.find((p) => p && p.connected);
+      const pad = activePad();
       if (!pad) return;
       const thr = bindingsRef.current.pad.triggerThreshold;
       for (let i = 0; i < pad.buttons.length; i++) {
@@ -411,8 +411,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       return true;
     };
     const poll = () => {
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-      const pad = Array.from(pads).find((p) => p && p.connected);
+      const pad = activePad();
       if (pad) {
         // the same press test the game uses, so a trigger that counts as held in play (past the
         // player's own threshold) is the same trigger the capture sees

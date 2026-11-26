@@ -92,6 +92,28 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   Shift was let go first): nothing sticks. Any other layout is left as it comes, since there `code`
   names a different character and a `;` would be a phantom. Non-Latin layouts are a separate gap
   (their binds are letters this never sees).
+- ⚠️ **THE PAD THAT IS READ IS THE ONE BEING USED, NOT THE FIRST SLOT** (`activePad`,
+  `src/input/padSelect.ts`; player reports 2026-11-25: a pad that a gamepad tester page showed
+  working did nothing here). All seven readers took the first connected entry of
+  `navigator.getGamepads()`. A browser lists every device the OS calls a game controller (a virtual
+  joystick driver, a wheel or pedals, a throttle, some keyboards and tablets), and Chrome shows a page
+  all of them from the first press on any one, so with such a device in a lower slot the player's pad
+  was never read, in a match, in the menus or in the bind capture. One `PadPicker` for the page now:
+  the pad read is the one that last gave an INPUT EVENT (a button changing, an axis moving 0.5), and
+  events are changes, never levels, so a device resting with a button on or an axis at an end stop
+  gives none. It stays while it is listed; another pad takes over on an event of its own unless the
+  current one is busy (a button it was seen to press is still down, or an event inside 400 ms); a
+  current pad that drops out reads as NO pad for the 100 ms dropout grace, so `GamepadInput` holds
+  its last sample and does not fall onto the other device. With no event yet: a pad with a button
+  down when first seen, then the standard mapping, then the lowest slot. One pad connected behaves
+  as before. **Never call `navigator.getGamepads()` from a reader**; `npm test` pins the four files.
+  `PadNavLayer` drops its button history and re-reads the glyph family when the pad changes;
+  `scripts/padpick.cjs` (offscreen Electron, a generic device in slot 0 and an Xbox pad in slot 1)
+  holds that the layer follows the pad that is pressed.
+  ⚠️ **NOT COVERED: A NON-STANDARD PAD'S STICKS.** `Gamepad.mapping === ''` (a pad the browser does
+  not know, common for generic USB pads and for PlayStation and Switch pads in Firefox): buttons can
+  be rebound by index, but the sticks are read on axes 0 to 3 and its right stick or triggers may be
+  on others (2 and 5, or 3 and 4), so it can turn wrongly or not at all. No axis assignment exists.
 - **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
   held together fire one action (`RT + D-UP` for a lift), the way real drive-team code reads
   `gamepad.dpad_up && gamepad.right_trigger > 0.5`. Capture commits on the first RELEASE, so a

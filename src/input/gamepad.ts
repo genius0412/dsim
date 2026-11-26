@@ -1,6 +1,7 @@
 import { PAD_TRIGGERS, livePad, type PadBindings } from './bindings';
 import { PadChordResolver } from './padChords';
 import { applyPadMask, clearPadMask } from './padNav';
+import { PAD_DROPOUT_GRACE_MS, activePad } from './padSelect';
 
 /** deadzone + sensitivity curve for ONE axis: below `deadzone` reads as dead center; past
  * it, the remaining travel is rescaled to 0-1 and raised to `curve` (1 =
@@ -128,14 +129,13 @@ const EMPTY: GamepadSample = {
  * Which BUTTONS mean which ACTION — singles and combos alike — is the chord
  * resolver's answer (`padChords.ts`); this class only reads the hardware. */
 /**
- * HOW LONG A PAD MAY VANISH BEFORE IT COUNTS AS UNPLUGGED (ms). `getGamepads()` can report no
- * connected pad for a single frame (seen on Bluetooth pads), and returning the empty sample
- * then released every held button at once: replay 1dc6eb8f has one all-zero input frame in the
- * middle of a held press, and the ramp toggled twice on it. Within the grace the last sample is
- * held, with its one-shot actions cleared so they cannot fire again.
+ * A PAD MAY VANISH FOR `PAD_DROPOUT_GRACE_MS` BEFORE IT COUNTS AS UNPLUGGED. `getGamepads()` can
+ * report no connected pad for a single frame (seen on Bluetooth pads), and returning the empty
+ * sample then released every held button at once: replay 1dc6eb8f has one all-zero input frame in
+ * the middle of a held press, and the ramp toggled twice on it. Within the grace the last sample
+ * is held, with its one-shot actions cleared so they cannot fire again.
+ * WHICH pad is read is `activePad` (`padSelect.ts`): the one the player is using, not the first slot.
  */
-const PAD_DROPOUT_GRACE_MS = 100;
-
 export class GamepadInput {
   private last: GamepadSample | null = null;
   private lostAt = 0;
@@ -150,9 +150,8 @@ export class GamepadInput {
   private live: PadBindings | null = null;
 
   sample(bindings: PadBindings): GamepadSample {
-    const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
-    const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const pad = activePad(now);
     if (!pad) {
       if (this.last) {
         if (this.lostAt === 0) this.lostAt = now;

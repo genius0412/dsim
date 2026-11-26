@@ -317,6 +317,7 @@ import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { GamepadInput, padButtonDown, shape as padShape, shapeStick, triggerTravel } from '../src/input/gamepad';
+import { PAD_BUSY_MS, PAD_DROPOUT_GRACE_MS, PadPicker, resetPadPicker } from '../src/input/padSelect';
 import {
   awardBadge,
   awardBoardWord,
@@ -45482,6 +45483,131 @@ function fxImportFixed(): RobotSpec {
       'src/robotImport/ui/ImportEditor.tsx',
     );
   }
+}
+
+// WHICH PAD IS READ (`src/input/padSelect.ts`): the one the player is using, not the first slot.
+// Player reports, 2026-11-25: a pad that a gamepad tester page showed working did nothing here,
+// because every reader took the first connected slot and another device sat in it.
+{
+  const mkPad = (index: number, o: { std?: boolean; id?: string; axes?: number[]; down?: number[] } = {}) => ({
+    connected: true,
+    index,
+    id: o.id ?? `pad ${index}`,
+    mapping: o.std === false ? '' : 'standard',
+    axes: o.axes ?? [0, 0, 0, 0],
+    buttons: Array.from({ length: 17 }, (_, i) => {
+      const d = (o.down ?? []).includes(i);
+      return { pressed: d, value: d ? 1 : 0 };
+    }),
+  });
+  {
+    const p = new PadPicker();
+    check('pad pick: one pad is the pad, from its first sample', p.pick([mkPad(0)], 0)?.index === 0);
+    check('pad pick: ...and stays the pad with nothing pressed', p.pick([mkPad(0)], 5000)?.index === 0);
+  }
+  {
+    const p = new PadPicker();
+    const got = p.pick([mkPad(0, { std: false }), mkPad(1)], 0)?.index;
+    check('pad pick: with nothing pressed anywhere, a standard-mapping pad is read before a non-standard device in a lower slot', got === 1, `slot ${got}`);
+  }
+  {
+    // the reported case: an idle device in slot 0, the player's pad in slot 1
+    const p = new PadPicker();
+    const idle = p.pick([mkPad(0), mkPad(1)], 0)?.index;
+    const press = p.pick([mkPad(0), mkPad(1, { down: [0] })], 16)?.index;
+    const let1 = p.pick([mkPad(0), mkPad(1)], 32)?.index;
+    const later = p.pick([mkPad(0), mkPad(1)], 60_000)?.index;
+    check('pad pick: a press on the pad in slot 1 is read on that sample, with an idle device in slot 0', idle === 0 && press === 1, `idle ${idle} press ${press}`);
+    check('pad pick: ...and that pad stays the pad after the release, a minute on', let1 === 1 && later === 1, `${let1} ${later}`);
+  }
+  {
+    const p = new PadPicker();
+    const got = p.pick([mkPad(0), mkPad(1, { down: [0] })], 0)?.index;
+    check('pad pick: the pad whose press made the browser list the pads is read from the first sample', got === 1, `slot ${got}`);
+  }
+  {
+    // a device that rests with a button on and an axis at its end stop (a throttle, a wheel)
+    const stuck = () => mkPad(0, { down: [3], axes: [-1, 0, 0, 0] });
+    const p = new PadPicker();
+    const first = p.pick([stuck(), mkPad(1, { down: [0] })], 0)?.index;
+    const release = p.pick([stuck(), mkPad(1)], 16)?.index;
+    let stole = false;
+    for (let t = 32; t < 20_000; t += 500) if (p.pick([stuck(), mkPad(1)], t)?.index !== 1) stole = true;
+    check('pad pick: a stuck button and an end-stop axis are levels, not events: the real pad takes over on its first change', first === 0 && release === 1, `first ${first} release ${release}`);
+    check('pad pick: ...and the stuck device never takes it back', !stole);
+    const q = new PadPicker();
+    const ns = q.pick([{ ...stuck(), mapping: '' }, mkPad(1, { down: [0] })], 0)?.index;
+    check('pad pick: ...and when the stuck device is non-standard the real pad is read from the first sample', ns === 1, `slot ${ns}`);
+  }
+  {
+    const p = new PadPicker();
+    p.pick([mkPad(0), mkPad(1)], 0);
+    const drift = p.pick([mkPad(0), mkPad(1, { axes: [0.3, 0, 0, 0] })], 16)?.index;
+    const push = p.pick([mkPad(0), mkPad(1, { axes: [0.6, 0, 0, 0] })], 32)?.index;
+    check('pad pick: a stick pushed past half is an event, a drifting one is not', drift === 0 && push === 1, `drift ${drift} push ${push}`);
+  }
+  {
+    // the pad in use is not taken over while it is in use
+    const p = new PadPicker();
+    p.pick([mkPad(0), mkPad(1)], 0);
+    p.pick([mkPad(0, { down: [7] }), mkPad(1)], 16);
+    const held = p.pick([mkPad(0, { down: [7] }), mkPad(1, { down: [0] })], 5000)?.index;
+    p.pick([mkPad(0), mkPad(1, { down: [0] })], 5016);
+    const justLet = p.pick([mkPad(0), mkPad(1)], 5032)?.index;
+    const quiet = p.pick([mkPad(0), mkPad(1, { down: [1] })], 5016 + PAD_BUSY_MS)?.index;
+    check('pad pick: a second pad does not take over while a button pressed on the first is still down', held === 0, `slot ${held}`);
+    check('pad pick: ...nor inside the busy window after its release, and it does once the first pad is quiet', justLet === 0 && quiet === 1, `justLet ${justLet} quiet ${quiet}`);
+  }
+  {
+    // the pad in use vanishes for a frame while another device stays listed
+    const p = new PadPicker();
+    p.pick([mkPad(0), mkPad(1)], 0);
+    p.pick([mkPad(0), mkPad(1, { down: [0] })], 16);
+    const gap = p.pick([mkPad(0), null], 32);
+    const back = p.pick([mkPad(0), mkPad(1, { down: [0] })], 48)?.index;
+    const gap2 = p.pick([mkPad(0), null], 64);
+    const gone = p.pick([mkPad(0), null], 64 + PAD_DROPOUT_GRACE_MS)?.index;
+    check('pad pick: a dropout of the pad in use reads as no pad (so the last sample is held), not as the other device', gap === null && back === 1 && gap2 === null, `gap ${gap?.index} back ${back}`);
+    check('pad pick: ...and past the grace the device that is left is read', gone === 0, `slot ${gone}`);
+    const q = new PadPicker();
+    q.pick([mkPad(0), mkPad(1)], 0);
+    q.pick([mkPad(0), mkPad(1, { down: [0] })], 16);
+    const taken = q.pick([mkPad(0, { down: [2] }), null], 32)?.index;
+    check('pad pick: ...unless the other pad is pressed, which takes over at once', taken === 0, `slot ${taken}`);
+  }
+  {
+    const p = new PadPicker();
+    p.pick([mkPad(0), mkPad(1, { id: 'A' })], 0);
+    const seen = p.pick([mkPad(0), mkPad(1, { id: 'B', down: [2] })], 16)?.index;
+    const let2 = p.pick([mkPad(0), mkPad(1, { id: 'B' })], 32)?.index;
+    check('pad pick: another device in the same slot starts over: its first sample is no event, its first change is', seen === 0 && let2 === 1, `seen ${seen} then ${let2}`);
+  }
+  {
+    // the drive path: `GamepadInput` reads the pad that was pressed, not slot 0
+    const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+    const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+    let pads: unknown[] = [];
+    Object.defineProperty(nav, 'getGamepads', { value: () => pads, configurable: true, writable: true });
+    resetPadPicker();
+    try {
+      const other = () => mkPad(0, { axes: [-1, 0, 0, 0] });
+      const gi = new GamepadInput();
+      pads = [other(), mkPad(1)];
+      gi.sample(DEFAULT_BINDINGS.pad);
+      pads = [other(), mkPad(1, { axes: [0.9, 0, 0, 0], down: [7] })];
+      const drove = gi.sample(DEFAULT_BINDINGS.pad);
+      pads = [other(), mkPad(1, { axes: [0.9, 0, 0, 0] })];
+      const still = gi.sample(DEFAULT_BINDINGS.pad);
+      check('pad pick: the drive sample is the pressed pad’s stick and trigger, not slot 0’s', drove.driveX > 0.5 && drove.fire && still.driveX > 0.5 && !still.fire, `x ${drove.driveX.toFixed(2)} fire ${drove.fire} then x ${still.driveX.toFixed(2)}`);
+    } finally {
+      if (had) Object.defineProperty(nav, 'getGamepads', had);
+      else delete nav.getGamepads;
+      resetPadPicker();
+    }
+  }
+  const readers = ['src/input/gamepad.ts', 'src/ui/ControlsSection.tsx', 'src/ui/PadNavLayer.tsx', 'src/robotImport/ui/useHandleGrab.ts'];
+  const own = readers.filter((f) => /navigator\.getGamepads|\.find\(\(p\) => p && p\.connected\)/.test(readFileSync(f, 'utf8')));
+  check('pad pick: no reader lists the pads itself; they all ask `activePad`', own.length === 0, own.join(', '));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
