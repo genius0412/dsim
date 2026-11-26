@@ -22,7 +22,9 @@ APP="${FLY_APP:-dohun-sim-decode}"
 HOST="${DECODE_HOST:-https://dohun-sim-decode.fly.dev}"
 # NOTE: no apostrophe in this default — a literal ' inside "${1:-…}" is parsed by
 # bash as an unterminated single quote (script fails to parse), so keep it out.
-MSG="${1:-Server updating shortly — you will be reconnected automatically}"
+# And ASCII only: run from Git Bash on Windows, an em dash here reached players as "�"
+# (2026-11-26). docs/area/ui.md prefers the full stop anyway.
+MSG="${1:-Server updating shortly. You will be reconnected automatically.}"
 WAIT="${2:-300}"
 : "${ADMIN_SECRET:?set ADMIN_SECRET (matches the Fly secret) to authorize the announce}"
 
