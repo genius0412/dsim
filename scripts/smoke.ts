@@ -318,6 +318,7 @@ import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { GamepadInput, padButtonDown, shape as padShape, shapeStick, triggerTravel } from '../src/input/gamepad';
 import { PAD_BUSY_MS, PAD_DROPOUT_GRACE_MS, PadPicker, resetPadPicker } from '../src/input/padSelect';
+import { StickCapture, coerceStickMap, sticksOf } from '../src/input/padAxes';
 import {
   awardBadge,
   awardBoardWord,
@@ -355,6 +356,7 @@ import {
   padConfirmButton,
   padFamily,
   padMaskSize,
+  padNavPrefs,
   padNavSuspendReasons,
   padNavSuspended,
   pickNav,
@@ -362,6 +364,8 @@ import {
   repeatDueMs,
   resetPadNavSuspend,
   resumePadNav,
+  setPadNavPrefs,
+  subscribePadNavPrefs,
   suspendPadNav,
   wrapNav,
   type NavRect,
@@ -447,7 +451,7 @@ import { rememberStandardRobot, sameBuild, standardRobotChoices, standardRobotFo
 // the importer gate: the channel rule, and the projection a build without the importer renders from
 import * as IMPGATE from '../src/net/imported';
 import { keepImportActive as gateKeepImportActive, withoutImport as gateWithoutImport } from '../src/settings';
-import { SETTINGS_KEEPS_IMPORTS, keepImportsFromOlderClient, keepsImports, sameButDropped } from '../src/net/settingsKeep';
+import { SETTINGS_KEEPS_IMPORTS, keepImportsFromOlderClient, keepNewerFieldsFromOlderClient, keepsImports, sameButDropped } from '../src/net/settingsKeep';
 import { pendingPracticeUploads, savePracticeRun } from '../src/net/practiceRuns';
 import { pendingLanUploads, saveLanRunLocal } from '../src/net/lanRuns';
 import { sanitizeReplay } from '../src/net/sanitize';
@@ -45608,6 +45612,168 @@ function fxImportFixed(): RobotSpec {
   const readers = ['src/input/gamepad.ts', 'src/ui/ControlsSection.tsx', 'src/ui/PadNavLayer.tsx', 'src/robotImport/ui/useHandleGrab.ts'];
   const own = readers.filter((f) => /navigator\.getGamepads|\.find\(\(p\) => p && p\.connected\)/.test(readFileSync(f, 'utf8')));
   check('pad pick: no reader lists the pads itself; they all ask `activePad`', own.length === 0, own.join(', '));
+}
+
+// STICK AXES (`src/input/padAxes.ts`, `PadBindings.sticks`): where a pad the browser gives no
+// standard mapping keeps its sticks. Player reports, 2026-11-25: a generic pad with a trigger on
+// axis 2 (resting at -1) turned the robot for as long as it was connected, because the right
+// stick was read on axis 2.
+{
+  const J = (x: unknown): string => JSON.stringify(x);
+  const MAP = { axes: [0, 1, 3, 4], flip: [false, false, false, false] };
+  {
+    check('pad sticks: a map is read as written, flips included',
+      J(coerceStickMap({ axes: [0, 1, 3, 4], flip: [false, false, false, true] })) === J({ axes: [0, 1, 3, 4], flip: [false, false, false, true] }));
+    check('pad sticks: a missing flip reads all false', J(coerceStickMap({ axes: [0, 1, 3, 4] })) === J(MAP));
+    check('pad sticks: a duplicate axis, 16, -1 and 1.5 are refused',
+      coerceStickMap({ axes: [0, 1, 3, 3] }) === undefined &&
+        coerceStickMap({ axes: [0, 1, 3, 16] }) === undefined &&
+        coerceStickMap({ axes: [0, 1, 3, -1] }) === undefined &&
+        coerceStickMap({ axes: [0, 1, 3, 1.5] }) === undefined);
+    check('pad sticks: a wrong length and anything that is not an object are refused',
+      coerceStickMap({ axes: [0, 1, 3] }) === undefined &&
+        coerceStickMap({ axes: [0, 1, 3, 4, 5] }) === undefined &&
+        coerceStickMap({ axes: 'abcd' }) === undefined &&
+        coerceStickMap(null) === undefined &&
+        coerceStickMap('x') === undefined &&
+        coerceStickMap(7) === undefined &&
+        coerceStickMap(undefined) === undefined);
+    check('pad sticks: the standard order with no flip needs no map', coerceStickMap({ axes: [0, 1, 2, 3], flip: [false, false, false, false] }) === undefined);
+    check('pad sticks: ...but the standard order with a flip is kept',
+      J(coerceStickMap({ axes: [0, 1, 2, 3], flip: [false, false, false, true] })) === J({ axes: [0, 1, 2, 3], flip: [false, false, false, true] }));
+  }
+  {
+    const axes = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+    const map = coerceStickMap({ axes: [4, 5, 1, 0], flip: [false, true, false, true] });
+    check('pad sticks: a standard-mapping pad ignores the map', J(sticksOf({ mapping: 'standard', axes }, map)) === J([0.1, 0.2, 0.3, 0.4]));
+    check('pad sticks: a non-standard pad with no map reads axes 0 to 3', J(sticksOf({ mapping: '', axes }, undefined)) === J([0.1, 0.2, 0.3, 0.4]));
+    check('pad sticks: a non-standard pad with a map reads the mapped axes, flips applied', J(sticksOf({ mapping: '', axes }, map)) === J([0.5, -0.6, 0.2, -0.1]));
+    check('pad sticks: an axis the pad does not have reads 0', J(sticksOf({ mapping: '', axes: [0.1, 0.2] }, map)) === J([0, 0, 0.2, -0.1]));
+  }
+  {
+    const blob = { pad: { sticks: { axes: [0, 1, 3, 4], flip: [false, true, false, false] } } };
+    const merged = mergeBindings(blob);
+    check('pad sticks: a stored map survives mergeBindings', J(merged.pad.sticks) === J(blob.pad.sticks));
+    const copy = cloneBindings(merged);
+    check('pad sticks: ...and cloneBindings, as copies', J(copy.pad.sticks) === J(blob.pad.sticks) && copy.pad.sticks !== merged.pad.sticks && copy.pad.sticks!.axes !== merged.pad.sticks!.axes && copy.pad.sticks!.flip !== merged.pad.sticks!.flip);
+    const none = mergeBindings({ pad: { curve: 2 } });
+    check('pad sticks: a blob without one has no sticks key afterwards, merged or cloned',
+      !('sticks' in none.pad) && !('sticks' in cloneBindings(none).pad) && !('sticks' in DEFAULT_BINDINGS.pad));
+    check('pad sticks: an invalid map is dropped on load', !('sticks' in mergeBindings({ pad: { sticks: { axes: [0, 0, 1, 2] } } }).pad));
+    check('pad sticks: ...and so is the standard order, so an untouched blob round-trips without the field', !('sticks' in mergeBindings({ pad: { sticks: { axes: [0, 1, 2, 3] } } }).pad));
+  }
+  {
+    // the drive path, through a stubbed `navigator.getGamepads`
+    const nav = globalThis.navigator as unknown as { getGamepads?: () => unknown[] };
+    const had = Object.getOwnPropertyDescriptor(nav, 'getGamepads');
+    let pads: unknown[] = [];
+    Object.defineProperty(nav, 'getGamepads', { value: () => pads, configurable: true, writable: true });
+    const mk = (std: boolean, axes: number[]) => ({
+      connected: true,
+      index: 0,
+      id: 'generic pad',
+      mapping: std ? 'standard' : '',
+      axes,
+      buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })),
+    });
+    // a trigger on axis 2 resting at -1, the right stick on axes 3 and 4, a second trigger on 5
+    const axesOf = (rx: number) => [0, 0, -1, rx, 0, -1];
+    const withMap = { ...DEFAULT_BINDINGS.pad, sticks: { axes: [0, 1, 3, 4], flip: [false, false, false, false] } as typeof DEFAULT_BINDINGS.pad.sticks };
+    resetPadPicker();
+    try {
+      pads = [mk(false, axesOf(0))];
+      const bug = new GamepadInput().sample(DEFAULT_BINDINGS.pad);
+      check('pad sticks: with no map, a trigger resting on axis 2 turns the robot with the sticks centred (the reported bug)', bug.rotate !== 0, `rotate ${bug.rotate}`);
+      resetPadPicker();
+      const centred = new GamepadInput().sample(withMap);
+      check('pad sticks: with a map, the same pad centred does not turn', centred.rotate === 0 && centred.driveX === 0 && centred.driveY === 0, `rotate ${centred.rotate}`);
+      resetPadPicker();
+      pads = [mk(false, axesOf(0.9))];
+      const pushed = new GamepadInput().sample(withMap);
+      check('pad sticks: ...and turns with the right stick it was mapped to', pushed.rotate < -0.5, `rotate ${pushed.rotate}`);
+      resetPadPicker();
+      pads = [mk(true, axesOf(0.9))];
+      const std = new GamepadInput().sample(withMap);
+      const stdNone = new GamepadInput().sample(DEFAULT_BINDINGS.pad);
+      check('pad sticks: the same map on a standard-mapping pad is ignored', std.rotate === stdNone.rotate && std.driveX === stdNone.driveX, `${std.rotate} vs ${stdNone.rotate}`);
+    } finally {
+      if (had) Object.defineProperty(nav, 'getGamepads', had);
+      else delete nav.getGamepads;
+      resetPadPicker();
+    }
+  }
+  {
+    // the capture, on scripted frames: a trigger rests at -1 on axes 2 and 5 throughout
+    const R = [0, 0, -1, 0, 0, -1];
+    const at = (o: Record<number, number>, base: number[] = R): number[] => base.map((v, i) => o[i] ?? v);
+    const last = (cap: StickCapture, frames: number[][]) => {
+      let s: ReturnType<StickCapture['step']> = { t: 'push', role: -1 };
+      for (const f of frames) s = cap.step(f);
+      return s;
+    };
+    const full = new StickCapture();
+    const end = last(full, [R, at({ 0: 0.9 }), R, at({ 1: 0.9 }), R, at({ 3: 0.9 }), R, at({ 4: 0.9 })]);
+    check('pad sticks: four pushes give the axes they moved, none flipped',
+      end.t === 'done' && J(end.map) === J(MAP), J(end));
+    const neg = new StickCapture();
+    const endNeg = last(neg, [R, at({ 0: 0.9 }), R, at({ 1: -0.9 }), R, at({ 3: 0.9 }), R, at({ 4: -0.9 })]);
+    check('pad sticks: a push that reads negative sets that role’s flip',
+      endNeg.t === 'done' && J(endNeg.map) === J({ axes: [0, 1, 3, 4], flip: [false, true, false, true] }), J(endNeg));
+    const diag = new StickCapture();
+    const d1 = last(diag, [R, at({ 0: 0.9, 1: 0.8 })]);
+    const d2 = last(diag, [at({ 0: 0.9, 1: 0.2 })]);
+    check('pad sticks: a diagonal push is not taken, and the same push cleaner is', d1.t === 'push' && d1.role === 0 && d2.t === 'push' && d2.role === 1, `${J(d1)} then ${J(d2)}`);
+    const again = new StickCapture();
+    const a1 = last(again, [R, at({ 0: 0.9 }), R]);
+    const a2 = last(again, [at({ 0: 0.9 })]);
+    check('pad sticks: an axis already taken is not taken again', a1.t === 'push' && a1.role === 1 && a2.t === 'push' && a2.role === 1, `${J(a1)} then ${J(a2)}`);
+    const settle = new StickCapture();
+    const s1 = last(settle, [R, at({ 0: 0.9 })]);
+    const s2 = last(settle, [at({ 0: 0.9, 1: 0.9 })]);
+    const s3 = last(settle, [at({ 0: 0.1, 1: 0.9 })]);
+    check('pad sticks: the next push is not read until the taken axis is back near rest',
+      s1.t === 'push' && s1.role === 1 && s2.t === 'push' && s2.role === 1 && s3.t === 'push' && s3.role === 2, `${J(s1)} ${J(s2)} ${J(s3)}`);
+    const rest = new StickCapture();
+    const r1 = last(rest, [R, R, R, at({ 2: -0.9, 5: -0.7 }), at({ 0: 0.4, 3: -0.3 })]);
+    check('pad sticks: a trigger axis resting at -1 is not a push, and a small drift is not either', r1.t === 'push' && r1.role === 0, J(r1));
+    const S = [0, 0, 0, 0];
+    const std = new StickCapture();
+    const endStd = last(std, [S, at({ 0: 0.9 }, S), S, at({ 1: 0.9 }, S), S, at({ 2: 0.9 }, S), S, at({ 3: 0.9 }, S)]);
+    check('pad sticks: four pushes in the standard order end done with no map', endStd.t === 'done' && endStd.map === undefined, J(endStd));
+  }
+  {
+    type Blob = Record<string, any>;
+    const sticks = { axes: [0, 1, 3, 4], flip: [false, true, false, false] };
+    const stored: Blob = { bindings: { keys: { fire: [' '] }, pad: { curve: 1, buttons: { fire: [7] }, sticks } } };
+    const incoming: Blob = { bindings: { keys: { fire: [' '] }, pad: { curve: 1, buttons: { fire: [7] } } } };
+    const carried = keepNewerFieldsFromOlderClient(stored, incoming) as Blob;
+    check('pad sticks: a stored map is carried into a save that lacks it', J(carried.bindings.pad.sticks) === J(sticks) && incoming.bindings.pad.sticks === undefined, J(carried.bindings.pad));
+    const own = { axes: [1, 0, 3, 4], flip: [false, false, false, false] };
+    const mine: Blob = { bindings: { ...incoming.bindings, pad: { ...incoming.bindings.pad, sticks: own } } };
+    check('pad sticks: ...but a save’s own map stands', J((keepNewerFieldsFromOlderClient(stored, mine) as Blob).bindings.pad.sticks) === J(own));
+    const bare: Blob = { bindings: { keys: { fire: [' '] }, pad: { curve: 1, buttons: { fire: [7] } } } };
+    check('pad sticks: with nothing stored to carry the incoming save is returned as is', keepNewerFieldsFromOlderClient(bare, incoming) === incoming);
+  }
+  {
+    const was = padNavPrefs();
+    let n = 0;
+    const off = subscribePadNavPrefs(() => n++);
+    try {
+      const base = { menuButton: was.menuButton, navEnabled: was.navEnabled };
+      setPadNavPrefs({ ...base, sticks: undefined });
+      const before = n;
+      setPadNavPrefs({ ...base, sticks: { axes: [0, 1, 3, 4], flip: [false, false, false, false] } });
+      const after = n;
+      setPadNavPrefs({ ...base, sticks: { axes: [0, 1, 3, 4], flip: [false, false, false, false] } });
+      const same = n;
+      setPadNavPrefs({ ...base, sticks: undefined });
+      check('pad sticks: the pad-nav prefs notify when the map changes and not when an equal one is set again',
+        after === before + 1 && same === after && n === same + 1 && padNavPrefs().sticks === undefined, `${before} ${after} ${same} ${n}`);
+    } finally {
+      off();
+      setPadNavPrefs(was);
+    }
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

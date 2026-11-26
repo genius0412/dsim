@@ -180,17 +180,46 @@ export class PadPicker {
  *  mode all ask it, so they read the same pad. The always-mounted `PadNavLayer` keeps it fed. */
 const picker = new PadPicker();
 
+const listed = (): ArrayLike<Gamepad | null> =>
+  typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+
 /** the pad the player is using, or null */
 export function activePad(now: number = typeof performance !== 'undefined' ? performance.now() : Date.now()): Gamepad | null {
-  const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
-  return picker.pick(pads, now);
+  return picker.pick(listed(), now);
 }
 
 /** is any pad connected at all? (the active one may be inside its dropout grace) */
 export function anyPadConnected(): boolean {
-  const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
+  const pads = listed();
   for (let i = 0; i < pads.length; i++) if (pads[i]?.connected) return true;
   return false;
+}
+
+/**
+ * THE PAD A STICK CAPTURE SHOULD READ (`padAxes.ts`): the active pad when the browser gives it no
+ * standard mapping, else the first connected pad that has none, else null. Not simply the active
+ * pad: the capture is usually started with a mouse, before the pad in question has given the
+ * event that would make it the active one.
+ */
+export function nonStandardPad(now?: number): Gamepad | null {
+  const active = activePad(now);
+  if (active && active.mapping !== 'standard') return active;
+  const pads = listed();
+  for (let i = 0; i < pads.length; i++) {
+    const p = pads[i];
+    if (p && p.connected && p.mapping !== 'standard') return p;
+  }
+  return null;
+}
+
+/** the pad in one slot, or null. For a capture that must stay on the pad it started with. */
+export function padInSlot(slot: number): Gamepad | null {
+  const pads = listed();
+  for (let i = 0; i < pads.length; i++) {
+    const p = pads[i];
+    if (p && p.connected && p.index === slot) return p;
+  }
+  return null;
 }
 
 /** for the smoke run, which shares one process between scenes */

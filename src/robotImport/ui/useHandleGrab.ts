@@ -5,12 +5,14 @@ import {
   padBackButton,
   padConfirmButton,
   padFamily,
+  padNavPrefs,
   repeatDueMs,
   resumePadNav,
   suspendPadNav,
   type PadGlyphs,
 } from '../../input/padNav';
 import { activePad } from '../../input/padSelect';
+import { sticksOf } from '../../input/padAxes';
 
 /**
  * GRAB MODE: how a controller moves a drag handle (lane 4 spec §5).
@@ -109,8 +111,7 @@ export function useHandleGrab(): {
         if (edge('l', btn(14), now)) cb.nudge(-step, 0);
         if (edge('r', btn(15), now)) cb.nudge(step, 0);
       }
-      const ax = pad.axes[0] ?? 0;
-      const ay = pad.axes[1] ?? 0;
+      const [ax, ay] = sticksOf(pad, padNavPrefs().sticks);
       const dz = (v: number): number => (Math.abs(v) < 0.2 ? 0 : (v - Math.sign(v) * 0.2) / 0.8);
       const sx = dz(ax);
       const sy = dz(ay);

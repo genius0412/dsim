@@ -24,6 +24,7 @@ import {
   type PadNavDir,
 } from '../input/padNav';
 import { activePad, anyPadConnected } from '../input/padSelect';
+import { sticksOf } from '../input/padAxes';
 
 /**
  * PAD NAVIGATION — the DOM half.
@@ -402,8 +403,10 @@ export function PadNavLayer(): JSX.Element | null {
       const std = pad.mapping === 'standard';
       const confirm = padConfirmButton(family);
       const backB = padBackButton(family);
+      // the left stick, through the player's stick map on a non-standard pad (`padAxes.ts`)
+      const stick = sticksOf(pad, padNavPrefs().sticks);
       const ax = (i: number): number => {
-        const v = pad.axes[i] ?? 0;
+        const v = stick[i];
         return Math.abs(v) < 0.5 ? 0 : v;
       };
       // D-pad on a standard pad, left stick everywhere

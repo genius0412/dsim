@@ -14,6 +14,8 @@
 
 // ---- geometry ---------------------------------------------------------------------
 
+import { sameStickMap, type PadStickMap } from './padAxes';
+
 export type PadNavDir = 'up' | 'down' | 'left' | 'right';
 
 /** a candidate's box in viewport pixels — `getBoundingClientRect()` reduced to what matters */
@@ -292,14 +294,17 @@ export function padMaskSize(): number {
 export interface PadNavPrefs {
   menuButton: number;
   navEnabled: boolean;
+  /** the player's stick map for a non-standard pad (`padAxes.ts`): the menus and the importer's
+   *  grab read the left stick through it, as the drive sample does */
+  sticks?: PadStickMap;
 }
 
 let prefs: PadNavPrefs = { menuButton: PAD_MENU_BUTTON, navEnabled: true };
 const prefSubs = new Set<() => void>();
 
 export function setPadNavPrefs(p: PadNavPrefs): void {
-  if (p.menuButton === prefs.menuButton && p.navEnabled === prefs.navEnabled) return;
-  prefs = { menuButton: p.menuButton, navEnabled: p.navEnabled };
+  if (p.menuButton === prefs.menuButton && p.navEnabled === prefs.navEnabled && sameStickMap(p.sticks, prefs.sticks)) return;
+  prefs = { menuButton: p.menuButton, navEnabled: p.navEnabled, sticks: p.sticks };
   for (const fn of prefSubs) fn();
 }
 export function padNavPrefs(): PadNavPrefs {

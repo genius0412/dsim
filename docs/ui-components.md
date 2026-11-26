@@ -383,8 +383,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 |---|---|---|
 | `.ds-bind-col` | src/ui/shell.css:6863 | 4 |
 | `.ds-bind-fold` | src/ui/shell.css:6805 | 1 |
-| `.ds-bind-label` | src/ui/shell.css:6893 | 5 |
-| `.ds-bind-row` | src/ui/shell.css:6883 | 5 |
+| `.ds-bind-label` | src/ui/shell.css:6893 | 6 |
+| `.ds-bind-row` | src/ui/shell.css:6883 | 6 |
 | `.ds-bind-scope` | src/ui/shell.css:6819 | 1 |
 
 ## `ds-stage` — 5
@@ -912,13 +912,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-key` | src/ui/shell.css:2144 | 13 |
+| `.ds-key` | src/ui/shell.css:2144 | 15 |
 
 ## `ds-keys` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-keys` | src/ui/shell.css:6897 | 5 |
+| `.ds-keys` | src/ui/shell.css:6897 | 6 |
 
 ## `ds-linkbtn` — 1
 

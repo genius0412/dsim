@@ -45,10 +45,11 @@ import {
   type PadBindings,
   type PressMode,
 } from '../input/bindings';
-import { PadCapture } from '../input/padChords';
+import { PAD_HOLD_REMOVE_MS, PadCapture } from '../input/padChords';
 import { padButtonDown } from '../input/gamepad';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
-import { activePad } from '../input/padSelect';
+import { activePad, anyPadConnected, nonStandardPad, padInSlot } from '../input/padSelect';
+import { StickCapture, type PadStickMap } from '../input/padAxes';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import { visibleSeasons } from '../seasonVisibility';
@@ -141,6 +142,14 @@ interface Notice {
 /** how long a confirmation holds a card title before the title comes back. A PROMPT (a slot is
  *  armed) is not a notice and holds for as long as the slot does. */
 const NOTICE_MS = 4000;
+
+/** what the stick capture asks for at each of its four steps (`STICK_ROLES` order) */
+const STICK_PROMPTS = [
+  'Push the left stick right. Hold a button to cancel, or Esc.',
+  'Push the left stick down. Hold a button to cancel, or Esc.',
+  'Push the right stick right. Hold a button to cancel, or Esc.',
+  'Push the right stick down. Hold a button to cancel, or Esc.',
+] as const;
 
 /** the cards of a scope: a season's own, or All games with `active`'s mechanisms in it */
 const panelsOf = (game: GameId | null, active: GameId): BindPanel[] =>
@@ -312,6 +321,94 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     };
   }, [menuCapture]);
 
+  /**
+   * THE STICK AXES' own capture (`padAxes.ts`), for a pad the browser gives no standard mapping:
+   * four pushes, read from the pad it STARTED on (`stickSlot`), not from whichever pad is active,
+   * because its resting values are taken once at the start. Keyed on `stickCapture` alone, like
+   * the captures above. Esc cancels, and so does one button held `PAD_HOLD_REMOVE_MS`, the way
+   * out for a player with no keyboard.
+   */
+  const [stickCapture, setStickCapture] = useState(false);
+  const [stickRole, setStickRole] = useState(0);
+  const stickSlot = useRef(-1);
+  const setSticks = (sticks: PadStickMap | undefined): void => {
+    const b0 = cloneBindings(bindingsRef.current);
+    const next = { ...b0.pad };
+    if (sticks) next.sticks = sticks;
+    else delete next.sticks;
+    onChangeRef.current({ ...b0, pad: next });
+    setNotice({ text: `Stick axes: ${sticks ? 'custom' : 'standard'}`, panel: 'driving' });
+    setStickCapture(false);
+  };
+  useEffect(() => {
+    if (!stickCapture) return;
+    suspendPadNav('capture');
+    setStickRole(0);
+    const cap = new StickCapture();
+    let raf = 0;
+    let first = true;
+    const alreadyDown = new Set<number>();
+    let heldSince = 0;
+    const poll = (): void => {
+      raf = requestAnimationFrame(poll);
+      const pad = padInSlot(stickSlot.current);
+      if (!pad) return;
+      const now = performance.now();
+      let pressed = false;
+      for (let i = 0; i < pad.buttons.length; i++) {
+        const b = pad.buttons[i];
+        const down = !!b && (b.pressed || b.value > 0.5);
+        if (first && down) alreadyDown.add(i);
+        if (!down) alreadyDown.delete(i);
+        else if (!alreadyDown.has(i)) pressed = true;
+      }
+      first = false;
+      if (!pressed) heldSince = 0;
+      else if (heldSince === 0) heldSince = now;
+      else if (now - heldSince >= PAD_HOLD_REMOVE_MS) {
+        cancelAnimationFrame(raf);
+        setStickCapture(false);
+        return;
+      }
+      const s = cap.step(pad.axes);
+      if (s.t === 'push') setStickRole(s.role);
+      else {
+        // done: stop reading before the re-render's cleanup runs, or one more frame could step
+        // a finished capture
+        cancelAnimationFrame(raf);
+        setSticks(s.map);
+      }
+    };
+    raf = requestAnimationFrame(poll);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setStickCapture(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onKey);
+      resumePadNav('capture');
+    };
+  }, [stickCapture]);
+  const beginSticks = (): void => {
+    setCapture(null);
+    setConflict(null);
+    setMenuCapture(false);
+    const target = nonStandardPad();
+    if (!target) {
+      setNotice({
+        text: anyPadConnected()
+          ? 'This controller’s sticks are already in the standard order.'
+          : 'No controller found. Press a button on it first.',
+        panel: 'driving',
+      });
+      return;
+    }
+    stickSlot.current = target.index;
+    setNotice(null);
+    setStickCapture(true);
+  };
+
   /** REMOVE the armed slot — the only way to shrink a list that `+` can grow. Reached by Backspace
    *  or Delete during a capture (below) and by the `×` cap that stands in for `+` while a bound
    *  slot is armed, so a pointer or touch player is not left with a keyboard-only chord. */
@@ -446,6 +543,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const begin = (c: Capture): void => {
     setNotice(null);
     setConflict(null);
+    setStickCapture(false);
     setCapture(c);
   };
 
@@ -586,7 +684,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       }
     : menuCapture
       ? { panel: 'match', text: 'Press a gamepad button for Menu. Esc cancels.' }
-      : notice;
+      : stickCapture
+        ? { panel: 'driving', text: STICK_PROMPTS[stickRole] }
+        : notice;
 
   const pad = bindings.pad;
   const setPad =(patch: Partial<PadBindings>): void => {
@@ -599,6 +699,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     setNotice(null);
     // a capture belongs to the row it started on, and that row may not exist in the new scope
     setCapture(null);
+    setStickCapture(false);
   };
 
   const listsHolder = (c: Conflict, here: Scope): boolean => holderListed(c, here, activeGame);
@@ -776,6 +877,34 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                     step={0.1}
                     onChange={(turnCurve) => setPad({ turnCurve })}
                   />
+                  {/* STICK AXES (`padAxes.ts`): for a pad the browser gives no standard mapping.
+                      Standard until the player pushes each stick; × puts it back. */}
+                  <div className="ds-bind-row">
+                    <span className="ds-bind-label">Stick axes</span>
+                    <span className="ds-keys">
+                      <button
+                        className={`ds-key${stickCapture ? ' capturing' : ''}`}
+                        aria-label={
+                          stickCapture
+                            ? undefined
+                            : `Stick axes, ${pad.sticks ? 'custom' : 'standard'}. Press to set them by pushing the sticks`
+                        }
+                        onClick={beginSticks}
+                      >
+                        {pad.sticks ? 'CUSTOM' : 'STANDARD'}
+                      </button>
+                      {pad.sticks && (
+                        <button
+                          className="ds-key remove"
+                          aria-label="Reset stick axes to standard"
+                          title="Reset stick axes to standard"
+                          onClick={() => setSticks(undefined)}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  </div>
                 </>
               )}
               {p.pads.map(padRow)}
@@ -788,6 +917,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                       aria-label={`Menu button, ${padButtonLabel(bindings.pad.menuButton)}. Press to rebind`}
                       onClick={() => {
                         setNotice(null);
+                        setStickCapture(false);
                         setMenuCapture(true);
                       }}
                     >

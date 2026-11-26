@@ -273,6 +273,7 @@ function bindClash(a: string, list: unknown[], map: Obj, storedMap: Obj): boolea
  *  · `bindings.modes` (hold or toggle);
  *  · `bindings.pad.turnCurve`, only where the player split it from `curve`: an unsplit one follows
  *    the curve the older build saved, as it does when it is absent;
+ *  · `bindings.pad.sticks` (the stick map of a non-standard pad, 2026-11-26);
  *  · the binds of `flyPreset`, `bbReverse` and `bbBar` (keys, and the pad's buttons and combos as
  *    one), unless the older build gave one of those keys or buttons to another action of a game
  *    the action plays in: that later choice stands, and the action is left absent, where the
@@ -321,6 +322,11 @@ export function keepNewerFieldsFromOlderClient(stored: unknown, incoming: Obj): 
       let padChanged = false;
       if (pad.turnCurve === undefined && typeof sp.turnCurve === 'number' && sp.turnCurve !== sp.curve) {
         pad.turnCurve = sp.turnCurve;
+        padChanged = true;
+      }
+      // the stick map of a non-standard pad (`PadBindings.sticks`): absent on a build that predates it
+      if (pad.sticks === undefined && isObj(sp.sticks)) {
+        pad.sticks = sp.sticks;
         padChanged = true;
       }
       if (isObj(sp.buttons) && isObj(pad.buttons)) {

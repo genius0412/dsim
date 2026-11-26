@@ -538,8 +538,8 @@ robot (paired by position) that came back as the stored one minus the field
 (`keepZeroPowerFromOlderClient`); `carriesNew` lists it too, so a build with no caps at all keeps it.
 ⚠️ **PRODUCTION'S BUILD SAVES TO THE SAME ROW** (2026-11-18). Production's `main` sends no caps, and
 its `coerceSettings` drops everything newer than it: `runLength`, `communityToasts`, `pace`,
-`paceReplays`, `audio.volume.penalty`, `bindings.modes`, `pad.turnCurve`, the binds of `flyPreset`,
-`bbReverse` and `bbBar`, a robot's `plateFont` and a BIOBUZZ intake's `feed` / `reject` (measured by
+`paceReplays`, `audio.volume.penalty`, `bindings.modes`, `pad.turnCurve`, `pad.sticks`, the binds of
+`flyPreset`, `bbReverse` and `bbBar`, a robot's `plateFont` and a BIOBUZZ intake's `feed` / `reject` (measured by
 running origin/main's coercer over an alpha blob). A save with no caps now carries each back from the
 stored blob when it arrives without it (`keepNewerFieldsFromOlderClient`, rule 6, inside
 `keepImportsFromOlderClient`), since that build cannot have cleared a field it does not know: a bind

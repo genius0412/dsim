@@ -2,6 +2,7 @@ import { PAD_TRIGGERS, livePad, type PadBindings } from './bindings';
 import { PadChordResolver } from './padChords';
 import { applyPadMask, clearPadMask } from './padNav';
 import { PAD_DROPOUT_GRACE_MS, activePad } from './padSelect';
+import { sticksOf } from './padAxes';
 
 /** deadzone + sensitivity curve for ONE axis: below `deadzone` reads as dead center; past
  * it, the remaining travel is rescaled to 0-1 and raised to `curve` (1 =
@@ -184,26 +185,27 @@ export class GamepadInput {
       this.live = livePad(bindings);
     }
     const on = this.chords.resolve(held, this.live ?? bindings, now);
-    const ax = (i: number, curve = bindings.curve): number => shape(pad.axes[i] ?? 0, bindings.deadzone, curve);
-    // left stick = axes 0/1, right stick = axes 2/3
-    const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
-    const rotAxis = bindings.driveStick === 'left' ? 2 : 0;
+    // left stick = axes 0/1, right stick = axes 2/3 on a standard pad; on any other, where the
+    // player's stick map says they are (`padAxes.ts`)
+    const [lx, ly, rx, ry] = sticksOf(pad, bindings.sticks);
+    const one = (v: number, curve = bindings.curve): number => shape(v, bindings.deadzone, curve);
+    const left = bindings.driveStick === 'left';
     // the TRANSLATION stick is shaped as one 2D vector (radial deadzone); the turn axis and the
     // tank sticks are single axes and keep the 1D shape
-    const [dx, dy] = shapeStick(pad.axes[drive[0]] ?? 0, pad.axes[drive[1]] ?? 0, bindings.deadzone, bindings.curve);
+    const [dx, dy] = shapeStick(left ? lx : rx, left ? ly : ry, bindings.deadzone, bindings.curve);
     // TURN WITH TRIGGERS: LT turns left (+, counter-clockwise, as `rotateCCW`), RT right. The
     // other stick then turns nothing, so a thumb resting on it cannot fight the triggers.
     // Turning, either way, is shaped by `turnCurve`; the drive stick and tank sticks by `curve`.
     const trig = (i: number): number => shape(triggerTravel(pad.buttons[i]), bindings.deadzone, bindings.turnCurve);
     const rotate =
-      bindings.turnWith === 'triggers' ? trig(PAD_TRIGGERS[0]) - trig(PAD_TRIGGERS[1]) : -ax(rotAxis, bindings.turnCurve);
+      bindings.turnWith === 'triggers' ? trig(PAD_TRIGGERS[0]) - trig(PAD_TRIGGERS[1]) : -one(left ? rx : lx, bindings.turnCurve);
     const sampleOut: GamepadSample = {
       connected: true,
       driveX: dx,
       driveY: -dy,
       rotate,
-      leftY: -ax(1),
-      rightY: -ax(3),
+      leftY: -one(ly),
+      rightY: -one(ry),
       fire: on.fire,
       intake: on.intake,
       catalyst: on.catalyst,

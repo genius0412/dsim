@@ -110,10 +110,33 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   `PadNavLayer` drops its button history and re-reads the glyph family when the pad changes;
   `scripts/padpick.cjs` (offscreen Electron, a generic device in slot 0 and an Xbox pad in slot 1)
   holds that the layer follows the pad that is pressed.
-  ⚠️ **NOT COVERED: A NON-STANDARD PAD'S STICKS.** `Gamepad.mapping === ''` (a pad the browser does
-  not know, common for generic USB pads and for PlayStation and Switch pads in Firefox): buttons can
-  be rebound by index, but the sticks are read on axes 0 to 3 and its right stick or triggers may be
-  on others (2 and 5, or 3 and 4), so it can turn wrongly or not at all. No axis assignment exists.
+- **STICK AXES** (`PadBindings.sticks`, `src/input/padAxes.ts`; same reports as the pad above).
+  `Gamepad.mapping === ''` is a pad the browser does not know (generic USB pads, PlayStation and
+  Switch pads in Firefox, most pads on Linux): its axes come in the device's own order, often the
+  right stick on 3 and 4 with a trigger on 2 that RESTS AT -1. Read on axes 0 to 3, that trigger was
+  the turn stick, so the robot spun for as long as the pad was connected, or never turned. Buttons
+  were always rebindable by index; the sticks were not. `sticks` is `{ axes: [lx, ly, rx, ry], flip }`,
+  and it is applied ONLY to a pad whose mapping is not `'standard'` (`sticksOf`), so a map on the
+  account cannot break the Xbox pad the same player uses elsewhere. The Driving card's **Stick axes**
+  row (`STANDARD` / `CUSTOM`, a `×` to reset) runs `StickCapture`: four pushes (left stick right and
+  down, right stick right and down), each taking the ONE axis that moved 0.6 from where it rested
+  when the capture began, which is why a trigger sitting at -1 is never a push. A diagonal push (a
+  second axis past 0.6 of the first) and an axis already taken are not taken, the next push is not
+  read until the taken axis is back near rest, and a push that reads negative sets that role's flip.
+  Four pushes in the standard order leave no map (`coerceStickMap` returns `undefined` for it, so a
+  blob that never used the field round-trips without the key). The capture reads the pad it STARTED
+  on (`padInSlot`), not whichever is active, because its resting values are taken once; it starts
+  from `nonStandardPad`, since it is begun with a mouse before the pad has given an event. A button
+  held for `PAD_HOLD_REMOVE_MS` or Esc cancels it, and a standard pad is told its sticks are already
+  in order. Read by `GamepadInput`, `PadNavLayer` (menus) and `useHandleGrab` (the importer's grab),
+  all through `sticksOf`; the last two get it through `PadNavPrefs.sticks`, mirrored by App.
+  A NEW OPTIONAL SIBLING FIELD, so an older client ignores it, and `settingsKeep` rule 6 carries it
+  from the stored row when a save with no caps omits it. `npm test` "pad sticks:" holds the coercer,
+  the reader, the capture, rule 6 and the prefs store; `scripts/padsticks.cjs` (offscreen Electron,
+  one non-standard pad with a trigger on axis 2) holds the screen, and `scripts/padpick.cjs` the
+  layer. ⚠️ **NOT COVERED:** a trigger a pad reports as an AXIS (not as a button) cannot be bound
+  to Shoot or Intake; a D-pad reported as a hat axis is not read as buttons; and one map serves
+  every non-standard pad on the account.
 - **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
   held together fire one action (`RT + D-UP` for a lift), the way real drive-team code reads
   `gamepad.dpad_up && gamepad.right_trigger > 0.5`. Capture commits on the first RELEASE, so a

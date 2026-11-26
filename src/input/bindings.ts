@@ -4,6 +4,7 @@
 
 import { GAME_IDS, type GameId } from '../games/types';
 import { PAD_MENU_BUTTON } from './padNav';
+import { coerceStickMap, type PadStickMap } from './padAxes';
 
 export type KeyAction =
   | 'driveUp'
@@ -147,6 +148,13 @@ export interface PadBindings {
    * and turns with the stick.
    */
   turnWith: 'stick' | 'triggers';
+  /**
+   * WHICH RAW AXIS IS EACH STICK AXIS, for a pad the browser gives no standard mapping
+   * (`padAxes.ts`; player reports 2026-11-25). Absent means the standard order, and a standard pad
+   * is read in that order whatever this says. A NEW SIBLING FIELD, optional like `perGame`: an
+   * older client ignores it, and a blob that never used it round-trips byte for byte.
+   */
+  sticks?: PadStickMap;
 }
 
 /** the standard mapping's two analog triggers, LT then RT */
@@ -739,6 +747,7 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
       turnWith: b.pad.turnWith,
     },
   };
+  if (b.pad.sticks) out.pad.sticks = { axes: [...b.pad.sticks.axes], flip: [...b.pad.sticks.flip] };
   const pg = clonePerGame(b.perGame);
   if (pg) out.perGame = pg;
   if (b.modes) out.modes = { ...b.modes };
@@ -875,7 +884,10 @@ export function mergeBindings(saved: unknown): ControlBindings {
       menuButton?: unknown;
       navEnabled?: unknown;
       turnWith?: unknown;
+      sticks?: unknown;
     };
+    const sticks = coerceStickMap(pad.sticks);
+    if (sticks) out.pad.sticks = sticks;
     if (isButtonIndex(pad.menuButton)) out.pad.menuButton = pad.menuButton;
     if (typeof pad.navEnabled === 'boolean') out.pad.navEnabled = pad.navEnabled;
     if (pad.turnWith === 'stick' || pad.turnWith === 'triggers') out.pad.turnWith = pad.turnWith;
