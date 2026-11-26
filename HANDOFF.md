@@ -1,3 +1,16 @@
+# HANDOFF — 2026-11-26 (Stick axes: a gamepad the browser gives no standard mapping)
+
+**State: on `alpha`. Client, plus one server line (`settingsKeep` rule 6). `dsim-alpha` deploy: see the State line of the next HANDOFF commit; if there is none, it is not deployed. Nothing on `main`.** `npm test` (5275 + 6338), `build`, `bundleaudit`, `server:check`, `typecheck:nozenith`, `uiaudit`, `docaudit` pass; `scripts/padsticks.cjs` 11 of 11 and `scripts/padpick.cjs` 6 of 6.
+
+- **Owner:** "Yes, build it" (cause 2 of the 2026-11-25 gamepad report).
+- **What it is** (`PadBindings.sticks`, `src/input/padAxes.ts`): which raw axis is each stick axis, with a flip each, for a pad whose `Gamepad.mapping` is not `'standard'`. Such a pad often has a trigger on axis 2 resting at -1, which DSIM read as the turn stick: the robot spun, or never turned. Controls ▸ Driving ▸ Gamepad has a **Stick axes** row; the capture is four pushes. Rules: `docs/area/ui.md`, "STICK AXES".
+- ⚠️ **The map is applied only to a non-standard pad.** A standard pad is read on axes 0 to 3 whatever is stored.
+- ⚠️ **A new optional sibling field.** An older client ignores it; `settingsKeep` rule 6 keeps it on a save from a build with no caps (that line is server code, so it needs the alpha server deployed).
+- **How it was built:** the field, the readers and the keep rule by the coordinator; the Controls row, the 28 smoke checks, the offscreen script and the guide by a sonnet agent, reviewed.
+- **Not covered:** a trigger reported as an axis cannot be bound; a D-pad reported as a hat axis is not read as buttons; one map serves every non-standard pad on the account.
+- **Not tested on a real controller.** Everything is synthetic pads and a scripted offscreen window. No player has confirmed which cause they have.
+- `importerui` is 46.20 KB against a 43.01 KB baseline: inside the ratchet's tolerance, close to its edge. The pad modules are in the main chunk, so this feature did not add it.
+
 # HANDOFF — 2026-11-25 (A gamepad DSIM ignored: every reader took the first slot)
 
 **State: on `alpha`. Client only: no server, sim, replay or settings change. `dsim-alpha` DEPLOYED from 505725d5 on 2026-11-26 04:45Z (11-25 23:45 EST): one machine in ord, started, checks 1/1, image `deployment-01M8B2RVT66XN96V6BPTRXKDS2`, `/health` 200, and `/api/records/recent?season=1` answers the current season, so the five server fixes of 2026-11-18d (74055ece) are on the alpha server. They waited a week: the flyctl login had expired on 2026-11-23 (720 h after 2026-10-24), and the owner signed in again on 11-25. Nothing on `main`.** `npm test`, `build`, `bundleaudit`, `typecheck:nozenith`, `uiaudit`, `docaudit` pass; `scripts/padpick.cjs` passes.
