@@ -30,3 +30,25 @@ function resolvesToStub(): boolean {
 }
 
 export const ZENITH_AVAILABLE: boolean = typeof __DSIM_ZENITH__ === 'boolean' ? __DSIM_ZENITH__ : !resolvesToStub();
+
+/**
+ * MAY THIS BUILD SAY THE WORD "AUTONOMOUS" TO A PLAYER? One decision, in one place: every screen that
+ * names autos (the Match setup section and its sentence, the room's AUTO chip, the privacy page's
+ * inventory row) asks this and draws nothing when it is false. A production build (channel not
+ * `alpha`) without autos must not name an unreleased feature; an alpha build whose packages are
+ * missing still tells its developer why the panel is absent (`AUTOS_UNAVAILABLE`). The day autos
+ * ship to production, `available` is true there and this is the only line that changes.
+ * `channel` is `VITE_APP_CHANNEL` read as `appChannel()` reads it (trimmed, default `stable`); not
+ * imported from `net/env` so this file stays a leaf the server can load.
+ */
+export function autosMentionedOn(channel: string, available: boolean): boolean {
+  return available || channel.trim() === 'alpha';
+}
+
+const buildChannel = (): string => {
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+  return env?.VITE_APP_CHANNEL?.trim() || 'stable';
+};
+
+/** `autosMentionedOn` for THIS build */
+export const autosMentioned = (): boolean => autosMentionedOn(buildChannel(), ZENITH_AVAILABLE);

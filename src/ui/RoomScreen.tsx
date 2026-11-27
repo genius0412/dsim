@@ -7,6 +7,7 @@ import { botLabel } from './SoloSetup';
 import { canTakeSeat, seatMap, settingsLine, shrinkState, type PendingSeat, type Seat, type SeatTo } from './lobbyRules';
 import { useDialog } from './useDialog';
 import { isImportedSpec } from '../net/imported';
+import { autosMentioned } from '../auto/available';
 import './room.css';
 
 /**
@@ -264,7 +265,7 @@ export function RoomScreen(props: RoomScreenProps) {
           <span className="ds-chip">{props.startLabel(p)}</span>
           {p.bot && <span className="ds-chip">BOT</span>}
           {p.ready3d === false && <span className="ds-chip off">LOADING</span>}
-          {p.autoName && <span className="ds-chip">AUTO</span>}
+          {p.autoName && autosMentioned() && <span className="ds-chip">AUTO</span>}
         </div>
         <div className="rm-seat-acts">
           {mine && (

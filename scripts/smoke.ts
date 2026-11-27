@@ -48744,5 +48744,71 @@ function fxImportFixed(): RobotSpec {
       /t: 'roster';\s*players: LobbyPlayer\[\];\s*hostId: string;\s*settings\?: RoomSettings;/.test(rd(joinPath('src', 'net', 'protocol.ts'))));
 }
 
+// ---- S: the window pass lows (Configure's Robot hint, a model with no extent, a Detail re-read's step) ----
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  const geo = await import('../src/robotImport/geometry');
+  const part = (pos: number[]) => ({ positions: new Float32Array(pos), indices: null, color: [1, 1, 1] as [number, number, number], name: 'p' });
+  const setup = geo.defaultImportSetup();
+  const measure = (parts: ReturnType<typeof part>[], s = setup) => geo.measureParts(parts, s, { format: 'stl' }).measurement;
+  const none = measure([]);
+  const nan = measure([part([NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN])]);
+  const tiny = measure([part([0, 0, 0, 0.002, 0, 0, 0, 0.002, 0.002])], { ...setup, units: 'in' });
+  const cfg = readFileSync('src/ui/Configure.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('S1: Configure’s Robot hint names importing only where the importer is open, and keeps production’s words where it is closed',
+    /robot: \{ label: 'Robot', hint: 'Presets, build, intake' \}/.test(cfg) &&
+      /importerEnabled\(\) \? 'Build, save & import' : LABELS\.robot\.hint/.test(cfg) &&
+      /\{hintOf\(s\)\}/.test(cfg) && !/\{LABELS\[s\]\.hint\}/.test(cfg));
+  check('S2: a model with no triangles, or no finite vertex, has no extent (it is a failed measurement, not a 0 x 0 x 0 in robot)',
+    em.modelHasNoExtent(none, setup) && em.modelHasNoExtent(nan, setup));
+  check('S2: a legitimate tiny model is not caught, and neither is one the player emptied (deleted or left out every part)',
+    !em.modelHasNoExtent(tiny, { ...setup, units: 'in' }) && !em.modelHasNoExtent(none, { ...setup, removed: [0] }) && !em.modelHasNoExtent(none, { ...setup, apart: [0] }));
+  const editorSrc = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check('S2: the editor asks it where a measurement is first known, a fresh read and a stored draft’s (every entry reaches one of the two)',
+    /if \(modelHasNoExtent\(n\.measurement, setup\)\) throw new Error/.test(editorSrc) &&
+      /if \(modelHasNoExtent\(n\.measurement, doc\.setup\)\) return \{ n: null, threw: true \}/.test(editorSrc));
+  const hull = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }];
+  check('S3: a Detail re-read leaves the player on the step they are on, unless the new model has no footprint (then the Model step)',
+    em.stepAfterReread(4, { hull }) === 4 && em.stepAfterReread(2, { hull }) === 2 && em.stepAfterReread(4, { hull: [] }) === 0 &&
+      /step: opts\.keepHistory \? stepAfterReread\(baseDoc\.step, n\.measurement\) : 0/.test(editorSrc));
+}
+
+/**
+ * T1: A BUILD THAT IS NOT ALPHA NEVER MENTIONS AUTONOMOUS (docs/area/autos.md, "Going to main"). One helper
+ * decides; Match setup, the room's AUTO chip and the privacy inventory all go through it.
+ */
+{
+  const av = await import('../src/auto/available');
+  check(
+    'T1: autosMentionedOn truth table: alpha with packages, alpha without, stable with, stable without',
+    av.autosMentionedOn('alpha', true) === true &&
+      av.autosMentionedOn('alpha', false) === true &&
+      av.autosMentionedOn('stable', true) === true &&
+      av.autosMentionedOn('stable', false) === false &&
+      av.autosMentionedOn('stable', false) === false &&
+      av.autosMentionedOn(' alpha ', false) === true &&
+      av.autosMentionedOn('Alpha', false) === false,
+  );
+  const solo = readFileSync('src/ui/SoloSetup.tsx', 'utf8');
+  check(
+    'T1: Match setup draws the Autonomous section (panel or sentence) only when autosMentioned()',
+    /moduleFor\(settings\.game\)\.zenithAutos &&\s*autosMentioned\(\) &&\s*\(ZENITH_AVAILABLE \?/.test(solo),
+  );
+  check(
+    'T1: the room roster’s AUTO chip goes through autosMentioned()',
+    /p\.autoName && autosMentioned\(\) && <span className="ds-chip">AUTO<\/span>/.test(readFileSync('src/ui/RoomScreen.tsx', 'utf8')),
+  );
+  const yd = readFileSync('src/ui/YourData.tsx', 'utf8');
+  check(
+    'T1: the privacy inventory lists the auto library only when autosMentioned(), rows and count alike',
+    /e\.key !== ZENITH_AUTOS_KEY \|\| autosMentioned\(\)/.test(yd) &&
+      /storageKeysIn\(cat\)\.filter\(storageRowShown\)/.test(yd) &&
+      /STORAGE_KEYS\.filter\(storageRowShown\)\.length/.test(yd),
+  );
+  check('T1: the sentence still exists for an alpha build without its packages',
+    /Autonomous isn’t included in this build\./.test(readFileSync('src/auto/available.ts', 'utf8')) &&
+      /<p className="ds-hint">\{AUTOS_UNAVAILABLE\}<\/p>/.test(solo));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -61,8 +61,10 @@ import {
   wheelLayoutOf,
   type EditorDoc,
   type RectNumber,
+  modelHasNoExtent,
   readFailureText,
   readKeepsBuild,
+  stepAfterReread,
   readSetup,
   type ReadOpts,
   type ReviewItem,
@@ -126,8 +128,16 @@ import './../../ui/importer.css';
  *                               worker threw, `normalise` threw, the engine never loaded) ends it: the error
  *                               says so, with Choose another file, Try again for the engine, Undo, Discard
  *                               and Back. Cancel on "Measuring…" is the same exit, not a dead button.
+ *   model, no extent .......... a model with no triangles or no finite vertex (a damaged stored draft) is
+ *                               measured but is not a robot (`modelHasNoExtent`): it ends like a measurement
+ *                               that failed, with the same sentence and the same exits; a file read fresh that
+ *                               comes out so says the first read's measurement sentence over the drop box. A
+ *                               model the player emptied (every part deleted or left out) is not this.
  *   a read in flight .......... Save, Export and Test drive wait (their title says why); everything else is
  *                               live, and a read that lands after the editor left, or after a save, is ignored.
+ *                               A Detail re-read (the same file again) lands on the step the player is on
+ *                               (`stepAfterReread`: the Model step only if the new model has no footprint);
+ *                               a new file starts on the Model step, and so does a draft read back from disk.
  *   a render throws ........... `EditorBoundary`: Back to Robot (the draft is kept and resumes on the Model
  *                               step) or Discard this import.
  *
@@ -480,11 +490,16 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
           }
           n = e.normalise(prepared, setup);
         }
+        // a model with no extent is a measurement that failed, said as one (W-2): `measuring` is still true,
+        // so the catch gives it the measurement's sentence and lets the model go
+        if (modelHasNoExtent(n.measurement, setup)) throw new Error('the model has no extent');
         const model = prepared;
         const spec = opts.spec ?? baseDoc.spec;
         const doc: EditorDoc = {
           ...baseDoc,
-          step: 0,
+          // the same file read again (a Detail change) leaves the player on the step they are on (W-3); any
+          // other read starts on the Model step
+          step: opts.keepHistory ? stepAfterReread(baseDoc.step, n.measurement) : 0,
           setup,
           detected: {
             units: n.measurement.units,
@@ -886,7 +901,11 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   const freshRes = useMemo((): { n: NormalisedModel | null; threw: boolean } => {
     if (!eng || !model || !doc || !ready) return { n: null, threw: false };
     try {
-      return { n: eng.normalise(model as PreparedModel, doc.setup), threw: false };
+      const n = eng.normalise(model as PreparedModel, doc.setup);
+      // a stored draft whose model has no triangles or no finite vertex (W-2): measured, but not a robot, so
+      // it ends like a measurement that failed (`measureBroke`) instead of opening as 0 x 0 x 0 in, "Fits 18 in"
+      if (modelHasNoExtent(n.measurement, doc.setup)) return { n: null, threw: true };
+      return { n, threw: false };
     } catch (err) {
       console.warn('[import] normalise failed', err);
       return { n: null, threw: true };
@@ -905,10 +924,11 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   const measureBroke = measuring && (failedFor === model || freshRes.threw);
   const [measuringLong, setMeasuringLong] = useState(false);
   useEffect(() => {
-    if (!measuring) return setMeasuringLong(false);
+    // a measurement that is not coming is not "Measuring…": the panel's title must not say so over the error that says it failed
+    if (!measuring || measureBroke) return setMeasuringLong(false);
     const t = window.setTimeout(() => setMeasuringLong(true), MEASURING_NOTICE_MS);
     return () => window.clearTimeout(t);
-  }, [measuring]);
+  }, [measuring, measureBroke]);
   const m = normalised?.measurement ?? null;
   // what Save, Test drive, Export and Review read: the placements already in this measurement's frame
   // and a single turret's launcher on its ring, the same rules the effects below write into the

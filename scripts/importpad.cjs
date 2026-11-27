@@ -159,7 +159,9 @@ app.whenReady().then(async () => {
   await key('Return');
   await sleep(1500);
   check('keys: Enter on Resume import reopens the editor', await js(`location.pathname.endsWith('/configure/robot/import')`));
-  check('keys: …on the step it was left on (Mechanisms)', (await tab()) === '3', await tab());
+  // a draft read back from the device opens on the Model step, so a step that crashed does not crash again on resume
+  // (docs/area/robot-import.md, "THE EDITOR'S STATES"); only a test drive's return keeps the step it was on
+  check('keys: …on the Model step, where a draft read back from the device always opens', (await tab()) === '1', await tab());
   await js(`document.querySelector('.ds-import-steps .ds-tab')?.focus(); true`);
   await key('Return');
   await sleep(500);

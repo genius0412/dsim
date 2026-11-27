@@ -5,8 +5,10 @@ import {
   STORAGE_CATEGORY_ORDER,
   STORAGE_KEYS,
   storageKeysIn,
+  ZENITH_AUTOS_KEY,
   type StorageCategory,
 } from '../storageKeys';
+import { autosMentioned } from '../auto/available';
 import { analyticsEnabled } from '../analytics';
 import { analyticsAllowed, setAnalyticsAllowed } from '../analyticsPref';
 import { adsConfigured, cmpEnabled, showConsentSettings, AD_TFUAC } from '../ads/adsense';
@@ -65,12 +67,15 @@ export function YourData() {
  * printed even though it is EMPTY, with "None" in it: that absence is the most reassuring line
  * on the page, and it stays true by construction because it is derived rather than written.
  */
+/** a build that does not mention autonomous (`autosMentioned`) never writes the auto library, so it does not list it */
+const storageRowShown = (e: { key: string }): boolean => e.key !== ZENITH_AUTOS_KEY || autosMentioned();
+
 function StorageInventory() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
         <h3 className="ds-panel-title">Stored on this device</h3>
-        <span className="ds-count">{STORAGE_KEYS.length}</span>
+        <span className="ds-count">{STORAGE_KEYS.filter(storageRowShown).length}</span>
       </div>
       <div className="ds-panel-body stack">
         <p className="ds-hint">
@@ -87,7 +92,7 @@ function StorageInventory() {
 }
 
 function StorageGroup({ cat }: { cat: StorageCategory }) {
-  const rows = storageKeysIn(cat);
+  const rows = storageKeysIn(cat).filter(storageRowShown);
   return (
     <>
       <div className="yd-group">

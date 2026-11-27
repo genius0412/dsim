@@ -312,11 +312,19 @@ autonomous simply off (2026-11-04, after a contributor could not build).
   client it is `__DSIM_ZENITH__`, baked in by `vite.config.ts` (true only when the packages resolve
   AND the build's channel is `alpha`: "Going to `main`"); under Node it reads where
   `@horizon36596/zenith-core` resolves, and fails OPEN (anything it cannot check reads true), so the
-  production server can never turn autos off by mistake. False means: Solo setup shows the
-  Autonomous heading over `AUTOS_UNAVAILABLE` ("Autonomous isn’t included in this build.") and never
-  loads the panel; `GameView` seats no auto; the lobby sends none; `parseAutoText` and
+  production server can never turn autos off by mistake. False means: on an ALPHA build Solo setup
+  shows the Autonomous heading over `AUTOS_UNAVAILABLE` ("Autonomous isn’t included in this build.")
+  and never loads the panel; `GameView` seats no auto; the lobby sends none; `parseAutoText` and
   `loadZenithAuto` throw `AutoLoadError` with that sentence, which is what a server without Zenith
   answers a `zenithAuto` with.
+- ⚠️ **A BUILD THAT IS NOT ALPHA NEVER MENTIONS AUTONOMOUS, AND ONE HELPER DECIDES.** The sentence above is
+  for an alpha developer whose packages are missing. Production, where the feature is not released,
+  must show nothing: no heading, no sentence, no gap. `autosMentioned()` (`available.ts`: `ZENITH_AVAILABLE`
+  or channel `alpha`) is asked by every screen that names autos: Match setup (the section), the room
+  roster's AUTO chip, and the privacy inventory's auto-library row (`YourData.tsx`, count included). A new
+  screen that names autos asks it too; the day autos ship to production only that line changes.
+  `stablecheck.cjs` holds it in a real window. Known and left to the owner: `contributors.ts` credits a
+  contributor for "Autonomous in multiplayer".
 - ⚠️ **A DEPLOY NEVER SHIPS THE STAND-INS.** `zenithRequired()` is true under Vercel or
   `ZENITH_REQUIRED=1` (`ZENITH_REQUIRED=0` overrides; plain `CI` does not count, so a contributor's
   own CI builds), and `vite.config.ts` then throws before building if a package does not resolve.

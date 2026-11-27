@@ -6,6 +6,7 @@ import { ControlsSection } from './ControlsSection';
 import { AudioSection } from './AudioSection';
 import { NetworkSection } from './NetworkSection';
 import { moduleFor } from '../games';
+import { importerEnabled } from '../seasonVisibility';
 /**
  * LAZY, unlike its five siblings — and the reason is the bundle, not the screen.
  *
@@ -45,13 +46,19 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
  * as unfinished. The narrow layouts hide `.sh` with the rail's `.rh`.
  */
 const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
-  robot: { label: 'Robot', hint: 'Build, save & import' },
+  // where the importer is closed (production) the hint says nothing of importing: `robotHint`, below
+  robot: { label: 'Robot', hint: 'Presets, build, intake' },
   controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and visual', hint: 'Sounds, voice & theme' },
   graphics: { label: 'Graphics', hint: '3D view quality' },
   network: { label: 'Network', hint: 'Client prediction' },
 };
+
+/** the Robot entry's hint: it names importing only where the importer is open (`importerEnabled`, the gate the
+ *  rest of Configure reads); production's closed build keeps the words it has always had */
+const robotHint = (): string => (importerEnabled() ? 'Build, save & import' : LABELS.robot.hint);
+const hintOf = (s: ConfigureSection): string => (s === 'robot' ? robotHint() : LABELS[s].hint);
 
 /**
  * Configure — everything you tune before a match, behind one destination with a
@@ -117,7 +124,7 @@ export function Configure({
               }}
             >
               <span className="sl">{LABELS[s].label}</span>
-              <span className="sh">{LABELS[s].hint}</span>
+              <span className="sh">{hintOf(s)}</span>
             </a>
           ))}
         </nav>

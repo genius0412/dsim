@@ -15,7 +15,7 @@ import { OptRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
 import { lazy, useEffect, useState } from 'react';
 import { activeZenithAuto, AUTO_LIBRARY_CHANGED } from '../auto/library';
-import { AUTOS_UNAVAILABLE, ZENITH_AVAILABLE } from '../auto/available';
+import { AUTOS_UNAVAILABLE, ZENITH_AVAILABLE, autosMentioned } from '../auto/available';
 import { ZENITH_AUTOS_KEY } from '../storageKeys';
 import { LoadBoundary } from './LoadBoundary';
 
@@ -201,13 +201,15 @@ export function SoloSetup({
         </section>
 
         {moduleFor(settings.game).zenithAutos &&
+          autosMentioned() &&
           (ZENITH_AVAILABLE ? (
             <LoadBoundary what="the autonomous settings" fallback={<div className="ds-loading">Loading autonomous settings…</div>}>
               <AutonomousSetup settings={settings} />
             </LoadBoundary>
           ) : (
-            // A BUILD WITHOUT ZENITH (docs/area/autos.md): the section stays, so the player is told
-            // rather than left wondering where it went, and nothing from the autos chunk loads.
+            // AN ALPHA BUILD WITHOUT ZENITH (docs/area/autos.md): the section stays, so its developer
+            // is told rather than left wondering where it went, and nothing from the autos chunk
+            // loads. A build that does not mention autos at all (`autosMentioned`) never gets here.
             <section className="ds-sec">
               <h2>Autonomous</h2>
               <p className="ds-hint">{AUTOS_UNAVAILABLE}</p>

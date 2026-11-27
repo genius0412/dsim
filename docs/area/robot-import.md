@@ -1596,7 +1596,14 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   loads for a restored draft says so with Try again (`engineDown`). `EditorBoundary` wraps the editor:
   Back to Robot, or Discard this import after a confirm. A draft read back from the device opens on the
   Model step, so a step that crashes does not crash again on resume; a live draft (a test drive's return)
-  keeps its step.
+  keeps its step. (E5) **A model with no extent is a failed measurement** (`modelHasNoExtent`, W-2): no
+  triangles or no finite vertex (a damaged stored draft) is measured by the engine as `empty`, and the editor
+  ends it as E4 does, in the memoised measurement (`freshRes`) and in a fresh read (`readModel`, which then says
+  the first read's measurement sentence); never as a 0 x 0 x 0 in robot that "fits". A model the player emptied
+  (every part deleted or left out) is not this: it has Undo and Review's block. The panel title must not say
+  "Measuring…" over the failure. (E6) **A Detail re-read leaves the player on the step they are on**
+  (`stepAfterReread`, W-3): it is the same file at another detail, so Review stays Review; only a model with
+  no footprint goes to the Model step. A new file starts on the Model step.
 - **A FIRST READ THAT FAILS IN THE MEASUREMENT SAYS SO** (`readFailureText`, M3). The sentence is the
   engine's `ImportError` text, else, when the file read fine and its MEASUREMENT failed,
   `COPY.readMeasureFailed` ("Couldn’t measure …. Close other tabs and try again, choose Light detail
@@ -1676,9 +1683,38 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   the report robot and the get gate across the thread, on both server shapes) and `npm run dbtest`.
   Derived constants are asserted by relationship (`SHARE_MAX_TRIANGLES` against `MAX_MESH_BYTES`, cases 0.1 m
   outside `ROBOT_MESH_BOX_M`), never by a copied number, and a relay-validator fixture is in METRES.
-  `scripts/importpad.cjs` drives the editor by gamepad and keys. **No script yet drives the whole public
-  flow in windows** (two accounts in one room, the consent dialog, Outline, a report, a Public room's
-  refusals): walk it by hand against a local stack before the flip.
+  `scripts/importpad.cjs` drives the editor by gamepad and keys. The public flow in real windows is
+  "Window harnesses" below (consent, Outline, the host's setting, a relayed model drawn on a second screen,
+  watchers, a report, a dropped connection, the get gate). What no script reaches: a report FILED against
+  a stored row (it needs two signed-in accounts; `dbtest` holds the row) and a real vendor CAD.
+
+- **Window harnesses** (`scripts/`, Electron, every window OFFSCREEN and MUTED on an in-memory partition, so a run leaves
+  nothing on the machine; one at a time, and the 3D ones at graphics Low). Each says how to run it in its own header.
+  - `importflows.cjs`: one window, the editor end to end on the repo fixtures (flows f1 to f8: every step and a test
+    drive in each game, a cut-off Replace, Back mid-read, a Detail re-read, a stored draft that cannot be measured, the
+    restored-changes line, wheels at the edge, share files). `--gpu` keeps hardware GL for BIOBUZZ's 3D view. Needs an
+    alpha-channel dev server: `VITE_APP_CHANNEL=alpha npx vite --config scripts/vite.window.config.ts --port 5194
+    --strictPort`, then `env -u ELECTRON_RUN_AS_NODE npx electron scripts/importflows.cjs [--only f1,f4]`.
+  - `importflows-boom.ts`: `npx tsx scripts/importflows-boom.ts` writes `scratch/window-pass/boom.step` (a boom past the
+    box a room can draw, for f7b) and `ramp.step` (a long reach that stays inside it, for importroom's d7).
+  - `importroom.cjs`: several windows in one process against the repo's own server, WebSocket frames read through the
+    debugger and asserted by type (d1 to d5 consent, sharing, Outline, the host row, host-off; d7 a relayed model drawn in
+    the 3D view; d8 and d8p a watcher of a Private and a Public room; d9 a dropped connection; d10 a report from Results;
+    d11 the get gate; d6 a Public room). Server: `ROBOT_IMPORT=1 PORT=8799 npx tsx server/index.ts`, client:
+    `VITE_APP_CHANNEL=alpha VITE_GAME_SERVER_URL=ws://localhost:8799` on the config above. `--only d7 --gpu`, `--only d10`;
+    `--gate --gpu` against a server started with `VISUAL_GETS_PER_MIN_TEST=1`; `--signedin` (d6, d8p) against
+    `scripts/adminharness.ts` with `ROBOT_IMPORT=1` and `VITE_NEON_AUTH_URL=http://localhost:8798` on the client.
+  - `importui.cjs`: Play with an import active (the three tiles it cannot play), Controls' Stick axes row, the admin page
+    signed out and a replay route with nothing behind it, both themes.
+  - `stablecheck.cjs`: the stable channel as production shows it (importer closed): nothing of importing reachable, nothing
+    about it in Configure's sidebar or pages, and photographs at 1366x657 and 1920x1080. Needs a build with no channel
+    variable: `npx vite build --outDir scratch/dist-stable --emptyOutDir`, `npx vite preview --outDir scratch/dist-stable
+    --port 5195 --strictPort`. `--alpha` runs the same probes against the alpha client as a positive control.
+  - `vite.window.config.ts`: the repo's config with a watcher that ignores `scratch/` (a download written there killed
+    vite's watcher with EBUSY).
+  - Things the harnesses taught: a window that is the LAST one closed quits Electron unless `window-all-closed` is
+    handled; the signed-out stack files no report row (both accounts must be signed in); BIOBUZZ's 3D view refuses a
+    software renderer, so a 3D check without `--gpu` passes in 2D and proves nothing.
 
 - `npm test` runs the DOM-free half (a block at the end of `scripts/smoke.ts`): the catalogue,
   hull/reduction/wheels/bands, units and up axis in every orientation, HANDEDNESS (the synthetic

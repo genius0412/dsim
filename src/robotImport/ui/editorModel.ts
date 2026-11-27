@@ -237,6 +237,28 @@ export function readFailureText(err: unknown, measuring: boolean, name: string, 
   return measuring ? COPY.readMeasureFailed(name, full) : `Couldn’t read ${name}. Export it again and retry.`;
 }
 
+/**
+ * A MODEL WITH NO EXTENT IS NOT A ROBOT (window pass W-2). Its measurement is the engine's own `empty` check
+ * (no triangles, or no finite vertex: a stored draft whose positions are NaN or whose parts are gone), and the
+ * editor treats it as a measurement that failed (`measureBroke`, `readFailureText`), never as a 0 x 0 x 0 in
+ * robot that "fits 18 in". Only when the PLAYER did not empty it: deleting every part, or leaving every part
+ * out of the footprint, is their own edit, with Undo and Review's block already there. A tiny model has an
+ * extent and is never caught.
+ */
+export function modelHasNoExtent(m: Pick<ImportMeasurement, 'checks'>, setup: Pick<ImportSetup, 'removed' | 'apart'>): boolean {
+  return m.checks.some((c) => c.code === 'empty') && !setup.removed?.length && !setup.apart?.length;
+}
+
+/**
+ * THE STEP A RE-READ OF THE SAME FILE LANDS ON (window pass W-3). A Detail change reads the file again with the
+ * player somewhere else; the new model is the same robot at another level of detail, so they stay where they
+ * are. A step is valid for a model with a footprint (the placements and Review read the hull); one without
+ * has only the Model step, where units, up axis, wheels and parts are put right.
+ */
+export function stepAfterReread(prev: StepIndex, m: Pick<ImportMeasurement, 'hull'>): StepIndex {
+  return m.hull.length >= 3 ? prev : 0;
+}
+
 /** the step each check belongs to, for the step rail's counts */
 export function stepOf(item: ReviewItem): StepIndex {
   return item.fix?.step ?? 4;
