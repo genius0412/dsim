@@ -242,7 +242,7 @@ honest, not because they are field work.
 | `BB_FLOWER_RETRIEVE_PAD` | 1.0 in | "the contact slop of a compliant roller" |
 | `BB_LIFT_MASS_FLOOR` | 2.0 lb | "extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX." |
 | `BB_POLLEN_WALL_REST` | 0.35 | "a guess about a 3-in foam ball, and only a picture judges it (`launch-wall-bounce` in the gallery)" — FLIGHT only |
-| `BB_MIN_LENGTH` · `BB_MAX_LENGTH` · `BB_MIN_WIDTH` · `BB_MAX_WIDTH` | 13.5 · 17 · 14.5 · 17 in | "The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule to argue a different one from … All four are APPROX." |
+| `BB_MIN_LENGTH` · `BB_MAX_LENGTH` · `BB_MIN_WIDTH` · `BB_MAX_WIDTH` | **10 · 17 · 10 · 17 in** (the floors were 13.5 and 14.5 when this was written) | "The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule to argue a different one from … All four are APPROX." Quoted as written on 2026-09-12; since `a8c4f0f2` (2026-10-10) the chassis floor is 10 x 10 and the shared intake and swerve floors no longer apply to BIOBUZZ. |
 | `BB_STORE_AREA_PER_BALL` | 12 in² | "a one-layer packing model, ~12 in² of hopper floor per 3-in POLLEN" — inert while `BB_STORAGE_MAX` 4 binds first |
 | `NECTAR_ENTRY_JITTER` (`play.ts`) | 4.0 in | "A human putting five elements on the same tile does not stack them. APPROX." |
 | `BB_POLLEN_SIM` | 60 | "60 is a placeholder chosen to LOOK like a field worth driving on" — **and nothing reads it; see below** |

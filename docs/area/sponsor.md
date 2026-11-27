@@ -96,4 +96,50 @@ whatever URL the page gave to `shell.openExternal`, which runs the scheme's hand
 UNC path included), `ms-*:`, `search-ms:`. The window loads the live site and every script on it.
 Every link the app opens is https, or mailto on the legal pages. It ships with a desktop release
 too. Still open: the main window has no navigation allowlist, because the account-link flow
-navigates it to GitHub and Discord.
+navigates it to GitHub and Discord. The ONE same-window navigation the shell takes is a `mailto:`
+(the Privacy and Terms contact addresses are plain `<a href>`; `will-navigate` in `main.cjs` stops it
+when `isMailtoNavigation` (`electron/permissions.cjs`) says so and hands it to `openLink`, which
+allows https and mailto only, 2026-11-26). Chromium would have asked the `openExternal` permission,
+which is refused and stays refused, so every other non-web scheme still goes nowhere. Not run in a
+desktop build when written.
+
+## Desktop shell: what a page may do (merge audit, 2026-11-26)
+
+⚠️ **All of this ships only with a DESKTOP RELEASE** (the first automatic one after the merge push),
+never with Vercel or a Fly deploy: `main.cjs`, `preload.cjs` and the files beside them are inside the
+installed app. The shell loads the live site, so every script on it can reach `window.dsim`.
+
+- **The bridge is trusted by ADDRESS, in two layers** (`electron/trust.cjs`). `preload.cjs` exposes
+  `window.dsim` only on `file:` (the offline bundle) and on `https://www.playdsim.com` and the apex
+  `https://playdsim.com` (same owner, redirects to www). Alpha is NOT trusted: a developer who points a
+  shell at the alpha site gets no bridge, on purpose. `main.cjs` wraps every `ipcMain.handle` in
+  `guarded(…)`, which answers `{ error: 'forbidden' }` unless `event.senderFrame` is the TOP frame of a
+  trusted page. **A new `ipcMain.handle` without `guarded(` is a bug** (smoke counts them). A sandboxed
+  preload may require only `electron`, `events`, `timers` and `url`, so the preload carries a COPY of the
+  origin rule; smoke runs it against stub locations and fails when it disagrees with `isTrustedUrl`.
+  Change the allow list in both files together.
+- **Permissions and ads are decided on the default session before the window exists**
+  (`lockDownSession`, lists in `electron/permissions.cjs`). With no handler Electron grants every
+  permission, camera and location included, to any frame. Only `fullscreen`, `pointerLock` and
+  `clipboard-sanitized-write` are granted; a feature that needs another must add it there. The AdSense,
+  DoubleClick, ad-services and ad-quality hosts are cancelled in `webRequest.onBeforeRequest`: the shell
+  loads the live site, which carries the publisher tag for the web crawler, and ads never run in the
+  desktop app (`docs/area/monetization.md`). The page still loads; a missing `adsbygoogle` reads as no ads.
+- **Update dialogs (manual mode: macOS and the portable exe).** The BACKGROUND check opens "a new
+  version is available" once per version and at most once a week (`shouldNotify`,
+  `electron/updateNotify.cjs`; `notifiedVersion` and `notifiedAt` in `update-pref.json`). Every push to
+  main releases, so without this a manual-mode player is nagged at every launch for a shell whose
+  content (the live site) is already current. The menu's own "Check for Updates" is never gated: a
+  player who asked is always answered.
+- **A failed load of the live site puts the bundled copy up** (`did-fail-load`, main frame only, not
+  `ERR_ABORTED`, address on the site: `trust.shouldFallBackToBundle`), so an offline reload is not a
+  blank window. `loadLocal` ignores a second call within 2 s, because the first-load catch and this
+  handler can both answer one failure.
+- **`openLink` opens the PARSED href** (`safeExternalUrl`), never the string the page supplied: the URL
+  parser drops tabs, newlines and leading blanks, so the check and the use must see the same bytes.
+- **The LAN server copy** (`electron/lanHost.cjs`, a packaged app copies its bundled
+  `lan-server.mjs` to `userData` so the child can run it) is re-copied when the app's bundle is NEWER than
+  the copy (`bundleStale`, 1 s slack) as well as on a size change, and the copy is stamped with the
+  source's mtime so the next update compares against the build. A size check alone left a host running
+  the previous release's server when an update kept the byte count. Whether a LAN host accepts imported
+  robots is the server's rule (`importsOpen`, `docs/area/netcode.md`); this file sets no `ROBOT_IMPORT`.

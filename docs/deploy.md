@@ -110,9 +110,9 @@ the production config under whichever app name it was given.
 
 | | production | alpha preview |
 | --- | --- | --- |
-| regions | iad + sjc/lhr/syd/nrt | iad only |
-| always-warm machine | yes (the matchmaker) | no — idles to zero, wakes on connect |
-| VM | shared-cpu-4x (iad) | shared-cpu-2x |
+| regions | eight, one machine each: iad (primary, the matchmaker), ord, sjc, lhr, gru, jnb, syd, nrt (`FLEET_REGIONS`, `scripts/fly-deploy.sh`) | ord only (`SINGLE_REGION`, `MATCHMAKER_REGION=ord`) |
+| always-warm machine | yes (iad, the matchmaker) | no — idles to zero, wakes on connect |
+| VM | iad `performance-2x`/4096 (`fly.toml`'s one `[[vm]]`); satellites per `SATELLITE_SIZES` (ord, jnb, syd, nrt `shared-cpu-4x`/1024; sjc, lhr, gru `shared-cpu-8x`/2048) | `fly.alpha.toml`'s `[[vm]]` (`shared-cpu-2x`/1024 as written; see the note in that file about the live size) |
 | database | production Neon | the `alpha` Neon branch |
 | accounts | the one Neon Auth project | same sign-in; its own profiles and records, copied from production by `npm run sync:alpha` |
 | alpha results persist | never | yes |
@@ -291,12 +291,27 @@ works the same way.
 
 ---
 
-## Deploy ORDER when the wire protocol moved — client first, then server
+## Deploy ORDER when the wire protocol moved — decide by what the server refuses
 
 Normally the two deploys are independent and the order does not matter: the server accepts
 every client build it has ever shipped, and a client that is one server behind still plays.
 **The 2026-09-19 publish of `alpha` to `main` is not that case**, and the same shape will
 recur whenever a server starts REFUSING clients that lack a capability.
+
+⚠️ **THE RULE BELOW (CLIENT FIRST) IS FOR A SERVER THAT REFUSES OLD CLIENTS, AND NOT EVERY MERGE IS
+ONE** (2026-11-26). Ask what the NEW server does with the clients already out there:
+- **It refuses some of them** (the `bb3d` case below): site first, then the server, so no player is
+  locked out of a room they could play a minute earlier.
+- **It tolerates every client it ever shipped and the NEW client needs new server routes or fields**
+  (the 2026-11-26 merge of alpha: Records, Browse rooms, Competitions, the importer's `imports2`, the
+  BIOBUZZ 3D prediction): **server first.** The version gate steers every active player onto the new
+  client at their next start, so site-first parks everyone on a new client against an old server for
+  the whole Fly roll (error states on those pages, rubber-banding in BIOBUZZ 3D), while the new
+  server costs an old client nothing. The cost of server-first is the guard: the merge commit is not
+  yet an ancestor of `origin/main`, so `require_main_tree` refuses it. Use
+  `DEPLOY_ANY_TREE=1` for exactly that commit (it prints that it is on), then fast-forward `main` to
+  the same SHA, which restores the invariant. Never the override for any other commit.
+Either way the server must stay backward-compatible with every client build (CLAUDE.md, "Deploying").
 
 The new server runs every BIOBUZZ room in 3D physics (`serverPhysics`, owner ruling
 2026-09-18) and refuses a client that does not advertise `bb3d` in its `caps`
@@ -360,11 +375,12 @@ fly launch --no-deploy        # pick a unique app name + region near your player
   machine is serving `/health` in well under a second.
 - Your server URL is `wss://<app-name>.fly.dev`.
 - Scale/CPU: the room loop runs a CONTINUOUS 60 Hz Rapier physics step. That is a
-  sustained CPU workload, so the primary `iad` machine runs on `shared-cpu-4x` (4 shared
-  vCPUs — enough parallel headroom that the 60 Hz loop never exhausts burst credits in
-  practice; a smaller `shared-cpu-1x` throttles to a tiny baseline within a minute of play,
-  stalling the event loop until even `/health` times out and the machine flaps "unhealthy").
-  See fly.toml's COST-PASS note for the measured tradeoff vs. a dedicated `performance-1x`.
+  sustained CPU workload, so the primary `iad` machine runs on `performance-2x`/4096 (two
+  dedicated vCPUs, since the 2026-09-13 launch sizing; it was `shared-cpu-4x` before) and a
+  satellite on a shared size is held to `SATELLITE_SIZES` (a smaller `shared-cpu-1x` throttles
+  to a tiny baseline within a minute of play, stalling the event loop until even `/health`
+  times out and the machine flaps "unhealthy").
+  See fly.toml's COST-PASS and LAUNCH SIZING notes for the measured tradeoffs.
   `auto_stop_machines = 'stop'` +
   `min_machines_running = 1` keep ONE machine warm (the primary region = the
   designated `MATCHMAKER_REGION`, which ranked queueing routes to), while other regions
@@ -393,6 +409,19 @@ also accepts a signed-in admin's JWT (the Admin panel's "Announce restart" butto
 the same thing manually). Check `GET /api/presence` first — if `online` is 0, you can
 skip the wait. Keep `ADMIN_SECRET` out of git (it's only ever passed via env / the Fly
 secret; never commit it).
+
+### After a deploy: did the boot finish? (2026-11-26)
+
+Migrations apply at game-server boot, one transaction per file, each with a 5 s `lock_timeout` where
+a long reader could block an `ALTER` (0059, 0061, 0062, 0065). A file that cannot get its lock fails
+and the boot RETRIES the scan (`migrateWithRetry`: 3 more tries, 20 s apart). Read the iad log:
+`[db] applied migration <file>` for each new one, then `[server] database ready`, `staff synced`
+and `[rewards] boot award job`. **`[server] MIGRATIONS INCOMPLETE` means the retries gave up**: later
+files were not applied, and this machine serves WITHOUT persisting records and runs none of its
+startup jobs until it restarts (`fly machine restart <id>`, then wait for `database ready`). A
+migration that has run on production is never edited (`migrate()` keeps no checksum); a fix is a new
+file. For a roll of a season or act, keep maintenance up for a minute afterwards: the other machines'
+act cache expires in 60 s (`docs/area/accounts.md`).
 
 ### The primary router (`router/`)
 
@@ -459,18 +488,19 @@ fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global r
 - **`fly-replay` routing can only be verified on the deployed app** (the Fly proxy isn't in
   the loop on localhost) — after deploy, confirm a `?region=lhr` connection from the US lands
   on the `lhr` machine (`/api/presence` shows its region).
-- **Per-region VM sizes + the deploy reset (IMPORTANT).** `iad` runs `shared-cpu-4x`
-  /1024MB (the always-warm matchmaker; 4 shared vCPUs give the 60 Hz loop ample headroom
-  without a dedicated vCPU's cost — see fly.toml's COST-PASS note); EVERY other region —
-  `ord`/`sjc` plus the far satellites `lhr`/`gru`/`jnb`/`syd`/`nrt` — runs the much cheaper
-  `shared-cpu-1x`/512MB. fly.toml has only ONE `[[vm]]`, and **`fly deploy` re-applies it
-  (`shared-cpu-4x`) to every machine — silently UPSIZING the satellites off their cheap
-  size.** A region added with `fly scale count` inherits that same `[[vm]]`, so a NEW
-  satellite is born at `shared-cpu-4x` too and is only shrunk once it is listed in the
-  script's `SATELLITES`. So always deploy with **`scripts/fly-deploy.sh`** (deploy +
-  re-shrink the satellites) rather than a bare `fly deploy`. Verify after: `fly machine
-  list -a dohun-sim-decode` should show `iad` at `shared-cpu-4x:1024MB` and every other
-  region at `shared-cpu-1x:512MB`.
+- **Per-region VM sizes + the deploy reset (IMPORTANT).** `iad` runs `performance-2x`
+  /4096MB (the always-warm matchmaker: two dedicated vCPUs, one SIM worker, the size `fly.toml`'s
+  one `[[vm]]` states); every other region takes its own entry in the script's `SATELLITE_SIZES`
+  (`region:size:memoryMB`, the source of truth, changed by the capacity checkup): `ord`, `jnb`,
+  `syd` and `nrt` on `shared-cpu-4x`/1024, `sjc`, `lhr` and `gru` on `shared-cpu-8x`/2048, each with
+  a `MAX_ROOMS` for its size. fly.toml has only ONE `[[vm]]`, and **`fly deploy` re-applies it
+  (`performance-2x`/4096) to every machine — silently UPSIZING the satellites off their size and
+  billing a dedicated vCPU pair each.** A region added with `fly scale count` inherits that same
+  `[[vm]]`, so a NEW satellite is born at `performance-2x` too and is only put right once it is
+  listed in the script's `SATELLITE_SIZES`. So always deploy with **`scripts/fly-deploy.sh`**
+  (deploy + re-apply each satellite's size) rather than a bare `fly deploy`. Verify after: `fly
+  machine list -a dohun-sim-decode` should show `iad` at `performance-2x:4096MB` and every other
+  region at the size its `SATELLITE_SIZES` entry names, one machine per region (eight).
 - **There is NO Middle East region on Fly** (`fly platform regions` is the authority, and
   Africa has only `jnb`). The nearest machine for those players is `lhr`; `fra` would be
   marginally closer and is the one to add if it ever matters.
@@ -619,6 +649,18 @@ Absent ⇒ the MULTIPLAYER menu is hidden and the solo game is unaffected (mirro
 old `supabaseConfigured()` gating). For the Electron build, set the same var in the
 shell before `npm run dist`.
 
+⚠️ **PRODUCTION'S ENVIRONMENT MUST HAVE NO `VITE_APP_CHANNEL`, `VITE_ROBOT_IMPORT`, `VITE_ZENITH_URL` OR
+`VITE_SITE_LOCKDOWN`** (2026-11-26; `vercel env ls production`). `VITE_APP_CHANNEL=alpha` is what makes
+a build alpha: it opens the robot importer (`docs/area/robot-import.md`), switches Zenith autonomous on
+(`vite.config.ts` bakes `__DSIM_ZENITH__` true only for the `alpha` channel, `docs/area/autos.md`),
+puts every player of that build in alpha's matchmaking pool and stops their results persisting. Alpha
+gets all of it only from its own branch-scoped `VITE_APP_CHANNEL=alpha`. A production build still
+RUNS `fetch-zenith` at install and refuses stand-ins (a deploy never ships them), so
+`ZENITH_VENDOR_REPO` and `ZENITH_VENDOR_TOKEN` must exist in the Production scope even while
+autonomous is off, and `ZENITH_VENDOR_REF` should be pinned to the vendor commit that matches the
+lockfile, or the next vendor push breaks every later main build. If they are missing the build fails
+and the previous production deployment stays live (a safe failure: the merge simply does not ship).
+
 ### Security headers, and why framing is an ALLOWLIST rather than `'none'`
 
 `vercel.json` sends `Referrer-Policy`, `X-Content-Type-Options` and a `Content-Security-Policy`
@@ -670,8 +712,16 @@ before deploying. `--alpha` is not asked. `--check` runs the question and stops,
   `set -euo pipefail`, so an API flake there ended the script with nothing printed and every
   satellite on `fly.toml`'s size and `MAX_ROOMS` 24. It is tried twice now; a second failure prints
   "THE MACHINES COULD NOT BE LISTED" and the script exits non-zero. Re-run it.
-- `bash scripts/deploy-guard-test.sh` runs the guard's twelve cases and the listing's three in
-  throwaway repositories with a stub `fly`. Run it after changing the script.
+- ⚠️ **`--check` ALSO NEEDS THE ZENITH TARBALLS** (2026-11-26). It runs `scripts/fetch-zenith.mjs`
+  BEFORE it exits, because `announce-deploy.sh` asks `--check` before it tells every player a restart
+  is coming: with the fetch after it, a fresh worktree with no tarballs said "ok to deploy", the
+  countdown ran, and the deploy then died with nothing deployed. So a fresh `main` worktree needs
+  `ZENITH_VENDOR_REPO` and `ZENITH_VENDOR_TOKEN` in the shell (or the three tarballs already in
+  `vendor/zenith/`) even for `announce-deploy.sh`; without them `--check` fails before any banner. It
+  has no deploy side effect and is idempotent; it is skipped for `--router`.
+- `bash scripts/deploy-guard-test.sh` runs the guard's cases, the listing's three and the vendor
+  check's three in throwaway repositories with a stub `fly` (18 in all). Run it after changing the
+  script.
 
 ## 2b. Desktop app — releases itself (2026-11-16)
 

@@ -15,7 +15,12 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 
 - **`src/ads/adsense.ts` is the single gate.** Ads are OFF unless `VITE_ADSENSE_CLIENT`
   is set, and are suppressed unconditionally in the Electron build (AdSense forbids app
-  wrappers), on touch, and for supporters. `AdsProvider` FAILS CLOSED — ads stay off
+  wrappers), on touch, and for supporters. ⚠️ **The desktop shell enforces it too, not only the
+  gate** (2026-11-26): the shell loads the live site, which carries the publisher tag in
+  `index.html` for the web crawler, so `lockDownSession` (`electron/main.cjs`, hosts in
+  `electron/permissions.cjs`) cancels the AdSense, DoubleClick, ad-services and ad-quality requests
+  with `webRequest.onBeforeRequest` before any script runs. Add a new ad host there as well as to
+  the gate (`docs/area/sponsor.md`, "Desktop shell: what a page may do"). `AdsProvider` FAILS CLOSED — ads stay off
   until the entitlement check settles, so a supporter never sees a flash of them.
 - **Ads are NON-PERSONALIZED by default and tagged TFUAC.** DSIM simulates FTC
   (grades 7–12) and the sim is fully playable SIGNED OUT, so most impressions carry no
@@ -205,7 +210,19 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     - Imported days are whole UTC days: range ends round to the nearest midnight, and an hourly
       range that reaches them is returned by day (`grain`). The chart marks the boundary.
     - `imported` stays in the response as `null` so a pre-change admin page does not break.
-  - **`LEGAL_UPDATED` moved to October 10, 2026** (owner) for Public rooms: a signed-in host's in-room name, the game, the seats and the room code are listed in Browse rooms while the room is still a lobby. Earlier: **September 25, 2026** (owner) for first-party analytics, the host's
+  - **`LEGAL_UPDATED` moved to November 26, 2026** (merge audit; `LEGAL_VERSION` is now `2026-11-26`)
+    for imported robots in rooms: the privacy section "Imported robots in rooms" (everyone in the room
+    and any watcher sees the robot's outline and measurements; its top picture and, in BIOBUZZ, a lighter
+    copy of its model go only if its owner turns sharing on, are held in the game server's memory while
+    the room lasts and are never written to a database or a replay; a Public room's watchers get the
+    picture only and only signed-in players' looks are shown; turning sharing off stops it, though
+    someone who already received it keeps it until they leave), the Replays bullet (a replay of a room
+    match with an imported robot holds its measurements, never its model or pictures), the storage
+    registry's `ROBOT_LIBRARY_DB` row (measurements travel with the settings and reach the room and its
+    saved replay) and the new `IMPORT_SHARE_KEY` row, and the terms' "Imported robots." paragraph. **EVERY
+    signed-in account accepts the terms once more**, and it is a CLIENT and a SERVER change (the accept
+    route records the server's own constant), so both deploy. It ships with the merge and not with the
+    importer's opening, so production accounts accept once and not twice. Earlier: **October 10, 2026** (owner) for Public rooms: a signed-in host's in-room name, the game, the seats and the room code are listed in Browse rooms while the room is still a lobby. Earlier: **September 25, 2026** (owner) for first-party analytics, the host's
     count removed and browser DNT/GPC no longer gating it: every signed-in account accepts once.
 - Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.

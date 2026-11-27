@@ -9,11 +9,11 @@ An FTC driver-practice sim hosting **more than one game**:
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
 | `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | full match, scored, ranked; 2D or 3D physics + view |
 
-Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
-(`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
-(`ws`, `tsx`, `pg`, `jose`, `@neondatabase/auth`) exists for the SERVER and auth — keep the
-client that lean. BIOBUZZ 3D adds LAZY chunks (Rapier 3D deterministic, Three.js, post FX), fetched
-only when a 3D world is stepped or drawn locally; `npm run bundleaudit` ratchets every chunk. Deploys to Vercel zero-config; a Node/`ws` authoritative game server on
+Vite + React + TypeScript, Canvas 2D. The CLIENT's main chunk is React + **Rapier 2D**
+(`@dimforge/rapier2d-compat`, wasm) + the auth SDK; `ws`, `tsx`, `pg`, `jose` are SERVER
+only — keep the client that lean. LAZY chunks, fetched only when used: BIOBUZZ 3D (Rapier 3D
+deterministic, Three.js, post FX), the robot importer (occt), Zenith autos (alpha), Discord SDK;
+`npm run bundleaudit` ratchets every chunk. Deploys to Vercel zero-config; a Node/`ws` authoritative game server on
 Fly; Electron wrapper for the desktop build.
 
 **The app brand is DSIM; a game is a "season" (`src/seasons.ts`).** Keep them separate in
@@ -88,13 +88,13 @@ future session read it.
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
-- `npm test` — **headless sim verification** (1861 checks in `scripts/smoke.ts` + 2375 in
-  `scripts/smoke-biobuzz/`, BOTH games, **~39s**). Run this after ANY change to `src/sim/`,
+- `npm test` — **headless sim verification** (~5,300 checks in `scripts/smoke.ts` + ~6,300 in
+  `scripts/smoke-biobuzz/`, BOTH games, **~105s**). Run this after ANY change to `src/sim/`,
   `src/config.ts`, or `src/games/`. It catches almost everything. **Add a check per behavior
   change.**
   It is fast because `scripts/smokeshard.mjs` SHARDS smoke.ts across cores, not because it is
-  small (serially it is 3m40s): it parses smoke.ts, keeps the
-  103-statement preamble verbatim in every shard, and bin-packs its 257 top-level blocks
+  small (serially it is minutes): it parses smoke.ts, keeps the
+  preamble verbatim in every shard, and bin-packs its ~580 top-level blocks
   longest-first across 12 processes from a measured cost table. **smoke.ts itself is
   untouched — write checks exactly as before**; a serial run produces the same check names
   and outcomes as the sharded one.
@@ -108,8 +108,8 @@ future session read it.
   - `npm run test:calibrate` — re-measure per-block cost (~60s). Worth doing after adding or
     deleting an expensive block; the table is keyed by block CONTENT, so ordinary edits
     invalidate one entry rather than all of them, and a stale table only packs worse.
-  - **~22s is the FLOOR** at any width: one block costs 22.4s on its own and a block cannot be
-    split across processes. More shards past 12 buy nothing.
+  - **There is a FLOOR** at any width: the costliest block runs alone, a block cannot be split
+    across processes, and more shards than 12 buy nothing (`smokeshard.mjs` has the numbers).
 - `npm run test:mm` / `test:comp` — the matchmaker (`scripts/mmsmoke.ts`) and the
   competition modules (`scripts/compsmoke.ts`). Run after changing one.
   Not in `npm test`, like `contrast`: red `npm test` must mean "physics broke".

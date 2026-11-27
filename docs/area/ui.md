@@ -90,8 +90,17 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   bind stored as `:` keeps working. `codeKey` keeps the LIST per physical key, and the release lets go
   of all of it whichever way the keyup arrives (`:` after Shift went down over a held `;`, `;` after
   Shift was let go first): nothing sticks. Any other layout is left as it comes, since there `code`
-  names a different character and a `;` would be a phantom. Non-Latin layouts are a separate gap
-  (their binds are letters this never sees).
+  names a different character and a `;` would be a phantom.
+  ⚠️ **A NON-LATIN LAYOUT TYPES THE WRONG LETTER, SO EVERY LETTER BIND WAS DEAD** (merge audit,
+  2026-11-26). On a Russian, Greek, Hebrew, Arabic or Korean layout the W key reports `ц`, `ω`, ...
+  and binds are the US legend. `latinOf(key, code)` (`keyboard.ts`) gives the Latin letter or digit of
+  a `KeyX` / `DigitN` code when `key` is ONE non-ASCII character that is not Latin script; `keysOfStroke`
+  then returns the native key AND the Latin one, so a bind already stored as `ц` still works. **An ASCII
+  `key` and any Latin-script character is never rewritten** (Dvorak, AZERTY, Colemak, Turkish `ı`,
+  Czech `ě` on a digit key): the physical key is the wrong guide there, and rewriting would move binds
+  for players whose layout was already right. A rebind is stored through `canonicalKey(e.key, e.code)`,
+  so a bind made on a Russian layout is `w` on every layout. Release stays symmetric through `codeKey`,
+  whichever key the keyup arrives as.
 - ⚠️ **THE PAD THAT IS READ IS THE ONE BEING USED, NOT THE FIRST SLOT** (`activePad`,
   `src/input/padSelect.ts`; player reports 2026-11-25: a pad that a gamepad tester page showed
   working did nothing here). All seven readers took the first connected entry of
@@ -102,7 +111,9 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   the pad read is the one that last gave an INPUT EVENT (a button changing, an axis moving 0.5), and
   events are changes, never levels, so a device resting with a button on or an axis at an end stop
   gives none. It stays while it is listed; another pad takes over on an event of its own unless the
-  current one is busy (a button it was seen to press is still down, or an event inside 400 ms); a
+  current one is busy (a button it was seen to press is still down, an axis of it is `PAD_WAKE_AXIS`
+  (0.5) or more from the value that axis had when the pad was FIRST SEEN (`Slot.rest`), or an event
+  inside 400 ms); a
   current pad that drops out reads as NO pad for the 100 ms dropout grace, so `GamepadInput` holds
   its last sample and does not fall onto the other device. With no event yet: a pad with a button
   down when first seen, then the standard mapping, then the lowest slot. One pad connected behaves
@@ -110,7 +121,11 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   embed whose host withholds the gamepad feature) and reads no pads, because it runs every frame
   and an exception there stops the game loop. A busy pad is not safe for ever: a device latched
   with a button down (a throttle's toggle) would lock the real pad out, so a pad that gives
-  3 events inside 1.5 s takes over from a current pad that has itself been silent for 1.5 s. **Never call `navigator.getGamepads()` from a reader**; `npm test` pins the four files.
+  3 events inside 1.5 s takes over from a current pad that has itself been silent for 1.5 s, and
+  that escape applies to a held stick as it does to a held button. ⚠️ **A HELD STICK IS BUSY** (merge
+  audit, 2026-11-26): a stick held out is a LEVEL and gives no event after 400 ms, so one twitch on a
+  second device took the pad over and the robot stopped mid-drive. The distance is taken from
+  `Slot.rest`, never from zero, so a throttle resting at -1 never counts as held. **Never call `navigator.getGamepads()` from a reader**; `npm test` pins the four files.
   `PadNavLayer` drops its button history and re-reads the glyph family when the pad changes;
   `scripts/padpick.cjs` (offscreen Electron, a generic device in slot 0 and an Xbox pad in slot 1)
   holds that the layer follows the pad that is pressed.
@@ -272,7 +287,11 @@ that season has none) — then the bind panels —
 - **TURN WITH TRIGGERS** (`PadBindings.turnWith`, owner 2026-10-10; Controls ▸ Driving ▸ gamepad
   "Turn with": the other stick, or Triggers). LT turns left and RT right, analog, through the
   stick deadzone and the turn curve (`GamepadInput.sample`); the other stick then turns nothing. A new
-  sibling field, so an older client ignores it and turns with the stick.
+  sibling field, so an older client ignores it and turns with the stick. ⚠️ **The Menu button's capture
+  refuses LT and RT while `turnWith` is `triggers`** (INPUT-05, merge audit 2026-11-26): they are held
+  all the time the robot turns, so a Menu bound there would open the menu mid-turn. The capture stays
+  ARMED and says so on the live line ("The triggers turn the robot, so Menu can’t be LT or RT. Press
+  another button.").
 - **DRIVE CURVE AND TURN CURVE ARE TWO SLIDERS** (owner 2026-10-11). `PadBindings.curve` shapes the
   drive stick (strafe and forward, radially) and the two tank sticks; `PadBindings.turnCurve` shapes
   turning, on the stick or the triggers. `turnCurve` is a new sibling field: an older client ignores
@@ -488,9 +507,9 @@ Controls screen stands the layer down the same way while a rebind is armed
   tab does nothing at all. `scripts/importpad.cjs` stubs `navigator.getGamepads` in an
   OFFSCREEN Electron window, which keeps painting; copy it for a new screen.
 
-## THE MENU STAGE — Home and Play over the field (owner, 2026-10-18, after MoSim's home)
+## THE MENU STAGE — Home and Play over the field (owner, 2026-10-18, after another sim's home page)
 
-The owner asked for DSIM's front door to look like MoSim's, and answered every layout question; the
+The owner asked for DSIM's front door to look like that home page, and answered every layout question; the
 rulings below are theirs, not defaults.
 
 - **ONE stage behind both screens** (`src/ui/MenuStage.tsx`, mounted by `App` while `screen` is `home`
@@ -543,6 +562,19 @@ rulings below are theirs, not defaults.
   `RobotCard`s — the kept unsaved edit, the kept preset build, saved robots, imports. Picking the card
   that is ALREADY on opens the builder (an import's opens the importer). Header: **New robot, Edit,
   Import**. Every gate the old tiles had is kept.
+  ⚠️ **THE IMPORT BUTTON IS GATED LIKE EVERY OTHER WAY INTO THE IMPORTER** (merge audit, 2026-11-26).
+  `ModeSelect`'s `onImport` is optional and the button is drawn only when it is set; `App` passes it
+  only when `importerEnabled()` is true, at BOTH `<ModeSelect` call sites (the live page and the
+  `PlayRehearsal` copy, which must lay out the same). It was passed unconditionally and, where the
+  importer is closed, just navigated to the robot page, so every production player saw an Import button
+  for a feature that is not shipped. A new entry to the importer anywhere in `src/ui` takes the same
+  gate (`importerEnabled`, from `seasonVisibility`) or is not drawn. Smoke: "A1:".
+  ⚠️ **A DISABLED TILE SAYS WHY ON SCREEN.** A disabled button takes no focus, so a title is never met by
+  a keyboard or pad player. Solo record, Ranked and Duo record carry the `note` "Imported robots can’t
+  play this. Pick a standard robot." while an import is the active robot (`importedNote`, only where
+  online play exists; Ranked shows it before "Sign in to play ranked", since signing in would not
+  enable the tile). Any tile disabled for a reason the player can fix takes a `note`, not only a
+  `title`. Smoke: "A2:".
 - ⚠️ **THE GARAGE RAIL: FROM 1000PX WIDE, IN A LANDSCAPE WINDOW, THE ROBOTS ARE A COLUMN ON THE LEFT**
   (owner, 2026-11-02, on an ultrawide: "the robot selectors are massive and the robot in the
   background is tiny"; picked from three layouts). Measured first: the camera's FOV is VERTICAL, so the
@@ -1320,13 +1352,27 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `useDialog` still goes first, because it listens on `document` and consumes the key. In a room:
   the Setup drawer is a `useDialog` (`SetupDrawer`, `RoomScreen.tsx`; it claimed `aria-modal` with no
   focus handling and no Escape), and with the builder up Escape is its "← Done". Smoke: "escape:".
+  ⚠️ **A HELD ESCAPE IS ONE PRESS** (merge audit, 2026-11-26): `onKey` ignores `e.repeat`. The first
+  keydown closes the top surface and its holder leaves the stack, so the auto-repeat keydown would land
+  on the one under it (the friends sheet closes, then the room is left). Smoke: "A7:".
 - ⚠️ **LEAVING THE MATCH SCREEN WITHOUT MENU CLEARS WHAT THE START STAGED** (`App.tsx`, same day).
   Browser Back, the phone's back gesture and Forward are a `popstate`, which only swaps `screen` and
   never ran `exitGame`: `tutorialRun`, `testDrive`, `editMobileLayout` and `compReturnRef` stayed set,
   and the next Solo practice mounted `GameView` as the tutorial, the importer's test drive or the
   touch-layout editor. One effect keyed on `screen` clears the four whenever the screen leaves
-  `game`; `exitGame` clears the same ones, so after MENU it does nothing. It does not touch the
-  session: a Back during an online match still leaves the socket open (open, reported 2026-11-18).
+  `game`; `exitGame` clears the same ones, so after MENU it does nothing.
+  **The session is left by a second effect on the same transition** (merge audit, 2026-11-26; its own
+  ref, so the first effect's smoke pin stays exact): Back during an online match used to leave the
+  socket, the 300 ms ping and the seat alive with nothing rendering them, and Rejoin then built a
+  second `ServerSession` over the first. It calls `leaveSession()` when `sessionRef.current` is set.
+  `backToRoomLobby` nulls the session in the same batch as its `navigate`, so a released socket is never
+  disposed; `exitGame` leaves first. Smoke: "A3:".
+- **A FAILED PAGE CLEARS WHEN ANYTHING THAT REPLACES THE CONTENT CHANGES** (merge audit, 2026-11-26).
+  `AppShell`'s boundary keys on `page`, `scrollPage` (screen plus section or tab) and the Play `popup`,
+  so a Configure section, a Records tab or a Ranked-to-Room popup that follows a throw is not stuck
+  behind the failure card. **`/admin` for an account that is not an admin renders `AdminRefused`**
+  ("Admin sign-in required"), not an empty page, and only after the session and the admin status have
+  both answered, so an admin never sees it flash. Smoke: "A4:", "A6:".
 - **`.ds-title h1` is `.ds-h1`'s type.** It was 26→40 against 26→38 — the same heading on two
   page shells, two clamps, visible only by navigating between them.
 - **A NAME CLAMPS; IT DOES NOT BREAK ITS ROW.** `.lb-name-h` / `.lb-at` are nowrap ellipses
@@ -1343,6 +1389,13 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 
 ## Shared primitives, touch and phone layout (design review 2026-09-22)
 
+- ⚠️ **A LINK IN RENDERED MARKDOWN IS ONE OF THREE SHAPES** (`safeHref`, `src/ui/markdown.tsx`, exported;
+  merge audit 2026-11-26). It admits `http(s)://`, `mailto:` and a single-slash path (`/x`), and returns
+  `#` for everything else. `//host`, `/\host` and `\\host` are NOT paths: the browser resolves a
+  protocol-relative URL against the page's own scheme and treats a backslash as a slash in a
+  special-scheme URL, so a bare `/` prefix test followed a competition's or announcement's text off-site.
+  A bare relative path (`rel/x`) is dropped too. Every link the renderer makes goes through it, so any
+  new link rule belongs there and not at a call site.
 - **`.ds-sr` is the ONE visually-hidden utility** (`shell.css`). Use it for a spoken name
   beside a glyph or a keycap, a live region's text, a table caption. Do not write another
   clip-rect rule for a single component.
@@ -1481,6 +1534,21 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   20-row DECODE solo board for layout work.
 - **BROWSE ROOMS: ONE CONTROL PER ROW, TWO BUTTONS TO HOST, ONE BOX FOR A CODE (2026-11-04, owner playtest; rebuilt the same day as the one-screen room, `docs/rooms-redesign.md`).** A row is a single button: **Join →** while a seat is free, **Spectate →** when the room is full or in its match (the row names which, and how many watch). There is no Watch button on entry. The header's **Private room** and **Public room** buttons (owner ruling: they stay, before a room is made) each CREATE the room and open it, one click, no dialog and no form (`Lobby.create`, created once the server's caps are known so it gets its settings); Play's **New room** does the same, Private. The name is the account's (or the last one used), the region the player's own, the shape a 2v2. **Join with a code** is the one code box (the old Watch-a-custom-room box is gone): a code into a full or playing room watches. A typed code names no kind, so it is joined as an ordinary room and, when the server answers "different game mode", goes again on the Duo record screen (`retriesAsRecord`, `onRecordCode`); that screen's own entry still has **New room | Have a code**, because a record partner has no browser to go to. A friend's custom room (`spectateRoom` with a bare code) is watched through the Lobby, so a lobby shows its room instead of nothing.
 - **THE ONE-SCREEN ROOM (`RoomScreen.tsx`, `room.css`; 2026-11-04).** Height binds, so it is a grid of four rows inside the window (head, a notice line, the seats, a pinned bar): RED seats | room panel | BLUE seats on a desktop, one column with the bar still pinned under 760 px. READY sits at y=702 at 1366×768 (it was 1089, below the fold) and 725 at 390×844 (1802). ⚠️ **NOTHING MOVES ON A ROOM EVENT**: a side draws every seat it has, open ones included (`seatMap`), so a join or a leave swaps a card's content in place; a seat card is one height in every state, its alliance stripe an inset shadow; the notice line, each side's note line and the bar's second line keep their height while empty; the bar keeps the height its buttons give it for a watcher who has none; START sits LEFT of READY, so a crown arriving never moves READY (on a phone the two share the width); the title reserves "Private room"'s width so the code beside it holds when the host switches. `DSIM_ROOM=only npm run shiftaudit` holds all of it (a watcher joining and leaving, READY, the Setup drawer, the crown). **Moves**: an open seat's **Take seat** (a watcher's, or a driver's where drivers pick a side), drawn at once (`PendingSeat`) and put back with a line on that side if the room does not make it; **Watch** in the Spectators box (not for the host, a record run, a LAN room or an activity: `canWatch`). On a `'rooms3'` server both are the `seat` message on the same socket; an older server gets the old reconnect. With **Drivers pick a side** the host moves bots only (`hostMoveOffered`, and `Room.moveMember` refuses a human); **Host places drivers** adds drag between the columns and a Move button. Bots are seated from an open seat's **+ Bot**, re-tiered and removed on their own card. The Close/Far swap is on your card. **The Setup drawer** holds the start position, the robot and (signed out, or in an activity) your name; it opens FIRST for a nameless activity player, where the "You" card above the roster used to be. **Spectators** are listed by name with a count of 8; a watcher's match HUD has no YOU, no "Click the field to drive", no robot card and no my-alliance highlight (`HudSnapshot.spectator`). After a match every member sees **BACK TO ROOM** and the countdown (`returnIn`); a watcher comes back as one (`lobby.spectator`, `LobbyClient.resumeWatching`, with the roster the match's session kept). Six fixed reactions show as a 3 s bubble on the sender's card. The decisions are `src/ui/lobbyRules.ts` ("rooms:", "spectate:", "move lock:", "shrink:", "rooms3:" in `scripts/smoke.ts`).
+- ⚠️ **IMPORTED ROBOTS IN A ROOM: THE THREE CONTROLS** (2026-11-26; the rules and the wire are
+  `docs/area/robot-import.md` "Relayed to a room" and `netcode.md`; only the surfaces are here).
+  (1) **`ShareLookDialog`** (`src/ui/ShareLookDialog.tsx`) is the consent dialog: a `useDialog` whose
+  Escape, backdrop click and the pad's B (`data-padnav-back`) all answer "Keep it private" (the safe
+  answer is the easy one), neither button is `.primary` (the pad's Y presses the first primary on the
+  page, so nothing may be a default yes). `Lobby` shows it only when this client is seated (not
+  watching), an import is on the wire, the room relays and no answer is stored. (2) **The room card's
+  Outline button** for ANOTHER player's imported robot is a `.ds-seg` in a `.ds-segs` (`on` AND
+  `aria-pressed` when it is hidden, so the pressed state is drawn and announced, and the card's height
+  does not change), shown to seats and watchers. (3) **The host's "Imported robots" row** (Allowed / Not
+  allowed) is drawn only on a server that advertises `robotImport` and `imports2` (`RoomHostPanel.imports`,
+  from `roomTakesImportSettings()`), never for a record or LAN room. "Not allowed" is a DISABLED `.ds-seg`
+  with a `title` while any player holds an import; a disabled button takes no focus, so a keyboard or pad
+  player does not meet the reason there, and the server's own refusal sentence still reaches the bar if
+  the press comes another way.
 - **THE RANKED SCREEN OPENS ON YOUR STANDING** (`RankedStanding`, above the 1v1/2v2 pick): the rating for the picked format, its rank, the games it is over and the overall W–L, from the one `fetchUserStats` read, in a box that is RESERVED while the read is in flight and stays empty on failure.
 - ⚠️ **THE RESULTS SCREEN MUST NOT SCROLL (2026-10-10).** `.resx-stage` is `100dvh` and was measured with a real
   solo match at six sizes: 1920x1080, 1366x768, 1280x720 fit, and 1024x600, 844x390, 390x844 scrolled by 63,

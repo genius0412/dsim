@@ -163,10 +163,61 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   unique and two people called "Player" otherwise page one row twice. Both `ilike` searches
   ESCAPE `% _ \` — a bare `%` used to enumerate every account on the service, and those rows
   carry the membership and the staff role.
+- ⚠️ **THE MODERATOR'S RECORD LIST READS EXACTLY THE ROWS THE BOARD AND THE AWARDS READ**
+  (`adminListRecords`, merge audit 2026-11-26): `run_length = 'full'` and the board's `boardPhysics`
+  INSIDE `best` (a filter after it would pick a player's 2D or auto-only best, drop it, and hide the best
+  that actually ranks), one entry per driver (solo) or per pair (duo, with `partnerId`/`partnerHandle`).
+  It is the ONLY tool for cleaning a board before a roll pays it out as permanent badges, so a view that
+  differs from the board is a cheater who keeps a podium. The delete confirms name the game and mode of
+  the LOADED board, and "clear all" deletes every game and season and its text says so.
+- **A DETAIL PANEL ANSWERS FOR ITS OWN ACCOUNT ONLY** (`AdminUser`, `AdminStanding`, F6). Both are keyed
+  on the account id and drop a response that arrives after an unmount or an id change (a `latest`
+  counter). The destructive buttons act on `userId`; what the panel prints must be that account's, or a
+  moderator deletes one account while reading another's name.
 - **POLLING PAUSES WHILE THE TAB IS HIDDEN** (`usePolled`). The console polled presence and
   maintenance at 5s and matches at 30s on bare intervals, forever: an admin tab left open
   behind an editor was by itself enough to keep the game server — which auto-stops when idle —
   permanently awake.
+
+### Names, reports, the boot and account deletion (merge audit, 2026-11-26)
+
+- ⚠️ **THE HOSTED MODERATION BUDGET HAS TWO POOLS AND TWO BEHAVIOURS** (`server/moderation.ts`). The
+  provider key's rate limit is one counter of 300 calls a minute. A PUBLIC probe
+  (`moderateName(raw, { probe: true })`, used only by the unauthenticated `GET /api/username-available`)
+  may spend 60 of them, counted inside the shared pool; past its own 60 it is answered unchecked WITHOUT
+  touching the shared counter, so a flood of probes can never starve real claims (the claim re-checks,
+  so the hint is all a probe can lose). A PERSISTENT claim (`/api/user/handle`, `/api/user/username`,
+  competition public text through `cleanPublic`) that meets a spent pool gets
+  `ModerationResult.budget: true` and is REFUSED with `NAME_CHECK_BUSY` (400); a provider failure stays
+  fail-open and never sets `budget`. Match-end writes (`scrubName`, `scrubSpecNames`) stay fail-open on
+  purpose: nobody is there to tell. **Any new public, unthrottled route that moderates a name must pass
+  `probe: true`; any new route that stores a name must refuse on `r.budget`.**
+- **The Ko-fi webhook token is compared as two sha256 digests with `timingSafeEqual`**
+  (`server/api.ts`), so the compare takes the same time wherever the strings differ; a non-string token
+  is a 401.
+- ⚠️ **A REPORT CAN NAME A ROBOT'S LOOK** (`REPORT_REASONS` gained `look`, "Offensive robot picture or
+  model", APPENDED so the others keep their order; `src/report.ts`). A look is never stored, so the
+  SERVER names the robot: `Room.resolveReport` returns `robot: { id, name }` for an imported robot (the
+  match's own setup for that robot id, else the seat's current spec; never anything the client sent) and
+  `fileReport` stores `lookReportDetail(robot, detail)` (`[<name> <id>] <detail>`, cut to
+  `REPORT_DETAIL_MAX`) so a moderator knows which robot. The room code and the reported account are on
+  every row already. No migration: `player_reports.reason` has no check constraint. The moderation panel
+  prints the label through `REPORT_LABELS`, with the raw key as the fallback for an older label table.
+  An older server drops the reason like any unknown one. The wire half is `docs/area/netcode.md`.
+- ⚠️ **A MIGRATION FILE IS ONE TRANSACTION, AND A BOOT THAT CANNOT FINISH SAYS SO** (F7). `migrate()` runs
+  each file in one transaction, so `set local lock_timeout = '5s'` as the FIRST statement bounds every
+  statement of the file: a long reader on `profiles`, `matches` or `records` fails the file instead of
+  queueing every query behind its `ALTER`. 0059, 0061, 0062 and 0065 carry it, edited in place because
+  none had run on production and `migrate()` keeps no checksum. **A migration that HAS run on production
+  must never be edited.** Boot calls `migrateWithRetry` (3 retries, 20 s apart) and logs
+  `[server] MIGRATIONS INCOMPLETE` when it gives up; the post-migrate chain (lockdown refresh, staff
+  sync, the award job, the competition runner) starts only after a successful run, so a machine that gave
+  up serves WITHOUT persisting records until it restarts. Watch for that log line after a deploy
+  (`docs/deploy.md`: restart the machine and wait for `database ready`).
+- **`deleteAccount` clears `competition_matches.call_note` on every match the account was in**, as
+  captain OR partner (found through the slots while the entries still point at the account), before the
+  entry rename: the note names who did not connect ("@x did not connect"), and after the delete the
+  cascade has already nulled the link that finds it.
 
 ### The alpha's own database: only the sign-in is shared (2026-11-04)
 
@@ -226,6 +277,10 @@ rule; `lockdownPasses` in repo.ts is the pure form smoke and dbtest pin.
   webhook, `/api/user/delete`, and a sign-up's own two writes, `/api/user/username` and
   `/api/user/accept-terms`). `rejoin` and `abandon` stay open: a match already running finishes
   and persists. Reads stay open.
+  ⚠️ **THE `handleApi` DOOR SEES ONLY NON-GET REQUESTS, AND ONE GET WRITES** (merge audit, 2026-11-26).
+  The account-link callback is a GET that stores a link, so it asks `lockdownRefusal(who.userId,
+  'site')` itself and bounces to `/account?link=closed` (the client's one sentence for it ships with the
+  site). Any future GET that writes needs the same line, because the blanket door will not catch it.
   ⚠️ **THE CLOSED ALPHA IS WHERE TESTERS MAKE THEIR ACCOUNTS** (2026-11-02). With the sign-up's two
   writes refused, every account made there arrived without the @username it chose or its terms
   acceptance, and the closed screen said only "This account doesn’t have access", which testers
@@ -375,6 +430,20 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   it (DECODE included, unlike the read URLs); the Acts and seasons card has a game select with NO
   default, its three buttons wait for a pick, and both confirm sentences name the game. The
   announcement a roll publishes goes to every game's players, so its body says whose boards rolled.
+  ⚠️ **THE SERVER REFUSES A ROLL WITH NO GAME** (merge audit, 2026-11-26). Both routes now answer 400
+  `{ ok: false, error: 'game required: decode, chain or biobuzz' }` for an absent or unknown `game`, and
+  the match is case-sensitive (`BIOBUZZ` is refused, not guessed). **Neither route may fall back to
+  DECODE again**: a roll is irreversible, so a typo or a console tab loaded before a deploy must fail
+  instead of rolling the wrong game. A curl runbook always sends `game=`.
+  ⚠️ **THE ANNOUNCEMENT DEPENDS ON `act=new`, AND SO DOES WHAT RESETS.** Ratings are keyed by ACT, so an
+  act roll says the leaderboards and ranked ratings are fresh and a season roll says only the record
+  boards are fresh and ratings carry over. `startNewSeason` returns `rewards: { periods, grants }` or
+  `rewardsError`; the route passes them through (and into the `season.start` / `season.newAct` audit
+  detail) and the console prints them after "Started". A roll whose award job failed is still a roll:
+  the console says nobody was paid and the next boot retries (`reward_periods` pays once). Its confirm
+  names that the roll pays permanent badges now and cannot be undone. `startNewSeason` also calls
+  `clearActCache()` after the commit, on THIS machine only; the others' memo expires in 60 s, so keep
+  maintenance up a minute after a roll.
 - **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
   `reward_periods` (a season is closed once `currentSeasonNumber` is past it; an act once a seasons
   row exists in a later act). It runs at every boot on every machine and after every
@@ -545,9 +614,18 @@ stored blob when it arrives without it (`keepNewerFieldsFromOlderClient`, rule 6
 `keepImportsFromOlderClient`), since that build cannot have cleared a field it does not know: a bind
 production gave to another action of the same game stands, and a turn curve the player never split
 follows production's curve. The robot fields are `carriesNew`, so rule 1 restores the robot whole.
-Saved robots are not covered. A new client-only setting is lost the same way until it is added to
+A new client-only setting is lost the same way until it is added to
 that list or given a cap. `npm run dbtest` "settings: a save from production's build"; smoke
 "settings keep 6:".
+**Rule 1 covers SAVED robots too (rule 1b, `keepImportsFromOlderClient`; merge audit, 2026-11-26).**
+Per game, each saved robot is paired BY POSITION with the stored one (an older build keeps the list's
+order) and restored whole when the stored one carries what an older build cannot read (`carriesNew`) and
+the sent one is the stored one minus those fields (`sameButDropped`). Production's build rewrote every
+saved robot's plate font, fixed shooter and intake feed away, which used to stand. It lives in the
+no-`robotImport`-cap path on purpose: only that build is known not to write those fields, so only there
+is a missing field "not read" and not "cleared"; a build that sends the cap is stored as sent.
+`keepZeroPowerFromOlderClient` keeps its own coast-only test for builds that keep imports. The limit is
+the pairing: a list edit that moves robots (a delete, a reorder) leaves the moved ones as sent.
 ⚠️ **THE FLAG COULD NOT LIVE IN `profiles.settings`.** That blob is client-shaped,
 client-validated and opaque to the server — nothing in SQL reads it — so a privacy bit stored
 there would be enforced only by asking the client, which is not enforcement. It is a real column,

@@ -155,6 +155,11 @@ only, and only while a competition is running**: one read at boot, then any API 
 touches a running competition wakes it, and the first pass that finds nothing running sends it back
 to sleep. This is the IDLE MEANS SILENT rule (`server/index.ts`): Neon bills the hours it is
 awake. Every call and result write is conditional, so a second runner could only waste queries.
+It relies on HTTP reaching the matchmaker region through the primary router
+(`router/primaryRouter.mjs` answers every request with a `fly-replay` to that region): a request that
+touches a running competition is what wakes the runner. If the router is ever removed, add a
+`fly-replay` to the matchmaker's region for `/api/competitions*`, or a satellite would take those
+requests and the runner would stay asleep (merge audit, 2026-11-26).
 
 Auto-calling calls the earliest scheduled matches whose drivers are free and rested, up to
 `maxConcurrent`, looking a little past the head of the queue (`2 × maxConcurrent`) so one busy
@@ -219,7 +224,16 @@ changed. Refresh."; a reset and a void each start a new attempt, so a ruling fro
 lands on a result entered after it), writes a log line, and tells the drivers whose ranking points changed
 (`competition.rp`) or who were carded (`competition.card`). **A finished or cancelled
 competition's results are final** (`matchRoute` refuses everything but a note): its placements
-were written once from them. The waitlist is capped at the capacity, and nobody comes off it once
+were written once from them. ⚠️ **THE STAFF ENTRY ACTIONS FOLLOW STATE TOO** (`entryActionRefusal`,
+`server/competitions.ts`, merge audit 2026-11-26): a `completed` or `cancelled` competition takes no
+`disqualify`, `remove` or `reinstate` (409, "its entries are final": a removal there would also notify
+a player about an event that is over), and `reinstate` works only on a `disqualified` or `withdrawn`
+entry (on a registered one it only wrote a log line, and on a waitlisted or pending one it let an entry
+past the capacity, or a duo past its partner's acceptance, with no check). Note, seed, rename, check-in,
+`promote` and `demote` are corrections a referee may need at any time and are not restricted here
+(`promote` and `demote` check their own state). A qualification draw's seed (the competition's plus
+`Date.now()`) is NOT stored, so a re-draw differs and a draw cannot be reproduced: the matches rows are
+the record (a Swiss round uses the seed plus the round, and can be). The waitlist is capped at the capacity, and nobody comes off it once
 qualifications start (they would hold a place and have no matches).
 
 ⚠️ **A NOTE WRITES THE NOTE ALONE** (`setMatchNote`, 2026-11-18). It went through a status write
@@ -253,7 +267,8 @@ replay rail says the same: the archived row and the competition's result would d
   (a rename's `from`/`to`), and by position against their ids a forfeit's `dq` (`dqEntries`), a
   failed call's `who` (`whoEntries`), the champions (`championEntries`) and a reset's `cards`. A
   failed call's public match note names the alliance only ("Blue did not connect."); its staff-only
-  `call_note` names the drivers until the next call, a reset or a void. Lines written before these ids existed keep
+  `call_note` names the drivers until the next call, a reset, a void or the deletion of an account in the match (`deleteAccount` nulls `call_note` on every match the account was in, as captain or partner, before the
+  entry rename). Lines written before these ids existed keep
   their names. `users` never leaves the server (`detailOf` drops it).
 - A CALLED match is not a notice (it is time-critical): the call bar says it for exactly as long as
   it is true.
@@ -273,6 +288,11 @@ replay rail says the same: the archived row and the competition's result would d
   the tables. The rankings table (`.ds-comp-rank`) has a width floor and folds the bonus columns
   into a sub-line on phones. The match desk's ranking form sends only what changed, keyed on the
   match's attempt.
+- ⚠️ **A COUNTDOWN'S SERVER CLOCK SKEW IS MEASURED ONCE PER FETCHED PAYLOAD** (`CompDetail`,
+  `CompMatchPlay`: `skew` is a `useMemo` on the data, merge audit 2026-11-26). Re-deriving
+  `data.now - Date.now()` on every render cancels the page's own 1 s clock (`now + skew` becomes the
+  payload's `now` again) and freezes the countdown between polls; the `useMemo` keeps the offset
+  from the payload and lets the clock run.
 - The call bar polls `/api/competitions/me` only while there is something to ask about: once on
   sign-in, every 2 min during registration, every 10 s while a competition is running, every 5 s
   while a match is called; never while hidden or idle.

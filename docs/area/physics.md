@@ -469,8 +469,16 @@ step, all three games, allowed in ranked.
   sends no field). `updateRobot` never reaches the coast code without it, so saved robots, DB
   rows, replays and older clients step bit for bit as before. Smoke pins 15 brake scenes (stop
   from top speed, head-on and side-on shoves, every drivetrain) at the hashes and distances they
-  had before the setting existed, plus `IMP_STANDARD_PINS`. No `SIM_VERSION`/`SIM_PATCH`: nothing
-  an old replay contains can reach the new branch. It is spec, not per-tick state, so no snapshot
+  had before the setting existed, plus `IMP_STANDARD_PINS`. The FIRST shipment took no
+  `SIM_VERSION`/`SIM_PATCH`, because nothing an old replay contains can reach the coast branch.
+  ⚠️ **THAT STOPPED BEING TRUE THE DAY IT SHIPPED** (merge audit, 2026-11-26): coast was changed three
+  times on 2026-11-04 (977a65ae, 6ddaaf41, 00a8e481) with `SIM_PATCH` still 13, so a coast robot
+  recorded earlier that day (alpha, about 08:47Z to 19:40Z) replays under the later model and reads as
+  exact. Contained: `zeroPower` exists only on alpha's database (`src/config.ts`, ledger notes).
+  **From here, any change to `zeroPower.ts`, the coast branch of `updateRobot`, `DISABLED_CMD` /
+  `ZERO_CMD` or `settleCoast` takes a `SIM_PATCH` gate (the next is `simPatchAtLeast(…, 15)`),
+  never a version bump**: a replay already holds coast robots, so a silent change re-plays them as
+  something they never did. It is spec, not per-tick state, so no snapshot
   bytes. A server without the field drops it in `coerceSpec`, so on an old deploy a coast robot
   drives as brake online (its client predicts from the roster spec, which is the server's).
 - **ZERO POWER IS EXACT**: a wheel is off when its command is under one count of the hub's 16-bit

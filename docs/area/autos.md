@@ -116,7 +116,23 @@ contract. BIOBUZZ only: Zenith has no DECODE or Chain Reaction field, and DECODE
   (`server/api.ts`) and one auto can be most of that, so it is `ZENITH_AUTOS_KEY` in
   `localStorage`, device-local, registered in `storageKeys.ts`.
 - **`setup.zenithAuto` IS BOUNDED BYTES** (`coerceZenithAuto`: 40 KiB auto, 8 KiB waypoints, so one `zenithAuto` message fits the server's 64 KiB frame cap) and
-  dropped by `coerceSetup` for a game without `GameSimModule.zenithAutos`. The one validator is
+  dropped by `coerceSetup` for a game without `GameSimModule.zenithAutos`.
+  ⚠️ **THE REAL LIMIT IS THE FRAME, MEASURED AS THE WIRE SEES IT** (merge audit, 2026-11-26). The server
+  reads no frame over 64 KiB, and one `{ t: 'zenithAuto' }` message carries the auto AND its waypoints,
+  each as a JSON string (every `"` costs two bytes, a non-Latin character two or three).
+  `ZENITH_AUTO_WIRE_MAX_BYTES` (63 KiB, `src/auto/coerce.ts`) is the budget for
+  `zenithAutoWireBytes(auto, waypoints)`, the UTF-8 bytes of each as a JSON string, leaving the
+  envelope (under 1 KiB). `ZENITH_AUTO_MAX_BYTES` (40 KiB of UTF-16 UNITS) is unchanged, so nothing
+  accepted before the wire measure is refused for its text alone: a compact auto is 25 to 30% quotes,
+  about 50 KiB on the wire at the text cap, and only a file that cannot fit a frame (40,000 quotes are
+  80 KB) is refused. Waypoints that would push the pair over the budget are DROPPED by
+  `coerceZenithAuto` (silently, by design: the auto still plays); **`autoTooLarge(text, waypoints?)`
+  (library) applies the same two tests and must be GIVEN the waypoints at every call site that stores
+  or imports an auto**, or it checks the auto alone and a pair that cannot fit a frame saves and then
+  loses its waypoints at the door. The sites: the Autonomous panel's import (the waypoints file
+  imported beside the autos, and a waypoints-only import against the selected auto) and Zenith's Save
+  (`planHostSave`'s entry waypoints, in `zenithLaunch.ts`). Keep `autoTooLarge` and `coerceZenithAuto`
+  in step: its sentence is the one the player reads. The one validator is
   Zenith's schema, in the seat: a bad file makes the seat report an error and drive nothing.
   Every load error is one sentence (`sentence()` folds the detail's own full stop). A file above
   the vendored schema's `FORMAT_VERSIONS` gets DSIM's own line ("saved by a newer Zenith (file
@@ -293,7 +309,8 @@ autonomous simply off (2026-11-04, after a contributor could not build).
   changing what `src/auto` reads off Zenith. `biobuzz.field.json` is an empty 144 in field:
   `src/games/biobuzz/auto` reads it at import time.
 - **ONE FLAG: `ZENITH_AVAILABLE` (`src/auto/available.ts`, main chunk, imports nothing).** In the
-  client it is `__DSIM_ZENITH__`, baked in by `vite.config.ts`; under Node it reads where
+  client it is `__DSIM_ZENITH__`, baked in by `vite.config.ts` (true only when the packages resolve
+  AND the build's channel is `alpha`: "Going to `main`"); under Node it reads where
   `@horizon36596/zenith-core` resolves, and fails OPEN (anything it cannot check reads true), so the
   production server can never turn autos off by mistake. False means: Solo setup shows the
   Autonomous heading over `AUTOS_UNAVAILABLE` ("Autonomous isn’t included in this build.") and never
@@ -363,16 +380,28 @@ push, or every build that fetches will refuse them (which is the point).
 
 ## Going to `main`
 
-Autos are on `alpha` only. They go live on `main` the day Zenith publishes the release that carries
-host mode and `createLiveRun` (Zenith's own rule: its CLAUDE.md, "Releases"; the release notes' step
-12), and not before, because production DSIM opens the PUBLIC Zenith (`ZENITH_URL`'s default,
-`libraries.horizon36596.org/zenith/app/`), which has no host mode until then. On that day:
+Autos are on `alpha` only, **and the build enforces it** (`vite.config.ts`): `__DSIM_ZENITH__` is
+`ZENITH_MISSING.length === 0 && channel === 'alpha'`, the channel read from `VITE_APP_CHANNEL` exactly
+as `appChannel()` reads it (`zenithBuildChannel`, default `stable`; `loadEnv`, so a real process
+variable such as Vercel's beats a `.env` file). A production build therefore has the Zenith packages
+installed (the Vercel and Fly builds still require them, so Production needs the vendor variables
+until step 1 below) but `ZENITH_AVAILABLE` is false: no Autonomous panel, no auto seated, none sent
+in a lobby. A dev server or local build that wants autos sets `VITE_APP_CHANNEL=alpha` (also for
+`scripts/zenith-e2e.mjs`'s dev server). The server keeps `zenithAutos: true` and fails open
+(`available.ts`), which is harmless: a production client never sends `zenithAuto`. The reason is that
+production DSIM opens the PUBLIC Zenith (`ZENITH_URL`'s default,
+`libraries.horizon36596.org/zenith/app/`), which has no host mode until a release carries it. Do NOT
+move the gate into `available.ts`: the ZENITH lane asserts `ZENITH_AVAILABLE` equals "the packages
+resolve" on the stable channel. ⚠️ **The day a Zenith release carries host mode and `createLiveRun`**
+(Zenith's own rule: its CLAUDE.md, "Releases"; the release notes' step 12), take the channel gate
+out of `vite.config.ts` together with the npm switch below, and not before. On that day:
 
 1. Do "THE DAY A RELEASE CARRIES THEM" above on `alpha` (npm versions instead of vendored files), so
    neither Vercel production nor the production Fly image needs the vendor token.
 2. `HOST_BUILD` must be at least the released Zenith's DSIM `minBuild`.
 3. Production Vercel must NOT set `VITE_ZENITH_URL` (the default is the public app); alpha's Preview
-   keeps pointing at the gated beta.
+   keeps pointing at the gated beta. It must not set `VITE_APP_CHANNEL` either (that is what keeps
+   the importer closed too).
 4. It is a SERVER change (custom rooms run the seat), so production needs `./scripts/fly-deploy.sh`
    from a `main` worktree, on the owner's word.
 5. Check on production: New in Zenith opens the public Zenith with "Editing for DSIM", Save to DSIM

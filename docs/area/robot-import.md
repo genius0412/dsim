@@ -11,18 +11,39 @@ Owner, 2026-10-10: "We will not deploy the robot importer feature to main until 
 we will keep it on alpha. Note that things like fixed shooter should stay." So the importer is gated
 per deployment, in two halves over one rule. **Do not open it on production without his word.**
 
+⚠️ **PRODUCTION RUNS THE MERGED CODE WITH THE IMPORTER CLOSED, AND OPENING IT IS A RELEASE OF ITS OWN.**
+Everything a public importer needs (the share-look consent, the host's setting, the Public-room rules,
+withdrawal, the rate gate, the `look` report, the relayed-mesh box, the editor's hardening) ships with the
+merge to main, correct while the gate is shut; the flip afterwards is one line (`IMPORTER_CHANNELS`) plus
+the checklist under "Opening production" below. "Relayed to a room" says what a public room enforces and
+where; the engine's own rules are the sections above it.
+
 - **The rule**: `importerOpenOn(channel)` over `IMPORTER_CHANNELS = ['alpha']` (`src/net/imported.ts`).
-  An unknown channel is closed.
+  An unknown channel is closed. THE GATE IS THAT ONE LIST: both halves below read it.
 - **Client (cosmetic)**: `importerEnabled()` (`src/seasonVisibility.ts`), the build's
   `VITE_APP_CHANNEL` (the alpha site bakes `alpha`), or a dev server, or `VITE_ROBOT_IMPORT=1`.
   Closed, it hides the import route (the URL falls through to the robot page), the Imported robots
   row, the lobby's library cards and the relay setting, `useLibrary` loads nothing, and a room this
-  tab hosts takes no import (`hostRuntime.start` sends the same gate in its open message).
+  tab hosts takes no import (`hostRuntime.start` sends the same gate in its open message). ⚠️ **Every
+  way INTO the importer takes the gate**: Play's **Import** button (`ModeSelect`'s `onImport`) is drawn
+  only when `App` passes it, which it does only when `importerEnabled()` is true, at both `<ModeSelect`
+  call sites. It was passed unconditionally and, where the importer is closed, navigated to the robot
+  page, so every production player saw an Import button for a feature that is not shipped. A new entry
+  anywhere in `src/ui` takes the same gate or is not drawn.
 - **Server (authoritative)**: `IMPORTS_OPEN_HERE` (`server/channel.ts`, `importsOpen`), the server's
-  own `SERVER_CHANNEL` (`fly.alpha.toml` sets `alpha`) or `ROBOT_IMPORT=1`; `LAN_MODE` closes it.
+  own `SERVER_CHANNEL` (`fly.alpha.toml` sets `alpha`) or `ROBOT_IMPORT=1`, which wins over everything.
+  A `LAN_MODE` server (the desktop app's own LAN host, or anyone running the LAN bundle) answers
+  `importerOpenOn('stable')`: it FOLLOWS THE STABLE CHANNEL'S RULE, so it is closed today, opens with
+  production at the flip and closes with it. `electron/lanHost.cjs` sets NO `ROBOT_IMPORT` (setting
+  it would hold LAN open whatever production does; smoke H9 pins its absence). A desktop LAN host runs
+  the server bundled with its own release, so it opens only from a desktop build made after the flip.
   Closed, `/api/presence` advertises neither `robotImport` nor `importVisuals` (`advertisedCaps`),
   and every room refuses an imported robot at the door (`RoomConfig.imports`, resolved once on the
   socket thread and sent to the room's worker). The client's channel is never trusted for this.
+  **`'imports2'` is advertised either way**: it says the machine runs the code that knows the host
+  setting and the Public-room rules, so a production `/api/presence` that lists it and lacks the other
+  two is the proof, region by region, that every machine runs the merged code CLOSED (the flip's
+  precondition; `docs/area/netcode.md` "goes public").
 - **Nothing is stripped.** Production's database and origin have never held an import; alpha's
   are its own. A gated client that meets a stored import anyway (a dev client signed in to a
   production account) shows and drives the player's standard robot (`withoutImport`, App's `shown`)
@@ -35,11 +56,30 @@ per deployment, in two halves over one rule. **Do not open it on production with
   specs. They are everyone's.
 - **Local builds**: `npm run dev` is open; a `vite build` is closed unless `VITE_ROBOT_IMPORT=1` (the
   import probes and `shiftaudit`'s import pass need it); a local server is closed unless
-  `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`. Desktop builds and desktop LAN hosts (`LAN_MODE`
-  forces `stable`) are closed.
-- **Opening production** (owner's word only): add `'stable'` to `IMPORTER_CHANNELS` (both halves,
-  the desktop build and desktop LAN hosts follow), merge to main, then deploy the client and the
-  server from a main worktree (deploy.md "Deploy ORDER").
+  `ROBOT_IMPORT=1` or `SERVER_CHANNEL=alpha`. The desktop build's own client is closed like any
+  production build; its LAN host follows the stable rule above.
+- ⚠️ **THE IMPORTER IS NOT THE AUTONOMOUS GATE.** Adding `'stable'` to `IMPORTER_CHANNELS` does not
+  touch Zenith autos: their gate reads the channel in `vite.config.ts` (`=== 'alpha'`) and stays
+  alpha-only until a Zenith release carries host mode (`docs/area/autos.md`, "Going to `main`").
+  Production's Vercel scope must therefore have **none of `VITE_APP_CHANNEL` and `VITE_ROBOT_IMPORT`**:
+  `VITE_APP_CHANNEL=alpha` there would also put every production player in alpha's matchmaking pool,
+  stop their results persisting and switch on autos.
+- **Opening production** (owner's word only; its own release, after the merge has reached every
+  machine and region CLOSED, which `/api/presence` proves by listing `imports2` and lacking the two
+  import words). The commit: `IMPORTER_CHANNELS = ['alpha', 'stable']` (both halves, and desktop LAN
+  hosts from a desktop release built after it), the comments in `imported.ts`, `server/channel.ts` and
+  `.env.example`, this section, the "ALPHA ONLY" words in `netcode.md`, and the smoke pins that assume
+  closed (the importer-gate and `imports/gate:` checks, plus every check that treats a room with no
+  `imports` as closed: run `ROBOT_IMPORT=1 npm test` and `ROBOT_IMPORT=1 npm run test:workers` BEFORE
+  editing to find them, and give those rooms `imports: false` explicitly). Before it: `npm run build`,
+  `npm run bundleaudit`, `npm run bundleaudit:importer`, `npm run costprobe` (snapshot bytes unchanged:
+  an import adds none per tick). **Server first** (`DEPLOY_ANY_TREE=1` once for exactly the flip
+  commit, `deploy.md`), then main/Vercel: a client first would leave every tab loaded in the gap
+  holding cached closed caps (`serverCaps()` lives for the page) and falling back until it reloads; a
+  pre-merge server instead drops `spec.imported` silently while the client predicts it, which is why
+  the merged-closed roll comes first. Rollback: promote the previous Vercel deployment, then
+  redeploy the server from main's previous commit; stored imports stay on devices and in settings (a
+  closed build hides them with `withoutImport` and keeps them).
 
 ## Layout and the lazy boundary
 
@@ -224,8 +264,12 @@ per deployment, in two halves over one rule. **Do not open it on production with
   so 250k is 2.0–2.3 MiB and 400k about 3.6 MiB. Quantisation moves a vertex 0.022 mm at most;
   normals are off by 0.3° on average, 1.2° at most. Dense CAD packs tighter: at Full, REV's 2.31M
   are 10.2 MB (4.6 bytes a triangle) and goBILDA's BIOBUZZ 5.66M 27.0 MB (5.0). If a bake still
-  comes out over the cap (about 14M triangles), the triangle target drops in proportion and the mesh
-  is simplified again.
+  comes out over the cap, the triangle target drops in proportion and the mesh is simplified again.
+  The cap is in BYTES, so the triangle count it admits depends on the detail: about 14M triangles
+  at Light's 9 bytes a triangle, but 27 to 29M at the vendors' kits' 4.6 to 5.0 at Full, and 20.7M at
+  the dense stress robot's 6.5 (measured 2026-11-26). `SHARE_MAX_TRIANGLES` is derived from it
+  (`MAX_MESH_BYTES / 4`, 33.5M; "A share file's model is held to what DSIM writes"), never a guess at
+  a robot's size, so the cap cannot refuse a file the editor itself exported.
 - Every reader sets three's meshopt decoder: the 3D scene's loader, `parse.ts` (an edit of a saved
   robot, a share file) and `liteMesh`. The scene turns positions and normals back into Float32 on load
   (`floatAttribute`, `renderImported.ts`, straight off the typed array), because ANGLE on D3D11 draws
@@ -304,6 +348,17 @@ before this rule, a 3.9 M-triangle STL froze the editor for one 3.6 s task and a
   quantised arrays against the weld with them, the direct `partsFromObject` read against
   `Vector3.applyMatrix4`. Arrays cross TRANSFERRED; a buffer listed twice is a `DataCloneError`, so
   `partBuffers` dedupes.
+- ⚠️ **THE WELD KEEPS ONE TABLE SLOT PER QUANTISED KEY** (`weld`, `engine/meshOps.ts`; merge audit
+  2026-11-26). A vertex whose quantised key is not an int32 (NaN, ±Infinity, past ±2^31) stops at its
+  key's slot and becomes a vertex of its own WITHOUT adding a slot, so identical non-finite vertices no
+  longer share a cluster that every later one walks to the end of: 80k NaN vertices took 14.6 s
+  (quadratic, in an import worker nothing cancels, and a share file can carry them) and take 3 ms. The
+  output is the first weld's bit for bit, NaN and far coordinates included (smoke `robot import (scale)`
+  pins it against the first version). **Do not "fix" a NaN by dropping it there**: that pin forbids it.
+  The simplifier's `extentOf` skips ±Infinity vertices for the same reason (a NaN never passed a
+  comparison): one infinite vertex made the weld tolerance infinite and collapsed the whole model into
+  one point. Every fixture's simplified output (glb, stl, obj, ply, 3mf and the stress robot, at Light,
+  the Full measured copy and 5k) is byte for byte the same as before.
 - **The streamed STL reader** (`parseBinaryStlWelded`) reads a binary STL in 3.2 MB slices and merges
   bit-identical vertices as it goes, so a 184 MB file never sits in memory un-indexed; an ASCII STL,
   a colour STL or one whose length disagrees with its count goes to three's loader.
@@ -317,7 +372,11 @@ before this rule, a 3.9 M-triangle STL froze the editor for one 3.6 s task and a
   thread (`load.ts`, `normalise` computing the orientation itself). `npm test` runs those paths,
   which is the same code the workers run. A saved robot's stored mesh (a re-open) and a share file go
   through the import worker like any other file: a Full robot's is tens of MB. The dev harness uses
-  the main-thread `loadModel`.
+  the main-thread `loadModel`. ⚠️ **An orientation that THREW in the measure worker is never measured
+  again on the page's thread** (`measureSession.ts`, 2026-11-26): `prepare` rejects with its error (now
+  and when asked again) and `normalise` throws it, as `find` already did, because the same measurement
+  would throw again after seconds of the page's thread. Only a worker that STOPPED or never started
+  falls back to measuring here. The editor ends such a state in `measureBroke` ("The importer UI").
 - **Memory.** The renderer's peak on the 3.9 M STL went from 1021 MB to 763 MB; what is left is
   meshopt's working set for a 3.9 M-triangle part, in the import worker, returned when it is
   terminated. The main thread holds the prepared model and up to six orientations of its measured
@@ -455,7 +514,21 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   ZIP64) on the main thread, a few KB from the file's tail, to see which model is inside (the same
   priority as dropped files; a .gltf brings its .bin, an .obj its .mtl). The model is inflated where
   it is read, in 4 MB slices of the compressed data into a buffer of its stated size: in the STEP
-  worker for a STEP (390 MB in 1.8 s), in the import worker for the rest.
+  worker for a STEP (390 MB in 1.8 s), in the import worker for the rest. ⚠️ **Every number a zip
+  states is held to the file before it is trusted** (`zip.ts`, merge audit 2026-11-26): the ZIP64 end
+  record and its locator, the ZIP64 extra values (read from inside their own field), the name, extra and
+  comment lengths, a local header's offset, and a stored entry's stated size. The size cap applies to the
+  model PLUS every companion inflated with it (`resolveFiles`), not to each file alone.
+- ⚠️ **THE STEP INDEX IS LINEAR AND BOUNDED BY THE FILE** (`stepSplit.ts`; a STEP is a stranger's text).
+  `findData` is one pass over the header that skips strings (`'…'`, `''` inside) and comments; no regex
+  on untrusted STEP text may rescan from every start position (the old `ENDSEC … DATA` pattern was
+  quadratic on 16,000 `ENDSEC;/*`s, and `radiusOf` is a linear scan too). **A raw apostrophe in a header
+  string** (an author `O'Brien`, which the standard writes `''`) flips the string parity and hides
+  `ENDSEC; DATA;`, so when the string-aware pass finds no DATA it runs once more with strings ignored
+  (comments only): both passes together are one linear scan. Entity numbers past 2,147,483,647 are
+  refused as damaged (`corrupt`, not cut off). The id table is used only while the largest id is under
+  `min(2^26, 16 × entities + 1024)`, else a Map with the same answers: a 130-byte file naming `#67108000`
+  allocated 256 MB, in the STEP worker and again in `wholeHint`.
 - **The editor reads a zip as its STEP.** It takes a zip only when the directory names a `.step` or
   `.stp` (`fileSelection.ts`, through the engine's `zipFileNames`), and reads with
   `ImportOptions.zipFormats: ['step']`, so a zip that also holds a GLB (which the priority would pick)
@@ -464,7 +537,12 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   `ISO-10303-21;` and ends with `END-ISO-10303-21;`): "Couldn’t read …: the file is cut off …".
   Every STEP failure ends with `EXPORT_HINT`, a fresh STEP export menu by menu for Onshape, Fusion,
   SolidWorks and Inventor (it named a GLB or STL export until the editor stopped taking them).
-  `step-reader` (the reader did not load) is the only one with Try again.
+  `step-reader` (the reader did not load) is the only one with Try again. ⚠️ **An occt worker that DIES
+  after it posted `reading` is `step-failed`**, never `step-reader` ("close other tabs and try again",
+  plus "or choose Light detail" at Full): it ran out of memory, and Try again on the same file would
+  fail the same way. One that never started is `step-reader` ("Reload the page and try again"). **No
+  engine sentence may offer a GLB, glTF, STL, OBJ, PLY or 3MF export or drop** (the editor refuses
+  them all); smoke `D6:` scans every engine file for one.
 
 | starter bot (file) | read | longest main-thread task | renderer peak | triangles in → kept | footprint (L × W), height | wheels (corner four) | front |
 |---|---|---|---|---|---|---|---|
@@ -1008,6 +1086,7 @@ The editor, rebuilt with this code, finds the same groups as the Node probe on a
   ramp off `bbRampOut`, a generic joint off its drive (`jointLevel`; a swing eases over 0.3 s, a
   slide over 0.5 s), a geared part as its leader times the ratio. Drawn spin is capped at 26 rad/s,
   past which a spoked wheel strobes. The editor's preview has Play for the same, with fixed rates.
+  ⚠️ A SLIDE never follows a part that turns without end (`importedMotionNodes`: "Relayed to a room").
 
 ## Deleting parts
 
@@ -1083,6 +1162,33 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
   the reason in the sentence, and not offered to the editor. ⚠️ **A NEW FEATURE IN EITHER WRITER
   NEEDS ITS KEY HERE**, or every share file made after it is refused; smoke "share model:" reads
   both writers' real output and fails first.
+  ⚠️ **THE LIMITS, AND WHY EACH IS WHAT IT IS** (merge audit 2026-11-26). **A mesh may be drawn by ONE
+  node at most** (`mesh reused`): both writers give every part its own node, mesh and accessors, so a
+  writer change that shares any of them must change this check first. `SHARE_MAX_TRIANGLES` is
+  `MAX_MESH_BYTES / 4` (33.5M), derived from the byte cap and not a guess at a robot ("Budgets": the
+  stored mesh is 4.6 to 6.5 bytes a triangle at Full, so the 128 MiB cap fills at 20.7 to 29M, and a 20M
+  cap refused a file the editor itself exported; it was 50M before that). `SHARE_MAX_VERTICES` is 60M,
+  its own number, counted per DRAWING primitive (a POSITION accessor named by many primitives counts
+  each time, because the reader flattens every one). Smoke asserts the relationship, never the numbers.
+  **A file is judged before it is read** (`SHARE_MAX_FILE_BYTES` = `MAX_MESH_BYTES` + 1 MiB of JSON, in
+  `shareFile.ts`, which must not import the engine; IMPUI-08): a dropped `.glb` over it is refused with
+  `COPY.shareTooBig` without being read, then `shareHeaderRefusal(file.slice(0, 12), file.size)` refuses
+  a missing `glTF` magic as `notStep` and a header length that is not the file's size as `bad-length`
+  (stricter than `parseGlb` was: bytes after the declared end are now refused up front; DSIM's own
+  exports are exact), and only then `readShareFile(await file.arrayBuffer())`. A multi-GB file named
+  `.glb` used to be read whole by whoever dropped it.
+  **A stored mesh's `_BODY` ids are used only when they are in bounds** (`storedIdsTrusted`, `parse.ts`):
+  every id finite, under 2^20 (`MAX_STORED_BODY_ID`) and under 16 × the model's vertex count. The bound is
+  the MODEL's (the tree's top), never the mesh's, because `readStoredScene` calls `partsFromObject` one
+  mesh at a time and a small moving part carries ids numbered across the whole robot. Otherwise every
+  mesh of the model gets one body per mesh instance. Measurement tables (`bodyStats`) are sized by the
+  largest id, so this is what stops a share file from sizing them.
+  **A saved setup is opened through `coerceImportSetup`** (`shareFile.ts`; E5): library records added from
+  share files before `isImportSetup` existed can hold any setup, and one with no `drive` threw in
+  `buildSpec`. It keeps every field `isImportSetup` accepts, replaces a bad `drive` with the default
+  drivetrain and drops a bad optional list; the editor applies it when it opens a library record and
+  `exportLibraryRobot` applies it before re-exporting. **A new `ImportSetup` field needs a line in it as
+  well as in `isImportSetup`, or it is dropped on open.**
 
 ### The drop box, before a file is read
 
@@ -1274,12 +1380,27 @@ their calculated values are `ui/tuneFields.ts`.
 
 The picture and mesh live on the owner's device, so a custom or LAN room relays them (`docs/area/netcode.md`, VISUALS RELAY has the wire, budgets and validation). What the importer owns:
 
+**What a public room enforces, and where** (the index: each rule is written out in the bullets below or in `netcode.md`; a change to one must move every place on its row):
+
+| rule | enforced by | also |
+|---|---|---|
+| a relayed 3D model is robot-sized, opaque, few draw calls, and the check's own work is bounded by the file | the room's `validateMeshGlb` at the last frame (server) | the viewer runs it again on the bytes it assembled AND measures the parsed template (`importedMeshFits`); the editor's Review blocks a model outside the box (`mesh-reach`). ONE box: `ROBOT_MESH_BOX_M` |
+| nothing of a robot's look leaves its owner's device without a yes | the owner's client (`getShareOwnLook`: `ask` / `on` / `off`, fails closed) | the server cannot know; it only ever holds what an owner sent |
+| the host may refuse imported robots (Allowed / Not allowed; a Public room starts Not allowed) | the server, every door, through `Room.allowsImportedRobots` | the client hides the cards and sends the standard robot |
+| in a Public room only a signed-in owner's look is relayed, and watchers get the picture, never the model | the server relay (`mayShare`, `mayReceive`, `reconcile`) | the client says why (`ownLookTrouble`) |
+| turning sharing off withdraws the look | the owner sends `visualDrop`; the server frees the owner's assets | people who already received it keep it until they leave the room |
+| one source may not drain the relay: 24 `visualGet` a minute per source, machine-wide | the socket thread (`VisualGetGate`) | the viewer retries a `busy` later (up to 6 times) |
+| a viewer may show any robot as an outline, and report a look | the viewer's own screen (Outline); the server names the robot on a `look` report | `ReportDialog` offers `look` only against an imported robot |
+| a share file is held to what DSIM writes, and read only after a header check | `readShareFile`, `shareModelCheck` (`SHARE_MAX_*`) | the importer's drop box (`shareHeaderRefusal`, `SHARE_MAX_FILE_BYTES`) |
+
 - **What goes:** the top PNG (every viewer, 2D is the default) and the GLB (BIOBUZZ's 3D view only). Caps: PNG ≤ 256 KiB with a side ≤ 1024 px (the bake is 512), GLB ≤ 1 MiB.
 - **`liteMesh`** (`engine/lite.ts`, reached through `loadImporterEngine()`) makes the 1 MiB mesh when the stored one (≤ 128 MiB, tens of MB at Full) is bigger. It does NOT go back through `normalise`/`bake`: a re-measure could re-detect the wheels or the origin and land the mesh a hair off the footprint the sim was told about. It reads the stored GLB, simplifies the same vertices with the importer's simplifier, re-creases the normals and writes it back in the SAME stored mesh frame, so a viewer places it with `STORED_MESH_TO_ROBOT` exactly as the full one. Measured against real GLTFExporter output: 140k triangles, 2.5 MB → 0.9 MB, bounding box unchanged to 0.1 mm, both colours kept. It returns null below 400 triangles, and the relay then sends the picture alone.
 - **The relay never gets the compressed stored mesh.** `liteMesh` always writes a FLOAT GLB (`exportStoredScene`, `floatGlb.ts`): a compressed mesh goes through it however small, whole when the float copy fits 1 MiB, else aimed from the float copy's size. From the REV kit's 248k stored mesh it makes 19.8k triangles in 0.97 MB (the old 69k float mesh gave 16k). A mesh that cannot fit the cap by eight times (a Full robot) is aimed from the float writer's usual 46 bytes a triangle instead of writing all of it as float to find out: from goBILDA's BIOBUZZ kit at Full (5.66M, 27 MB) 18.9k triangles in 0.89 MB, 6.3 s in Node (9.1 s writing it whole first), made once and cached (`meshLite`). The owner sends the library's file as it is only when `validateMeshGlb` takes it, which is a float mesh saved before (`libraryOwnAssets.mesh`). So nothing on the wire changed and no server needs a deploy. An older client holding a compressed mesh (from a share file) refuses it at its own validator and sends the picture alone.
 - **`meshLite`** is cached on the library record (`LibraryRobot.meshLite`, `meshLiteFor`, `putMeshLite`; the file key `<id>:meshLite`). `putRobot` drops it unless the save carries one, because the mesh it was cut from may have changed; `deleteRobot` removes it; `getRobot` returns it when present. It is never required.
 - **A viewer sees what the owner's device would**: the relayed blobs are lent to the renderers' registry, which prefers a lent blob over the library, and are taken back when the room is left or the viewer turns "Show other players’ imported robots" off. A lent blob carries its LENDER (`registerImportedAssets(id, assets, lender)`): `''` is this device (the editor's draft) and always wins; `relay:<owner>` is a room's, and never replaces another lender's look for that id.
 - **The relayed mesh must be what the float exporter writes and nothing more.** The relay's GLB check (`validateMeshGlb`) is an allowlist sized to `exportStoredScene`'s output: no glTF extensions, no images or textures, only POSITION/NORMAL/TANGENT/COLOR_0/TEXCOORD_0-1 and `_BODY` attributes, nodes with a mesh, children and a transform. The bake's own file (quantised, meshopt) is outside it on purpose. To relay that file directly, both extensions need field checks in `VISUAL_GLB_EXTENSIONS` AND a capability every receiver advertises, because older servers and clients run the old check; until then `liteMesh` stays in the path.
+- ⚠️ **A RELAYED MESH MUST FIT ONE BOX, AND THE VIEWER MUST NEVER BE STRICTER THAN THE RELAY** (merge audit M-IMP-TRUST-01 and RI-01, 2026-11-26). The relay's GLB validator (`validateMeshGlb`: every drawn vertex, through its node's transforms, inside the box; opaque materials only; at most 1,024 drawn primitives; every position read once, so its work is bounded by the file: `netcode.md`, "Validation, twice"), the viewer (`importedMeshFits`, `renderImported.ts`, called from the slot's `load`) and the editor's Review all hold a model to **`ROBOT_MESH_BOX_M` / `ROBOT_MESH_BOX_IN`** (`robotImport/types.ts`, main-safe; `visualCheck.ts` re-exports them as `VISUAL_MESH_BOX` / `VISUAL_MESH_BOX_ROBOT_IN`): STORED frame x and z ±1 m, y −0.5..2 m, which is ±39.37 in sideways and −19.69..78.74 in vertically, robot-local, converted the way a mesh is. Real meshes span ±0.2 m and 0..0.43 m up. **Any change to the box moves all three.** The viewer measures the PARSED template against it before drawing (`prepareImportedMesh` sizes every geometry's bounds from its positions, `exactBounds`, because GLTFLoader trusts the file's `min`/`max`, and forces every material opaque; then `importedMeshFits`): a finite box inside `ROBOT_MESH_BOX_IN`, total surface at most `IMPORTED_MESH_MAX_AREA_M2` (100 m²; measured 0.85 to 1.49 m² from the 0.47 M to the 3.85 M triangle stress robots, since a mesh's area is its CAD's and finer detail adds none; this is what bounds overdraw, which the validator cannot, because a hostile mesh is random triangles), and no instancing, skinning, morph targets, points or lines. A mesh that fails is the placeholder (`state: 'none'`). It is the only check a share file's mesh and an older room ever meet (the relay's validator never saw them); it costs 5.5 ms on the 0.47 M-triangle stress robot, once per template. ⚠️ **Why the viewer's box is the relay's and not the robot's**: a box grown from the robot's own hull refused the model of a robot with a deployed ramp or a tall lift left out of the footprint (`ImportSetup.apart`) that the room had accepted, stored and served, so every screen drew a placeholder, the owner's drive included. So **Review blocks a model outside the box** (`mesh-reach`, Fix goes to the Parts on the Model step): `OrientedMeasure.reach` (the box of every part, `apart` included, model frame; set only when parts are left out, because nothing else can pass the drive base's own 18 in check) becomes `ImportMeasurement.reach` (robot-local inches) in `finishMeasure`, and `meshReachOver` holds it to the box less `MESH_REACH_MARGIN_IN` (0.1 in: the stored mesh is quantised and the room's copy is cut from it). The sentence names how far and on which side, and says to delete the parts or shorten them in the CAD. Smoke places its cases 0.1 m outside the box faces and asserts the relationship (`ROBOT_MESH_BOX_M`), never fixed numbers; a fixture fed to the relay's validator must be in METRES (a robot-sized box), not inches.
+- ⚠️ **A SLIDE DOES NOT FOLLOW A PART THAT TURNS WITHOUT END** (`importedMotionNodes`, `renderImported.ts`, RI-06). A follower's travel is its leader's running value times the ratio (capped at ±100; the product was not), and a wheel, roller, flywheel or `spin` only ever adds to its value, so a relayed mesh whose slide followed one could carry a part across the field. `follow` is dropped from a `slide` whose leader is such a part, directly or through other slides. A turn is periodic and harmless, so a swing on a spin and a cascade of slides keep their follow. Still open (`renderRobots.ts`, not clamped): a slide's travel from a slide chain is bounded by the leader's amount times the ratio, up to 100 times; cosmetic (a part flies off), not a GPU cost.
 - **A host that draws frames in one burst must wait for them.** The pictures and meshes load
   lazily (a draw asks, a later task delivers), which a live view never notices and the replay
   export did: it draws every frame before the browser gets a turn, so a file made from a viewer
@@ -1287,6 +1408,13 @@ The picture and mesh live on the owner's device, so a custom or LAN room relays 
   `importedTopsSettled` (2D) or the scene's `assetsSettled` (3D, `importedMeshesSettled`),
   raced against `IMPORT_ASSET_WAIT_MS`, before frame 0.
 - **Robot ids are unique within a room.** A seat may not hold an id another seat holds (`IMPORT_ID_TAKEN`). An import of a SHARE FILE should therefore mint a new id (`duplicateRobot` does), or two teammates who loaded the same file cannot sit in one room until one duplicates it. The one exception is the account's own active robot arriving on a second device (next section): one player holds one seat.
+- ⚠️ **NOTHING OF A PLAYER'S IMPORTED ROBOT'S LOOK LEAVES THE DEVICE UNTIL ITS OWNER SAID YES** (2026-11-26). A robot's outline and measurements always go (the room needs them to play); its top picture and the lighter model are CAD, which FTC teams keep private before events. `getShareOwnLook()` (`importVisualsPref.ts`, key `IMPORT_SHARE_KEY`, per DEVICE and not in the synced settings, so a new device asks for itself) is `'ask'` until answered, then `'on'` or `'off'`, and **fails closed**: absent or unreadable storage, or any value but the exact `'1'`/`'0'`, is `'ask'`. `maybeUpload` and the frame loop both do nothing unless it is `'on'`, on every path (join, reconnect, a robot change, a room going Public or Private, a page that loads with an answer stored); `'ask'` and `'off'` send nothing. Asked once, in `ShareLookDialog` (`Lobby`, when this client is seated with an import on the wire in a room that relays and the answer is `'ask'`): default focus, Escape, a click outside and the pad's B all mean **Keep it private**, and neither button is `.primary` (the pad's Y presses the first primary). Changeable in Configure ▸ Network ("Share my imported robot’s look in rooms"). The one `ImportVisualsClient` the app builds passes the real reader; the class's own default is `'on'` for a client a test builds with assets of its own, and smoke pins that `src/` constructs exactly one.
+- **Turning sharing off withdraws the look** (`shareChanged`): the upload in flight stops, what the room confirmed is forgotten, and one `{ t: 'visualDrop' }` goes, only when something may be held and only to a server that advertised `'imports2'` (`setDropSupported`, set by `Lobby.wire` from `roomServerHas`). Viewers who already received it keep it until they leave. Turning it on again uploads afresh. Another tab's answer arrives as a `storage` event, so the room this tab is in is withdrawn from as well. A `visualReady` for this seat that arrives after the switch is ignored, so it is not counted as held.
+- **The owner's line** (`ownLookTrouble`): a seat that holds an import, in a room that relays, on a device whose answer is `'off'` reads `{ kind: 'top', reason: 'private' }` ("Your robot’s look isn’t shared, so others see its outline."); a Public room's `'signin'` refusal reads "…: sign in to share it here." (it refuses every frame, so no other kind is tried). Both ≤ 64 characters.
+- **Outline, per robot, for this room session** (`setHidden`/`isHidden`/`subscribeHidden`, the lobby card's button for another player's imported robot, shown to seats and watchers, absent when "Show other players’ imported robots" is off because everything is an outline then): hiding drops that owner's downloads in flight, takes back what was lent for its robot and asks for nothing more of it; showing asks afresh. It is this screen's alone (nothing is sent), is keyed by client id so a seat that rejoins is a new one, and `reset()` (another room's transport) clears it; a lobby/match hand-off on the same transport keeps it. The button is a `.ds-seg` toggle (`on` and `aria-pressed` together, so the pressed state is drawn and announced; `docs/area/ui.md`, the room card).
+- **The host's "Imported robots" setting, as the client sees it** (netcode.md has the wire): `RoomSettings.importedRobots === 'off'` from the roster. `Lobby` then offers no imported cards, sends `standardRobotFor` on the wire (`wireSpec`, which reads a ref because it runs inside handlers registered once) and says "The host turned imported robots off here, so you are using your last standard robot." in "Your robot" (and the bar). A PUBLIC room this client creates starts off on a server that advertises `'imports2'`, so the creator sends the standard robot (an older server never turned it off, so nothing changes there). A joiner refused at the door with `error.code === 'imports_off'` and no seat yet (`lobby.clientId === ''`) remembers the room code for the tab (`hostOffRooms`), disposes the refused client and joins again on a NEW socket with the standard robot, once per room: **never a second `join` on the refused socket (RV-04)**. The host's own row (`RoomHostPanel.imports`: the server has `robotImport` and `imports2`, the importer is open, not a record or LAN room) is Allowed / Not allowed; Not allowed is disabled while any player's spec is imported (the server refuses it anyway).
+- **A refusal is retried only where it can change** (`importVisualsClient.ts`). A `busy` answer to a download (the viewer's serve window, shared by every signed-out seat and watcher on one address, or the machine-wide get gate) is held and asked again 20 to 60 s later, jittered, up to 6 times per (owner, kind), counted apart from `MAX_ASKS`; every other download refusal is final. `reset()` and turning the viewer preference off cancel a pending retry. A `'signin'` refusal of this seat's own upload (a Public room, a signed-out owner) is offered again ONCE when the roster shows the room Private (`noteListed`), and not again until the room has been Public in between; an account cannot change on a connection, so signing in is a new seat (`onWelcome`), which forgets both.
+- **Reporting a look**: `ReportDialog` offers "Offensive robot picture or model" (`look`) only once the picked driver is imported (`drivers[].imported`, read by `Results` off the match's setups), and clears it if the pick moves to one who is not. An older server drops the reason silently. The SERVER names the robot on the stored report (`Room.resolveReport`, `lookReportDetail`: `[<name> <id>] <detail>`; `docs/area/accounts.md`), never anything the client sent. Accepted gaps, by design: a moderator cannot SEE a reported look (looks are never stored), there is no automated image check, and no per-account "may not share" switch (suspension is the tool); what strangers can be shown is the picture only, and only from a signed-in, reportable account.
 - **The owner is told when its look does not reach the room** (`ImportVisualsClient.ownLookTrouble`, `ownLookLine`): a room refusal (out of space, a file it cannot use, an id taken, an upload it never confirmed), a model not on this device, or one out of date here. The custom-room lobby says it in ONE line in place of the robot's build line under "Your robot", so the section does not move; every line is ≤ 64 characters (smoke `visuals/owner`).
 - **Only a look made for the robot the seat holds is sent.** The owner compares its library record's descriptor with the seat's (`OwnAssets.describe`) and sends nothing for an out-of-date copy; a VIEWER whose library holds an out-of-date copy of another seat's robot takes the relayed look instead of its own (`has(id, imp)`).
 - **The relay client stays in `main`** (it was a candidate for a lazy chunk, lane 8, 2026-10-02 re-measured: 9.0 KB minified, 3.3 KB gzip of its own). Every call into it is synchronous and arrives on the socket's message path (`bind`, `release`, `onWelcome`, `noteRoster`, `handle` from `LobbyClient` and `ServerSession`, `setOffered`/`setGame` from the lobby) and the lobby reads `ownLookTrouble()` while rendering. A lazy chunk needs a stand-in that holds the transport, the offer, the game, the seat and the last roster, queues the frames that arrive while the chunk loads, and replays all of it in order: a SECOND state machine beside the real one, whose bind/release/reset ordering is exactly where this layer's bugs have been (a hand-off between the lobby and the match keeps the state, another transport clears it). About 2 KB of gzip in a ~1 MB entry chunk does not pay for that. Revisit only with a test that drives the stand-in through a lobby-to-match hand-off and a reconnect.
@@ -1377,7 +1505,48 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   the same way; it used to log and nothing else, so "a reload loses nothing" was false exactly when
   storage was short. The editor is told once per change (failing, then recovered), and on mounting
   while failing (a test drive comes back to a store that is still failing). The status line shows
-  `COPY.draftNotSaved` ahead of the step title, once a model is read, until a write lands.
+  `COPY.draftNotSaved` ahead of the step title, once a model is read, until a write lands. The failure
+  line is reset when a draft is dropped or a new one is created.
+  ⚠️ **`flushDraft(key)` RESOLVES TRUE ONLY WHEN FORGETTING THE IN-MEMORY COPY LOSES NOTHING** (the write
+  landed, or nothing is pending and it is already on the device; false while a write is failing or the
+  model has not been stored), and every draft with a write pending is also flushed on `visibilitychange`
+  to hidden and on `pagehide` (the 800 ms timer alone lost the last edits of a closed tab).
+  ⚠️ **A SAVED ROBOT THAT WAS ONLY OPENED IS NOT A DRAFT** (M2, RI-02). `EditorDoc.edited` is set by
+  `withEditMark` on the player's own edit (`update` with `how !== 'auto'`) and on a file the player read
+  over the document, never by the editor's `'auto'` edits or by opening a saved robot's stored mesh
+  (`readModel` with `savedModel`). `draftStore` writes no draft for an edit (`editId`) that has neither
+  the mark nor a stored model (`untouched`), and `flushDraft` counts it safe to forget: opening a robot
+  used to write the whole document, and at Full detail tens of MB of model, 800 ms later, and every
+  later open then said "Restored your unsaved changes" for changes that were none. The line shows only
+  for a document with `edited`; `sameDoc` ignores the mark. A draft written before the field has no mark
+  and is restored without the line, never discarded (it may hold real edits).
+  ⚠️ **FILES HANDED TO THE EDITOR GO OVER THE STORED DRAFT, NEVER IN ITS PLACE** (MIMPUI-14). The boot
+  effect reads the stored draft (`restoreDraft`) whether or not files were handed (the robot page's Resume
+  card drop) and only STAGES them (`stageHandedFiles`), so the Model step offers Keep current model or
+  Start import and nothing is replaced before the player picks. Before, handed files skipped the restore,
+  a fresh document was kept, and the 800 ms write replaced the stored draft. The files are held in a ref
+  (`handedFiles`) until a boot that was not cancelled has finished, because `takeHandedFiles` is one-shot
+  and the boot now awaits IndexedDB (StrictMode's dev rehearsal otherwise cancels the boot that took
+  them). `fromDisk` (no draft in memory and no files) still decides the step; `restored` (no draft in
+  memory) decides the restore and the note.
+  **An edit's restored changes are announced** (MIMPUI-15a): a stored EDIT draft (`doc.editId`) restored
+  from this device shows `COPY.draftRestored` in the step panel's status line (not on Review, whose line
+  is the to-fix count) until the player's next real edit or a new file read. **`updateIdentity` keeps the
+  edit draft in step** (MIMPUI-15b): in the same transaction it rewrites `spec.name`, `teamName` and
+  `teamNumber` of the robot's edit draft (`<game>:<id>`, the editor's `draftKey`, written out in
+  `library.ts`, which may not import `ui/`) and nothing else of the draft (`updated` included). Any new
+  door that changes a saved robot's identity must go through it, or a restored draft puts the old name
+  back on the next Save. Known gap: an editor holding the robot's draft in memory (`liveDraft`) is not
+  reached; Back releases it, so only a rename made while the editor is mounted could hit it, and the
+  robot page is not.
+  ⚠️ **PERSISTENT STORAGE IS ASKED FOR ONLY FROM THE SAVE CLICK** (`askPersistentStorage`, `library.ts`,
+  MIMPUI-07 and M7). The stored mesh is the only copy of an imported robot (the account syncs the spec,
+  never the model), so the editor's `save` asks `navigator.storage.persist()`, synchronously, before the
+  bake, never awaited, and NEVER from `putRobot` or `putDraft`: Firefox shows a permission prompt, and it
+  used to appear from the draft timer with nothing on screen to explain it. Once per device: `persisted()`
+  first, then a marker (`meta:persist-asked` in the library's `files` store) written BEFORE the browser is
+  asked, so a prompt closed or a tab shut on it is not shown again. Best effort: no API, a refusal or a
+  throw changes nothing. A robot added only from a share file is not asked until the next Save.
 - ⚠️ **A share file's `setup` is judged as a whole** (`isImportSetup`, `shareFile.ts`). Only `apart`
   and `motion` were checked, the rest stored as another player's file wrote it, so a file without a
   `drive` was added to the library and then threw in `buildSpec` on every render of the editor, and the
@@ -1391,6 +1560,50 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   drops (a side under `IMPORT_MIN_SIDE`, an area under `IMPORT_MIN_AREA`, a sliver) saves fine
   and then plays as its parametric fallback with no word said. `reviewItems` blocks whenever the
   built spec has no `imported`, so a new refusal there is covered without a new item.
+- ⚠️ **REVIEW BLOCKS WHEELS AT THE FOOTPRINT'S EDGE** (`origin-edge`, E6). The origin (the wheels' mean)
+  is the pinned centre of mass. `coerceImported` recentres the hull when the origin is under
+  `IMPORT_ORIGIN_MARGIN` (1 in) inside it, but the bake still frames the mesh and the top picture about
+  the measurement's origin, so the model would sit off its collision hull. `reviewItems` therefore blocks
+  (Fix goes to the Wheels on the Model step) whenever `polyPointDepth` of the origin in the descriptor's
+  hull is under the margin: **it fires exactly when the coercer would move the hull, so keep the two
+  tests identical.** Review also blocks a model outside the relay's box (`mesh-reach`, "Relayed to a
+  room") and says, in one `ds-hint` under the identity fields in every game (`COPY.reviewSharing`), what
+  a room sees: its outline and measurements always, its picture and 3D model only if the owner chooses to
+  share them. ⚠️ The second sentence is true only because the consent preference exists; they ship
+  together.
+- ⚠️ **THE EDITOR'S STATES, AND THE WAY OUT OF EACH** (the table is the header comment of
+  `ImportEditor.tsx`; keep it true when a state is added, and every row's exits must be real buttons that
+  keyboard and pad reach). (E1) **An error over a loaded model is a BANNER above the step, never the
+  step**: `ModelStep` draws the drop box in place of the step only when there is no model, a read is
+  running or files are staged; an `error` with a model loaded shows Dismiss and the error's own action
+  (Try again, Set it up for …) and leaves Units, Up axis, Front, Wheels, Parts and Detail reachable. A new
+  state that can put the editor in "error with a model" must clear on leaving the Model step or on a new
+  read. (E2) **Leaving stops what runs, then lets the model go**: the unmount cleanup bumps `gen`, aborts
+  `importAbort` (the read's worker pool, or a share file's import worker, which has its own
+  `AbortController`), flushes the draft and, once it is on the device, calls `forgetLiveDraft` and
+  `releaseModel` and unregisters the lent pictures. A test drive is the one exception
+  (`leavingForDrive`, which lapses after 10 s in case the App declined the drive): it comes straight back
+  to the same document. `mountedEditors` (per draft key) keeps StrictMode's rehearsal remount and a Resume
+  that beats the flush from losing the draft. Consequence: after Back, Resume reads the draft from
+  IndexedDB like a reload, so the undo history and the source files (a Detail re-read) are gone, which is
+  the price of not holding every triangle for the session. (E3) **Nothing stores or drives the old model
+  while a file is read**: header Save, Export, Test drive and Review's Save are disabled while `phase` is
+  set, with `COPY.waitRead` as their title (the other steps say a read is running in theirs), and a read
+  that lands after a save is ignored (`gen` is bumped before the draft is dropped). (E4) **A model that
+  cannot be measured has a way out**: `measureBroke` (the measure worker rejected, `normalise` threw, or
+  the player cancelled "Measuring…") replaces "Measuring…" with `COPY.measureFailed` and keeps Choose
+  another file, Discard (shown whenever a `model` exists), Undo and Back reachable; an engine that never
+  loads for a restored draft says so with Try again (`engineDown`). `EditorBoundary` wraps the editor:
+  Back to Robot, or Discard this import after a confirm. A draft read back from the device opens on the
+  Model step, so a step that crashes does not crash again on resume; a live draft (a test drive's return)
+  keeps its step.
+- **A FIRST READ THAT FAILS IN THE MEASUREMENT SAYS SO** (`readFailureText`, M3). The sentence is the
+  engine's `ImportError` text, else, when the file read fine and its MEASUREMENT failed,
+  `COPY.readMeasureFailed` ("Couldn’t measure …. Close other tabs and try again, choose Light detail
+  (only at Full), or choose another file."), else the generic read failure. Exporting the file again
+  cannot fix a measurement failure, so it is never offered. `readModel`'s catch releases the model
+  (`held`) first, so the measure worker holding a copy of every triangle does not wait for two more
+  models to evict it.
 - ⚠️ **`computeBands` gives up above 1.5 × the 18 in cube** (`BAND_MAX_HEIGHT_IN`). Its cost
   grows with the cube of the slice count; a model in the wrong units (381 in tall) took 42 s
   and froze the editor between two clicks on Units. A robot that tall is refused anyway.
@@ -1449,6 +1662,7 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   centre (`REACH_IN`), its height inside `zRange` (the game's window under the robot's top, the height
   slider's own range). The handle list is memoised (`gizmoState`): the preview compares it by
   identity, and a new one every render rebuilt every handle mesh on every render and drag frame.
+- **Keyboard and pad reach every control but picking CAD parts** (MIMPUI-16, deliberately left): clicking a part in the 3D view to choose it is mouse-only. Every other control is a real button or field, the file pick is the OS dialog, and CAD import is a desktop workflow. A roving Parts list (arrows move through the bodies, Enter picks) is the fix if it is wanted, about a day's work.
 - **The preview takes a fresh `<canvas>` per controller.** Re-using one after `dispose()`
   (which forces a context loss) threw `Cannot read properties of null (reading 'precision')`
   on the next mount. A lost context falls back to the top-down map.
@@ -1456,6 +1670,15 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   `renderTop` / `renderThumb` on its parts moved by `STORED_MESH_TO_ROBOT`. Never a UI-side render.
 
 ## Proving it
+
+- **The public-importer rules** are held by `npm test` ("imports/public:", "L2.*:", "L3.*:", "C1:" and the
+  engine hardening checks "D*:", "E*:", "M*:"), `npm run test:workers` (the host setting, `visualDrop`,
+  the report robot and the get gate across the thread, on both server shapes) and `npm run dbtest`.
+  Derived constants are asserted by relationship (`SHARE_MAX_TRIANGLES` against `MAX_MESH_BYTES`, cases 0.1 m
+  outside `ROBOT_MESH_BOX_M`), never by a copied number, and a relay-validator fixture is in METRES.
+  `scripts/importpad.cjs` drives the editor by gamepad and keys. **No script yet drives the whole public
+  flow in windows** (two accounts in one room, the consent dialog, Outline, a report, a Public room's
+  refusals): walk it by hand against a local stack before the flip.
 
 - `npm test` runs the DOM-free half (a block at the end of `scripts/smoke.ts`): the catalogue,
   hull/reduction/wheels/bands, units and up axis in every orientation, HANDEDNESS (the synthetic
