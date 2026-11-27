@@ -33,12 +33,13 @@ export function LinkedAccounts() {
   };
   useEffect(load, []);
 
-  // the callback bounces back to /account?link=ok|taken|error — say what happened, once.
+  // the callback bounces back to /account?link=ok|taken|error|closed — say what happened, once.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search).get('link');
     if (!p) return;
     if (p === 'taken') setError('That account is already linked to another DSIM profile.');
     else if (p === 'error') setError('Couldn’t finish linking. Try again.');
+    else if (p === 'closed') setError('Couldn’t link that account. DSIM is closed right now, so try again when it reopens.');
     // strip it so a reload does not repeat the message (the same history entry: its scroll key stays)
     replaceRoute(window.location.pathname + window.location.hash);
   }, []);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { adminEditStanding, adminFetchStanding, type AdminStanding as AdminStandingData } from '../net/api';
 import { adminFail } from './adminCopy';
 import { ListState, confirmed } from './adminBits';
@@ -47,8 +47,13 @@ export function StandingEditor({
   const [score, setScore] = useState('');
   const [note, setNote] = useState('');
 
+  // a late answer for another account must not replace this one's (same guard as `AdminUser`);
+  // the callers key this editor on the account, so it also remounts
+  const latest = useRef(0);
   const load = (): void => {
+    const mine = ++latest.current;
     void adminFetchStanding(userId).then((d) => {
+      if (mine !== latest.current) return;
       setErr(d === null);
       if (d) {
         setData(d);
@@ -56,7 +61,13 @@ export function StandingEditor({
       }
     });
   };
-  useEffect(load, [userId]);
+  useEffect(() => {
+    load();
+    return () => {
+      latest.current++;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   const run = async (
     opts: Parameters<typeof adminEditStanding>[1],

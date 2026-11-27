@@ -111,7 +111,7 @@ import { Appearance } from './Appearance';
 import { RewardDialog } from './RewardDialog';
 import { NoticeDialog } from './NoticeDialog';
 import type { ProfileTab } from './ProfileTabs';
-import { authEnabled } from '../lib/authClient';
+import { authClient, authEnabled } from '../lib/authClient';
 import { useLanEnabled } from './useLanEnabled';
 import { lanEnabled, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
@@ -149,6 +149,36 @@ import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 
 /** the rehearsed Play page's handlers (`PlayRehearsal`) */
 const noop = (): void => {};
+
+/**
+ * `/admin` FOR AN ACCOUNT THAT IS NOT AN ADMIN SAYS SO. The console renders only for an admin, so the
+ * route used to draw an empty page under the bar. It waits for the two answers that decide it (the
+ * session, and the admin status `App` fetches once the session names a user), so an admin opening the
+ * address directly never sees the refusal flash up first. The server enforces every admin action; this
+ * is only the page's own answer.
+ */
+function AdminRefused({ signedIn, checked, onSignIn }: { signedIn: boolean; checked: boolean; onSignIn: () => void }) {
+  // `authEnabled` is a build constant, so the hook is called on every render or on none
+  const session = authEnabled ? authClient!.useSession() : null;
+  const resolving = !checked || (!signedIn && !!session && (session.isPending || !!session.data?.user));
+  if (resolving) return <p className="ds-loading">Loading…</p>;
+  return (
+    <>
+      <h1 className="ds-h1">Admin</h1>
+      <div className="ds-empty">
+        <div className="big">Admin sign-in required</div>
+        {signedIn ? 'This account doesn’t have admin access. Sign in with an admin account.' : 'Sign in with an admin account to open the console.'}
+        {!signedIn && authEnabled && (
+          <div>
+            <button className="ds-btn primary small" onClick={onSignIn}>
+              Sign in
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
 
 type Screen =
   | 'home'
@@ -1200,14 +1230,22 @@ export function App() {
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
   // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
+  /** the account the status above last answered for (null: signed out, which needs no fetch). It is
+   *  compared with the CURRENT account, so the render after a sign-in is "not answered yet" at once,
+   *  not one effect later. */
+  const [adminFor, setAdminFor] = useState<string | null | undefined>(undefined);
+  const adminChecked = adminFor === accountUserId;
   useEffect(() => {
     if (!accountUserId) {
       setIsAdmin(false);
+      setAdminFor(null);
       return;
     }
     let cancelled = false;
     fetchAdminStatus().then((s) => {
-      if (!cancelled) setIsAdmin(s.isAdmin);
+      if (cancelled) return;
+      setIsAdmin(s.isAdmin);
+      setAdminFor(accountUserId);
     });
     return () => {
       cancelled = true;
@@ -2065,7 +2103,7 @@ export function App() {
    * a `popstate`, which only swaps `screen`: what a start had staged for that one mount stayed
    * set, and the NEXT Solo practice mounted `GameView` as the tutorial, as the importer's test
    * drive or with the touch-layout editor open. `exitGame` clears the same four before it
-   * navigates, so after MENU this runs to no effect. The session is not touched here.
+   * navigates, so after MENU this runs to no effect. The session is left by the effect below.
    */
   const leftScreenRef = useRef(screen);
   useEffect(() => {
@@ -2076,6 +2114,23 @@ export function App() {
     setTestDrive(null);
     setEditMobileLayout(false);
     compReturnRef.current = null;
+  }, [screen]);
+  /**
+   * ⚠️ AND THE SESSION IS LEFT TOO. Back used to leave the `ServerSession` open with nothing rendering
+   * it (socket, 300 ms ping timer, seat attached), and Rejoin then built a second one over it.
+   * `backToRoomLobby` nulls the session in the same batch as its `navigate`, so a released socket is
+   * never disposed here; `exitGame` leaves first, so after MENU the ref is already null; the replay
+   * path (`onWatchReplay`) now really does tear it down on the way out, as its comment says.
+   */
+  const sessionLeftScreenRef = useRef(screen);
+  useEffect(() => {
+    const was = sessionLeftScreenRef.current;
+    sessionLeftScreenRef.current = screen;
+    if (was !== 'game' || screen === 'game') return;
+    if (sessionRef.current) leaveSession();
+    // `leaveSession` is re-created every render and reads this render's session, which is the one
+    // `sessionRef` holds in this same commit
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
@@ -2497,6 +2552,7 @@ export function App() {
         game={settings.game}
         page={popup ? 'modes' : screen}
         scrollPage={scrollPage}
+        popup={popup}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both
@@ -2592,7 +2648,7 @@ export function App() {
           onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
           onChange={update}
           onEditRobot={() => navigate('configure', { sub: 'robot' })}
-          onImport={(id) => (importerOn ? navigate('robotimport', { sub: id ?? null }) : navigate('configure', { sub: 'robot' }))}
+          onImport={importerOn ? (id) => navigate('robotimport', { sub: id ?? null }) : undefined}
           multiplayer={multiplayer}
           signedIn={signedIn}
           onFreeDrive={() =>
@@ -2634,7 +2690,7 @@ export function App() {
             onTutorial={moduleFor(settings.game).tutorial ? noop : undefined}
             onChange={noop}
             onEditRobot={noop}
-            onImport={noop}
+            onImport={importerOn ? noop : undefined}
             multiplayer={multiplayer}
             signedIn={signedIn}
             onFreeDrive={noop}
@@ -3059,6 +3115,9 @@ export function App() {
         <LoadBoundary what="the console" fallback={<p className="ds-loading">Loading the console…</p>}>
           <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} onCompetition={(sub) => navigate('competitions', { sub })} />
         </LoadBoundary>
+      )}
+      {screen === 'admin' && !isAdmin && (
+        <AdminRefused signedIn={signedIn} checked={adminChecked} onSignIn={() => navigate('account')} />
       )}
       {screen === 'dev' &&
         (() => {

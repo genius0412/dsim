@@ -27,6 +27,10 @@
 /**
  * Last substantive revision — shown on both pages.
  *
+ * November 26, 2026 (owner): imported robots in rooms. What other players receive when you play a
+ * robot imported from CAD (its outline and measurements always; its picture and a lighter copy of
+ * its model only if you share them), what a replay keeps of it, and the rule for what you may share.
+ *
  * October 10, 2026 (owner): Public rooms. A host who is signed in can now list a room in Browse
  * rooms, which publishes their in-room name, the game, the seats taken and the room code.
  *
@@ -35,7 +39,7 @@
  * Moving this asks EVERY signed-in account to accept the terms again, once — move it for a
  * material change, never for a typo.
  */
-export const LEGAL_UPDATED = 'October 10, 2026';
+export const LEGAL_UPDATED = 'November 26, 2026';
 
 /**
  * THE SAME REVISION, AS A SORTABLE KEY — what an acceptance is recorded against.
@@ -196,7 +200,8 @@ Only if you create an account:
   runs and ranked matches.
 - **Replays**: the random seed, robot configurations, and per-tick inputs needed to
   reconstruct a match. A replay contains no personal information beyond the robot
-  setups and the account it belongs to.
+  setups and the account it belongs to. A replay of a room match with an imported robot
+  also holds that robot’s measurements, never its model or pictures.
 - **Ranking**: your Glicko-2 rating, deviation, and match history.
 - **Social**: friend requests, friendships, blocks, room invites, and an online or
   last-seen status if you use those features.
@@ -282,6 +287,23 @@ competition rather than something we do to every room:
   running, as above. A Private room is not listed, and its code is shared only by whoever
   holds it. Taking a room out of the list can take a few seconds to show, and a code someone
   has already seen keeps working until the room closes.
+
+## Imported robots in rooms
+
+You can import a robot from your own CAD and play it in a room. What the other players
+receive depends on what you choose:
+
+- **Always**: everyone in a room you play an imported robot in, and anyone watching it,
+  sees its outline and measurements. The room needs them to play.
+- **Only if you turn sharing on**: its top picture and, in BIOBUZZ, a lighter copy of its
+  3D model. They are held in the game server’s memory while the room lasts, and are never
+  written to a database or a replay.
+- **In a Public room**, people watching get the picture only, and only signed-in players’
+  looks are shown.
+- **Turning sharing off** stops it. Anyone who already received your picture or model
+  keeps it until they leave that room.
+- **Other players’ choices**: they can show any robot as an outline on their own screen,
+  and can report a look after a match.
 
 ## Site administrators
 
@@ -512,6 +534,11 @@ their current terms until they lapse.
 Robot names, usernames, and anything else you type stay yours. You give us
 permission to display them where you would expect: leaderboards, profiles, match
 results, and replays.
+
+**Imported robots.** Import only CAD you have the right to use. When you share an
+imported robot’s look, you let us send its picture and a lighter copy of its model to the
+rooms you play it in, and nowhere else. A look must not be offensive: players can hide
+and report it, and an account that shares offensive looks may lose access.
 
 ## What we do not promise
 

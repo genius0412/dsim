@@ -32,7 +32,7 @@ import {
 } from './db/repo';
 import { emailGateRefusal, verifyAuthToken, type AuthedUser } from './auth';
 import { ADMIN_IDS } from './staff';
-import { moderateName } from './moderation';
+import { moderateName, NAME_CHECK_BUSY } from './moderation';
 import { MATCHMAKER_REGION } from './regions';
 import { SERVER_CHANNEL } from './channel';
 import type { CompetitionTag, PendingMatch, PendingRosterEntry } from './matchTypes';
@@ -1266,7 +1266,11 @@ const intIn = (v: unknown, min: number, max: number): number | null => {
 
 /** may this text be shown publicly (the same moderation every other public name goes through) */
 async function cleanPublic(v: string, what: string): Promise<string> {
-  if (v && !(await moderateName(v)).allowed) refuse(400, `That ${what} isn’t allowed. Please choose another.`);
+  if (!v) return v;
+  const r = await moderateName(v);
+  if (!r.allowed) refuse(400, `That ${what} isn’t allowed. Please choose another.`);
+  // unchecked only because the hosted budget is spent: this text is public and stays, so refuse it
+  if (r.budget) refuse(400, NAME_CHECK_BUSY);
   return v;
 }
 
@@ -2098,6 +2102,29 @@ async function statusRoute(
 
 // ---------------------------------------------------------------------- entries (organizer)
 
+/**
+ * WHICH STAFF ACTIONS A STATE ALLOWS (COMPS-06). Only the three that CHANGE who is in:
+ *  - a `completed` or `cancelled` competition takes no disqualify, remove or reinstate: its
+ *    results are the record, and a removal there would also notify a player about a competition
+ *    that is over;
+ *  - `reinstate` undoes a disqualification or a withdrawal and nothing else. On a registered
+ *    entry it only wrote a log line, and on a waitlisted or pending one it let an entry past the
+ *    capacity (or a duo past its partner's acceptance) with no check.
+ * The rest (note, seed, rename, check-in, promote, demote) are corrections a referee may need at
+ * any time, and `promote` and `demote` already check their own state. Returns the sentence the
+ * organizer reads, or null.
+ */
+export function entryActionRefusal(act: string, entryStatus: string, compStatus: string): string | null {
+  if (act !== 'disqualify' && act !== 'remove' && act !== 'reinstate') return null;
+  if (compStatus === 'completed' || compStatus === 'cancelled') {
+    return `Couldn’t ${act} that entry. This competition is ${compStatus}, so its entries are final.`;
+  }
+  if (act === 'reinstate' && entryStatus !== 'disqualified' && entryStatus !== 'withdrawn') {
+    return 'Couldn’t reinstate that entry. Only a disqualified or withdrawn entry can be reinstated.';
+  }
+  return null;
+}
+
 async function entriesRoute(
   comp: db.CompRow,
   user: AuthedUser,
@@ -2141,6 +2168,8 @@ async function entriesRoute(
   const entry = e!;
   const name = nameOfEntry(entry);
   const before = comp.status === 'draft' || comp.status === 'published';
+  const stateRefusal = entryActionRefusal(act, entry.status, comp.status);
+  if (stateRefusal) refuse(409, stateRefusal);
   switch (act) {
     case 'remove':
       if (before) await db.deleteEntry(entry.id);
@@ -2218,7 +2247,8 @@ async function drawQuals(comp: db.CompRow, st: CompState, eligible: db.EntryRow[
   const ids = eligible.map((e) => e.id).sort((a, b) => a - b);
   const per = entriesPerAlliance(comp.format, comp.teamMode);
   const s = st.settings.quals;
-  // a fresh seed per draw, from the competition's: re-drawing gives a different schedule
+  // a fresh seed per draw: the competition's plus the clock, so re-drawing gives a different
+  // schedule. The seed is NOT stored, so a draw cannot be reproduced; the matches rows are the record.
   const seed = (comp.rngSeed + Date.now()) % 2147483647;
   // a round robin is counted BEFORE it is drawn: 256 entries over three cycles is 97,920 matches
   if (s.kind === 'roundRobin') refuseLongSchedule(roundRobinMatches(ids.length, s.matchesPerEntry), 'Use fewer cycles, or Balanced or Swiss qualifications.');

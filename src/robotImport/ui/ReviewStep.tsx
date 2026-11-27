@@ -70,6 +70,7 @@ export function ReviewStep({
           />
         </label>
       </div>
+      <p className="ds-hint">{COPY.reviewSharing}</p>
     </>
   );
 }

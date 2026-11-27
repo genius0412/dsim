@@ -32,9 +32,20 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
-import { IMPORT_ID_TAKEN, IMPORT_MEMBER_NEEDS_UPDATE, IMPORT_REFUSED_HERE, IMPORT_REFUSED_RANKED, IMPORT_ROOM_NEEDS_UPDATE, ROBOT_IMPORT_CAP } from '../src/net/imported';
+import {
+  IMPORT_HOST_OFF,
+  IMPORT_HOST_OFF_CODE,
+  IMPORT_ID_TAKEN,
+  IMPORT_MEMBER_NEEDS_UPDATE,
+  IMPORT_OFF_REFUSED,
+  IMPORT_REFUSED_HERE,
+  IMPORT_REFUSED_RANKED,
+  IMPORT_ROOM_NEEDS_UPDATE,
+  IMPORTS2_CAP,
+  ROBOT_IMPORT_CAP,
+} from '../src/net/imported';
 import * as IV from '../src/net/importVisuals';
-import { visualBytesInUse } from '../server/importVisuals';
+import { visualBytesInUse, visualSourceKey } from '../server/importVisuals';
 import { IMPORTS_OPEN_HERE } from '../server/channel';
 import { glbBytes, pngBytes } from './visualFixtures';
 import type { Alliance, RobotCommand } from '../src/types';
@@ -391,6 +402,110 @@ async function partA(): Promise<void> {
     op.add(impClient(so2, 'o1', 'red'));
     await answered(so2);
     check('A: the same room opened by its config allows them on both threads', op.importState().allows && so2.msgs('welcome').length > 0);
+  }
+
+  // ---- the host's "Imported robots" setting, across the thread (`'imports2'`) ---------------------
+  // The door reads `RemoteRoom.importState()`, whose host term comes from `config.settings`, which
+  // follows the worker's room through `applyFacts`: a message behind. The worker's `Room.add` asks again.
+  {
+    const impClient = (sock: ReturnType<typeof fakeSocket>, id: string, alliance: Alliance, iid = IMP.id): Client => {
+      const c = clientOn(sock, id, `u-${id}`, alliance);
+      c.player.spec = { ...c.player.spec, imported: { ...IMP, id: iid } } as typeof c.player.spec;
+      return c;
+    };
+    const answered = (sock: ReturnType<typeof fakeSocket>): Promise<boolean> =>
+      until(() => sock.msgs('welcome').length > 0 || sock.msgs('error').length > 0, 5000);
+    const hostOffErr = (sock: ReturnType<typeof fakeSocket>): boolean =>
+      sock.msgs('welcome').length === 0 &&
+      sock.msgs('error').some((m) => (m as { message?: string; code?: string }).message === IMPORT_HOST_OFF && (m as { code?: string }).code === IMPORT_HOST_OFF_CODE);
+
+    const pub = createRoom('wt-pub', () => {}, { kind: 'versus', game: 'decode', imports: true, settings: coerceRoomSettings('versus', undefined, { listed: true }) });
+    const ps = pub.importState();
+    check("A: a Public room on a worker reads 'Not allowed' on the socket thread, and says it is the host (hostOff)", !ps.allows && ps.hostOff === true);
+    const sp = fakeSocket();
+    pub.add(impClient(sp, 'pp', 'red'));
+    await answered(sp);
+    check('A: ...and the worker room refuses an imported join with the host-off sentence and its code', hostOffErr(sp), JSON.stringify(sp.msgs('error')));
+
+    const priv = createRoom('wt-priv', () => {}, { kind: 'versus', game: 'decode', imports: true, settings: coerceRoomSettings('versus', undefined, { listed: false }) });
+    const sh = fakeSocket();
+    priv.add(clientOn(sh, 'ph', 'u-ph', 'red'));
+    await answered(sh);
+    check('A: a Private room on a worker allows imports', priv.importState().allows && priv.importState().hostOff === undefined);
+    priv.onMessage('ph', { t: 'roomSettings', patch: { importedRobots: 'off' } });
+    // the mirror is a message behind: the door would still let an import through...
+    const stale = priv.importState().allows;
+    const sj = fakeSocket();
+    priv.add(impClient(sj, 'pj', 'blue', 'fedcba9876543210'));
+    await answered(sj);
+    check("A: ⚠️ a host's 'Not allowed' that the door's mirror has not seen yet is still enforced by the worker's Room.add, with the code",
+      stale && hostOffErr(sj), JSON.stringify(sj.msgs('error')));
+    check('A: ...and the mirror catches up (config.settings follows the worker, hostOff on the socket thread)',
+      await until(() => priv.importState().hostOff === true && !priv.importState().allows, 3000));
+    priv.onMessage('ph', { t: 'roomSettings', patch: { importedRobots: 'on' } });
+    check("A: ...'on' clears it on both threads", await until(() => priv.importState().allows, 3000));
+    const sk = fakeSocket();
+    priv.add(impClient(sk, 'pk', 'blue', 'fedcba9876543210'));
+    await answered(sk);
+    check('A: ...and an imported join is seated again', sk.msgs('welcome').length > 0);
+    priv.onMessage('ph', { t: 'roomSettings', patch: { importedRobots: 'off' } });
+    await sleep(300);
+    check("A: ⚠️ 'Not allowed' is refused while a seat holds an import (the worker's changeSettings), and the room still allows them",
+      sh.msgs('error').some((m) => (m as { message?: string }).message === IMPORT_OFF_REFUSED) && priv.importState().allows);
+
+    // visualDrop and the look report's robot, across the thread
+    const png = pngBytes(64, 64, { noise: true, seed: 3 });
+    const base = visualBytesInUse();
+    for (let seq = 0; seq < IV.visualFrames(png.length); seq++) {
+      const s = IV.visualSpan(png.length, seq);
+      priv.onMessage('pk', { t: 'visualPut', kind: 'top', id: 'fedcba9876543210', total: png.length, seq, data: IV.bytesToBase64(png, s.start, s.end) });
+    }
+    check('A: an upload on the worker holds its bytes', await until(() => visualBytesInUse() - base === png.length, 3000));
+    priv.onMessage('pk', { t: 'visualDrop' });
+    check('A: ⚠️ visualDrop crosses the thread and frees them', await until(() => visualBytesInUse() === base, 3000), String(visualBytesInUse() - base));
+    priv.onMessage('ph', { t: 'start' });
+    await until(() => sk.msgs('matchStart').length > 0, 5000);
+    const kRobot = (sk.msgs('matchStart')[0] as Extract<ServerMsg, { t: 'matchStart' }> | undefined)?.yourRobotId ?? -1;
+    const rep = await priv.resolveReport('ph', kRobot);
+    check("A: resolveReport names the reported import across the thread (the `look` report's robot)",
+      rep?.reportedId === 'u-pk' && rep.robot?.id === 'fedcba9876543210', JSON.stringify(rep));
+  }
+
+  // ---- a signed-in watcher pays by account, across the thread (`rekeyWatcher`) ----------------------
+  {
+    const room = createRoom('wt-rekey', () => {}, { kind: 'versus', game: 'decode', imports: true });
+    const so = fakeSocket();
+    const co = clientOn(so, 'ro', 'u-ro', 'red');
+    co.player.spec = { ...co.player.spec, imported: IMP } as typeof co.player.spec;
+    room.add(co);
+    await until(() => so.msgs('welcome').length > 0, 5000);
+    const mesh = glbBytes({ tris: 25_000 }); // ~0.9 MiB
+    for (let seq = 0; seq < IV.visualFrames(mesh.length); seq++) {
+      const s = IV.visualSpan(mesh.length, seq);
+      room.onMessage('ro', { t: 'visualPut', kind: 'mesh', id: IMP.id, total: mesh.length, seq, data: IV.bytesToBase64(mesh, s.start, s.end) });
+    }
+    await until(() => so.msgs('visualReady').length > 0, 5000);
+    const n = Math.floor(IV.VISUAL_SERVE_CLIENT_BYTES / mesh.length);
+    const addr = visualSourceKey('ip:198.51.100.7');
+    const ws: ReturnType<typeof fakeSocket>[] = [];
+    for (let i = 0; i <= n; i++) {
+      const sw = fakeSocket();
+      room.addSpectator({ id: `rw${i}`, send: sw.send, player: { ...makePlayer(`rw${i}`, 'red', 0), clientId: `rw${i}` }, connected: true, disconnectAt: 0, caps: CLIENT_CAPS, budgetKey: addr });
+      ws.push(sw);
+    }
+    await until(() => ws.every((w) => w.msgs('welcome').length > 0), 5000);
+    for (let i = 0; i <= n; i++) room.onMessage(`rw${i}`, { t: 'visualGet', owner: 'ro', id: IMP.id, kind: 'mesh' });
+    const busy = (w: ReturnType<typeof fakeSocket>): boolean => w.msgs('visualRefused').some((m) => (m as { reason?: string }).reason === 'busy');
+    await until(() => busy(ws[n]), 3000);
+    check(`A: ${n + 1} watchers on one address share one serve window on a worker: the last is busy`, busy(ws[n]) && ws.slice(0, n).every((w) => !busy(w)));
+    room.rekeyWatcher(`rw${n}`, visualSourceKey('u:acct-rw'));
+    room.onMessage(`rw${n}`, { t: 'visualGet', owner: 'ro', id: IMP.id, kind: 'mesh' });
+    check('A: ⚠️ rekeyWatcher crosses the thread: the same watcher, now its account, is streamed the mesh',
+      await until(() => ws[n].msgs('visualChunk').length > 0, 5000) && ws[n].msgs('visualRefused').length === 1);
+    // give the bytes back, so the budget checks further down start from what they read
+    const held = visualBytesInUse();
+    room.detach('ro', co.conn, true);
+    await until(() => visualBytesInUse() === held - mesh.length, 3000);
   }
 
   // ---- reattach and the report resolvers answer across the thread ----------------------------
@@ -898,6 +1013,34 @@ async function scenarios(s: Server): Promise<void> {
     K2.close();
     L2.close();
   }
+  {
+    // THE HOST'S "IMPORTED ROBOTS" SETTING AT THE REAL DOOR (`'imports2'`): a Public room starts at
+    // Not allowed, so an imported joiner is refused with the sentence AND the code a client acts on
+    const caps = (((await (await fetch(`${s.http}/api/presence`)).json()) as { caps?: string[] }).caps ?? []);
+    check(L('/api/presence advertises imports2'), caps.includes(IMPORTS2_CAP), caps.join(','));
+    const pubCfg: RoomConfig = { kind: 'versus', game: 'decode', settings: coerceRoomSettings('versus', undefined, { listed: true }) };
+    const room4 = newCode();
+    const H = await open();
+    H.send({ t: 'join', room: room4, config: pubCfg, player: stdP('H', 'red'), caps: CLIENT_CAPS });
+    const roster = await H.until('roster');
+    check(L("a room created Public reads 'Not allowed' on its roster"), roster?.settings?.importedRobots === 'off', JSON.stringify(roster?.settings));
+    const J = await open();
+    J.send({ t: 'join', room: room4, config: pubCfg, player: impP('J', 'blue'), caps: CLIENT_CAPS });
+    const je = await J.until('error');
+    check(L('⚠️ ...an imported joiner is refused at the door with the host-off sentence and code imports_off'), je?.message === IMPORT_HOST_OFF && je.code === IMPORT_HOST_OFF_CODE, JSON.stringify(je));
+    J.close();
+    H.send({ t: 'roomSettings', patch: { importedRobots: 'on' } });
+    await H.until('roster', (m) => m.settings?.importedRobots === undefined, 5000, H.log.length);
+    const J2 = await open();
+    J2.send({ t: 'join', room: room4, config: pubCfg, player: impP('J2', 'blue'), caps: CLIENT_CAPS });
+    check(L('...and seated once the host allows them'), !!(await J2.until('welcome')));
+    const mark = H.log.length;
+    H.send({ t: 'roomSettings', patch: { importedRobots: 'off' } });
+    const he = await H.until('error', () => true, 3000, mark);
+    check(L("...while it holds one, the host's Not allowed is refused with the sentence"), he?.message === IMPORT_OFF_REFUSED, he?.message);
+    J2.close();
+    H.close();
+  }
 
   await visuals(s);
 }
@@ -990,6 +1133,22 @@ async function visuals(s: Server): Promise<void> {
   R.send({ t: 'visualPut', kind: 'top', id: IMP.id, total: 12, seq: 0, data: IV.bytesToBase64(new Uint8Array(12).fill(7)) });
   const rr = await R.until('visualRefused', () => true, 3000, m3);
   check(L('a record room refuses an upload, with the room reason'), rr?.reason === 'room', JSON.stringify(rr));
+
+  // THE MACHINE-WIDE GET GATE (`'imports2'`): every socket here is one address, so past
+  // `VISUAL_GETS_PER_SOURCE_MIN` a minute the socket thread answers `busy` and the room never sees
+  // the request (it would answer `none`: the owner is gone). Last in this server's run, because the
+  // gate is the process's and outlives the room.
+  const m4 = V.log.length;
+  const N = IV.VISUAL_GETS_PER_SOURCE_MIN + 6;
+  for (let i = 0; i < N; i++) V.send({ t: 'visualGet', owner: ownerId, id: IMP.id, kind: 'top' });
+  await until(() => V.log.slice(m4).filter((m) => m.t === 'visualRefused').length >= N, 5000);
+  // (on a worker the forwarded ones answer later than the gate's, so the count is checked, not the order)
+  const answers = (V.log.slice(m4).filter((m) => m.t === 'visualRefused') as Extract<ServerMsg, { t: 'visualRefused' }>[]).map((m) => m.reason);
+  const nones = answers.filter((r) => r === 'none').length;
+  const busys = answers.filter((r) => r === 'busy').length;
+  check(L('⚠️ past 24 visualGets a minute from one address, the socket thread answers busy and does not forward'),
+    answers.length === N && nones + busys === N && nones <= IV.VISUAL_GETS_PER_SOURCE_MIN && busys >= N - IV.VISUAL_GETS_PER_SOURCE_MIN,
+    answers.join(','));
   for (const k of [V, X, S, R]) k.close();
 }
 
@@ -1006,6 +1165,7 @@ async function closedGate(s: Server): Promise<void> {
   const caps = (((await (await fetch(`${s.http}/api/presence`)).json()) as { caps?: string[] }).caps ?? []);
   check(L('⚠️ /api/presence advertises neither robotImport nor importVisuals'), !caps.includes(ROBOT_IMPORT_CAP) && !caps.includes(IV.IMPORT_VISUALS_CAP) && caps.includes('rooms2'), caps.join(','));
   check(L('the boot line says the gate is closed'), s.log.join('').includes('imports=closed'));
+  check(L("...and it still advertises imports2 (the flip checks every region runs this code, closed)"), caps.includes(IMPORTS2_CAP), caps.join(','));
   const open = (): Promise<Sock> => new Sock(s.url).open();
   const room = newCode();
   const P = await open();

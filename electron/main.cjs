@@ -1,9 +1,13 @@
-const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, net } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme, net, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const lanHost = require('./lanHost.cjs');
+const trust = require('./trust.cjs');
+const { permissionAllowed, AD_URL_PATTERNS, isMailtoNavigation } = require('./permissions.cjs');
+const { shouldNotify } = require('./updateNotify.cjs');
 
-const SITE = 'https://www.playdsim.com';
+// one definition of the live site's address, shared with the trust rules (electron/trust.cjs)
+const SITE = trust.SITE_ORIGIN;
 const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest';
 
 /**
@@ -16,13 +20,10 @@ const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest
  * the app itself opens is https, or mailto on the legal pages.
  */
 function openLink(url) {
-  let scheme = '';
-  try {
-    scheme = new URL(String(url)).protocol;
-  } catch {
-    return;
-  }
-  if (scheme === 'https:' || scheme === 'mailto:') shell.openExternal(url);
+  // the PARSED href is what is opened: the URL parser drops tabs, newlines and leading blanks,
+  // so the string that passed the scheme check is not necessarily the one a handler would see
+  const href = trust.safeExternalUrl(url);
+  if (href) shell.openExternal(href);
 }
 
 /**
@@ -106,6 +107,24 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // The one same-window navigation we do take: a `mailto:` link (the Privacy and Terms contact
+  // addresses). Chromium would ask the `openExternal` permission, which is refused, so the link
+  // would do nothing; stop it and hand it to the OS through `openLink` (https and mailto only).
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isMailtoNavigation(url)) return;
+    event.preventDefault();
+    openLink(url);
+  });
+
+  // A RELOAD (or any later load) OF THE LIVE SITE THAT FAILS PUTS THE BUNDLED COPY UP. `loadApp`
+  // covers only the first load; a window that was online at launch and went offline (Ctrl+R, the
+  // site address followed from the bundle) was left blank. Only the main frame of a load of the
+  // site: a failed provider page or sub-frame must not replace the app, and ERR_ABORTED is a
+  // navigation replaced by another (see `shouldFallBackToBundle`).
+  win.webContents.on('did-fail-load', (_e, errorCode, _description, validatedURL, isMainFrame) => {
+    if (trust.shouldFallBackToBundle(isMainFrame, errorCode, validatedURL, SITE)) loadLocal(win);
+  });
+
   /**
    * THE HANDOVER, and its three exits — because a splash that outlives its window
    * is a frameless always-on-top rectangle the user cannot get rid of.
@@ -139,8 +158,17 @@ function createWindow() {
 // game-server + auth config in for ELECTRON=1), so multiplayer works from it too if
 // a network is present — the fallback only really means "solo/offline" when there's
 // genuinely no connection.
+const lastLocalLoad = new WeakMap();
 function loadLocal(win) {
-  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  if (win.isDestroyed()) return;
+  // `loadApp`'s catch and the `did-fail-load` handler can both answer the same failed load; the
+  // second would only restart the navigation the first just began
+  const now = Date.now();
+  if (now - (lastLocalLoad.get(win) || 0) < 2000) return;
+  lastLocalLoad.set(win, now);
+  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html')).catch(() => {
+    /* a navigation replaced by another is ERR_ABORTED; nothing else to fall back to */
+  });
 }
 
 async function loadApp(win) {
@@ -409,6 +437,14 @@ async function promptUpdate(interactive) {
     return;
   }
   if (r.updateAvailable) {
+    // The BACKGROUND check tells a player about a version once, and at most weekly (every push to
+    // main releases, so a player here is behind nearly always). The menu's own check is never
+    // asked: somebody who pressed the button is always answered.
+    if (!interactive) {
+      const now = Date.now();
+      if (!shouldNotify(readPrefs(), r.latest, now)) return;
+      writePrefs({ notifiedVersion: r.latest, notifiedAt: now });
+    }
     const { response } = await dialog.showMessageBox({
       type: 'info',
       message: `A new version of DSIM is available (${r.latest}).`,
@@ -429,15 +465,28 @@ async function promptUpdate(interactive) {
 }
 
 // ---- renderer bridge (see electron/preload.cjs) -------------------------
-ipcMain.handle('dsim:version', () => app.getVersion());
-ipcMain.handle('dsim:check', () => checkLatest()); // in-app UI: returns the result, no dialog
-ipcMain.handle('dsim:installUpdate', () => installUpdate());
-ipcMain.handle('dsim:getAuto', () => getAutoCheck());
-ipcMain.handle('dsim:setAuto', (_e, v) => {
-  setAutoCheck(v);
-  return getAutoCheck();
-});
-ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`));
+/**
+ * EVERY HANDLER BELOW IS WRAPPED IN `guarded(…)`: it answers `{ error: 'forbidden' }` unless the
+ * sender is the TOP frame of the live site or of the bundled `file:` page (`electron/trust.cjs`).
+ * The preload already exposes `window.dsim` to those pages only; this is the second layer, for a
+ * frame that reaches the channel some other way. The main window leaves the site by design (the
+ * account-link flow navigates it to GitHub and Discord), and those pages must not be able to
+ * start a LAN server, relaunch the app or install an update. A new `ipcMain.handle` that is not
+ * wrapped is a bug (`scripts/smoke.ts` counts them).
+ */
+const guarded = trust.guarded;
+ipcMain.handle('dsim:version', guarded(() => app.getVersion()));
+ipcMain.handle('dsim:check', guarded(() => checkLatest())); // in-app UI: returns the result, no dialog
+ipcMain.handle('dsim:installUpdate', guarded(() => installUpdate()));
+ipcMain.handle('dsim:getAuto', guarded(() => getAutoCheck()));
+ipcMain.handle(
+  'dsim:setAuto',
+  guarded((_e, v) => {
+    setAutoCheck(v);
+    return getAutoCheck();
+  }),
+);
+ipcMain.handle('dsim:openDownload', guarded(() => shell.openExternal(`${SITE}/download`)));
 
 /**
  * GOOGLE SIGN-IN IN A POP-UP (owner, 2026-09-24: on the desktop app "clicking on the log in with
@@ -456,7 +505,7 @@ ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`)
  * it recognises as an embedded browser. Only this window's; the site reads "Electron" in the main
  * window's to know it is the desktop app.
  */
-ipcMain.handle('dsim:oauth', (e, opts) => {
+ipcMain.handle('dsim:oauth', guarded((e, opts) => {
   const url = opts && typeof opts.url === 'string' ? opts.url : '';
   const callback = opts && typeof opts.callback === 'string' ? opts.callback : '';
   if (!/^https:\/\//.test(url) || !/^https:\/\//.test(callback)) return Promise.resolve({ error: 'bad-request' });
@@ -510,7 +559,7 @@ ipcMain.handle('dsim:oauth', (e, opts) => {
       /* an aborted load is the callback being intercepted, not a failure */
     });
   });
-});
+}));
 
 /**
  * THE FRAME-RATE SWITCHES. Two facts, not one, because they can legitimately disagree:
@@ -519,21 +568,27 @@ ipcMain.handle('dsim:oauth', (e, opts) => {
  * it to know, and guessing would make the restart prompt appear when nothing had changed.
  */
 const perfState = () => ({ unlimitedFps: getUnlimitedFps(), active: UNLIMITED_FPS_ACTIVE });
-ipcMain.handle('dsim:getPerf', () => perfState());
-ipcMain.handle('dsim:setPerf', (_e, v) => {
-  setUnlimitedFps(v);
-  return perfState();
-});
+ipcMain.handle('dsim:getPerf', guarded(() => perfState()));
+ipcMain.handle(
+  'dsim:setPerf',
+  guarded((_e, v) => {
+    setUnlimitedFps(v);
+    return perfState();
+  }),
+);
 /**
  * RESTART, ONLY EVER BECAUSE SOMEBODY PRESSED A BUTTON. The Graphics screen is its own
  * top-level screen (`screen === 'configure'` in `App.tsx`), mutually exclusive with the one a
  * match runs on, so there is no match to interrupt from there — but the rule stands anyway:
  * nothing in the main process may decide on its own that now is a good moment to quit.
  */
-ipcMain.handle('dsim:relaunch', () => {
-  app.relaunch();
-  app.quit();
-});
+ipcMain.handle(
+  'dsim:relaunch',
+  guarded(() => {
+    app.relaunch();
+    app.quit();
+  }),
+);
 
 /**
  * HOSTING A LAN GAME. See `electron/lanHost.cjs`.
@@ -543,9 +598,9 @@ ipcMain.handle('dsim:relaunch', () => {
  * in the main process, because none of it is the renderer's business and some of it
  * (blanking `DATABASE_URL`) is a rule rather than a detail.
  */
-ipcMain.handle('dsim:lanStart', (_e, opts) => lanHost.start(app, opts || {}));
-ipcMain.handle('dsim:lanStop', () => lanHost.stop());
-ipcMain.handle('dsim:lanStatus', () => lanHost.status());
+ipcMain.handle('dsim:lanStart', guarded((_e, opts) => lanHost.start(app, opts || {})));
+ipcMain.handle('dsim:lanStop', guarded(() => lanHost.stop()));
+ipcMain.handle('dsim:lanStatus', guarded(() => lanHost.status()));
 
 function buildMenu() {
   const isMac = process.platform === 'darwin';
@@ -569,7 +624,30 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * WHAT A PAGE MAY ASK THE SYSTEM FOR, AND WHAT IT MAY FETCH. Both are installed on the default
+ * session, which the main window and the sign-in pop-up share, BEFORE `createWindow()`.
+ *
+ * Electron grants every permission with no prompt unless these handlers exist, so any frame the
+ * window shows could use the camera, microphone or location. Both handlers are needed: a web API
+ * usually runs the check and then, if that is denied, the request (`electron/permissions.cjs`
+ * holds the allow list). The ad hosts are cancelled because AdSense does not permit serving in an
+ * app wrapper and the live site carries the publisher tag; the page still loads (the tag is
+ * async and `AdsProvider` treats a missing `adsbygoogle` as no ads).
+ */
+function lockDownSession() {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permissionAllowed(permission));
+  });
+  ses.setPermissionCheckHandler((_webContents, permission) => permissionAllowed(permission));
+  ses.webRequest.onBeforeRequest({ urls: [...AD_URL_PATTERNS] }, (_details, callback) => {
+    callback({ cancel: true });
+  });
+}
+
 app.whenReady().then(() => {
+  lockDownSession();
   buildMenu();
   // splash FIRST, so there is something on screen while `createWindow` starts its
   // reachability probe and the site load behind it

@@ -9,6 +9,8 @@
 #    each satellite back on its own size. That listing is retried once, and a second failure is
 #    said out loud and fails the script, instead of ending it silently with every satellite left
 #    on fly.toml's size.
+# 3. THE ZENITH FETCH IS PART OF `--check`. The vendored tarballs are fetched (or refused) before the
+#    `--check` exit, so announce-deploy.sh cannot count down to a deploy that dies at the fetch.
 #
 # `fly` is a stub, first on PATH. In part 1 it fails loudly: a case that got past the check and
 # reached a deploy shows as FLY CALLED. In part 2 it plays a deploy that works and a listing
@@ -117,6 +119,33 @@ flake "the listing answers: the satellite is re-shrunk, the primary is left alon
 flake "the listing fails once: it is tried again, and the satellite is re-shrunk" 1 0 "trying once more" "m-ord "
 flake "the listing fails twice: nothing is re-shrunk, the script says so and fails" 2 1 "COULD NOT BE LISTED" ""
 
+# ---- 3. --check asks for the Zenith tarballs too -------------------------------------------------
+# announce-deploy.sh runs --check before it tells every player a restart is coming. The fetch used to
+# sit AFTER the --check exit, so a fresh worktree with no tarballs and no ZENITH_VENDOR_* said "ok to
+# deploy", the countdown ran, and the deploy then died at the fetch with nothing deployed. Here the
+# REAL fetch script runs in a throwaway repository with one vendored dependency.
+cp "$(dirname "$SCRIPT")/fetch-zenith.mjs" scripts/fetch-zenith.mjs
+mkdir -p vendor/zenith
+printf 'not a real tarball\n' > "$T/core.tgz"
+INTEGRITY=$(node -e 'const c=require("crypto"),fs=require("fs");process.stdout.write("sha512-"+c.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$T/core.tgz")
+cat > package.json <<'JSON'
+{ "name": "t", "optionalDependencies": { "@horizon36596/zenith-core": "file:vendor/zenith/core.tgz" } }
+JSON
+printf '{ "lockfileVersion": 3, "packages": { "node_modules/@horizon36596/zenith-core": { "integrity": "%s" } } }\n' "$INTEGRITY" > package-lock.json
+git add scripts/fetch-zenith.mjs package.json package-lock.json
+git commit -q -m zenith 2>/dev/null && git push -q origin main
+NOVENDOR=(-u ZENITH_VENDOR_REPO -u ZENITH_VENDOR_TOKEN -u ZENITH_VENDOR_REF)
+run "--check refuses, before any banner, when the Zenith tarballs are missing and no vendor variables are set" 1 "vendor/zenith/core.tgz missing and ZENITH_VENDOR_REPO and ZENITH_VENDOR_TOKEN unset" "${NOVENDOR[@]}" bash "$SCRIPT" --check
+out=$(env "${NOVENDOR[@]}" bash "$SCRIPT" --check 2>&1)
+if echo "$out" | grep -q "ok to deploy"; then
+  echo "FAIL  ...and it never says ok to deploy :: $(echo "$out" | tr '\n' ' ' | cut -c1-200)"
+  fails=$((fails + 1))
+else
+  echo "PASS  ...and it never says ok to deploy"
+fi
+cp "$T/core.tgz" vendor/zenith/core.tgz
+run "--check passes when the tarballs are present and match the lockfile" 0 "ok to deploy PRODUCTION" "${NOVENDOR[@]}" bash "$SCRIPT" --check
+
 echo
-[ "$fails" -eq 0 ] && echo "ALL PASS (15 cases)" || echo "$fails FAILED"
+[ "$fails" -eq 0 ] && echo "ALL PASS (18 cases)" || echo "$fails FAILED"
 exit "$fails"

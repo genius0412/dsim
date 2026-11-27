@@ -10,7 +10,7 @@ import { afterBootLeave, bootCovering, holdBoot } from './screenFade';
 import { flyStep } from './stageFly';
 
 /**
- * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to MoSim's) — the field
+ * THE MENU STAGE (owner, 2026-10-18: "make the DSIM page something similar" to another simulator's) — the field
  * behind Home and Play. App mounts it behind the shell for both screens, so going Home → Play is a
  * change of `view` and not a remount, and that is what lets the camera FLY from the
  * audience-corner shot down to the player's robot. The poses are in `menuStagePoses.ts`.

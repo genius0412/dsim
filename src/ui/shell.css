@@ -10482,7 +10482,7 @@ input.admin-months {
 }
 
 /* ---- THE MENU STAGE (`MenuStage.tsx`): the field behind Home and Play ------------------------
-   Owner, 2026-10-18, after MoSim's home. ONE fixed layer behind the shell for both screens, so Play
+   Owner, 2026-10-18, after another simulator's home screen. ONE fixed layer behind the shell for both screens, so Play
    is a camera fly and not a page load. Its ground is `--ds-stage-bg` until the scene fades in (with
    `.ds-stage-wait` on it if that takes a while), and it is dark in both themes, which is why what is
    drawn straight on it is category 3. */
@@ -10614,11 +10614,11 @@ input.admin-months {
   opacity: 0.35;
 }
 
-/* HOME ON THE STAGE (desktop): ONE LEFT COLUMN over the field (owner, 2026-10-18, after MoSim). All of it
+/* HOME ON THE STAGE (desktop): ONE LEFT COLUMN over the field (owner, 2026-10-18, after another simulator's home). All of it
    is scoped to `.stage-home`: the PHONE's Home is the pre-stage page, restored as it was on alpha (owner,
    2026-10-18: "restore that page, only that page, to the original one"), so the base rules above are
    alpha's and these override them only over the stage. */
-/* ONE LEFT COLUMN over the menu stage (owner, 2026-10-18, after MoSim): the field takes the right.
+/* ONE LEFT COLUMN over the menu stage (owner, 2026-10-18, after another simulator's home): the field takes the right.
    `.ds-main` keeps its own max-width, so the column is pinned to the left edge here instead. */
 .ds-app.stage-home .ds-main-home {
   display: flex;

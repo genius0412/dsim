@@ -120,9 +120,12 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
  * figure is the authority, so nothing here can restate a record.
  */
 const DRIFT_TEXT: Record<'behaviour' | 'unstamped' | 'newer', (r: Replay) => string> = {
-  behaviour: (r) =>
-    `Recorded on sim v${r.sim}; this build runs v${SIM_VERSION}. It plays, but the ending may ` +
-    'not land on exactly the saved score. The leaderboard figure is the real one.',
+  // MEASURED (2026-11-26, the merge audit): a replay from before the sim moved a version does not
+  // land near its score (DECODE 88-163 replayed as 182-107, a winner flip in two of three), so
+  // "may not land on exactly the saved score" understated it
+  behaviour: () =>
+    'This replay was recorded on an older version of DSIM. The robots will not do what they did, ' +
+    'and the final score can be far from the saved one. The leaderboard figure is the real one.',
   // the one drift the player can end themselves: this tab (or the desktop app's bundled copy) is
   // behind the build that recorded it
   newer: () =>

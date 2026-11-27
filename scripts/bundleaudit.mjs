@@ -511,7 +511,15 @@ const BASELINE = {
   // registry and loader (`src/plateFonts.ts`), the builder's Plate numbers row and the five font
   // credits. The glyph table and the sign's layout are in the scene chunk (+1.17 there), and the
   // fonts themselves are separate files: inlined, Vite's 4 KB default had put +10 KB here.
-  main: { gzip: 1080.27 * 1000 },
+  // 2026-11-26: 1080.27 -> 1097.36 (+17.09), RAISED on purpose and measured, from a stable build of
+  // the merge tree: the go-public controls (the Public/Private and imported-robot rows in the room
+  // screen and Configure, Network), the share-your-look consent dialog and the visuals client that
+  // sends and withdraws a look, the new input modules (the gamepad picker and stick axes) and the
+  // room and lobby wiring that goes with them. Checked against the built files, not assumed:
+  // none of the importer's measuring code is in `main` (its check sentences exist only in
+  // `geometry-*.js`), and `src/net/visualCheck.ts` takes its two mesh-box constants from
+  // `robotImport/types.ts`, a types-and-constants module (its only import is `import type`).
+  main: { gzip: 1097.36 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
@@ -525,7 +533,11 @@ const BASELINE = {
   // 2026-10-24: 797.84 -> 841.86 (+44.02), MEASURED: the LAN host's Room imports the auto seat
   // statically, so it carries the same re-vendored Zenith as the `autos` chunk (+35.27 there; see
   // that entry), plus alpha's drift since 2026-10-01. Still only a player hosting a LAN room pays it.
-  hostWorker: { gzip: 841.86 * 1000 },
+  // 2026-11-26: 841.86 -> 818.82 (-23.04), LOWERED to lock in. Measured on a stable build: autonomous
+  // is compiled out of anything but an alpha build (`__DSIM_ZENITH__`, docs/area/autos.md "Going to
+  // main"), so the Room's auto seat resolves to its stand-in and Zenith's planner is not carried. An
+  // alpha build (`VITE_APP_CHANNEL=alpha`) carries it again and measures about 23 KB higher.
+  hostWorker: { gzip: 818.82 * 1000 },
   // 2026-10-07: NEW, MEASURED. `paceWorker-*.js` (see the route table): the server-safe sim and
   // Rapier 2D, the replay player and the curve. The same weight as the LAN host's sim, and like it
   // fetched only by somebody who uses it: a player with a pace on whose curve is not yet stored.
@@ -737,7 +749,13 @@ const BASELINE = {
   // the envelope, transfer and strut rules, and `loadAuto`'s parser over the new file kinds. That
   // is what makes DSIM's findings match Zenith's. The rest is this change's `src/auto` work (shot
   // patience, findings in the file's frame, the load sentences) and the panel's helpers.
-  autos: { gzip: 95.2 * 1000 },
+  // 2026-11-26: 95.20 -> 62.10 (-33.10), LOWERED to lock in. A STABLE build compiles Zenith autonomous
+  // out (`zenithBuildChannel` is `alpha` only, `vite.config.ts`; docs/area/autos.md "Going to main"):
+  // `zenithEditor-*.js` 58.26 and `AutonomousSetup-*.js` 3.83 are the editor shell and the panel,
+  // and Zenith's planner, checks and parser are not in the chunk. ⚠️ This audit reads a stable
+  // build. A build with `VITE_APP_CHANNEL=alpha` carries them again (about 95 KB) and will fail here:
+  // audit the build that goes to main.
+  autos: { gzip: 62.1 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
   // 2026-09-25: 25.10 -> 29.75, raised on purpose: the Access and Banners tabs, the lockdown
@@ -860,7 +878,10 @@ const BASELINE = {
   // 2026-10-01: NEW. `visualCheck-*.js`, the relay's PNG and GLB validators, behind `importVisualsClient.ts`'s
   // dynamic import (prefetched when a look is asked for or an upload starts). They were in `main` (~3.3 KB
   // of the entry chunk) until this build; the room and the LAN host worker still carry their own copy.
-  relay: { gzip: 3.35 * 1000 },
+  // 2026-11-26: 3.35 -> 4.68 (+1.33), raised on purpose and measured: the GLB validator now holds a mesh
+  // to the stored-mesh box (`VISUAL_MESH_BOX`) and to a drawn-primitive cap, the rules the viewer and
+  // Review share. The room and the LAN host worker carry their own copy.
+  relay: { gzip: 4.68 * 1000 },
   // 2026-10-01: NEW, the importer's UI (lane 4). `ImportEditor-*.js` 18.75 (the steps, the top-down
   // editor, the preview host, drafts, the review checks), and what the robot page `import()`s on a
   // click: `shareFile-*.js` 1.38, `LibraryDialogs-*.js` 0.75 and `exportRobot-*.js` 0.66. Fetched
@@ -890,7 +911,12 @@ const BASELINE = {
   // the allowlist a share file's model is held to before it is stored (docs/area/robot-import.md,
   // "A SHARE FILE'S MODEL IS HELD TO WHAT DSIM WRITES"). The route measures 45.00: the other +1.99
   // is drift since the last raise, inside the tolerance and not folded in.
-  importerui: { gzip: 43.01 * 1000 },
+  // 2026-11-26: 43.01 -> 49.67 (+6.66), raised on purpose and measured: `ImportEditor-*.js` 41.19 (the
+  // Review item for a model that reaches past the box a room draws, `mesh-reach`, and the draft store
+  // and editor work that came with the merge), `shareFile-*.js` 7.17 (was 4.00: the model
+  // allowlist now also checks the stored mesh's box and drawn primitives), `exportRobot-*.js` 0.73 and
+  // `LibraryDialogs-*.js` 0.58. All of it is fetched only when the importer opens or a robot is acted on.
+  importerui: { gzip: 49.67 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

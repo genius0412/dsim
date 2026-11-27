@@ -10,8 +10,10 @@
  * With the packages installed, none of that changes what resolves.
  *
  * ⚠️ A DEPLOY NEVER FALLS BACK. `zenithRequired()` is true under Vercel and wherever
- * `ZENITH_REQUIRED=1` is set (`scripts/fly-deploy.sh`), and `vite.config.ts` then refuses to
- * build without the real packages. The Fly image checks the same after its `npm ci` (Dockerfile).
+ * `ZENITH_REQUIRED=1` is set (the desktop release workflow, a shell that exports it), and
+ * `vite.config.ts` then refuses to build without the real packages. `scripts/fly-deploy.sh` does NOT
+ * set it: the Fly image checks the same after its `npm ci` (Dockerfile), and the script fetches the
+ * tarballs first (`scripts/fetch-zenith.mjs`).
  */
 import { createRequire } from 'node:module';
 import { existsSync, readdirSync } from 'node:fs';
@@ -56,6 +58,16 @@ export function zenithStubFor(specifier, root = process.cwd()) {
 export function zenithTarballs(root = process.cwd()) {
   const dir = resolve(root, 'vendor/zenith');
   return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.tgz')) : [];
+}
+
+/**
+ * The release channel of a client build, read the way `src/net/env.ts` `appChannel()` reads it
+ * (`VITE_APP_CHANNEL`, trimmed, default `stable`). `env` is `loadEnv(mode, root, 'VITE_')`, which
+ * already lets a real process variable (Vercel's) win over a `.env` file, as Vite does for the client.
+ * `vite.config.ts` bakes autonomous in only for `alpha` (docs/area/autos.md, "Going to main").
+ */
+export function zenithBuildChannel(env = process.env) {
+  return (env.VITE_APP_CHANNEL ?? '').trim() || 'stable';
 }
 
 /** may this build NOT have Zenith? Never on Vercel or with ZENITH_REQUIRED=1; ZENITH_REQUIRED=0 overrides. */

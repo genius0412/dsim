@@ -11,7 +11,7 @@
  */
 import type { GameId } from '../games/types';
 import { ZENITH_AUTOS_KEY } from '../storageKeys';
-import { coerceZenithAuto, ZENITH_AUTO_MAX_BYTES } from './coerce';
+import { coerceZenithAuto, zenithAutoWireBytes, ZENITH_AUTO_MAX_BYTES, ZENITH_AUTO_WIRE_MAX_BYTES } from './coerce';
 import type { ZenithAutoSetup } from './types';
 
 /** one auto in the library */
@@ -117,9 +117,14 @@ export function activeZenithAuto(game: GameId): (ZenithAutoSetup & { name: strin
  * that stores an auto (Zenith's Save, an import) asks this first and says so instead: otherwise
  * the save reports success, the auto is not in the library, and AUTO plays nothing.
  */
-export function autoTooLarge(text: string): string | null {
-  if (text.length <= ZENITH_AUTO_MAX_BYTES) return null;
-  return `This auto is ${Math.ceil(text.length / 1024)} KB and DSIM keeps autos up to ${ZENITH_AUTO_MAX_BYTES / 1024} KB. Split it into shorter routines.`;
+export function autoTooLarge(text: string, waypoints?: string): string | null {
+  // the SAME tests `coerceZenithAuto` applies, so the library can never accept a file the wire drops:
+  // the character cap, then the JSON-encoded UTF-8 size of the frame's contents (`zenithAutoWireBytes`)
+  const wire = zenithAutoWireBytes(text, waypoints);
+  if (text.length <= ZENITH_AUTO_MAX_BYTES && wire <= ZENITH_AUTO_WIRE_MAX_BYTES) return null;
+  const kb = Math.ceil(wire / 1024);
+  const limit = Math.floor(ZENITH_AUTO_WIRE_MAX_BYTES / 1024);
+  return `This auto is ${kb} KB when sent to a room and DSIM keeps autos up to ${limit} KB. Split it into shorter routines.`;
 }
 
 /** A fresh entry id: time plus a counter, unique within one device's library. */

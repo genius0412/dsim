@@ -627,7 +627,7 @@ export class ServerSession implements NetSession {
       this.host = m.hostId !== '' && m.hostId === this.clientId;
       this.roster = m;
       // ...and, for the visuals relay, who holds an imported robot (a watcher or a late joiner learns it here)
-      importVisuals.noteRoster(this.clientId, m.players);
+      importVisuals.noteRoster(this.clientId, m.players, m.settings);
     } else if (m.t === 'welcome') {
       // a reattach re-sends this; keep the seat credential current (see the field note)
       if (m.seatToken) this.seatToken = m.seatToken;

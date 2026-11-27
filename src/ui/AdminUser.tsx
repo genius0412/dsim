@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   adminAddNote,
   adminClearUserRecords,
@@ -65,8 +65,16 @@ export function AdminUser({
   const [reason, setReason] = useState('');
   const why = reason.trim();
 
+  /* A LATE ANSWER MUST NOT LAND ON ANOTHER ACCOUNT. Every delete, suspend and grant below acts on
+     `userId`, but the panel prints whatever `u` holds, so an answer for account A arriving after
+     the console moved to B would show A's name and typed-username check over buttons that act on
+     B. `Admin.tsx` also keys this panel on the account, which remounts it; this guard is the
+     second half, for the response that is still in flight when it unmounts or the id changes. */
+  const latest = useRef(0);
   const load = useCallback(async (): Promise<void> => {
+    const mine = ++latest.current;
     const d = await adminFetchUser(userId);
+    if (mine !== latest.current) return;
     setErr(d === null);
     if (d) {
       setU(d);
@@ -80,6 +88,10 @@ export function AdminUser({
     setShowStanding(false);
     setReason('');
     void load();
+    // unmount, or a new account: whatever is still in flight is for the old one
+    return () => {
+      latest.current++;
+    };
   }, [load]);
 
   if (err && !u) {
@@ -154,7 +166,7 @@ export function AdminUser({
       !confirmed(
         'Delete every record run by',
         name,
-        'Every mode and drivetrain, plus their replays. For a confirmed cheater. This cannot be undone.',
+        'Every game, every season, every mode and every drivetrain, archived seasons included, plus their replays. For a confirmed cheater. This cannot be undone.',
       )
     )
       return;
@@ -445,7 +457,7 @@ export function AdminUser({
       {status && <p className="ds-hint">{status}</p>}
 
       <div id="adm-standing-editor">
-        {showStanding && <StandingEditor userId={userId} handleHint={u.handle ?? undefined} />}
+        {showStanding && <StandingEditor key={userId} userId={userId} handleHint={u.handle ?? undefined} />}
       </div>
 
       {/* NOTES. Not a punishment and never shown to the player — which is exactly why the
@@ -630,7 +642,7 @@ export function AdminUser({
                     if (
                       !confirmed(
                         'Delete the',
-                        `${r.score}-pt ${r.drivetrain} run by ${name}`,
+                        `${r.score}-pt ${r.drivetrain} ${GAME_LABEL[r.game] ?? r.game} ${r.mode} run by ${name}`,
                         'The run and its replay go. This cannot be undone.',
                       )
                     )

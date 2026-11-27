@@ -42,6 +42,8 @@ export type Op =
   | { k: 'add'; rid: number; seq: number; sock: number; client: ClientData }
   | { k: 'spec'; rid: number; seq: number; sock: number; client: ClientData }
   | { k: 'hide'; rid: number; id: string }
+  /** a watcher's token verified: its serve window is its account's (`Room.rekeyWatcher`) */
+  | { k: 'rekey'; rid: number; id: string; key: number }
   /** `sock` 0 = this socket never attached (the socket thread's `conn` was still 0) */
   | { k: 'detach'; rid: number; id: string; sock: number; clean: boolean }
   /** `caps`: the returning socket's, which replace the seat's (`Room.reattach`); absent keeps them */

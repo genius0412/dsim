@@ -45,18 +45,24 @@ export function RoomBrowser({
   useEffect(() => {
     if (!configured) return;
     let alive = true;
+    /** the newest request: a slower, older answer (the poll, a tab wake and an activity poke can
+     *  overlap) must never overwrite a newer list with a staler one */
+    let latest = 0;
     const load = (): void => {
       // AN UNATTENDED PAGE DOES NOT POLL (userActivity.ts): a poll left open in a background tab
       // otherwise keeps the auto-stopping Fly machine awake for as long as the tab lives
       if (userIdle()) return;
+      const mine = ++latest;
       fetchListedRooms()
         .then((r) => {
-          if (!alive) return;
+          if (!alive || mine !== latest) return;
+          // a body that is not a list reads as a failed poll, not as a crash in the render below
+          if (!Array.isArray(r.rooms)) throw new Error('rooms is not a list');
           setRooms(r.rooms);
           setError(false);
         })
         .catch((e: unknown) => {
-          if (!alive) return;
+          if (!alive || mine !== latest) return;
           // the raw reason goes to the console; the poll below is already the retry
           console.warn('[rooms] /api/rooms failed', e);
           setError(true);

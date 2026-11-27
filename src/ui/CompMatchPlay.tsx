@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { GameId } from '../games/types';
 import { gameServerUrlWith } from '../net/env';
@@ -98,7 +98,9 @@ export function CompMatchPlay({
   const called: CompMatchView | null =
     detail?.matches.find((m) => m.status === 'called' && m.roomCode && inMatch(m, entryId)) ?? null;
   const wrongGame = !!comp && comp.game !== settings.game;
-  const skew = detail ? detail.now - Date.now() : 0;
+  // measured ONCE per fetched `detail`: a fresh Date.now() every render cancels the 1 s clock
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const skew = useMemo(() => (detail ? detail.now - Date.now() : 0), [detail]);
 
   // the chunks a 3D room needs, fetched while the player reads this screen
   useEffect(() => {

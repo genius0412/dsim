@@ -20,6 +20,7 @@
  * that leaves tiny fasteners out of a huge assembly, and the body colours occt cannot find in an
  * assembly (`colourHint`).
  */
+import { ImportError } from './importError';
 import type { StepColourHint, StepLostBody } from './stepConvert';
 
 /**
@@ -65,6 +66,8 @@ export type StepTextCheck = { ok: true } | { ok: false; reason: 'not-step' | 'tr
 const ascii = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
 const MAGIC = ascii('ISO-10303-21');
 const END = ascii('END-ISO-10303-21');
+const ENDSEC_WORD = ascii('ENDSEC');
+const DATA_WORD = ascii('DATA');
 
 function startsWithAt(buf: Uint8Array, at: number, word: Uint8Array): boolean {
   if (at + word.length > buf.length) return false;
@@ -108,6 +111,23 @@ export function checkStepText(buf: Uint8Array): StepTextCheck {
   const from = Math.max(0, j - 4096);
   for (let k = j - END.length + 1; k >= from; k--) if (startsWithAt(buf, k, END)) return { ok: true };
   return { ok: false, reason: 'truncated' };
+}
+
+/**
+ * What the STEP worker says when one of its occt workers dies (here, not in `stepWorker.ts`, so a
+ * test can ask it: that module is a worker's entry). ⚠️ ONE THAT HAD STARTED READING RAN OUT OF
+ * SOMETHING (2026-11-26): it was reported as "Couldn’t start the STEP reader", whose code
+ * (`step-reader`) is the one the editor offers Try again for, and a read that runs a reader out of
+ * memory does it again. Past its `reading` message occt had loaded, so the read is what failed
+ * (`step-failed`) and the next step is memory: other tabs, or Light detail, which leaves the
+ * smallest parts out (said only at Full, `keepSmall`). Not started: the wasm or its glue did not
+ * load, and a reload is the step. Neither offers a GLB or STL, which the editor has refused since
+ * 2026-11-05.
+ */
+export function occtDied(name: string, why: string, started: boolean, keepSmall: boolean): ImportError {
+  return started
+    ? new ImportError('step-failed', `Couldn’t finish reading ${name} (${why || 'the STEP reader stopped'}). The browser may have run out of memory: close other tabs and try again${keepSmall ? ', or choose Light detail' : ''}.`)
+    : new ImportError('step-reader', `Couldn’t start the STEP reader (${why || 'it stopped'}). Reload the page and try again.`);
 }
 
 // ---- the index: every entity's bytes, type and references ------------------------------------
@@ -154,6 +174,20 @@ const C_SLASH = 47;
 const C_STAR = 42;
 const C_COMMA = 44;
 
+/**
+ * The largest entity number read: `ids` and `refs` are Int32Arrays, and occt's own reader keeps them
+ * in a 32-bit int. A reference past it used to wrap negative and resolve to entity 0
+ * (M-IMP-ENGINE-08); now the file is refused as damaged. Real files number from #1 or #10 upward.
+ */
+const MAX_STEP_ID = 0x7fffffff;
+/**
+ * The id → index table is used while the largest id is under this many times the entity count
+ * (plus 1,024), so it costs at most 64 bytes an entity, against the 20 the index already holds.
+ * Exporters number entities one by one (measured on the fixture: 3,160 entities, largest #3160, a
+ * ratio of 1.0), some in tens (10), and anything sparser is read through a Map, with the same answers.
+ */
+const ID_TABLE_PER_ENTITY = 16;
+
 const isIdent = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95;
 const isDigit = (c: number): boolean => c >= 48 && c <= 57;
 
@@ -176,14 +210,92 @@ function growU8(a: Uint8Array, need: number): Uint8Array {
   return b;
 }
 
-/** the offset of `DATA;` after the header's `ENDSEC;` */
-function findData(buf: Uint8Array): number {
+/** a JavaScript regex `\s` in the latin1 range (what the old `findData` pattern matched) */
+const isReSpace = (c: number): boolean => c === 32 || (c >= 9 && c <= 13) || c === 160;
+
+/**
+ * The offset of `DATA` after the header's `ENDSEC;` (and blanks and comments), in the first 4 MB.
+ *
+ * ⚠️ ONE PASS, NOT A REGEX (2026-11-26). It was `/ENDSEC\s*;\s*(?:\/\*[\s\S]*?\*\/\s*)*DATA…/`, which
+ * scans to the end of the text again from every `ENDSEC;/*` with no `*` `/` after it: 16,000 of them
+ * (141 KB) took 402 ms, and 4 MB of them minutes of the STEP worker (M-IMP-ENGINE-07). This walks the
+ * header once, skipping its strings (`'…'`, `''` inside) and comments, and at each `ENDSEC` outside
+ * them reads what the pattern did: blanks, `;`, blanks and whole comments, `DATA`, blanks, an
+ * optional `(…)` holding no `;`, blanks, `;`. A header comment that never ends ends the search
+ * (occt would read the rest of the file as that comment), so such a file has no DATA section.
+ *
+ * ⚠️ `strings` false IGNORES STRINGS (comments only), and is the second try: a header whose string holds
+ * an apostrophe written raw (an author `O'Brien` from a non-conformant exporter; the standard writes
+ * `''`) flips the pass's string parity, so `ENDSEC; DATA;` reads as inside one and the file was refused
+ * "no DATA section" where the old pattern, blind to strings, found it (merge audit RI-04, proved on a
+ * header with one raw apostrophe). Still one linear pass, so the pair is linear. −1: not found.
+ */
+function findData(buf: Uint8Array, strings = true): number {
   const n = Math.min(buf.length, 4 << 20);
-  let text = '';
-  for (let i = 0; i < n; i += SPREAD) text += chars(buf.subarray(i, Math.min(n, i + SPREAD)));
-  const m = /ENDSEC\s*;\s*(?:\/\*[\s\S]*?\*\/\s*)*DATA\s*(?:\([^;]*\))?\s*;/.exec(text);
-  if (!m) throw new StepSyntaxError('no DATA section', false);
-  return m.index + m[0].search(/DATA\s*(?:\([^;]*\))?\s*;$/);
+  const blanks = (k: number): number => {
+    while (k < n && isReSpace(buf[k])) k++;
+    return k;
+  };
+  const wordAt = (k: number, word: Uint8Array): boolean => {
+    if (k + word.length > n) return false;
+    for (let j = 0; j < word.length; j++) if (buf[k + j] !== word[j]) return false;
+    return true;
+  };
+  const opensComment = (k: number): boolean => k + 1 < n && buf[k] === C_SLASH && buf[k + 1] === C_STAR;
+  /** the end of the comment opening at `k` (just past its `*` `/`), or −1 when it never closes */
+  const commentEnd = (k: number): number => {
+    for (let j = k + 2; j + 1 < n; j++) if (buf[j] === C_STAR && buf[j + 1] === C_SLASH) return j + 2;
+    return -1;
+  };
+  /** after the `ENDSEC` at `k`: where its `DATA` starts, or −1 */
+  const dataAfter = (k: number): number => {
+    k = blanks(k + 6);
+    if (k >= n || buf[k] !== C_SEMI) return -1;
+    k = blanks(k + 1);
+    while (opensComment(k)) {
+      const e = commentEnd(k);
+      if (e < 0) return -1;
+      k = blanks(e);
+    }
+    if (!wordAt(k, DATA_WORD)) return -1;
+    const at = k;
+    k = blanks(k + 4);
+    if (k < n && buf[k] === C_LP) {
+      // `\([^;]*\)`: the last `)` before the first `;` after it
+      let semi = k + 1;
+      while (semi < n && buf[semi] !== C_SEMI) semi++;
+      if (semi >= n) return -1;
+      let close = semi - 1;
+      while (close > k && buf[close] !== C_RP) close--;
+      if (close <= k) return -1;
+      k = blanks(close + 1);
+    }
+    return k < n && buf[k] === C_SEMI ? at : -1;
+  };
+  for (let i = 0; i < n; ) {
+    const c = buf[i];
+    if (strings && c === C_QUOTE) {
+      // a string, `''` inside it
+      i++;
+      while (i < n && !(buf[i] === C_QUOTE && buf[i + 1] !== C_QUOTE)) i += buf[i] === C_QUOTE ? 2 : 1;
+      i++;
+      continue;
+    }
+    if (opensComment(i)) {
+      const e = commentEnd(i);
+      if (e < 0) break;
+      i = e;
+      continue;
+    }
+    if (c === ENDSEC_WORD[0] && wordAt(i, ENDSEC_WORD)) {
+      const at = dataAfter(i);
+      if (at >= 0) return at;
+      i += 6;
+      continue;
+    }
+    i++;
+  }
+  return -1;
 }
 
 /**
@@ -194,7 +306,9 @@ function findData(buf: Uint8Array): number {
  */
 export function indexStep(buf: Uint8Array): StepIndex {
   const len = buf.length;
-  const dataAt = findData(buf);
+  let dataAt = findData(buf);
+  if (dataAt < 0) dataAt = findData(buf, false);
+  if (dataAt < 0) throw new StepSyntaxError('no DATA section', false);
   let i = dataAt;
   // past "DATA ... ;"
   while (i < len && buf[i] !== C_SEMI) i++;
@@ -244,6 +358,9 @@ export function indexStep(buf: Uint8Array): StepIndex {
   const truncated = (what: string): never => {
     throw new StepSyntaxError(`the file ends inside ${what}`, true);
   };
+  const tooBig = (): never => {
+    throw new StepSyntaxError('an entity number is past 2,147,483,647', false);
+  };
   const skipComment = (at: number): number => {
     let k = at + 2;
     while (k + 1 < len && !(buf[k] === C_STAR && buf[k + 1] === C_SLASH)) k++;
@@ -266,6 +383,7 @@ export function indexStep(buf: Uint8Array): StepIndex {
       i++;
       let id = 0;
       while (i < len && isDigit(buf[i])) id = id * 10 + (buf[i++] - 48);
+      if (id > MAX_STEP_ID) tooBig();
       while (i < len && isSpace(buf[i])) i++;
       if (i >= len) truncated('an entity');
       if (buf[i] !== C_EQ) throw new StepSyntaxError(`expected = after #${id}`, false);
@@ -330,6 +448,7 @@ export function indexStep(buf: Uint8Array): StepIndex {
           i++;
           let r = 0;
           while (i < len && isDigit(buf[i])) r = r * 10 + (buf[i++] - 48);
+          if (r > MAX_STEP_ID) tooBig();
           if (nRefs + 1 >= refCap) {
             refCap = Math.ceil(refCap * 1.6);
             refs = growI32(refs, refCap);
@@ -371,8 +490,10 @@ export function indexStep(buf: Uint8Array): StepIndex {
   }
   void sections;
   refStart[count] = nRefs;
-  // ids → indices
-  const resolve = maxId < 1 << 26 ? new Int32Array(maxId + 1).fill(-1) : null;
+  // ids → indices: a table where the ids are about as many as the entities, else a Map (the same
+  // answers). The table was used whenever the largest id was under 2^26, so a 130-byte file naming
+  // #67108000 allocated 256 MB, in the STEP worker and again in `wholeHint` (M-IMP-ENGINE-08).
+  const resolve = maxId < Math.min(1 << 26, ID_TABLE_PER_ENTITY * count + 1024) ? new Int32Array(maxId + 1).fill(-1) : null;
   const resolveMap = resolve ? null : new Map<number, number>();
   for (let k = 0; k < count; k++) {
     if (resolve) resolve[ids[k]] = k;
@@ -559,11 +680,31 @@ function pointOf(ix: StepIndex, e: number, out: number[]): boolean {
   return n >= 2 && Number.isFinite(out[0]) && Number.isFinite(out[1]) && Number.isFinite(out[2]);
 }
 
-/** a circle's radius, or an ellipse's larger semi-axis: the numbers after its placement */
+/**
+ * A circle's radius, or an ellipse's larger semi-axis: the numbers after its placement. What
+ * `/#\d+\s*,([^)]*)\)\s*;\s*$/` matched, found without it (2026-11-26): unanchored, that pattern
+ * tried every `#` and scanned to the next `)` from each, quadratic on a long entity whose last `)`
+ * is not followed by `;`. The `)` it ends on is the last one, followed only by blanks and `;`; the
+ * `#` is the first `#\d+\s*,` after the `)` before it.
+ */
 function radiusOf(ix: StepIndex, e: number): number {
-  const m = /#\d+\s*,([^)]*)\)\s*;\s*$/.exec(entityText(ix, e));
+  let text = entityText(ix, e).trimEnd();
+  if (!text.endsWith(';')) return NaN;
+  text = text.slice(0, -1).trimEnd();
+  if (!text.endsWith(')')) return NaN;
+  const close = text.length - 1;
+  const from = text.lastIndexOf(')', close - 1) + 1;
+  const run = text.slice(from, close);
+  const m = /#\d+\s*,/.exec(run);
   if (!m) return NaN;
-  return Math.max(...m[1].split(',').map((s) => Math.abs(parseFloat(s))));
+  // `Math.max(...list)` without the spread, which a list of a million numbers overflows
+  let r = -Infinity;
+  for (const s of run.slice(m.index + m[0].length).split(',')) {
+    const v = Math.abs(parseFloat(s));
+    if (Number.isNaN(v)) return NaN;
+    if (v > r) r = v;
+  }
+  return r;
 }
 
 interface SizeTypes {

@@ -1,9 +1,9 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { zenithFallbackPlugin, zenithMissing, zenithRequired } from './scripts/zenith-fallback.mjs';
+import { zenithBuildChannel, zenithFallbackPlugin, zenithMissing, zenithRequired } from './scripts/zenith-fallback.mjs';
 
 // a stable build id (git sha, timestamp fallback) baked into the client AND emitted
 // to /version.json, so a running client can detect that a newer build has deployed.
@@ -83,7 +83,7 @@ if (ZENITH_MISSING.length > 0 && zenithRequired()) {
 }
 const zenithFallback = () => zenithFallbackPlugin({ root: ROOT, missing: ZENITH_MISSING });
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     zenithFallback(),
     react(),
@@ -190,7 +190,12 @@ export default defineConfig({
   define: {
     __BUILD_ID__: JSON.stringify(BUILD_ID),
     __THIRD_PARTY_VERSIONS__: JSON.stringify(THIRD_PARTY_VERSIONS),
-    __DSIM_ZENITH__: JSON.stringify(ZENITH_MISSING.length === 0),
+    // AUTONOMOUS IS ALPHA-ONLY AT BUILD TIME (docs/area/autos.md, "Going to main"): on only when the real
+    // packages resolve AND this build's channel (`VITE_APP_CHANNEL`, read as `appChannel()` reads it) is
+    // alpha. A production build has Zenith installed but its public Zenith has no host mode yet.
+    __DSIM_ZENITH__: JSON.stringify(
+      ZENITH_MISSING.length === 0 && zenithBuildChannel(loadEnv(mode, ROOT, 'VITE_')) === 'alpha',
+    ),
   },
   /**
    * WORKERS ARE BUILT AS ES MODULES, because the LAN host worker code-splits.
@@ -245,4 +250,4 @@ export default defineConfig({
     // only when a robot sign or the builder's picker shows a face (`src/plateFonts.ts`).
     assetsInlineLimit: (file: string) => (/[\\/]plateFonts[\\/][^\\/]+\.woff2$/.test(file) ? false : undefined),
   },
-});
+}));

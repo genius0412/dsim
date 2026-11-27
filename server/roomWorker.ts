@@ -315,6 +315,9 @@ function handle(op: Op): void {
     case 'hide':
       r.hideSpectator(op.id);
       break;
+    case 'rekey':
+      r.rekeyWatcher(op.id, op.key);
+      break;
     case 'reattach': {
       e.ack = op.seq;
       const s = senders(op.rid, op.sock);

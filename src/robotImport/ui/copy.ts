@@ -205,11 +205,36 @@ export const COPY = {
   tryAgain: 'Try again',
   previewOff: 'Couldn’t start the 3D preview on this device. Showing the footprint.',
   bakeFailed: 'Couldn’t prepare the model. Try again, or reload the page.',
-  /** the draft is no longer being written to this device, so a reload would lose the import (`draftStore.ts`) */
+  /** a share file whose robot, setup or 3D model cannot be read: the FILE is the problem, not this device */
+  shareUnreadable: (names: string) => `Couldn’t add ${names}. Its robot or its 3D model can’t be read. Ask for it to be exported from DSIM again.`,
+  /** a dropped .glb larger than any robot file DSIM writes (`SHARE_MAX_FILE_BYTES`): refused before it is read */
+  shareTooBig: (name: string) => `Couldn’t open ${name}. It is larger than any robot file DSIM saves. Export it again from DSIM.`,
+  /** an error shown over a model that is still loaded (a failed Replace, a refused file): the model stays usable */
+  dismiss: 'Dismiss',
+  /** the model never measured (a restored draft, or a setting the measurement cannot take) */
+  /** a NEW file whose first measurement threw: the file read fine, so exporting it again cannot help */
+  readMeasureFailed: (name: string, full: boolean) =>
+    `Couldn’t measure ${name}. Close other tabs and try again${full ? ', choose Light detail' : ''}, or choose another file.`,
+  measureFailed: (canUndo: boolean) => `Couldn’t measure this model. ${canUndo ? 'Undo your last change, choose' : 'Choose'} another file, or discard this import.`,
+  /** why Save, Export and Test drive wait while a file is read */
+  waitRead: 'Wait for the file to finish reading.',
+  /** the importer itself failed to draw: the draft is kept on this device unless it is discarded here */
+  crashBig: 'Couldn’t show this import',
+  crashText: 'Go back to the robot page and resume it, or discard it to start again.',
+  discardThis: 'Discard this import',
+  discardBodyChanges: 'Your unsaved changes are removed. The saved robot stays as it was.',
+  /**
+   * the draft is no longer being written to this device, so a reload would lose the import
+   * (`draftStore.ts`). Storage that is blocked fails Save for the same reason, so the way out that
+   * needs no storage (Export file) is named in the second case, which covers every cause but a full device.
+   */
   draftNotSaved: (full: boolean) =>
     full
       ? 'Couldn’t keep this import on this device: it is out of storage space for DSIM, so a reload would lose it. Save the robot, or delete an imported robot to make room.'
-      : 'Couldn’t keep this import on this device, so a reload would lose it. Save the robot to keep your work.',
+      : `Couldn’t keep this import on this device, so a reload would lose it. Save the robot to keep your work. If saving fails too, ${PAGE_COPY.exportFile} on the Review step downloads a copy.`,
+
+  /** the status line over an EDIT whose unsaved changes came back from this device, until the next edit */
+  draftRestored: 'Restored your unsaved changes.',
 
   // ---- preview ----
   cameras: [
@@ -380,8 +405,11 @@ export const COPY = {
   notes: (n: number) => `Ready, with ${n} ${n === 1 ? 'note' : 'notes'}`,
   passFits: 'Fits the 18 in cube',
   apartWarn: (n: number) => `${n} ${n === 1 ? 'part' : 'parts'} left out of the footprint: drawn, but no collision and not counted in the 18 in cube.`,
+  meshReach: (parts: string, side: number, up: number) =>
+    `The 3D model sticks out of the space a room can draw: ${parts}. A room draws a model within ${side} in of the robot’s middle and ${up} in high; past that every screen shows the plain outline instead. Select the parts that stick out (Model step, Parts) and delete them, or shorten them in your CAD and export again.`,
   tooSmall: (side: number, min: number) =>
     `The footprint is only ${side.toFixed(1)} in across. The sim needs ${min} in a side, so check the units.`,
+  originEdge: 'The wheels sit at the edge of the footprint. Drag the wheels toward the middle.',
   passWheels: 'Four wheels on the footprint',
   passWeight: 'Weight in the sim’s range',
   passRpm: 'Drive rpm in the sim’s range',
@@ -390,6 +418,8 @@ export const COPY = {
   fixAria: (s: string) => `Fix: ${s}`,
   teamName: 'Team name',
   teamNumber: 'Team #',
+  /** under the identity fields, every game: what a room sees of this robot, and what only goes if the player says so */
+  reviewSharing: 'In a room, everyone sees this robot’s outline and measurements. Its picture and 3D model are sent only if you choose to share them.',
   testDrive: 'Test drive',
   saveNew: 'Save robot',
   saveEdit: 'Save changes',

@@ -6,6 +6,7 @@ import { BadgeMarks } from './BadgeMark';
 import { botLabel } from './SoloSetup';
 import { canTakeSeat, seatMap, settingsLine, shrinkState, type PendingSeat, type Seat, type SeatTo } from './lobbyRules';
 import { useDialog } from './useDialog';
+import { isImportedSpec } from '../net/imported';
 import './room.css';
 
 /**
@@ -40,8 +41,20 @@ export interface RoomHostPanel {
   /** Private/Public is offered (server `'rooms3'`); Public needs an account */
   visibility: boolean;
   signedIn: boolean;
+  /**
+   * the "Imported robots: Allowed / Not allowed" row is offered (`roomTakesImportSettings`: the server
+   * has `'robotImport'` and `'imports2'`; the importer is open in this build; not a record room, not a
+   * LAN room). Absent or false draws nothing.
+   */
+  imports?: boolean;
   /** a duo record's one host control */
   onUnlock?: () => void;
+}
+
+/** the viewer's per-robot Outline choice, for this room session (`ImportVisualsClient.setHidden`) */
+export interface RoomOutline {
+  isHidden: (clientId: string) => boolean;
+  toggle: (clientId: string) => void;
 }
 
 export interface RoomScreenProps {
@@ -87,6 +100,12 @@ export interface RoomScreenProps {
   onMove: (id: string, a: Alliance) => void;
   bots: RoomBots | null;
   host: RoomHostPanel | null;
+  /**
+   * The Outline button on another player's imported robot's card. Absent where it would do nothing:
+   * the importer is closed in this build, or this device shows every other imported robot as an outline
+   * already ("Show other players’ imported robots" is off).
+   */
+  outline?: RoomOutline;
   /** reaction bubbles showing now, by sender id */
   bubbles: Record<string, number>;
   /** reactions are offered (server `'rooms3'`) */
@@ -254,6 +273,23 @@ export function RoomScreen(props: RoomScreenProps) {
             </button>
           )}
           {mine && props.swap}
+          {/* ANOTHER PLAYER'S IMPORTED ROBOT, as an outline on THIS screen only: a pressable, so the
+              state is `aria-pressed` and nothing moves (the card is a fixed height). Seats and
+              watchers both see it; a player's own robot never has one. */}
+          {props.outline && !p.bot && p.clientId !== myId && isImportedSpec(p.spec) && (
+            <div className="ds-segs">
+              <button
+                type="button"
+                className={`ds-seg${props.outline.isHidden(p.clientId) ? ' on' : ''}`}
+                aria-pressed={props.outline.isHidden(p.clientId)}
+                aria-label={`Show ${p.name}’s robot as an outline on your screen`}
+                title={`Show ${p.name}’s robot as an outline on your screen`}
+                onClick={() => props.outline?.toggle(p.clientId)}
+              >
+                Outline
+              </button>
+            </div>
+          )}
           {moving && (
             <button type="button" className="ds-btn small" disabled={otherFull} onClick={() => props.onMove(p.clientId, other)}>
               Move to {other}
@@ -522,6 +558,26 @@ function HostPanel({
             <dd className="ds-segs">
               {seg(!set.listed, 'Private', () => host.onSettings({ listed: false }))}
               {seg(set.listed, 'Public', () => host.onSettings({ listed: true }), !host.signedIn, host.signedIn ? undefined : 'Sign in to make a room public')}
+            </dd>
+          </div>
+        )}
+        {host.imports && (
+          <div className="rm-set-row">
+            <dt>Imported robots</dt>
+            <dd className="ds-segs">
+              {seg(set.importedRobots !== 'off', 'Allowed', () => host.onSettings({ importedRobots: 'on' }))}
+              {/* the server refuses this while any seat holds an import (it never demotes anyone: a
+                  swapped robot would desync that player's own prediction), so the button says so first */}
+              {(() => {
+                const inUse = set.importedRobots !== 'off' && players.some((p) => !p.bot && isImportedSpec(p.spec));
+                return seg(
+                  set.importedRobots === 'off',
+                  'Not allowed',
+                  () => host.onSettings({ importedRobots: 'off' }),
+                  inUse,
+                  inUse ? 'A driver here is using an imported robot' : undefined,
+                );
+              })()}
             </dd>
           </div>
         )}

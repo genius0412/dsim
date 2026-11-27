@@ -98,7 +98,10 @@ export function CompDetail({
 
   // a one-second clock for the countdowns, only while something is counting
   const [now, setNow] = useState(() => Date.now());
-  const skew = data ? data.now - Date.now() : 0;
+  // the server-minus-local offset, measured ONCE per fetched `data`: re-deriving it every render
+  // against a fresh Date.now() cancels the one-second clock and freezes the countdown between polls
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const skew = useMemo(() => (data ? data.now - Date.now() : 0), [data]);
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(t);

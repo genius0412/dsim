@@ -69,6 +69,9 @@ export async function zipEntries(file: Blob, label: string): Promise<ZipEntry[]>
     const loc = at - 20;
     if (loc < 0 || u32(tail, loc) !== EOCD64_LOCATOR) throw bad('its ZIP64 directory is missing');
     const end64 = u64(tail, loc + 8);
+    // every offset and size below is the archive's own word, so each is held to the file before it
+    // is read (a short read was a RangeError with no sentence)
+    if (end64 + 56 > file.size) throw bad('its ZIP64 directory is damaged');
     const e = await slice(file, end64, end64 + 56);
     if (u32(e, 0) !== EOCD64) throw bad('its ZIP64 directory is damaged');
     count = u64(e, 32);
@@ -88,6 +91,7 @@ export async function zipEntries(file: Blob, label: string): Promise<ZipEntry[]>
     const nameLen = u16(dir, p + 28);
     const extraLen = u16(dir, p + 30);
     const commentLen = u16(dir, p + 32);
+    if (p + 46 + nameLen + extraLen + commentLen > dir.byteLength) throw bad('its directory is damaged');
     let offset = u32(dir, p + 42);
     const nameBytes = new Uint8Array(dir.buffer, dir.byteOffset + p + 46, nameLen);
     const name = new TextDecoder(flags & 0x800 ? 'utf-8' : 'latin1').decode(nameBytes);
@@ -98,16 +102,18 @@ export async function zipEntries(file: Blob, label: string): Promise<ZipEntry[]>
       const id = u16(dir, x);
       const len = u16(dir, x + 2);
       if (id === 0x0001) {
+        // the fields named are read from inside this field only
+        const fieldEnd = Math.min(xEnd, x + 4 + len);
         let q = x + 4;
-        if (size === 0xffffffff) {
-          size = u64(dir, q);
+        const next = (): number => {
+          if (q + 8 > fieldEnd) throw bad('its directory is damaged');
+          const v = u64(dir, q);
           q += 8;
-        }
-        if (compressedSize === 0xffffffff) {
-          compressedSize = u64(dir, q);
-          q += 8;
-        }
-        if (offset === 0xffffffff) offset = u64(dir, q);
+          return v;
+        };
+        if (size === 0xffffffff) size = next();
+        if (compressedSize === 0xffffffff) compressedSize = next();
+        if (offset === 0xffffffff) offset = next();
       }
       x += 4 + len;
     }
@@ -151,11 +157,17 @@ export async function unzipFiles(pick: ZipPick, onProgress?: (frac: number) => v
 export async function zipEntryBytes(file: Blob, e: ZipEntry, label: string, onProgress?: (frac: number) => void, signal?: AbortSignal): Promise<Uint8Array> {
   const bad = (why: string): ImportError => new ImportError('zip', `Couldn’t unzip ${entryBaseName(e.name)} from ${label}: ${why}. Download it again, or unzip it yourself and drop the file.`);
   if (e.method !== 0 && e.method !== 8) throw bad(`it is compressed a way DSIM doesn’t read (method ${e.method})`);
+  if (e.offset + 30 > file.size) throw bad('the archive is cut off');
   const head = await slice(file, e.offset, e.offset + 30);
   if (u32(head, 0) !== LOCAL) throw bad('the archive is damaged');
   const dataAt = e.offset + 30 + u16(head, 26) + u16(head, 28);
   if (dataAt + e.compressedSize > file.size) throw bad('the archive is cut off');
-  if (e.method === 0) return new Uint8Array(await file.slice(dataAt, dataAt + e.size).arrayBuffer());
+  // a STORED entry is its own bytes: the size the directory states must be in the file too (the
+  // check above is on the compressed size, which a stored entry's directory may state apart)
+  if (e.method === 0) {
+    if (dataAt + e.size > file.size) throw bad('the archive is cut off');
+    return new Uint8Array(await file.slice(dataAt, dataAt + e.size).arrayBuffer());
+  }
   const out = new Uint8Array(e.size);
   let written = 0;
   let overflow = false;

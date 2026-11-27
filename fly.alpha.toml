@@ -22,8 +22,11 @@
 #     The database and Neon Auth stay in us-east-1, so each query from ord is ~20 ms further.
 #   · min_machines_running = 0. Production keeps the matchmaker warm because a cold boot in
 #     front of a real player is a bad first impression. A preview can eat the ~7s wake.
-#   · shared-cpu-4x. shared-cpu-2x throttled on 09-21 (3h) and 09-25 (1h), so the capacity
-#     checkup moved it up a step; it costs money only while the machine is started.
+#   · shared-cpu-2x is the size THIS FILE states, and it is what every `--alpha` deploy applies. It
+#     throttled on 09-21 (3h) and 09-25 (1h), so the capacity checkup moved the LIVE machine up a
+#     step to shared-cpu-4x with `fly machine update`; a deploy re-applies the `[[vm]]` block below,
+#     so after one, check `fly machine list -a dsim-alpha` and raise the block's value if the
+#     larger size is meant to stay. The machine costs money only while it is started.
 #
 # Deploy with:  ./scripts/fly-deploy.sh --alpha
 # NEVER a bare `fly deploy` here either — it would pick up fly.toml and redeploy PRODUCTION.
@@ -38,18 +41,15 @@ primary_region = 'ord'
   # what makes this deployment persist alpha results to its own database (server/channel.ts).
   # NOT a secret — it changes behaviour, not access.
   SERVER_CHANNEL = 'alpha'
-  # accept self-hosted (LAN) matches filed by their host — server/lanUploads.ts. Set HERE and
-  # deliberately NOT in fly.toml: LAN is finished but is being held back from production for
-  # now, and the gate fails closed, so the prod app simply does not mount `/api/lan`. The
-  # CLIENT half is VITE_LAN_ENABLED on the matching Vercel project; a LAN environment needs
-  # both, and preview is the only one that has either.
+  # accept self-hosted (LAN) matches filed by their host — server/lanUploads.ts. LAN IS NOT HELD
+  # BACK ANY MORE: fly.toml sets the same two flags (owner, 2026-09-13), so production mounts
+  # `/api/lan` too. The gate still fails closed, so an app with neither flag mounts nothing; the
+  # flags are repeated here because this file is a separate app's whole config.
   LAN_UPLOADS = '1'
   # introduce two browsers to each other so one can host the room in a TAB
-  # (docs/lan-webrtc.md, server/lanUploads.ts `LAN_SIGNALLING`). A THIRD door, and it needs
-  # its own switch: LAN_UPLOADS closes the route by which a LAN match reaches production
-  # DATA, and the rendezvous touches no data at all — so that flag does not cover it, and an
-  # ungated rendezvous would have opened tab hosting in production while LAN is held back.
-  # Set here for the same reason as the line above, and deliberately NOT in fly.toml.
+  # (docs/lan-webrtc.md, server/lanUploads.ts `LAN_SIGNALLING`). A THIRD door with its own
+  # switch: LAN_UPLOADS closes the route by which a LAN match reaches DATA, and the rendezvous
+  # touches no data at all, so that flag does not cover it. On in production too (fly.toml).
   LAN_SIGNALLING = '1'
   # multi-core rooms, as in fly.toml (docs/scaling-multicore.md): shared-cpu-4x gets three workers
   SIM_WORKERS = 'auto'

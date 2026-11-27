@@ -3,7 +3,23 @@
 // only when window.dsim exists (i.e. running inside the Electron app).
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('dsim', {
+/**
+ * THE BRIDGE EXISTS ONLY ON THE SHELL'S OWN PAGES: the offline bundle (`file:`) and the live site.
+ * This script runs again for every document the window loads, so a provider's page after the
+ * account-link navigation (GitHub, Discord) gets no `window.dsim` at all; it could otherwise start
+ * a LAN server, relaunch the app or install an update. `main.cjs` checks the sender of every call
+ * a second time (`electron/trust.cjs`).
+ *
+ * ⚠️ THIS IS A COPY OF `isTrustedUrl` (trust.cjs), ON PURPOSE: a renderer is sandboxed, and a
+ * sandboxed preload can require only `electron`, `events`, `timers` and `url`, so it cannot load
+ * trust.cjs. `scripts/smoke.ts` runs this file against stub locations and fails if the two
+ * disagree. Edit both together.
+ */
+const TRUSTED_HTTPS_ORIGINS = ['https://www.playdsim.com', 'https://playdsim.com'];
+const onTrustedPage =
+  window.location.protocol === 'file:' || TRUSTED_HTTPS_ORIGINS.includes(window.location.origin);
+
+if (onTrustedPage) contextBridge.exposeInMainWorld('dsim', {
   isDesktop: true,
   version: () => ipcRenderer.invoke('dsim:version'),
   // check now (no native dialog) → { current, latest, updateAvailable, mode, ready }

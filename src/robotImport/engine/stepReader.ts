@@ -58,10 +58,12 @@ export function readStep(
     worker.onerror = (e) => {
       e.preventDefault();
       end();
-      // silent and then an error: the script did not load. Part-way: it ran out of something.
+      // silent and then an error: the script did not load. Part-way: it ran out of something. Light
+      // detail (only offered at Full) leaves the smallest parts out; a GLB or STL is not offered, as
+      // the editor refuses both (`occtDied` in `stepSplit.ts` says the same for an occt worker)
       reject(
         heard
-          ? new ImportError('step-failed', `Couldn’t finish reading ${name} (${e.message || 'the STEP reader stopped'}). The browser may have run out of memory: close other tabs and try again, or export a GLB or STL.`)
+          ? new ImportError('step-failed', `Couldn’t finish reading ${name} (${e.message || 'the STEP reader stopped'}). The browser may have run out of memory: close other tabs and try again${keepSmall ? ', or choose Light detail' : ''}.`)
           : new ImportError('step-reader', `Couldn’t load the STEP reader (${e.message || 'its script did not load'}). Check your connection and try again.`),
       );
     };

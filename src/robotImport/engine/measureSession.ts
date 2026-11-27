@@ -59,6 +59,8 @@ export class Measurer {
   private disposed = false;
   private entries = new Map<string, Entry>();
   private waits = new Map<string, Promise<void>>();
+  /** orientations whose measurement threw in the worker, and what it threw (`prepare`) */
+  private failed = new Map<string, Error>();
   private calls = new Map<number, { resolve: (m: MeasureResponse) => void; reject: (e: Error) => void }>();
   private nextId = 1;
   /** the worker holds `model.full` (sent before the first search) */
@@ -74,10 +76,21 @@ export class Measurer {
     return this.entries.has(orientKey(setup));
   }
 
-  /** compute `setup`'s orientation off the main thread; resolves when `ready(setup)` */
+  /**
+   * Compute `setup`'s orientation off the main thread; resolves when `ready(setup)`.
+   *
+   * ⚠️ AN ORIENTATION THAT THREW IN THE WORKER IS NOT MEASURED AGAIN HERE (2026-11-26), as `find`
+   * already did for a search: the same parts and setup throw the same way, after the whole
+   * `orientParts` on the page's thread (M-IMP-ENGINE-09; with a hostile share file, the allocation
+   * the worker failed). Its error is kept for the key: `prepare` rejects with it, now and when asked
+   * again, and `normalise` throws it rather than computing. Only a worker that STOPPED (or never
+   * started) falls back to measuring here.
+   */
   prepare(setup: ImportSetup): Promise<void> {
     const key = orientKey(setup);
     if (this.entries.has(key)) return Promise.resolve();
+    const failed = this.failed.get(key);
+    if (failed) return Promise.reject(failed);
     const have = this.waits.get(key);
     if (have) return have;
     const p = this.orientOff(setup)
@@ -86,6 +99,12 @@ export class Measurer {
       })
       .catch((err) => {
         if (this.disposed) return;
+        if (this.worker) {
+          // the worker is alive and answered with an error: the measurement itself threw
+          const e = err instanceof Error ? err : new Error(String(err));
+          this.fail(key, e);
+          throw e;
+        }
         console.warn('[import] measuring off the main thread failed; measuring here', err);
         this.computeHere(setup);
       })
@@ -97,6 +116,8 @@ export class Measurer {
   /** the measurement and the model-frame parts for `setup` (cached halves; see the file comment) */
   normalise(setup: ImportSetup): NormalisedModel {
     const key = orientKey(setup);
+    const failed = this.failed.get(key);
+    if (failed && !this.entries.has(key)) throw failed;
     const entry = this.entries.get(key) ?? this.computeHere(setup);
     // most recently used last
     this.entries.delete(key);
@@ -198,6 +219,13 @@ export class Measurer {
   private computeHere(setup: ImportSetup): Entry {
     const { oriented, modelParts } = orientParts(this.model.parts, setup, this.opts);
     return this.put(orientKey(setup), { oriented, modelParts });
+  }
+
+  private fail(key: string, err: Error): void {
+    this.failed.delete(key);
+    this.failed.set(key, err);
+    // a few hundred bytes each; past this many the oldest goes (and `prepare` asks the worker again)
+    while (this.failed.size > 64) this.failed.delete(this.failed.keys().next().value as string);
   }
 
   private put(key: string, entry: Entry): Entry {

@@ -536,7 +536,7 @@ export class LobbyClient {
     } else if (m.t === 'roster') {
       this.players = m.players;
       this.hostId = m.hostId;
-      importVisuals.noteRoster(this.clientId, m.players);
+      importVisuals.noteRoster(this.clientId, m.players, m.settings);
       this.handlers.roster?.(m.players, m.hostId, m.settings, m.watchers);
     } else if (m.t === 'react') {
       this.handlers.react?.(m.from, m.k);

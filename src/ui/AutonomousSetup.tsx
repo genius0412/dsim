@@ -203,7 +203,7 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
     for (const a of autos) {
       try {
         const auto = mod.parseAutoText(a.text);
-        const tooLarge = autoTooLarge(a.text);
+        const tooLarge = autoTooLarge(a.text, waypoints); // the waypoints file rides with it on the wire
         if (tooLarge) throw new Error(tooLarge);
         parsed.push({ file: a.file, name: auto.name, auto: a.text, ...(waypoints ? { waypoints } : {}) });
       } catch (err) {
@@ -213,7 +213,12 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
     // the library as it is NOW: the reads above awaited, and a Save may have landed meanwhile
     const { lib: next, added, refused } = importAutos(libRef.current, parsed);
     if (autos.length === 0 && waypoints && selected) {
-      // a waypoints file on its own: give it to the selected auto
+      // a waypoints file on its own: give it to the selected auto, unless the pair is over the frame
+      const tooLargeWith = autoTooLarge(selected.auto, waypoints);
+      if (tooLargeWith) {
+        setNotice({ bad: true, text: `Couldn’t add the waypoints to ${selected.name}. ${tooLargeWith}` });
+        return;
+      }
       if (commit(upsertAuto(libRef.current, { ...selected, waypoints, savedAt: Date.now() }))) {
         setNotice({ bad: false, text: `Added the waypoints to ${selected.name}.` });
       }

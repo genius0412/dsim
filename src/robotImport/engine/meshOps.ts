@@ -13,6 +13,18 @@ import type { MeshPart } from '../geometry';
  * ⚠️ TWO BODIES ARE NEVER WELDED TOGETHER (`MeshPart.body`): a roller touching its axle at one
  * corner would otherwise share a vertex with it, and a triangle's body would depend on which corner
  * it is read from. A part without bodies welds exactly as before.
+ *
+ * ⚠️ ONE SLOT PER KEY, A VERTEX THAT CANNOT MATCH INCLUDED (2026-11-26, M-IMP-ENGINE-02). The
+ * compare is on the quantised coordinates as int32 (`| 0`, the Int32Array store the first version
+ * kept). A vertex whose quantised coordinate is NOT an int32 (a NaN or infinite one, or one past
+ * ±2^31: a point thousands of the model's sizes out) never matches anything, so each one used to
+ * walk to the end of its cluster and add one more slot to it. Identical such vertices share a
+ * cluster (`Math.imul` of NaN is 0), so 80k NaN vertices took 14.6 s, quadratic, in an import worker
+ * nothing cancels, and a share file can carry them. Now such a vertex stops at the first slot with
+ * its key as int32 (`| 0` on both sides) and becomes a vertex of its own WITHOUT a slot: that slot
+ * already answers every vertex that could match the one it would have added, and is met first, so
+ * the output is the old weld's bit for bit, NaN and far coordinates included (smoke pins it against
+ * the first version). Each key now holds one slot, and the walk is as short as for distinct points.
  */
 export function weld(part: MeshPart, eps: number): { positions: Float32Array; indices: Uint32Array; body: Uint32Array | null } {
   const src = part.positions;
@@ -31,28 +43,35 @@ export function weld(part: MeshPart, eps: number): { positions: Float32Array; in
     const y = Math.round(src[3 * i + 1] * inv);
     const z = Math.round(src[3 * i + 2] * inv);
     const bd = bodyIn ? bodyIn[i] : 0;
+    // its key as the int32 compare sees it; a vertex whose key is not already that never matches
+    const qx = x | 0;
+    const qy = y | 0;
+    const qz = z | 0;
+    const matches = qx === x && qy === y && qz === z;
     let h = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791) ^ (bodyIn ? Math.imul(bd, 40503) : 0)) & (cap - 1);
     for (;;) {
       const slot = table[h];
-      if (slot < 0) {
-        table[h] = count;
+      // the slot's quantised position is recomputed from the vertex it holds (the same float32, so
+      // the same integers; `| 0` is the Int32Array store the old arrays did) instead of being kept
+      // in three more arrays: 12 bytes a vertex, 140 MB on an un-indexed 4M-triangle STL
+      const same =
+        slot >= 0 &&
+        (Math.round(out[3 * slot] * inv) | 0) === qx &&
+        (Math.round(out[3 * slot + 1] * inv) | 0) === qy &&
+        (Math.round(out[3 * slot + 2] * inv) | 0) === qz &&
+        (!bodyOut || bodyOut[slot] === bd);
+      if (same && matches) {
+        remap[i] = slot;
+        break;
+      }
+      if (slot < 0 || same) {
+        // a new vertex; it takes the slot only when its key has none
+        if (slot < 0) table[h] = count;
         out[3 * count] = src[3 * i];
         out[3 * count + 1] = src[3 * i + 1];
         out[3 * count + 2] = src[3 * i + 2];
         if (bodyOut) bodyOut[count] = bd;
         remap[i] = count++;
-        break;
-      }
-      // the slot's quantised position is recomputed from the vertex it holds (the same float32, so
-      // the same integers; `| 0` is the Int32Array store the old arrays did) instead of being kept
-      // in three more arrays: 12 bytes a vertex, 140 MB on an un-indexed 4M-triangle STL
-      if (
-        (Math.round(out[3 * slot] * inv) | 0) === x &&
-        (Math.round(out[3 * slot + 1] * inv) | 0) === y &&
-        (Math.round(out[3 * slot + 2] * inv) | 0) === z &&
-        (!bodyOut || bodyOut[slot] === bd)
-      ) {
-        remap[i] = slot;
         break;
       }
       h = (h + 1) & (cap - 1);

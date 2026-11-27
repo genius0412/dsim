@@ -583,6 +583,77 @@ async function main(): Promise<void> {
   }
 
   /*
+   * THE MODERATOR'S BOARD READS THE ROWS THE PUBLIC BOARD AND THE AWARDS READ (F5, 2026-11-26).
+   * A season roll pays permanent badges off `recordLeaderboard`, and this list is the only tool
+   * for cleaning that board first. It had neither of the two filters inside `best` (a full-length
+   * run, the board's physics), so a leftover 2D row or an auto-only run could be an entry's "best"
+   * and hide the run that actually ranks, and a duo entry named one driver only.
+   * BIOBUZZ, whose live era is 3D. Season 9150, which nothing else writes.
+   */
+  {
+    const BV = 9150;
+    for (const u of ['fm-a', 'fm-b', 'fm-c', 'fm-d']) await repo.ensureProfile(u, u.toUpperCase());
+    const put = (userId: string, partnerId: string | undefined, mode: 'solo' | 'duo', score: number, extra: Partial<Parameters<typeof repo.submitRecord>[0]> = {}) =>
+      repo.submitRecord({
+        userId, partnerId, mode, drivetrain: 'tank', score, balanceVersion: BV,
+        replayId: null as unknown as string, game: 'biobuzz', physics: '3d', ...extra,
+      });
+    await put('fm-a', undefined, 'solo', 100); // the run that ranks
+    // the same player's higher runs the board does not read: a leftover 2D row (written by hand,
+    // `submitRecord` refuses it now) and an auto-only run
+    await db.query(
+      `insert into records (user_id, mode, drivetrain, score, balance_version, replay_id, game, physics)
+       values ('fm-a', 'solo', 'tank', 300, $1, null, 'biobuzz', '2d')`, [BV]);
+    await put('fm-a', undefined, 'solo', 400, { runLength: 'auto', autoScore: 400 });
+    await db.query(
+      `insert into records (user_id, mode, drivetrain, score, balance_version, replay_id, game, physics)
+       values ('fm-b', 'solo', 'tank', 250, $1, null, 'biobuzz', '2d')`, [BV]); // only a 2D run: not on the board
+    await put('fm-c', undefined, 'solo', 500, { runLength: 'auto', autoScore: 500 }); // only an auto-only run
+    await put('fm-d', undefined, 'solo', 60);
+    await put('fm-a', 'fm-d', 'duo', 90);
+    await put('fm-d', 'fm-a', 'duo', 95); // the same pair seated the other way round
+
+    const mod = await repo.adminListRecords({ mode: 'solo', balanceVersion: BV, game: 'biobuzz' });
+    const pub = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: BV, game: 'biobuzz' });
+    const shape = (rows: { userId: string; score: number }[]) => rows.map((r) => `${r.userId}:${r.score}`).join(',');
+    check('⚠️ admin: a leftover 2D row and an auto-only run are not an entry’s best on the moderator’s board (it shows the 100 that ranks)',
+      mod.find((r) => r.userId === 'fm-a')?.score === 100, shape(mod));
+    check('⚠️ admin: ...a player with only a 2D run, or only an auto-only run, is not listed at all',
+      !mod.some((r) => r.userId === 'fm-b' || r.userId === 'fm-c'), shape(mod));
+    check('⚠️ admin: ...so the moderator’s list is exactly the public board’s entries and scores (what the awards pay)',
+      shape(mod) === shape(pub) && mod.length === 2, `${shape(mod)} | ${shape(pub)}`);
+    const modDuo = await repo.adminListRecords({ mode: 'duo', balanceVersion: BV, game: 'biobuzz' });
+    check('admin: a duo entry is ONE row for the pair, at its best run, and it names the partner',
+      modDuo.length === 1 && modDuo[0].score === 95 && [modDuo[0].userId, modDuo[0].partnerId].sort().join() === 'fm-a,fm-d' &&
+        modDuo[0].partnerHandle === (modDuo[0].userId === 'fm-a' ? 'FM-D' : 'FM-A'), JSON.stringify(modDuo));
+    check('admin: a solo row has no partner', mod.every((r) => r.partnerId === null && r.partnerHandle === null));
+  }
+
+  /*
+   * F7: THE FOUR MIGRATIONS THAT TAKE A TABLE LOCK GIVE UP AFTER 5 s instead of queueing every
+   * query behind a long reader. `migrate()` runs each file in ONE transaction, which is the only
+   * place `set local` has any effect: proved here on the same begin/exec/commit sequence, and by
+   * the files themselves (none of the four had run on production when this was added, and
+   * `migrate()` keeps no checksum, so an applied file is never re-read).
+   */
+  {
+    const lt = async (sql: string) => String((await db.query<{ lock_timeout: string }>(sql)).rows[0]?.lock_timeout);
+    await db.exec('begin');
+    await db.exec(`set local lock_timeout = '5s'`);
+    const inside = await lt('show lock_timeout');
+    await db.exec('commit');
+    const outside = await lt('show lock_timeout');
+    check('migrations: `set local lock_timeout` holds inside the transaction a migration runs in and is gone after it',
+      inside === '5s' && outside !== '5s', `${inside} / ${outside}`);
+    for (const f of ['0059_competitions', '0061_matches_preset', '0062_record_splits', '0065_community_events']) {
+      const text = readFileSync(join(ROOT, `server/db/migrations/${f}.sql`), 'utf8');
+      const statements = text.split(/\r?\n/).filter((l) => l.trim() && !l.trimStart().startsWith('--'));
+      check(`migrations: ${f}.sql sets a 5 s lock_timeout before its first statement`,
+        /^set local lock_timeout = '5s';$/.test(statements[0]?.trim() ?? ''), statements[0]);
+    }
+  }
+
+  /*
    * 0064: A DUO RUN KEEPS HOW THE PARTNER DROVE (owner, 2026-11-01). New runs write
    * `partnerAssists`; the migration fills it on older runs from the run's replay, whose setups
    * hold every robot's assists, finding the partner's setup by its BUILD (a replay names no
@@ -5314,7 +5385,12 @@ async function main(): Promise<void> {
       `select count(*)::int as n from reward_grants where user_id = 'rw-old'`)).rows[0].n) === 1);
 
     // ---- a roll pays automatically, through the same job ------------------------------------
-    await repo.startNewSeason(905, 'rw-roll', true, G); // closes Season 905 AND Act 2
+    const actBefore = await repo.actFor(G); // read once so the 60 s memo holds the OLD act
+    const rolled = await repo.startNewSeason(905, 'rw-roll', true, G); // closes Season 905 AND Act 2
+    check('⚠️ rollover: the roll REPORTS what the award job paid (periods and grants), and no error',
+      rolled.rewardsError === undefined && (rolled.rewards?.periods ?? 0) >= 2 && (rolled.rewards?.grants ?? 0) >= 1, JSON.stringify(rolled));
+    check('rollover: ...and the act the matchmaker reads ratings under moves with the roll, not a minute later (the memo is dropped)',
+      actBefore !== rolled.act && (await repo.actFor(G)) === rolled.act, `${actBefore} -> ${await repo.actFor(G)} vs ${rolled.act}`);
     const afterRoll = await db.query<{ board: string; period: number }>(
       `select board, period from reward_periods where game = $1 and ((board = 'ranked_act' and period = 2) or (board = 'record_season' and period = 905))`, [G],
     );
@@ -5327,6 +5403,34 @@ async function main(): Promise<void> {
     const gone = await db.query<{ n: number }>(`select count(*)::int as n from reward_grants where user_id = 'rw-c'`);
     check('⚠️ delete: a deleted account takes its rewards with it (the FK cascades)', Number(gone.rows[0].n) === 0);
     check('delete: ...and nothing more is minted for it on the next run', (await repo.runRewardJob({ games: [G] })).grants === 0);
+
+    // ---- a roll whose award job FAILS still rolls, and says so ---------------------------------
+    // The route used to answer ok whatever the job did, so a payout that threw read as a clean roll
+    // and nobody was told it was still owed (the next boot retries it). The pool refuses the one
+    // table the job reads first; the roll's own statements do not touch it.
+    {
+      const poolMod = await import('../server/db/pool');
+      const base = poolMod.pool!;
+      poolMod.setPoolForTests({
+        query: (async (text: string, params?: unknown[]) => {
+          if (/reward_periods/.test(text)) throw new Error('boom: reward_periods');
+          return base.query(text, params);
+        }) as typeof base.query,
+        connect: () => base.connect(),
+      });
+      let failedRoll: Awaited<ReturnType<typeof repo.startNewSeason>> | null = null;
+      let threw = '';
+      try {
+        failedRoll = await repo.startNewSeason(905, undefined, false, G);
+      } catch (e) {
+        threw = e instanceof Error ? e.message : String(e);
+      } finally {
+        poolMod.setPoolForTests(base);
+      }
+      check('⚠️ rollover: an award job that throws does not fail the roll: it comes back as rewardsError, with no rewards',
+        threw === '' && !!failedRoll && failedRoll.season > rolled.season && /boom/.test(failedRoll.rewardsError ?? '') && failedRoll.rewards === undefined,
+        threw || JSON.stringify(failedRoll));
+    }
   }
 
 
@@ -6658,7 +6762,22 @@ async function main(): Promise<void> {
         [lid],
       )).rows[0].n);
     const slotsBefore = await slotCount();
+    // F8: a referee's call note names who did not connect. One on a match the account played and one
+    // on a match it did not: deleting the account clears the first and leaves the second.
+    const noteOf = async (id: number) =>
+      (await db.query<{ call_note: string | null }>(`select call_note from competition_matches where id = $1`, [id])).rows[0]?.call_note ?? null;
+    const theirMatch = Number((await db.query<{ match_id: string | number }>(
+      `select s.match_id from competition_match_slots s join competition_matches x on x.id = s.match_id
+        where x.competition_id = $1 and s.entry_id = $2 limit 1`, [lid, theirs.id])).rows[0]?.match_id ?? -1);
+    const otherMatch = Number((await db.query<{ id: string | number }>(
+      `select x.id from competition_matches x where x.competition_id = $1
+          and not exists (select 1 from competition_match_slots s where s.match_id = x.id and s.entry_id = $2) limit 1`,
+      [lid, theirs.id])).rows[0]?.id ?? -1);
+    await db.query(`update competition_matches set call_note = 'Somebody did not connect.' where id = any($1::bigint[])`, [[theirMatch, otherMatch]]);
     await repo.deleteAccount(p[0].userId);
+    check('competition: deleting an entrant’s account clears the call note of every match it was in, and only those',
+      theirMatch > 0 && otherMatch > 0 && (await noteOf(theirMatch)) === null && (await noteOf(otherMatch)) === 'Somebody did not connect.',
+      JSON.stringify({ theirs: await noteOf(theirMatch), other: await noteOf(otherMatch) }));
     const kept = await cdb.getEntry(theirs.id);
     check('competition: deleting an entrant’s account keeps the entry, without their name or their account',
       kept?.name === 'Deleted account' && kept.userId === null && kept.placement === theirs.placement && kept.status === theirs.status,

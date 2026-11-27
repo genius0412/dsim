@@ -82,6 +82,7 @@ export function AppShell({
   game,
   page,
   scrollPage,
+  popup,
 }: {
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
@@ -135,6 +136,9 @@ export function AppShell({
    *  route that replaces the content (a section, a tab, a profile), never a filter. A change lands the
    *  new page at its top (or its anchor), Back restores the offset it was left at. */
   scrollPage: string;
+  /** the Play popup that is up (`POPUPS` in App), if any: with `page` and `scrollPage` it is what
+   *  clears a failed page, since a popup changes the content and neither of those */
+  popup?: string;
 }) {
   const lanOn = useLanEnabled();
   const presence = usePresence();
@@ -188,7 +192,9 @@ export function AppShell({
   useRouteScroll(appRef, mainRef, scrollPage);
   // a page that throws says so, under the bar, instead of unmounting the app (`AppBoundary`)
   const content = (
-    <AppBoundary resetKey={page} onHome={() => onNav('home')}>
+    // THE FAILURE CLEARS ON ANY PAGE CHANGE, not only a new screen: a Configure section, a Records tab
+    // and a Play popup (Ranked, Room…) all REPLACE the content while `page` stays the same
+    <AppBoundary resetKey={`${page ?? ''}/${scrollPage}/${popup ?? ''}`} onHome={() => onNav('home')}>
       {children}
     </AppBoundary>
   );

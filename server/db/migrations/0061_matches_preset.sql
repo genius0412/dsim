@@ -6,4 +6,9 @@
 -- from before this migration.
 --
 -- Purely ADDITIVE and nullable: rolling the server back leaves the column unread.
+--
+-- ACCESS EXCLUSIVE on `matches` for an instant, but it queues behind any open reader and then every
+-- other query queues behind it. Give up after 5 s instead (migrate() runs the file in one
+-- transaction, so `set local` applies; the boot retries, server/index.ts).
+set local lock_timeout = '5s';
 alter table matches add column if not exists preset text;

@@ -5,6 +5,7 @@ import { PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import { ResultsAd } from './AdSlot';
 import { ReportDialog } from './ReportDialog';
 import { ScoreReportDialog } from './ScoreReportDialog';
+import { isImportedSpec } from '../net/imported';
 import type { MatchResultInfo } from '../net/session';
 import type { MatchDriver, RecordRankInfo, StaffRole } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -661,8 +662,9 @@ export function Results({
    *  lines the results screen shows, since only the host keeps the match */
   lanHost?: boolean;
   onWatchReplay?: (replay: Replay) => void;
-  /** the OTHER drivers in this match, reportable by robot id (empty in solo) */
-  reportable?: { robotId: number; name: string }[];
+  /** the OTHER drivers in this match, reportable by robot id (empty in solo). `imported` says whether
+   *  that driver's robot was an import; absent, it is read off the match's own recorded setups */
+  reportable?: { robotId: number; name: string; imported?: boolean }[];
   /** send a report; absent in solo / on an older session */
   onReport?: (robotId: number, reason: string, detail: string) => void;
   /** file a MISSCORE claim about this match — see ScoreReportDialog */
@@ -1100,7 +1102,12 @@ export function Results({
             )}
             {reporting && onReport && reportable && (
               <ReportDialog
-                drivers={reportable}
+                // an import is read off the match's own setups (`isImportedSpec`): that is what the
+                // "Offensive robot picture or model" reason is offered against
+                drivers={reportable.map((d) => ({
+                  ...d,
+                  imported: d.imported ?? isImportedSpec(setups.find((s) => s.id === d.robotId)?.spec),
+                }))}
                 onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
                 onClose={() => {
                   setReporting(false);

@@ -216,7 +216,7 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     // join path buys nothing at all. `null` is already the honest value for "not told".
     if (typeof claim !== 'boolean' && REQUIRE_VERIFIED && !NO_CLAIM_SEEN.logged) {
       NO_CLAIM_SEEN.logged = true;
-      console.log('[auth] a token carries no emailVerified claim; the gate reads neon_auth."user" (stale on the alpha branch)');
+      console.log('[auth] a token carries no emailVerified claim; the gate reads neon_auth."user"');
     }
     const emailVerified =
       typeof claim === 'boolean' ? claim : REQUIRE_VERIFIED ? await verifiedFromStore(token, userId) : null;

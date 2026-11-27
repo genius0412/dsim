@@ -447,8 +447,9 @@ export function partsFromObject(root: THREE.Object3D, useVertexColours: boolean)
   const v = new THREE.Vector3();
   const tmp = new THREE.Matrix4();
   // BODIES (`MeshPart.body`): one per mesh instance, in traversal order — or, in a mesh the importer
-  // stored itself, the ids it wrote (`_body`, `bodyIdsOf`)
+  // stored itself, the ids it wrote (`_body`, `bodyIdsOf`), when they are in bounds (`storedIdsTrusted`)
   let nextBody = 0;
+  const trusted = storedIdsTrusted(root);
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh || (obj as THREE.Points).isPoints || (obj as THREE.Line).isLine) return;
@@ -463,7 +464,7 @@ export function partsFromObject(root: THREE.Object3D, useVertexColours: boolean)
     const plain = !(pos as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute && !pos.normalized && pos.itemSize === 3;
     const src = plain ? (pos as THREE.BufferAttribute).array : null;
     const full = index ? Uint32Array.from(index.array as ArrayLike<number>) : null;
-    const stored = bodyIdsOf(geo);
+    const stored = trusted ? bodyIdsOf(geo) : null;
     for (let n = 0; n < instances; n++) {
       const bodyId = nextBody++;
       const m = new THREE.Matrix4().copy(mesh.matrixWorld);
@@ -518,12 +519,85 @@ export function partsFromObject(root: THREE.Object3D, useVertexColours: boolean)
  * `_body`; `meshGroup.ts` writes it), as a fresh array, or null for any other mesh.
  */
 function bodyIdsOf(geo: THREE.BufferGeometry): Uint32Array | null {
-  const a = geo.getAttribute('_body');
-  const pos = geo.getAttribute('position');
-  if (!a || !pos || a.count !== pos.count || a.itemSize !== 1) return null;
+  const a = storedBodyAttr(geo);
+  if (!a) return null;
   const out = new Uint32Array(a.count);
   for (let i = 0; i < a.count; i++) out[i] = Math.max(0, Math.round(a.getX(i)));
   return out;
+}
+
+/** a geometry's `_body` attribute when it is one id per vertex, else null */
+function storedBodyAttr(geo: THREE.BufferGeometry): THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null {
+  const a = geo.getAttribute('_body');
+  const pos = geo.getAttribute('position');
+  return a && pos && a.count === pos.count && a.itemSize === 1 ? a : null;
+}
+
+/**
+ * ⚠️ A STORED MESH'S BODY IDS ARE ANOTHER PLAYER'S NUMBERS (2026-11-26). A share file is a stored
+ * mesh someone else wrote, and the measurement sizes its per-body tables by the LARGEST id
+ * (`bodyStats` in `motion.ts`: 16 Float64Arrays and a Uint32Array, 132 bytes an id), in the measure
+ * worker and again on the main thread: one vertex of a 1 MB file naming body 20,000,000 cost 2 GB a
+ * measurement (M-IMP-ENGINE-01). So the ids are kept only when every one is a finite number under
+ * both bounds below; otherwise EVERY mesh of the model gets one body per mesh instance, as a mesh
+ * the importer did not store does. The bounds are the MODEL's (the tree `root` is in, from its top),
+ * because `readStoredScene` reads a stored mesh one mesh at a time and a small moving part's mesh
+ * carries ids numbered across the whole robot.
+ * - `MAX_STORED_BODY_ID`, 2^20 (138 MB of `bodyStats` at most). Ids are dense: one per STEP solid,
+ *   renumbered across the pieces, lumps after the largest. The most measured is 10,992 (goBILDA's
+ *   BIOBUZZ mecanum bot at Full, `docs/area/robot-import.md` "Floating parts"), 95 times under it.
+ *   2^24 was not enough: `shareDecodeCap` lets a 1 MB meshopt file decode to 80 MB, 6.7M padding
+ *   vertices, and 16 times that is past 2^24 (2.2 GB of `bodyStats`).
+ * - `STORED_BODY_PER_VERTEX` × the model's vertices: an id names a body that had vertices, so a
+ *   legitimate stored mesh's largest id is a small share of them (measured on the stored mesh of
+ *   every fixture in `scripts/fixtures/robot-import/`: 9 of 440, 0.02). 16 leaves room for a robot
+ *   saved with nearly all of its bodies deleted, whose ids keep their numbers.
+ */
+const MAX_STORED_BODY_ID = 1 << 20;
+const STORED_BODY_PER_VERTEX = 16;
+
+/** per `_body` attribute (and its version): its largest id, and whether every value was finite */
+const bodyAttrFacts = new WeakMap<object, { version: number; top: number; finite: boolean }>();
+
+function bodyFacts(a: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): { top: number; finite: boolean } {
+  const version = (a as THREE.BufferAttribute).version ?? (a as THREE.InterleavedBufferAttribute).data?.version ?? 0;
+  const had = bodyAttrFacts.get(a);
+  if (had && had.version === version) return had;
+  let top = 0;
+  let finite = true;
+  for (let i = 0; i < a.count; i++) {
+    const v = Math.max(0, Math.round(a.getX(i)));
+    if (!Number.isFinite(v)) finite = false;
+    else if (v > top) top = v;
+  }
+  const facts = { version, top, finite };
+  bodyAttrFacts.set(a, facts);
+  return facts;
+}
+
+/** may the stored body ids of the model `root` is part of be used as they are? */
+function storedIdsTrusted(root: THREE.Object3D): boolean {
+  let top: THREE.Object3D = root;
+  while (top.parent) top = top.parent;
+  const seen = new Set<THREE.BufferGeometry>();
+  let vertices = 0;
+  let largest = 0;
+  let finite = true;
+  top.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || (obj as THREE.Points).isPoints || (obj as THREE.Line).isLine) return;
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    const pos = geo.getAttribute('position');
+    if (!pos || pos.count < 3 || seen.has(geo)) return;
+    seen.add(geo);
+    vertices += pos.count;
+    const a = storedBodyAttr(geo);
+    if (!a) return;
+    const f = bodyFacts(a);
+    if (!f.finite) finite = false;
+    if (f.top > largest) largest = f.top;
+  });
+  return finite && largest < MAX_STORED_BODY_ID && largest < STORED_BODY_PER_VERTEX * vertices;
 }
 
 /**
@@ -580,6 +654,7 @@ export function mergedPartsFromObject(root: THREE.Object3D, maxParts = 48): Mesh
   let splits = false;
   // one body per mesh instance, numbered as `partsFromObject` numbers them
   let nextBody = 0;
+  const trusted = storedIdsTrusted(root);
   const storedIds = new Map<THREE.BufferGeometry, Uint32Array | null>();
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -592,7 +667,7 @@ export function mergedPartsFromObject(root: THREE.Object3D, maxParts = 48): Mesh
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     const nIdx = index ? index.count : pos.count;
     const groups = geo.groups.length && materials.length > 1 ? geo.groups : [{ start: 0, count: nIdx, materialIndex: 0 }];
-    if (!storedIds.has(geo)) storedIds.set(geo, bodyIdsOf(geo));
+    if (!storedIds.has(geo)) storedIds.set(geo, trusted ? bodyIdsOf(geo) : null);
     for (let n = 0; n < instances; n++) {
       const bodyId = nextBody++;
       for (const g of groups) {

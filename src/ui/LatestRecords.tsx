@@ -47,6 +47,7 @@ export function LatestRecords({
     }
     let alive = true;
     setRows(null);
+    setError(false);
     const load = (): void => {
       if (userIdle()) return;
       fetchRecentRecords('season', game)

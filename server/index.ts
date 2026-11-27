@@ -15,8 +15,9 @@ import {
   workerPerf,
   type RoomHandle,
 } from './roomHost';
-import { IMPORT_REFUSED_RANKED, importAdmission, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
-import { visualSourceKey } from './importVisuals';
+import { IMPORT_REFUSED_RANKED, importAdmission, importErrorFrame, importIdOf, isImportedSpec, stripImported } from '../src/net/imported';
+import { VisualGetGate, visualSourceKey } from './importVisuals';
+import { VISUAL_GETS_PER_SOURCE_MIN, VISUAL_ID_RX, VISUAL_REFUSAL_COPY, isVisualKind } from '../src/net/importVisuals';
 import { clientIp } from './analytics';
 import { coerceCaps, coerceRoomSettings, decodeClientMsg, encodeMsg, BB3D_REFUSAL, CUSTOM_ROOM_WATCHERS, DEFAULT_ROOM_CONFIG, physicsAllowed, runLengthAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type LobbyPlayer, type RoomConfig, type ServerMsg, type SiteStatus } from '../src/net/protocol';
 import { coerceName, sanitizePlayer } from '../src/net/sanitize';
@@ -36,7 +37,7 @@ import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
-import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
+import { isReportReason, lookReportDetail, REPORT_DETAIL_MAX } from '../src/report';
 import { cleanMessage, ratingRefund } from '../src/notices';
 import { noticeCorrection, noticeMisscore, noticeReportTriage, noticeStandingEdit, costOf } from './notices';
 import { recalcAct } from './ratingRecalc';
@@ -834,6 +835,19 @@ const spectatorsByNet = new Map<string, number>();
  */
 const MSG_RATE_LIMIT = 240;
 const MSG_RATE_KILL = 2000;
+
+/**
+ * THE MACHINE-WIDE GET GATE (`'imports2'`, `VisualGetGate` in `server/importVisuals.ts`): one per
+ * process, on the socket thread, so it bounds a source across every room on the machine.
+ * `VISUAL_GETS_PER_MIN_TEST` exists for the window harness's "busy, then recovered" flow and can
+ * only TIGHTEN it (clamped to 1..`VISUAL_GETS_PER_SOURCE_MIN`); production sets nothing.
+ */
+const visualGetGate = new VisualGetGate(
+  (() => {
+    const n = Math.floor(Number(process.env.VISUAL_GETS_PER_MIN_TEST));
+    return Number.isFinite(n) && n >= 1 ? Math.min(n, VISUAL_GETS_PER_SOURCE_MIN) : VISUAL_GETS_PER_SOURCE_MIN;
+  })(),
+);
 
 /**
  * GET /api/presence aggregates presence across ALL regions' machines (each machine
@@ -2133,15 +2147,23 @@ const httpServer = createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
           return;
         }
-        // which game's period to advance — DECODE and Chain Reaction run independent
-        // Act → Season progressions (default DECODE).
-        const adminGame = coerceGameId(u.searchParams.get('game'));
+        // which game's period to advance — every game runs its own Act → Season progression, and
+        // the roll pays permanent badges and cannot be undone, so the game is REQUIRED: an absent or
+        // unknown one (a typo, a console tab loaded before a deploy) used to read as DECODE and roll
+        // DECODE's boards instead. Case-sensitive on purpose: `BIOBUZZ` is refused, not guessed.
+        const gameParam = u.searchParams.get('game');
+        if (!isGameId(gameParam)) {
+          res.writeHead(400, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'game required: decode, chain or biobuzz' }));
+          return;
+        }
+        const adminGame = gameParam;
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
           // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
           // new season in the current act.
           const bumpAct = u.searchParams.get('act') === 'new';
-          const { season, act, seasonNo } = await startNewSeason(BALANCE_VERSION, name, bumpAct, adminGame);
+          const { season, act, seasonNo, rewards, rewardsError } = await startNewSeason(BALANCE_VERSION, name, bumpAct, adminGame);
           const label = periodLabel({ name, act, seasonNo });
           console.log(
             `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
@@ -2149,7 +2171,7 @@ const httpServer = createServer((req, res) => {
           await writeAudit({
             adminId: actor,
             action: bumpAct ? 'season.newAct' : 'season.start',
-            detail: { game: adminGame, season, act, seasonNo, label },
+            detail: { game: adminGame, season, act, seasonNo, label, rewards, rewardsError },
           });
           // auto-publish a cinematic announcement (editable/retire-able from the
           // admin console). `announce=0` opts out for a silent roll.
@@ -2158,12 +2180,17 @@ const httpServer = createServer((req, res) => {
               kind: bumpAct ? 'act' : 'season',
               title: label,
               tagline: bumpAct ? 'A NEW ACT BEGINS' : 'A NEW SEASON BEGINS',
-              // the announcement goes to every game's players, so it says whose boards rolled
-              body: `Fresh ${seasonFor(adminGame).name} leaderboards and ranked ratings are live. Set a new record and climb from the top.`,
+              // the announcement goes to every game's players, so it says whose boards rolled.
+              // Ratings are keyed by ACT: only an act roll starts them over, a season roll keeps them.
+              body: bumpAct
+                ? `Fresh ${seasonFor(adminGame).name} leaderboards and ranked ratings are live. Set a new record and climb from the top.`
+                : `Fresh ${seasonFor(adminGame).name} record boards are live. Ranked ratings carry over.`,
             }).catch((e) => console.error('[admin] announcement failed:', e));
           }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, season, act, seasonNo }));
+          // `rewards` / `rewardsError`: what the award job paid straight after the roll (or why it
+          // did not), so the console never says "started" about a roll that paid nobody
+          res.end(JSON.stringify({ ok: true, season, act, seasonNo, rewards, rewardsError }));
           return;
         }
         // purge-replays: default to every season BEFORE the live one when unspecified
@@ -3368,6 +3395,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // the authed user this socket belongs to (set once its JWT verifies), so the
   // signed-in tally can be decremented cleanly on close
   let authedUserId: string | null = null;
+  /** a WATCHER's verified account (`attachSpectator`), which is not counted as a signed-in socket
+   *  but does key its `visualGet`s by account (`visualGetGate`) */
+  let watcherUserId: string | null = null;
   const markAuthed = (userId: string): void => {
     if (authedUserId) return; // count each connection's user exactly once
     authedUserId = userId;
@@ -3797,7 +3827,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         id: importIdOf(msg.player?.spec),
       });
       if (refusal) {
-        send({ t: 'error', message: refusal });
+        send(importErrorFrame(refusal)); // the host's "Not allowed" carries `code: 'imports_off'`
         abandon();
         return;
       }
@@ -4218,7 +4248,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     {
       const refusal = importAdmission(r.importState(), { imported: false, caps: coerceCaps(msg.caps) });
       if (refusal) {
-        send({ t: 'error', message: refusal });
+        send(importErrorFrame(refusal));
         return;
       }
     }
@@ -4243,9 +4273,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // immediately either way so a slow/failed verify never costs the admin the
     // start of the match; the count is corrected the moment it resolves.
     if (typeof msg.authToken === 'string' && msg.authToken) {
+      const watcherId = id;
       void verifyAuthToken(msg.authToken)
         .then((u) => {
-          if (u && ADMIN_IDS.has(u.userId)) r.hideSpectator(id);
+          if (!u) return;
+          // A SIGNED-IN WATCHER PAYS BY ACCOUNT (`'imports2'`): its look-serve window moves off the
+          // address it attached with, and so does the get gate below. Only from a VERIFIED token.
+          r.rekeyWatcher(watcherId, visualSourceKey(`u:${u.userId}`));
+          if (room === r && id === watcherId) watcherUserId = u.userId;
+          if (ADMIN_IDS.has(u.userId)) r.hideSpectator(watcherId);
         })
         .catch(() => {});
     }
@@ -4509,11 +4545,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           // one row per (reporter, target, reason) per room reaches the database — the key the
           // table's unique index would have dropped the repeat on anyway (`Room.claimReportSlot`)
           if (!room!.claimReportSlot(`player|${r.reporterId}|${r.reportedId}|${m.reason}`)) return;
+          const said = typeof m.detail === 'string' ? m.detail.slice(0, REPORT_DETAIL_MAX) : null;
           void submitReport({
             reportedId: r.reportedId,
             reporterId: r.reporterId,
             reason: m.reason,
-            detail: typeof m.detail === 'string' ? m.detail.slice(0, REPORT_DETAIL_MAX) : null,
+            // a LOOK is never stored, so its report names the robot (`'imports2'`): the room says which
+            // one (`resolveReport`), never the client, and the note leads with it
+            detail: m.reason === 'look' && r.robot ? lookReportDetail(r.robot, said ?? '') : said,
             roomCode: room!.code,
             game: room!.gameId,
           })
@@ -4802,6 +4841,29 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           });
           return;
         }
+        /*
+         * THE MACHINE-WIDE GET GATE (`'imports2'`, `VisualGetGate`): a `visualGet` is counted per
+         * SOURCE (this socket's account once verified, else its address) before it reaches any room,
+         * and over `VISUAL_GETS_PER_SOURCE_MIN` a minute it is answered `busy` here and not forwarded.
+         * The rooms' own serve caps are per room; this is what bounds one source across all of them.
+         */
+        // (a malformed one is not counted: the room ignores it unanswered and it costs no egress)
+        if (msg.t === 'visualGet' && isVisualKind(msg.kind)) {
+          const uid = authedUserId ?? watcherUserId;
+          if (!visualGetGate.take(uid ? `u:${uid}` : `ip:${clientIp(req)}`, now)) {
+            const g = msg as unknown as Record<string, unknown>;
+            send({
+              t: 'visualRefused',
+              op: 'get',
+              owner: typeof g.owner === 'string' && g.owner.length <= 64 ? g.owner : '',
+              id: typeof g.id === 'string' && VISUAL_ID_RX.test(g.id) ? g.id : '',
+              kind: msg.kind,
+              reason: 'busy',
+              message: VISUAL_REFUSAL_COPY.busy,
+            });
+            return;
+          }
+        }
         // `conn` so a socket a reconnect has REPLACED no longer drives the seat (Room.onMessage).
         // 0 is "never stamped" (the dev matchmaker's local fallback seats a socket without one),
         // which keeps the old behaviour rather than dropping every frame.
@@ -4943,9 +5005,39 @@ if (LOBBY_IDLE_MS > 0) {
   }, LOBBY_REAP_EVERY_MS).unref?.();
 }
 
+/**
+ * `migrate()` with a second chance. One failed file stops the whole scan, and with it the post-
+ * migrate chain below (lockdown refresh, staff sync, reward job, competition runner), on this
+ * machine until its next boot; every record insert fails meanwhile if the file was a column the
+ * insert writes. The usual cause is transient: 0059, 0061, 0062 and 0065 carry a 5 s
+ * `lock_timeout`, so a long reader holding `profiles`, `matches` or `records` fails the file
+ * instead of queueing every query behind it, and the next attempt finds the table free. Each file
+ * is its own transaction, so a retry resumes at the file that failed.
+ */
+const MIGRATE_RETRIES = 3;
+const MIGRATE_RETRY_MS = 20_000;
+async function migrateWithRetry(): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await migrate();
+      return;
+    } catch (e) {
+      if (attempt >= MIGRATE_RETRIES) {
+        console.error(
+          `[server] MIGRATIONS INCOMPLETE after ${attempt + 1} attempts: later migrations were not applied and this machine will not persist records or run its startup jobs until it restarts. Last error:`,
+          e,
+        );
+        throw e;
+      }
+      console.error(`[server] migration attempt ${attempt + 1} failed; retrying in ${MIGRATE_RETRY_MS / 1000} s:`, e);
+      await new Promise<void>((resolve) => setTimeout(resolve, MIGRATE_RETRY_MS));
+    }
+  }
+}
+
 // apply DB migrations at boot (off the hot path; no-ops without DATABASE_URL). A
 // DB failure must NOT take the game server down — records just won't persist.
-migrate()
+migrateWithRetry()
   .then(async () => {
     console.log('[server] database ready');
     // Project ADMIN_USER_IDS / OWNER_USER_ID onto profiles.role. The env stays the

@@ -18,7 +18,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
 import { flywheelSpinTarget } from '../sim/field';
-import { ROBOT_IMPORT_CAP } from './imported';
+import { IMPORTS2_CAP, ROBOT_IMPORT_CAP } from './imported';
 import { IMPORT_VISUALS_CAP, type VisualKind, type VisualRefusal } from './importVisuals';
 
 /**
@@ -270,6 +270,14 @@ export interface RoomSettings {
    *  Chosen at creation. Gated on the `'autoOnly'` cap: an older predictor would run the
    *  transition (`runLengthAllowed`). */
   runLength?: 'auto';
+  /**
+   * `'off'` = the host's "Imported robots: Not allowed" (`'imports2'`). ABSENT = allowed, so every
+   * room an older server or client knows reads as it always did. A versus room created Public starts
+   * `'off'` (strangers in a listed room have not agreed to each other's uploads); a Private one and
+   * every record room start without it. The server enforces it (`Room.allowsImportedRobots`); an
+   * older client ignores the field and is refused at the door with the sentence.
+   */
+  importedRobots?: 'off';
 }
 
 const PRESET_SHAPE: Record<Exclude<RoomPreset, 'custom'>, { red: number; blue: number; record?: RecordKind }> = {
@@ -307,19 +315,26 @@ export function coerceRoomSettings(
   // a record preset on a versus room is just a custom room
   const preset = asked === 'solo-record' || asked === 'duo-record' ? 'custom' : asked;
   const shape = preset === 'custom' ? { red: 2, blue: 2 } : PRESET_SHAPE[preset];
-  // creation takes the preset and Public/Private only; everything else is the host's, in the room
+  // creation takes the preset and Public/Private only; everything else is the host's, in the room.
+  // A PUBLIC room starts with imported robots off (`'imports2'`); the request cannot ask otherwise.
+  const listed = r.listed === true;
   return {
     preset,
     perAlliance: { red: shape.red, blue: shape.blue },
     teamSwitch: true,
-    listed: r.listed === true,
+    listed,
     ...(r.runLength === 'auto' ? { runLength: 'auto' as const } : {}),
+    ...(listed ? { importedRobots: 'off' as const } : {}),
   };
 }
 
 /** apply a (possibly hostile) partial over settings, clamping every field */
-/** what a host may send to change the room: `runLength: 'full'` clears an auto-only run */
-export type RoomSettingsPatch = Partial<Omit<RoomSettings, 'runLength'>> & { runLength?: 'auto' | 'full' };
+/** what a host may send to change the room: `runLength: 'full'` clears an auto-only run, and
+ *  `importedRobots: 'on'` clears "Not allowed" (`'imports2'`) */
+export type RoomSettingsPatch = Partial<Omit<RoomSettings, 'runLength' | 'importedRobots'>> & {
+  runLength?: 'auto' | 'full';
+  importedRobots?: 'off' | 'on';
+};
 
 export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unknown>): RoomSettings {
   const side = (v: unknown, was: number): number =>
@@ -341,6 +356,9 @@ export function mergeRoomSettings(base: RoomSettings, patch: Record<string, unkn
     // `'rooms3'`: a lobby may change it (`'full'` clears it). `Room` refuses the patch first when a
     // member or a watcher could not play an auto-only run, so what lands here was checked.
     ...(patch.runLength === 'auto' ? { runLength: 'auto' as const } : patch.runLength === 'full' ? {} : base.runLength ? { runLength: base.runLength } : {}),
+    // `'imports2'`: 'off' sets "Not allowed", 'on' clears it, anything else keeps it. Changing `listed`
+    // never touches it. `Room.changeSettings` refuses 'off' while a seat holds an import.
+    ...(patch.importedRobots === 'off' ? { importedRobots: 'off' as const } : patch.importedRobots === 'on' ? {} : base.importedRobots === 'off' ? { importedRobots: 'off' as const } : {}),
   };
 }
 
@@ -824,6 +842,14 @@ export const SERVER_CAPS: string[] = [
    * offers each of those only when the server says this; an older server ignores every one of them.
    */
   ROOMS3_CAP,
+  /**
+   * `'imports2'` — IMPORTED ROBOTS GO PUBLIC (`IMPORTS2_CAP`, `src/net/imported.ts`): the host's
+   * `RoomSettings.importedRobots`, `visualDrop`, the Public-room relay rules and the `look` report
+   * reason. Advertised whether this server's importer is open or closed (`advertisedCaps` keeps it),
+   * so `/api/presence` says which machines run this code. A client sends `importedRobots` or
+   * `visualDrop` only to a server that says this; an older server ignores both.
+   */
+  IMPORTS2_CAP,
 ];
 
 /** the formats a "play a friend" challenge can be issued in.Shared so the API's
@@ -1001,6 +1027,13 @@ export type ClientMsg =
   /** ASK FOR another seat's asset: `owner` is its roster `clientId`, `id` the robot id the roster
    *  names. The room answers with a `visualChunk` stream, or a `visualRefused`. */
   | { t: 'visualGet'; owner: string; id: string; kind: VisualKind }
+  /**
+   * WITHDRAW MY LOOK (`'imports2'`): the owner turned sharing off. The room frees this seat's
+   * uploaded picture and mesh; a viewer mid-download loses the stream, and anyone who already has
+   * them keeps them until they leave. No reply. Ignored without `'importVisuals'` and by an older
+   * server, so the client sends it only to one that advertises `'imports2'`.
+   */
+  | { t: 'visualDrop' }
   /**
    * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`): physics and view are both up.
    * `gen` is the match generation it is ready for, so a report for a match that has since been
@@ -1260,7 +1293,13 @@ export type ErrorCode =
    */
   | 'match_gone'
   /** a custom room already has as many watchers as it carries (`CUSTOM_ROOM_WATCHERS`) */
-  | 'spectators_full';
+  | 'spectators_full'
+  /**
+   * The host turned imported robots off in this room (`IMPORT_HOST_OFF_CODE`, `'imports2'`). The
+   * client can act on it: reconnect on a NEW socket with its last standard robot. Never re-send
+   * `join` on the refused socket. Older servers send no code (their sentence differs too).
+   */
+  | 'imports_off';
 
 export type ServerMsg =
   /**

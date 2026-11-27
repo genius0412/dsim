@@ -12,6 +12,12 @@
 --
 -- Purely ADDITIVE, like every migration here: rolling the server back leaves the tables unread.
 
+-- The foreign keys below take a SHARE ROW EXCLUSIVE lock on `profiles`, which queues behind any
+-- open reader and then makes every write to `profiles` queue behind it. Give up after 5 s instead:
+-- migrate() runs each file in one transaction, so this applies to the whole file and the boot
+-- retries (server/index.ts).
+set local lock_timeout = '5s';
+
 create table if not exists competitions (
   id              uuid        primary key default gen_random_uuid(),
   -- the URL key, `/<game>/competitions/<slug>`; unique across games

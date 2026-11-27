@@ -4,7 +4,9 @@
  * DSIM, a second Edit in Zenith, Play it in AUTO, closing Zenith. Nothing opens on screen.
  *
  * Needs, running: DSIM's dev server on :5173 built with VITE_ZENITH_URL=http://localhost:5245/ (put
- * it in .env.development.local), and Zenith's web dev server on :5245 from a Zenith checkout that has
+ * it in .env.development.local, together with VITE_APP_CHANNEL=alpha: autos are on only in an alpha-
+ * channel build, and without it the Autonomous panel is absent and this fails with no hint), and
+ * Zenith's web dev server on :5245 from a Zenith checkout that has
  * `pnpm install` done (its Playwright is the one used here).
  *
  *   node scripts/zenith-e2e.mjs <zenith-checkout> [screenshot-dir]

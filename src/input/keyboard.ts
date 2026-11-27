@@ -62,11 +62,42 @@ const US_SHIFT: Readonly<Record<string, readonly [string, string]>> = {
   Backquote: ['`', '~'],
 };
 
-/** every lowercased key one keystroke stands for: its own `key`, plus the unshifted one when Shift turned it */
+const LATIN_SCRIPT = /\p{Script=Latin}/u;
+
+/**
+ * THE LATIN LETTER OR DIGIT A KEY ON A NON-LATIN LAYOUT IS PRINTED AS. `key` follows the active
+ * layout, so on a Russian, Greek, Hebrew, Arabic or Korean layout the W key reports `ц`, `ω`, ...
+ * and every letter bind (WASD) was dead. `code` is the physical key, and the binds are named after
+ * the US legend, so a lone non-Latin character on a `KeyX` or `DigitN` code stands for that letter.
+ *
+ * It rewrites nothing that is already Latin: an ASCII `key` (QWERTY, AZERTY, Dvorak, Colemak, and
+ * Shift+digit's `!`) and any other Latin-script character (Turkish `ı`, Czech `ě` on a digit key)
+ * return null, so a Latin layout keeps exactly the keys it always had. `Dead`, `Process` and
+ * `Unidentified` are longer than one character and return null too.
+ */
+export function latinOf(key: string, code: string | undefined): string | null {
+  if (!code || key.length !== 1 || key.charCodeAt(0) < 128 || LATIN_SCRIPT.test(key)) return null;
+  const m = /^Key([A-Z])$/.exec(code) ?? /^Digit([0-9])$/.exec(code);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** the key a rebind is stored as: layout-independent where `latinOf` can say, else the lowercased `key` */
+export function canonicalKey(key: string, code: string | undefined): string {
+  return latinOf(key, code) ?? key.toLowerCase();
+}
+
+/**
+ * every lowercased key one keystroke stands for: its own `key`, plus the unshifted one when Shift
+ * turned it, plus the Latin letter a non-Latin layout hides (`latinOf`). The native key stays in
+ * the list, so a bind already stored as `ц` keeps working.
+ */
 export function keysOfStroke(key: string, code: string | undefined): string[] {
   const k = key.toLowerCase();
   const pair = code ? US_SHIFT[code] : undefined;
-  return pair && key === pair[1] ? [k, pair[0]] : [k];
+  const keys = pair && key === pair[1] ? [k, pair[0]] : [k];
+  const latin = latinOf(key, code);
+  if (latin !== null && !keys.includes(latin)) keys.push(latin);
+  return keys;
 }
 
 /** tracks held keys and edge-triggered presses */

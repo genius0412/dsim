@@ -8,7 +8,15 @@ import {
   subscribePredictionPref,
   type PredictionPref,
 } from '../net/predictionPref';
-import { getShowOthersImported, setShowOthersImported, subscribeShowOthersImported } from '../net/importVisualsPref';
+import {
+  getShareOwnLook,
+  getShowOthersImported,
+  setShareOwnLook,
+  setShowOthersImported,
+  subscribeShareOwnLook,
+  subscribeShowOthersImported,
+  type ShareOwnLook,
+} from '../net/importVisualsPref';
 import { OptRow, ToggleRow } from './OptRow';
 import { importerEnabled } from '../seasonVisibility';
 
@@ -41,12 +49,21 @@ import { importerEnabled } from '../seasonVisibility';
  * concerns every game: a DECODE player's 2D picture is a download too. Graphics only exists for a
  * game with a 3D view, so a DECODE player would never have found it there. Not drawn where the
  * importer is closed (`importerEnabled`); the stored preference is left as it is.
+ *
+ * The same panel holds the OTHER direction: "Share my imported robot’s look in rooms"
+ * (`getShareOwnLook`), whether this device sends its own imported robot’s picture and model to the
+ * rooms it plays in. Unanswered reads as Off here, and nothing is sent until it is On: the lobby
+ * asks once (`ShareLookDialog`). Turning it Off in a room withdraws the look from it.
  */
 export function NetworkSection() {
   const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
   useEffect(() => subscribePredictionPref(setPrediction), []);
   const [showImported, setShowImported] = useState(() => getShowOthersImported());
   useEffect(() => subscribeShowOthersImported(setShowImported), []);
+  // the OWNER's side: whether this device sends its imported robot's look to the rooms it plays in
+  // (`ShareOwnLook`: unanswered reads as off here, and the lobby asks once)
+  const [shareOwn, setShareOwn] = useState<ShareOwnLook>(() => getShareOwnLook());
+  useEffect(() => subscribeShareOwnLook(setShareOwn), []);
   return (
     <>
       <section className="ds-panel">
@@ -78,6 +95,13 @@ export function NetworkSection() {
               onPick={setShowOthersImported}
               onDesc="Downloads each robot’s picture, and its model in the BIOBUZZ 3D view"
               offDesc="You see an outline instead. Nothing is downloaded"
+            />
+            <ToggleRow
+              label="Share my imported robot’s look in rooms"
+              value={shareOwn === 'on'}
+              onPick={setShareOwnLook}
+              onDesc="Others see its picture, and its model in the BIOBUZZ 3D view"
+              offDesc="Others see its outline. Nothing is sent"
             />
           </div>
         </section>

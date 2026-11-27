@@ -41,7 +41,7 @@ function writeSeenStats(s: GlobalStats): void {
 
 /**
  * The main menu: ONE LEFT COLUMN over the menu stage (`MenuStage.tsx`, owner 2026-10-18, after
- * MoSim's home) — the wordmark, the sponsor, the game switcher, the keycaps, the social pills and
+ * another simulator's home screen) — the wordmark, the sponsor, the game switcher, the keycaps, the social pills and
  * the site stats, top to bottom, with the field to the right. The keycaps read from `RAIL_ITEMS`.
  * The first-run tutorial offer and the "Rejoin match" banner are on the Play page (owner,
  * 2026-10-18), floating over the robot.

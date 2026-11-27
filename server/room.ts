@@ -70,9 +70,11 @@ import {
 import { sanitizePlayerPatch } from '../src/net/sanitize';
 import { allianceDuo, categoryDefaultIndex, derivedRole, indexCategory } from '../src/net/startRoles';
 import {
+  IMPORT_OFF_REFUSED,
   IMPORT_START_REFUSED,
   hasImportCap,
   importAdmission,
+  importErrorFrame,
   importIdOf,
   isImportedSpec,
   setupsHaveImported,
@@ -527,6 +529,11 @@ export class Room {
     importId: (id) => this.clients.get(id)?.player.spec.imported?.id,
     recipients: () => [...this.clients.values(), ...this.spectators.values()],
     live: () => this.world !== null && this.phase === 'match' && !this.finalized,
+    // the Public-room rules (`'imports2'`): read live, so a room that changes Public/Private is
+    // under the new rule at once (`changeSettings` then reconciles what the relay holds)
+    listed: () => this.settings?.listed === true,
+    isWatcher: (id) => this.spectators.has(id) && !this.clients.has(id),
+    signedIn: (id) => !!(this.clients.get(id) ?? this.spectators.get(id))?.userId,
   });
   /** the room has no one left: the registry may drop it, and the relay gives its bytes back */
   private emptied(): void {
@@ -1003,6 +1010,14 @@ export class Room {
       if (all.some((m) => !m.caps?.includes('autoOnly'))) return 'Someone here is on an older version of DSIM that can’t play auto-only runs.';
     }
     const next = mergeRoomSettings(this.settings, patch);
+    /*
+     * "IMPORTED ROBOTS: NOT ALLOWED" (`'imports2'`) is refused while any seat holds one, held seats
+     * included, exactly as a seat shrink is: the server never demotes anyone, and swapping a seat's
+     * robot here would desync that player's own prediction. Nothing changes.
+     */
+    if (next.importedRobots === 'off' && this.settings.importedRobots !== 'off') {
+      if ([...this.clients.values()].some((m) => isImportedSpec(m.player.spec))) return IMPORT_OFF_REFUSED;
+    }
     for (const a of ['red', 'blue'] as const) {
       const over = this.sideCount(a) - next.perAlliance[a];
       if (over > 0) return `Move ${over} ${over === 1 ? 'player' : 'players'} off ${a} first.`;
@@ -1010,6 +1025,9 @@ export class Room {
     this.settings = next;
     this.config.settings = next; // admission (`runLengthAllowed`) reads the config, here and on a worker room's mirror
     for (const c of this.clients.values()) c.player.ready = false;
+    // the relay answers to the room's rules: a room turned Public frees a signed-out owner's look
+    // (only a signed-in owner's is relayed there), and its watchers' mesh streams end in the pump
+    this.visuals.reconcile();
     this.broadcastRoster();
     return null;
   }
@@ -1516,7 +1534,7 @@ export class Room {
       id: importIdOf(client.player.spec),
     });
     if (refusal) {
-      client.send({ t: 'error', message: refusal });
+      client.send(importErrorFrame(refusal)); // the host's "Not allowed" carries its code
       return;
     }
     /**
@@ -1642,7 +1660,7 @@ export class Room {
     // holds an imported robot (see `importState`). The door asks the same question first.
     const refusal = importAdmission(this.importState(), { imported: false, caps: client.caps });
     if (refusal) {
-      client.send({ t: 'error', message: refusal });
+      client.send(importErrorFrame(refusal));
       return;
     }
     // `changeSettings` counts watchers too, so the run-length check `add` repeats is repeated here
@@ -1857,6 +1875,20 @@ export class Room {
     this.broadcastSpectators();
     // ...and off the lobby's list of watchers, which named it a moment ago
     if (this.watchersShown()) this.broadcastRoster();
+  }
+
+  /**
+   * A SIGNED-IN WATCHER PAYS BY ACCOUNT (`'imports2'`, M-IMP-TRUST-02). A watcher is attached before
+   * its token is verified, keyed by its address (`Client.budgetKey`); once the socket thread has
+   * verified the token it moves the key here, so a team on one school network watching a private
+   * room does not share one address's serve window. Only the SERVE window moves (`get` reads the
+   * key per request); a watcher reserves nothing, so nothing is re-charged. Called ONLY from the
+   * server's own token verification; no client message reaches it.
+   */
+  rekeyWatcher(id: string, key: number): void {
+    const s = this.spectators.get(id);
+    if (!s || typeof key !== 'number' || !Number.isFinite(key)) return;
+    s.budgetKey = key >>> 0;
   }
 
   /** watchers as PLAYERS are told about them: hidden admin observers excluded.
@@ -2209,7 +2241,7 @@ export class Room {
     if (caps !== undefined) {
       const refusal = importAdmission(this.importState(), { imported: false, caps });
       if (refusal) {
-        send({ t: 'error', message: refusal });
+        send(importErrorFrame(refusal));
         return null;
       }
       // the rejoin door asks this of a mirror that can be a message behind; the room asks it of itself
@@ -2410,6 +2442,14 @@ export class Room {
     // THE RELAY'S TWO MESSAGES come from a seat (an upload) or a seat or a watcher (a download),
     // so they are answered before the lookup below, which a watcher would not pass.
     if (msg.t === 'visualPut' || msg.t === 'visualGet') {
+      if (!this.cancelled) this.visuals.onMessage(id, msg);
+      return;
+    }
+    // `'imports2'`: the owner withdrew its look (sharing turned off). Only the socket that holds the
+    // seat speaks for it: a tab a reconnect has replaced must not withdraw the new tab's upload.
+    if (msg.t === 'visualDrop') {
+      const seat = this.clients.get(id);
+      if (seat && conn !== undefined && seat.conn !== undefined && conn !== seat.conn) return;
       if (!this.cancelled) this.visuals.onMessage(id, msg);
       return;
     }
@@ -2634,7 +2674,13 @@ export class Room {
         // `'rooms3'`: ANY member may, once the result is saved (`returnToLobby` refuses before). The
         // room was about to go back by itself anyway (`armReturn`), so a press only brings that
         // moment forward; an older client never offers it to anyone but the host.
-        if ((id === this.hostId || c.caps?.includes(ROOMS3_CAP)) && !this.pendingMatch?.competition) this.returnToLobby();
+        // ...and only where EVERY member advertised `'rooms3'`, exactly as `armReturn` requires: in a
+        // mixed room an older member would be moved off its results screen by somebody who is not
+        // the host, with nothing having said so. The host's own press is unchanged.
+        if (
+          (id === this.hostId || (c.caps?.includes(ROOMS3_CAP) && [...this.clients.values()].every((m) => m.caps?.includes(ROOMS3_CAP)))) &&
+          !this.pendingMatch?.competition
+        ) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -2673,7 +2719,7 @@ export class Room {
     if (!isImportedSpec(sent)) return rawPatch;
     const refusal = importAdmission(this.importState(c.id), { imported: true, caps: c.caps, id: importIdOf(sent) });
     if (!refusal) return rawPatch;
-    c.send({ t: 'error', message: refusal });
+    c.send(importErrorFrame(refusal)); // the host's "Not allowed" carries its code
     // the team fields ride the spec when one is sent, so they go with it
     const rest = { ...(rawPatch as Record<string, unknown>) };
     delete rest.spec;
@@ -4871,8 +4917,16 @@ export class Room {
    *
    * And only where the importer ships (`importsHere`, from `RoomConfig.imports`): every door, the
    * start refusal, `beginMatch`'s strip and the visuals relay ask this one method.
+   *
+   * And only where the HOST allows them (`settings.importedRobots !== 'off'`, `'imports2'`): the one
+   * term that changes in a live room, so `changeSettings` refuses 'off' while any seat holds one.
    */
   allowsImportedRobots(): boolean {
+    return this.importsEligible() && this.settings?.importedRobots !== 'off';
+  }
+
+  /** every term of `allowsImportedRobots` but the host's setting */
+  private importsEligible(): boolean {
     return this.importsHere && !this.ranked && !this.pendingMatch && this.config.kind === 'versus';
   }
 
@@ -4899,7 +4953,9 @@ export class Room {
       if (id !== undefined) ids.push(id);
     }
     for (const s of this.spectators.values()) if (!hasImportCap(s.caps)) capless = true;
-    return { allows: this.allowsImportedRobots(), hasImport, capless, ids };
+    // `hostOff` only when the host's setting is the ONE reason, so the refusal can name it
+    const hostOff = this.importsEligible() && this.settings?.importedRobots === 'off';
+    return { allows: this.allowsImportedRobots(), hasImport, capless, ids, ...(hostOff ? { hostOff: true } : {}) };
   }
 
   private broadcastRoster(): void {
@@ -4981,15 +5037,26 @@ export class Room {
    * with an error: none of them is something the reporting player can fix, and a failure
    * message would only tell a prober what does and does not exist.
    */
-  resolveReport(reporterClientId: string, robotId: number): { reporterId: string; reportedId: string } | null {
+  resolveReport(
+    reporterClientId: string,
+    robotId: number,
+  ): { reporterId: string; reportedId: string; robot?: { id: string; name: string } } | null {
     const reporter = this.clients.get(reporterClientId);
     if (!reporter?.userId) return null; // must be signed in to report
-    let reportedId: string | undefined;
+    let reported: Client | undefined;
     for (const c of this.clients.values()) {
-      if (this.robotOf.get(c.id) === robotId) reportedId = c.userId;
+      if (this.robotOf.get(c.id) === robotId) reported = c;
     }
-    if (!reportedId || reportedId === reporter.userId) return null;
-    return { reporterId: reporter.userId, reportedId };
+    const reportedId = reported?.userId;
+    if (!reported || !reportedId || reportedId === reporter.userId) return null;
+    /*
+     * AN IMPORTED ROBOT, NAMED (`'imports2'`, the `look` reason): a look is never stored, so the
+     * row says which robot it was. The match's own setup first (what the reporter saw), else the
+     * seat's current robot. Server-authored: the robot comes from this room, never from the report.
+     */
+    const spec = this.matchSetups.find((s) => s.id === robotId)?.spec ?? reported.player.spec;
+    const iid = importIdOf(spec);
+    return { reporterId: reporter.userId, reportedId, ...(iid ? { robot: { id: iid, name: String(spec.name ?? '') } } : {}) };
   }
 
   /**

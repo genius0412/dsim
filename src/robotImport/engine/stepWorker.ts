@@ -17,7 +17,7 @@
  */
 import { EXPORT_HINT, ImportError, notStep, stepCutOff } from './importError';
 import { STEP_PARAMS, STEP_PIECE_PARAMS, type OcctRequest, type OcctResponse, type StepColourHint, type StepPart, type StepRequest, type StepResponse, type StepStage } from './stepConvert';
-import { StepSyntaxError, checkStepText, colourHint, indexStep, pieceBytesFor, pieceText, planPieces, poolSize, wholeHint } from './stepSplit';
+import { StepSyntaxError, checkStepText, colourHint, indexStep, occtDied, pieceBytesFor, pieceText, planPieces, poolSize, wholeHint } from './stepSplit';
 import { zipEntryBytes } from './zip';
 
 /**
@@ -46,11 +46,14 @@ class OcctReader {
   private worker: Worker;
   private nextId = 1;
   private pending = new Map<number, { resolve: (r: { parts: StepPart[]; trisIn: number; faces: number }) => void; reject: (e: Error) => void; onReading?: () => void }>();
+  /** occt loaded here and began a read (`reading`) */
+  private started = false;
 
-  constructor() {
+  constructor(name: string, keepSmall: boolean) {
     this.worker = new Worker(new URL('./occtWorker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<OcctResponse>) => {
       const m = e.data;
+      if (m.kind === 'reading') this.started = true;
       const p = this.pending.get(m.id);
       if (!p) return;
       if (m.kind === 'reading') {
@@ -63,7 +66,7 @@ class OcctReader {
     };
     this.worker.onerror = (e) => {
       e.preventDefault();
-      const err = new ImportError('step-reader', `Couldn’t start the STEP reader (${e.message || 'it stopped'}). Reload the page and try again, or export a GLB or STL.`);
+      const err = occtDied(name, e.message, this.started, keepSmall);
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
     };
@@ -101,7 +104,7 @@ async function readInPieces(bytes: Uint8Array, name: string, keepSmall: boolean)
     ix = indexStep(bytes);
   } catch (e) {
     if (e instanceof StepSyntaxError && e.truncated) throw stepCutOff(name);
-    throw new ImportError('corrupt', `Couldn’t read ${name}: it looks damaged (${e instanceof Error ? e.message : 'unknown error'}). Export it again, or export a GLB or STL instead.`);
+    throw new ImportError('corrupt', `Couldn’t read ${name}: it looks damaged (${e instanceof Error ? e.message : 'unknown error'}). ${EXPORT_HINT}`);
   }
   const plan = planPieces(ix, { pieceBytes: pieceBytesFor(bytes.length, devicePool(Infinity)), minPartMm: keepSmall ? 0 : MIN_PART_MM });
   if (!plan.pieces.length) {
@@ -110,7 +113,7 @@ async function readInPieces(bytes: Uint8Array, name: string, keepSmall: boolean)
   const weights = plan.pieces.map((p) => p.reduce((s, u) => s + plan.units[u].bytes, 0) + plan.skeletonBytes);
   const total = weights.reduce((s, w) => s + w, 0);
   const results: { parts: StepPart[]; trisIn: number }[] = new Array(plan.pieces.length);
-  const readers = Array.from({ length: devicePool(plan.pieces.length) }, () => new OcctReader());
+  const readers = Array.from({ length: devicePool(plan.pieces.length) }, () => new OcctReader(name, keepSmall));
   // the biggest pieces first, so the last one to start is a small one (a split root's faces can make
   // a piece twice the others)
   const order = plan.pieces.map((_, k) => k).sort((a, b) => weights[b] - weights[a] || a - b);
@@ -174,7 +177,7 @@ ctx.onmessage = async (e: MessageEvent<StepRequest>) => {
     if (!check.ok) throw check.reason === 'truncated' ? stepCutOff(req.name) : notStep(req.name);
     if (bytes.length <= DIRECT_MAX_BYTES) {
       progress('step-wasm');
-      const reader = new OcctReader();
+      const reader = new OcctReader(req.name, !!req.keepSmall);
       let r;
       try {
         // the bytes are transferred; a copy stays here in case the whole read runs out of heap

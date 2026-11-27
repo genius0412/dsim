@@ -101,10 +101,12 @@ export function launchZenith(o: LaunchOptions): string | null {
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
       }
-      const tooLarge = autoTooLarge(text);
-      if (tooLarge) return tooLarge;
       const current = loadAutoLibrary(game);
       const plan = planHostSave(current, state, name, text);
+      // measured as it travels: the text plus the waypoints this save will store beside it, so a routine whose
+      // waypoints push it over the frame is refused here, not stored and then stripped of them on the wire
+      const tooLarge = autoTooLarge(text, plan.ok ? plan.entry.waypoints : undefined);
+      if (tooLarge) return tooLarge;
       if (!plan.ok) return plan.error;
       const next = upsertAuto(current, { ...plan.entry, source: 'zenith', savedAt: Date.now() });
       if (!saveAutoLibrary(game, next)) return 'DSIM couldn’t store it on this device: browser storage is full.';

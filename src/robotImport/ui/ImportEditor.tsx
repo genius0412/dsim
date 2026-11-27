@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../../game';
 import type { GameId, ImportedMech, RobotSpec, Vec2 } from '../../types';
 import { coerceSpec } from '../../sim/spawn';
@@ -15,15 +15,15 @@ import { wheelDiameterMm } from '../drive';
 import { defaultImportSetup, isFullDetail, orientKey, removalMovesFrame, transformParts, type MeshPart } from '../geometry';
 import { coaxialBodies, isSpin, MOTION_FINDER, motionAsStored, mountedBodies } from '../motion';
 import type { Found, MotionSearch, Search, WheelInputs } from '../findMoving';
-import { deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
+import { askPersistentStorage, deleteRobot, getRobot, listRobots, newRobotId, putRobot } from '../library';
 import { editSaveId, planShareAdd } from '../libraryIds';
-import { readShareFile, type SharePayload } from '../shareFile';
+import { coerceImportSetup, readShareFile, SHARE_MAX_FILE_BYTES, shareHeaderRefusal, type SharePayload } from '../shareFile';
 import { STORED_MESH_TO_ROBOT, type ImportSetup, type LibraryRobot, type MotionGroup, type QuarterTurns, type WheelLayout } from '../types';
 import { defaultMechFor, mechHandlesFor, mechRobotToModel, validateMechFor } from './placement';
 import { invalidateImportedAssets, registerImportedAssets, unregisterImportedAssets } from '../../render/importedAssets';
 import { COPY } from './copy';
 import { DrivetrainStep } from './DrivetrainStep';
-import { dropDraft, flushDraft, keepDraft, liveDraft, onDraftSaveFailure, restoreDraft, type LiveDraft } from './draftStore';
+import { dropDraft, flushDraft, forgetLiveDraft, keepDraft, liveDraft, onDraftSaveFailure, restoreDraft, type LiveDraft } from './draftStore';
 import type { DropError, Phase } from './DropZone';
 import {
   baseName,
@@ -61,6 +61,7 @@ import {
   wheelLayoutOf,
   type EditorDoc,
   type RectNumber,
+  readFailureText,
   readKeepsBuild,
   readSetup,
   type ReadOpts,
@@ -80,6 +81,7 @@ import {
   redoDoc,
   setupEdit,
   undoDoc,
+  withEditMark,
   type EditHow,
 } from './editorHistory';
 import { downloadBytes, shareBytes, shareFileName } from './exportRobot';
@@ -107,6 +109,34 @@ import './../../ui/importer.css';
  *
  * The engine (three.js, the loaders) is fetched on the first file, a draft resume or a re-open —
  * never on an empty editor.
+ *
+ * THE STATES A PLAYER CAN BE IN, and the way out of each (all of them a real button: mouse, keyboard
+ * and pad reach every one). `phase` = a file is being read, `error` = what the last read or drop said,
+ * `model` = a model is in the draft, `m` = it has been measured.
+ *
+ *   no model, no phase ........ the drop box. Out: choose a file (button), Back.
+ *   phase ..................... the drop box's progress. Out: Cancel (stops the workers), Back (stops them
+ *                               too, and leaves no draft behind), and, once a model exists, Discard.
+ *   no model, error ........... the drop box with the sentence. Out: Choose another file, the error's own
+ *                               action (Try again, Set it up for …), Back.
+ *   model, error .............. the Model step as usual under a banner (`ModelStep`). Out: Dismiss, the
+ *                               banner's own action, any step button; the error also clears when the player
+ *                               leaves the Model step, and when a new read starts.
+ *   model, not measured ....... "Measuring…" while the measure worker answers. A measurement that fails (the
+ *                               worker threw, `normalise` threw, the engine never loaded) ends it: the error
+ *                               says so, with Choose another file, Try again for the engine, Undo, Discard
+ *                               and Back. Cancel on "Measuring…" is the same exit, not a dead button.
+ *   a read in flight .......... Save, Export and Test drive wait (their title says why); everything else is
+ *                               live, and a read that lands after the editor left, or after a save, is ignored.
+ *   a render throws ........... `EditorBoundary`: Back to Robot (the draft is kept and resumes on the Model
+ *                               step) or Discard this import.
+ *
+ * LEAVING (Back, a route change, a save, a discard) stops what is running: the read is aborted (its worker
+ * pool, up to six occt readers, otherwise ran on for minutes and then wrote a draft nobody asked for) and
+ * the draft is written. Once it is on this device the in-memory copy and the engine's measure worker are
+ * let go (`forgetLiveDraft`, `releaseModel`): the whole prepared model, every triangle at Full detail,
+ * stayed in memory for the session after Back. A TEST DRIVE is the one exception: it comes straight back
+ * to this document, so nothing is stopped and nothing is let go.
  */
 export interface ImportEditorProps {
   settings: GameSettings;
@@ -127,11 +157,21 @@ let focusOnReturn: string | null = null;
 /** the engine module once loaded, so a remount (the way back from a test drive) has it on its
  *  first render instead of flashing the empty Model step while `import()` resolves again */
 let engineCache: ImporterEngine | null = null;
+/** editors mounted per draft key: an editor that leaves lets its draft's memory go only when no other has
+ *  taken the key over (StrictMode's rehearsal remount, a Resume that beat the flush) */
+const mountedEditors = new Map<string, number>();
 
 const STAGE_LABEL = (stage: LoadStage, file: string): string => {
   const p = COPY.phase[stage];
   return typeof p === 'function' ? p(file) : p;
 };
+
+/** an error for a share file that cannot be used as it is: told apart from a failure of this device's own */
+function fileProblem(message: string): Error {
+  const e = new Error(message);
+  e.name = 'ShareFileProblem';
+  return e;
+}
 
 /** is this build's launcher ONE turret (its placement is the turret's centre, `turretOnRing`)? */
 function singleTurret(game: GameId, spec: RobotSpec): boolean {
@@ -184,7 +224,94 @@ function freshDoc(settings: GameSettings, key: string, editId: string | null): E
   };
 }
 
-export default function ImportEditor({ settings, editId, onBack, onSaved, onTestDrive }: ImportEditorProps) {
+/**
+ * A THROW WHILE THE EDITOR DRAWS must not strand the draft (MIMPUI-10). The shell's boundary offers only
+ * Home, the draft restored on the next visit at the step it was left on, and Discard lives inside the
+ * editor, so a draft that crashed its step crashed again each time. This one is inside the editor: it says
+ * so, offers the robot page (a draft resumes on the Model step, the one a crash in another step does not
+ * reach) and Discard, which asks first, because it removes minutes of reading. A different draft key
+ * draws the editor again.
+ */
+class EditorBoundary extends Component<
+  { resetKey: string; onBack: () => void; children: ReactNode },
+  { failed: boolean; key: string; confirm: boolean; busy: boolean }
+> {
+  state = { failed: false, key: this.props.resetKey, confirm: false, busy: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  static getDerivedStateFromProps(props: { resetKey: string }, state: { key: string }): { failed: boolean; key: string; confirm: boolean } | null {
+    return props.resetKey === state.key ? null : { failed: false, key: props.resetKey, confirm: false };
+  }
+
+  componentDidCatch(err: unknown): void {
+    console.warn('[import] Couldn’t draw the editor.', err);
+  }
+
+  private discard = async (): Promise<void> => {
+    const k = this.props.resetKey;
+    this.setState({ busy: true });
+    // whatever of the draft is still in memory, and the engine's copy of its model, go with it
+    const gone = liveDraft(k);
+    try {
+      await dropDraft(k);
+      if (gone?.model) engineCache?.releaseModel(gone.model);
+      if (gone) unregisterImportedAssets(gone.doc.id);
+    } catch (e) {
+      console.warn('[import] discard failed', e);
+    }
+    this.props.onBack();
+  };
+
+  render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    const { confirm, busy } = this.state;
+    return (
+      <>
+        <div className="ds-head">
+          <button type="button" className="ds-back" onClick={this.props.onBack}>
+            {COPY.back}
+          </button>
+        </div>
+        <div className="ds-empty" role="alert">
+          <p className="big">{COPY.crashBig}</p>
+          <p>{confirm ? (this.props.resetKey.endsWith(':new') ? COPY.discardBodyNew : COPY.discardBodyChanges) : COPY.crashText}</p>
+          {confirm ? (
+            <>
+              <button type="button" className="ds-btn danger" disabled={busy} onClick={() => void this.discard()}>
+                {COPY.discard}
+              </button>
+              <button type="button" className="ds-btn" disabled={busy} onClick={() => this.setState({ confirm: false })}>
+                {COPY.cancel}
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="ds-btn" onClick={this.props.onBack}>
+                {COPY.backToRobot}
+              </button>
+              <button type="button" className="ds-btn danger" onClick={() => this.setState({ confirm: true })}>
+                {COPY.discardThis}
+              </button>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+}
+
+export default function ImportEditor(props: ImportEditorProps) {
+  return (
+    <EditorBoundary resetKey={draftKey(props.settings.game, props.editId)} onBack={props.onBack}>
+      <ImportEditorInner {...props} />
+    </EditorBoundary>
+  );
+}
+
+function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: ImportEditorProps) {
   const game = settings.game;
   const key = draftKey(game, editId);
   const [draft, setDraftState] = useState<LiveDraft | null>(() => liveDraft(key));
@@ -218,9 +345,20 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     { kind: 'discard' } | { kind: 'dup'; name: string; replace: () => void; keepBoth: () => void } | null
   >(null);
   const gen = useRef(0);
-  /** the import in flight: aborting it terminates its workers (Cancel, a new drop) */
+  /** the import in flight: aborting it terminates its workers (Cancel, a new drop, leaving) */
   const importAbort = useRef<AbortController | null>(null);
   const pendingFocus = useRef<string | null>(null);
+  /** set when the editor leaves for a test drive, which comes straight back to this document: nothing is
+   *  stopped and nothing let go on that way out */
+  const leavingForDrive = useRef(false);
+  /** the files the robot page handed over, held while the boot reads the stored draft (see the boot effect) */
+  const handedFiles = useRef<File[] | null>(null);
+  /** the model whose measurement was given up on (the worker threw, or the player cancelled "Measuring…") */
+  const [failedFor, setFailedFor] = useState<unknown>(null);
+  /** an EDIT's unsaved changes came back from this device (MIMPUI-15): said in the status line until the next edit */
+  const [restoredNote, setRestoredNote] = useState(false);
+  /** the importer engine would not load, with a draft restored: there is nothing to measure it with */
+  const [engineDown, setEngineDown] = useState(false);
 
   const setDraft = useCallback((d: LiveDraft | null) => {
     draftRef.current = d;
@@ -239,7 +377,12 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const cur = draftRef.current;
       if (!cur) return;
       const r = applyEdit(cur.doc, cur.history, fn, how, Date.now());
-      if (r) setDraft({ ...cur, doc: r.doc, history: r.history });
+      if (r) {
+        // the player changed something: what the restore said is no longer news (the editor's own edits are 'auto'),
+        // and the document is now worth keeping as a draft (`EditorDoc.edited`)
+        if (how !== 'auto') setRestoredNote(false);
+        setDraft({ ...cur, doc: withEditMark(r.doc, how), history: r.history });
+      }
     },
     [setDraft],
   );
@@ -270,6 +413,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       const name = files[0]?.name ?? '';
       setError(null);
       setActionError(null);
+      setRestoredNote(false); // a file read over the draft replaces what was restored
       setPhase({ title: name, label: COPY.phase.engine });
       let e: ImporterEngine;
       try {
@@ -283,6 +427,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         return;
       }
       let stepStart = 0;
+      // the model once it is read, and whether the step now running is its measurement: the catch below
+      // lets the model (and the measure worker holding a copy of it) go, and says which of the two failed
+      let held: PreparedModel | null = null;
+      let measuring = false;
       try {
         // read, weld and simplify in the import worker; the main thread only paints the progress
         const budget = opts.setup?.triBudget ?? draftRef.current?.doc.setup.triBudget ?? defaultImportSetup().triBudget;
@@ -303,6 +451,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           },
         });
         if (my !== gen.current) return;
+        held = prepared;
+        measuring = true;
         setPhase({ title: name, label: COPY.phase.measure });
         const cur = draftRef.current;
         const baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
@@ -355,6 +505,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           },
           sourceName: model.name,
           savedModel: !!opts.savedModel,
+          // a file the player read is a change to the document; a saved robot's stored mesh read back in is not
+          edited: opts.savedModel ? baseDoc.edited : (true as const),
           // a new file's mechanisms are read from it again; a re-read of the same one keeps what was set
           cadBuild: readKeepsBuild(opts) ? baseDoc.cadBuild : undefined,
           notes: model.notes.length ? model.notes : undefined,
@@ -367,13 +519,20 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         setDeleting(false);
         setSelected([]);
         sourceFiles.current = opts.savedModel ? null : files;
+        held = null; // the draft owns it from here
         setDraft({ doc, model: prepared, modelStored: false, baked: null, history: opts.keepHistory ? draftRef.current?.history : undefined });
         setPhase(null);
       } catch (err) {
+        // a model that was read but never became the draft's: its measure worker holds a copy of every
+        // triangle, and nothing else will ever let it go (the engine keeps the last two models)
+        if (held) e.releaseModel(held);
         if (my !== gen.current || (err instanceof Error && err.name === 'AbortError')) return;
         console.warn('[import] read failed', err);
         setPhase(null);
-        const msg = err instanceof Error && err.name === 'ImportError' ? err.message : `Couldn’t read ${name}. Export it again and retry.`;
+        // a measurement that threw is not the file's fault and exporting it again cannot change it (RI-03): it
+        // gets a sentence of its own, with what can help (memory is the usual cause)
+        const budget = opts.setup?.triBudget ?? draftRef.current?.doc.setup.triBudget ?? defaultImportSetup().triBudget;
+        const msg = readFailureText(err, measuring, name, isFullDetail(budget));
         // the reader that did not load (a dropped connection) is worth another go; a file it could
         // not read is not, and its sentence already says what to export instead
         const retry = err instanceof Error && (err as { code?: string }).code === 'step-reader';
@@ -387,8 +546,14 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const addShared = useCallback(
     async (file: File, payload: SharePayload) => {
       const my = ++gen.current;
+      // one import at a time: a share file added stops a read in flight, as a new drop does, and is
+      // itself stoppable (Cancel, Back, a new drop): its import worker used to run on whatever the player did
+      importAbort.current?.abort();
+      const abort = new AbortController();
+      importAbort.current = abort;
       setError(null);
       if (payload.game !== game) {
+        setPhase(null); // the read it stopped has no more to say
         const season = seasonFor(game).name;
         setError({
           text: COPY.wrongGame(payload.name, season, seasonFor(payload.game).name),
@@ -404,10 +569,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       try {
         const e = await ensureEngine();
         const spec: RobotSpec = { ...coerceSpec(payload.spec, undefined, game), name: payload.name.slice(0, 24) };
-        if (!spec.imported) throw new Error('share file without an import');
+        // a robot the checks refuse (`coerceImported`) is the FILE's problem, not a failure to prepare the model
+        if (!spec.imported) throw fileProblem('share file without an import');
         // read in the import worker (a share file holds every triangle of a Full robot, tens of MB),
         // at a budget no file reaches: nothing simplified, nothing measured, only the pictures drawn
-        const model = await e.importModel([file], { budget: Number.MAX_SAFE_INTEGER });
+        const model = await e.importModel([file], { budget: Number.MAX_SAFE_INTEGER, signal: abort.signal });
         const robotParts = transformParts(model.parts, STORED_MESH_TO_ROBOT);
         const top = await e.renderTop(robotParts, spec.imported.hull);
         const thumb = await e.renderThumb(robotParts);
@@ -471,9 +637,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         }
         await finish(withId(newRobotId()));
       } catch (err) {
+        // cancelled, left, or replaced by a newer read: whoever did it has said what to show
+        if (my !== gen.current || (err instanceof Error && err.name === 'AbortError')) return;
         console.warn('[import] share file failed', err);
         setPhase(null);
-        setError({ text: COPY.bakeFailed });
+        // an unreadable mesh or a refused robot is the file's: re-trying or reloading cannot change it
+        const theFile = err instanceof Error && (err.name === 'ImportError' || err.name === 'ShareFileProblem');
+        setError({ text: theFile ? COPY.shareUnreadable(file.name) : COPY.bakeFailed });
       }
     },
     [game, ensureEngine, readModel, onSaved],
@@ -497,10 +667,31 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       }
       if (sel.kind === 'share') {
         try {
-          const res = readShareFile(await files[0].arrayBuffer());
+          // THE HEADER BEFORE THE FILE (IMPUI-08): a dropped .glb was read whole before anything about it was
+          // checked, so a multi-gigabyte file named .glb filled this tab's memory. Its size, then its first
+          // twelve bytes, say whether it can be one DSIM wrote; only then is it read.
+          const file = files[0];
+          if (file.size > SHARE_MAX_FILE_BYTES) {
+            setError({ text: COPY.shareTooBig(file.name) });
+            return;
+          }
+          const bad = shareHeaderRefusal(new Uint8Array(await file.slice(0, 12).arrayBuffer()), file.size);
+          if (bad) {
+            // no glTF magic is not a DSIM file at all; a length that is not the file's is a download to repeat
+            setError({ text: bad.error === 'bad-length' ? bad.message : COPY.notStep(file.name) });
+            return;
+          }
+          const res = readShareFile(await file.arrayBuffer());
           if (res.ok) return void addShared(files[0], res.payload);
           if (res.error === 'newer-version') {
             setError({ text: COPY.newer, extra: { label: COPY.setUpAgain, run: () => void readModel(files) } });
+            return;
+          }
+          // a file that opens as a glb and then falls apart (cut off in the download, a chunk or the JSON
+          // damaged) says so in its own sentence, whose next step is to download it again; "choose a STEP
+          // file" would send the player away from the one thing that works
+          if (res.error === 'bad-length' || res.error === 'bad-chunk' || res.error === 'bad-json') {
+            setError({ text: res.message });
             return;
           }
           // a model DSIM did not write is not stored, and is not offered to the editor either:
@@ -550,19 +741,42 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   // ---- boot: a handed file, the live draft, the stored draft, a library robot, or empty ----
   useEffect(() => {
     let dead = false;
-    void (async () => {
-      const files = takeHandedFiles();
+    mountedEditors.set(key, (mountedEditors.get(key) ?? 0) + 1);
+    // The handed files are TAKEN once (`takeHandedFiles` is one-shot) but the boot now awaits the stored
+    // draft before it stages them, so a rehearsal remount (StrictMode, in development) would cancel the
+    // first boot after it had taken them and start a second that finds none. They are kept here until a
+    // boot that was not cancelled has finished.
+    const handed = handedFiles.current ?? takeHandedFiles();
+    handedFiles.current = handed;
+    const boot = async (files: File[] | null): Promise<void> => {
       let d = liveDraft(key);
-      if (!d && !files) {
+      // a draft read back from this device (a reload, a Resume after Back) opens on the Model step; one
+      // still in memory (the way back from a test drive) is where the player left it. The Model step is
+      // where a draft that cannot be measured has its way out.
+      // ⚠️ FILES HANDED TO THE EDITOR GO OVER THE STORED DRAFT, NEVER IN ITS PLACE (MIMPUI-14). The robot
+      // page's Resume card takes a drop, and the draft is read back first: it was skipped when files came
+      // with the open, so a fresh document was kept over it, and the 800 ms write replaced the stored
+      // draft (its model, its wheels, its moving parts) with an empty one before the player chose
+      // anything. Restored, the files are only STAGED (`stageHandedFiles`): the Model step offers
+      // Keep current model or starting the read, and nothing is replaced until it is picked.
+      const fromDisk = !d && !files;
+      // whether the document below was read back from this device, with files handed or not
+      const restored = !d;
+      if (!d) {
         setRestoring(true);
         d = await restoreDraft(key).catch(() => null);
         if (dead) return;
         setRestoring(false);
       }
       if (d) {
-        const staged = files ? { ...d, doc: { ...d.doc, step: 0 as StepIndex } } : d;
+        // handed files are staged on the Model step, so that is where the document opens
+        const staged = files || fromDisk ? { ...d, doc: { ...d.doc, step: 0 as StepIndex } } : d;
+        // an EDIT's unsaved changes are not what the player last saw: the status line says they came back
+        if (restored && staged.doc.editId) setRestoredNote(true);
         setDraft(staged);
-        if (staged.model) void ensureEngine().catch(() => setError({ text: COPY.engineFailed }));
+        // an engine that will not load leaves a restored model with nothing to measure it, so it says so
+        // (with Try again) instead of "Measuring…" for good
+        if (staged.model) void ensureEngine().catch(() => setEngineDown(true));
         if (files) void stageHandedFiles(files);
         if (focusOnReturn) {
           pendingFocus.current = focusOnReturn;
@@ -581,10 +795,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         }
         const rec = got.value;
         const base = freshDoc(settings, key, editId);
-        setDraft({ doc: { ...base, id: rec.id, spec: { ...rec.spec }, created: rec.created, setup: rec.setup }, model: null, modelStored: false, baked: null });
+        // a record added from a share file before the setup checks can hold any setup: opened as the editor
+        // can read it (`coerceImportSetup`), where it threw, by field, in `buildSpec` and at the top of a render
+        const recSetup = coerceImportSetup(rec.setup);
+        setDraft({ doc: { ...base, id: rec.id, spec: { ...rec.spec }, created: rec.created, setup: recSetup }, model: null, modelStored: false, baked: null });
         const file = new File([rec.mesh], `${baseName(rec.source.name)}.glb`);
         await readModel([file], {
-          setup: { ...rec.setup, units: 'm', up: '+y', yaw: 0, wheels: rec.setup.wheels },
+          setup: { ...recSetup, units: 'm', up: '+y', yaw: 0, wheels: recSetup.wheels },
           savedModel: true,
           spec: { ...rec.spec },
           keepSource: rec.source,
@@ -600,10 +817,37 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       }
       setDraft({ doc: freshDoc(settings, key, null), model: null, modelStored: false, baked: null });
       if (files) void stageHandedFiles(files);
-    })();
+    };
+    void boot(handed).finally(() => {
+      if (!dead) handedFiles.current = null;
+    });
     return () => {
       dead = true;
-      flushDraft(key);
+      mountedEditors.set(key, Math.max(0, (mountedEditors.get(key) ?? 1) - 1));
+      // a test drive comes straight back to this document: nothing stops, nothing is let go
+      if (leavingForDrive.current) {
+        void flushDraft(key);
+        return;
+      }
+      // LEAVING STOPS WHAT IS RUNNING. A read in flight (up to six occt workers and several GB, for
+      // minutes) otherwise ran on under the robot page or a match, and then wrote a draft nobody asked
+      // for ("Resume import" appearing from nowhere); a share file's import worker likewise. Bumping
+      // `gen` makes every awaiting step of a read return before it touches the draft.
+      gen.current++;
+      importAbort.current?.abort();
+      const gone = draftRef.current;
+      // Once the draft is on this device, the in-memory copy and the engine's copy of the model go: the
+      // whole prepared model (every triangle at Full detail) otherwise stayed for the session after Back,
+      // through any match played. A Resume reads it back. Not while the write is failing (the live copy is
+      // the only one), and not when another editor has taken the key over meanwhile (StrictMode's
+      // rehearsal remount, a Resume that beat the write).
+      void flushDraft(key).then((onDevice) => {
+        if (!onDevice || (mountedEditors.get(key) ?? 0) > 0) return;
+        forgetLiveDraft(key);
+        if (gone?.model) engRef.current?.releaseModel(gone.model);
+        // the pictures lent to the renderers for a test drive: a robot that was never saved is not drawn
+        if (gone) unregisterImportedAssets(gone.doc.id);
+      });
     };
     // the boot runs once per draft key
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -622,9 +866,16 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   useEffect(() => {
     if (!eng || !model || !doc || ready) return;
     let live = true;
+    // a new try starts clean: the orientation changed (an undo, another file's units), so a failure said
+    // about the last one is not this one's
+    setFailedFor(null);
     eng.prepareMeasure(model as PreparedModel, doc.setup).then(
       () => live && setMeasured((t) => t + 1),
-      (err) => console.warn('[import] measure failed', err),
+      (err) => {
+        console.warn('[import] measure failed', err);
+        // said, not left as "Measuring…" for good (`measureBroke`)
+        if (live) setFailedFor(model);
+      },
     );
     return () => {
       live = false;
@@ -632,21 +883,26 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     // once per orientation: a wheel or drivetrain edit has the same key and is never `ready: false`
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eng, model, okey, ready]);
-  const fresh: NormalisedModel | null = useMemo(() => {
-    if (!eng || !model || !doc || !ready) return null;
+  const freshRes = useMemo((): { n: NormalisedModel | null; threw: boolean } => {
+    if (!eng || !model || !doc || !ready) return { n: null, threw: false };
     try {
-      return eng.normalise(model as PreparedModel, doc.setup);
+      return { n: eng.normalise(model as PreparedModel, doc.setup), threw: false };
     } catch (err) {
       console.warn('[import] normalise failed', err);
-      return null;
+      return { n: null, threw: true };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eng, model, doc?.setup, ready]);
+  const fresh: NormalisedModel | null = freshRes.n;
   const lastMeasured = useRef<{ model: unknown; n: NormalisedModel } | null>(null);
   if (fresh) lastMeasured.current = { model, n: fresh };
   const normalised = fresh ?? (lastMeasured.current?.model === model ? lastMeasured.current.n : null);
   /** a new orientation is being measured; what is shown is the last one */
   const measuring = !!model && !fresh;
+  /** the measurement is not coming (the worker threw, `normalise` threw, or the player gave up waiting): the
+   *  editor says so and offers the ways out, where "Measuring…" with a dead Cancel was all there was. Still
+   *  `measuring` (nothing acts on a model that is not measured), and it clears itself if one lands */
+  const measureBroke = measuring && (failedFor === model || freshRes.threw);
   const [measuringLong, setMeasuringLong] = useState(false);
   useEffect(() => {
     if (!measuring) return setMeasuringLong(false);
@@ -754,6 +1010,9 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   usePageTop(doc ? step : null, bodyRef);
   const goStep = (s: StepIndex, focus?: string): void => {
     pendingFocus.current = focus ?? null;
+    // what the last read said is about the Model step: it is put away as the player leaves it (an error that
+    // arrives while they are on another step waits there until they come back, so it is not lost unseen)
+    if (step === 0) setError(null);
     // moving between steps is not an edit: it is kept with the draft, never undone
     update((d) => ({ ...d, step: s }), 'auto');
   };
@@ -802,7 +1061,13 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
     }
   };
 
-  const save = (): void =>
+  const save = (): void => {
+    // ask the browser to keep the library from THIS click (a user gesture, the moment the robot is worth
+    // keeping; Firefox shows a prompt for it). Not waited for: the save never depends on the answer
+    askPersistentStorage();
+    saveNow();
+  };
+  const saveNow = (): void =>
     void run(async () => {
       const built = finalSpec();
       const b = await ensureBaked();
@@ -831,6 +1096,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
         return;
       }
       if (id !== cur.doc.id) await deleteRobot(cur.doc.id);
+      // the robot is saved: a read still running (a Replace or Detail started while this baked) lands on
+      // nothing, rather than writing a draft for a robot that no longer has one
+      gen.current++;
+      importAbort.current?.abort();
       await dropDraft(key);
       if (cur.model) engRef.current?.releaseModel(cur.model);
       // the draft's lent pictures go, and the renderers read the library's copy from now on
@@ -849,8 +1118,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       if (!spec || !b) return;
       // lent to the renderers until the draft is saved or discarded (lane 6's asset seam)
       registerImportedAssets(spec.imported!.id, { top: b.top, mesh: b.mesh });
-      flushDraft(key);
+      void flushDraft(key);
       focusOnReturn = 'ri-testdrive';
+      // the way back is this same document: leaving must stop nothing and let nothing go
+      leavingForDrive.current = true;
+      // the App can decline a drive (a match already in progress, a new version waiting) and leave this
+      // editor mounted: the intent lapses, so a Back from here is an ordinary one
+      window.setTimeout(() => {
+        leavingForDrive.current = false;
+      }, 10_000);
       onTestDrive(spec);
     });
 
@@ -1259,6 +1535,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
 
   const hasModel = !!m;
   const draftNote = hasModel && draftFull !== null ? COPY.draftNotSaved(draftFull) : null;
+  // an edit's unsaved changes that came back from this device: said in the status line until the next edit.
+  // Not on Review, whose line is the count of what is left to fix (it is the sum of the rest). Only for a
+  // draft with changes in it (`EditorDoc.edited`): one that was merely opened is the saved robot (RI-02)
+  const restoredLine = hasModel && restoredNote && doc.edited ? COPY.draftRestored : null;
   const stepCounts = [0, 0, 0, 0];
   const stepBlocks = [0, 0, 0, 0];
   for (const it of items) {
@@ -1268,6 +1548,20 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
   const title = doc.editId ? COPY.titleEdit(doc.spec.name || 'robot') : COPY.titleNew;
   const toUndo = nextUndo(draft?.history);
   const toRedo = nextRedo(draft?.history);
+  // WHAT THE MODEL STEP SAYS ABOUT A MODEL THAT CANNOT BE USED, besides what the last read said: the engine
+  // would not load for a restored draft, or the measurement is not coming. Both end "Measuring…" (which had a
+  // Cancel that did nothing and no way out but waiting) and leave the ways out on the screen
+  // (the engine counts as down only while it is not loaded: a read started meanwhile may have loaded it)
+  const engineMissing = engineDown && !eng;
+  const shownError: DropError | null =
+    error ??
+    (engineMissing
+      ? { text: COPY.engineFailed, extra: { label: COPY.tryAgain, run: () => { setEngineDown(false); ensureEngine().catch(() => setEngineDown(true)); } } }
+      : measureBroke
+        ? { text: COPY.measureFailed(hasModel && !!toUndo) }
+        : null);
+  const measuringPhase: Phase | null =
+    model && !normalised && !engineMissing && !measureBroke ? { title: doc.source?.name ?? doc.sourceName ?? '', label: COPY.phase.measure } : null;
   // each step draws what it is about: the wheels and the contacts on the Model step, the placements
   // on Mechanisms, the moving parts on theirs, and all of it on Review
   const previewState = m && normalised
@@ -1383,7 +1677,11 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
       />
     ) : null;
 
-  const why = blocked ? COPY.fixFirst : undefined;
+  // a file being read holds Save, Export and Test drive: they would store or drive the model it is replacing
+  const why = phase ? COPY.waitRead : blocked ? COPY.fixFirst : undefined;
+  // a read goes on while the player is on another step (the rail stays live): its bar is on the Model step,
+  // so the title of the step they are on says one is running, and Save says why it waits
+  const readingNote = phase && step !== 0 ? COPY.phase.read(phase.title) : null;
   // what the editor reads by itself has landed: a new file's build, then its moving parts (each an
   // effect a render after the last), so a save from the header never stores a robot half-read
   const autoDone = !!doc && (doc.savedModel || !!doc.editId || (doc.cadBuild !== undefined && doc.setup.motion !== undefined));
@@ -1394,15 +1692,19 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           type="button"
           className="ds-back"
           onClick={() => {
-            flushDraft(key);
+            void flushDraft(key);
             onBack();
           }}
         >
           {COPY.back}
         </button>
         <span className="ds-head-spacer" />
-        {hasModel ? (
+        {/* Discard is there whenever a model is in the draft, measured or not: a restored draft that never
+            measures (`measureBroke`) has no other way to be put away */}
+        {hasModel || model ? (
           <div className="ds-actions ds-import-headacts">
+            {hasModel ? (
+              <>
             <button
               type="button"
               id="ri-undo"
@@ -1427,6 +1729,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             >
               {COPY.redo}
             </button>
+              </>
+            ) : null}
             <button type="button" className="ds-btn ghost small" onClick={() => setDialog({ kind: 'discard' })}>
               {doc.editId ? COPY.discardEdit : COPY.discardNew}
             </button>
@@ -1442,7 +1746,7 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             type="button"
             id="ri-save-head"
             className="ds-btn small ds-import-headsave"
-            disabled={blocked || busy || measuring || !autoDone}
+            disabled={blocked || busy || measuring || !autoDone || !!phase}
             title={why}
             onClick={save}
           >
@@ -1504,14 +1808,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
               <h2 className={`ds-panel-title notice${blocked ? ' error' : ''}`} role="status">
-                {actionError ?? draftNote ?? (busy ? COPY.working : measuring ? COPY.phase.measure : reviewSummary(items))}
+                {actionError ?? draftNote ?? (busy ? COPY.working : readingNote ?? (measuring ? COPY.phase.measure : reviewSummary(items)))}
               </h2>
             ) : (
               // a measurement past `MEASURING_NOTICE_MS` takes the title's place, as a status does on
               // the Controls screen: the slot keeps its line, so nothing below it moves. So does a
               // draft that is not being kept (`draftNote`), which a reload would lose
-              <h2 className={`ds-panel-title${measuringLong || draftNote ? ' notice' : ''}`} role={measuringLong || draftNote ? 'status' : undefined}>
-                {actionError ?? draftNote ?? (measuringLong ? COPY.phase.measure : COPY.steps[step])}
+              <h2
+                className={`ds-panel-title${measuringLong || draftNote || restoredLine || readingNote ? ' notice' : ''}`}
+                role={measuringLong || draftNote || restoredLine || readingNote ? 'status' : undefined}
+              >
+                {actionError ?? draftNote ?? restoredLine ?? (readingNote ?? (measuringLong ? COPY.phase.measure : COPY.steps[step]))}
               </h2>
             )}
           </div>
@@ -1521,8 +1828,17 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                 doc={doc}
                 m={m}
                 // a restored draft's model is measured before the step can show it
-                phase={phase ?? (model && !normalised ? { title: doc.source?.name ?? doc.sourceName ?? '', label: COPY.phase.measure } : null)}
-                error={error}
+                phase={phase ?? measuringPhase}
+                error={shownError}
+                onDismissError={
+                  error
+                    ? () => {
+                        setError(null);
+                        // the banner held focus: it goes to the step's first control, not to the page
+                        pendingFocus.current = 'ri-front';
+                      }
+                    : undefined
+                }
                 wheels={shownWheels}
                 selectedWheel={selWheel}
                 layout={layout}
@@ -1542,6 +1858,10 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
                   // terminates the import's workers: the CPU stops with the bar
                   importAbort.current?.abort();
                   setPhase(null);
+                  // "Measuring…" with no read behind it is the measure worker, which cannot be stopped: the
+                  // player is let out of the wait instead (the ways out show; a measurement that does land
+                  // takes the editor back by itself)
+                  if (!phase && model && !normalised) setFailedFor(model);
                 }}
                 onSetup={(patch) =>
                   update((d) => {
@@ -1633,14 +1953,15 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
             </button>
           ) : (
             <>
-              <button type="button" className="ds-btn" disabled={blocked || busy || measuring} aria-describedby={why ? 'ri-why' : undefined} onClick={exportIt}>
+              <button type="button" className="ds-btn" disabled={blocked || busy || measuring || !!phase} title={why} aria-describedby={why ? 'ri-why' : undefined} onClick={exportIt}>
                 {COPY.exportFile}
               </button>
               <button
                 type="button"
                 id="ri-testdrive"
                 className="ds-btn"
-                disabled={blocked || busy || measuring}
+                disabled={blocked || busy || measuring || !!phase}
+                title={why}
                 aria-describedby={why ? 'ri-why' : undefined}
                 onClick={testDrive}
               >
@@ -1649,7 +1970,8 @@ export default function ImportEditor({ settings, editId, onBack, onSaved, onTest
               <button
                 type="button"
                 className="ds-btn primary"
-                disabled={blocked || busy || measuring}
+                disabled={blocked || busy || measuring || !!phase}
+                title={why}
                 aria-describedby={why ? 'ri-why' : undefined}
                 onClick={save}
               >

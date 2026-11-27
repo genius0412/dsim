@@ -24,6 +24,10 @@
  *
  * ⚠️ NOTHING IS SENT TO A SERVER THAT DID NOT SAY IT HOLDS THE RELAY (`setOffered`), and nothing
  * here is sent per tick: an upload is at most a couple of dozen frames, once.
+ *
+ * ⚠️ NOTHING OF THE OWNER'S ROBOT IS SENT UNTIL ITS OWNER SAID YES (`getShareOwnLook() === 'on'`,
+ * `maybeUpload`). A device that was never asked, or said no, uploads nothing; turning sharing off
+ * mid-room withdraws what was sent (`visualDrop`, to a server that understands it).
  */
 import type { GameId } from '../types';
 import { loadImporterEngine } from '../robotImport/engineLoader';
@@ -43,7 +47,7 @@ import {
 } from './importVisuals';
 import { sameImportedRobot } from '../robotImport/libraryIds';
 import type { ImportedRobot } from '../types';
-import { getShowOthersImported, subscribeShowOthersImported } from './importVisualsPref';
+import { getShareOwnLook, getShowOthersImported, subscribeShareOwnLook, subscribeShowOthersImported, type ShareOwnLook } from './importVisualsPref';
 import { encodeMsg, type LobbyPlayer, type ServerMsg } from './protocol';
 import type { Transport } from './transport';
 
@@ -68,7 +72,7 @@ function loadCheck(): Promise<VisualCheck | null> {
   return checkLoading;
 }
 
-const REFUSALS: readonly VisualRefusal[] = ['room', 'id', 'size', 'format', 'budget', 'seq', 'dup', 'none', 'busy'];
+const REFUSALS: readonly VisualRefusal[] = ['room', 'id', 'size', 'format', 'budget', 'seq', 'dup', 'none', 'busy', 'signin'];
 const isVisualRefusal = (x: unknown): x is VisualRefusal => REFUSALS.includes(x as VisualRefusal);
 
 /** where the owner's own bytes come from: the device library, or a test */
@@ -93,13 +97,19 @@ export interface OwnAssets {
  */
 export interface OwnLookTrouble {
   kind: VisualKind;
-  reason: VisualRefusal | 'missing' | 'stale';
+  /** `'private'` is not a failure: this device's owner chose not to share (`getShareOwnLook() === 'off'`) */
+  reason: VisualRefusal | 'missing' | 'stale' | 'private';
 }
 
-/** the line for `OwnLookTrouble` (docs/area/ui.md copy rules: what failed, and why, in one line) */
+const PRIVATE_TROUBLE: OwnLookTrouble = { kind: 'top', reason: 'private' };
+
+/** the line for `OwnLookTrouble` (docs/area/ui.md copy rules: what failed, and why, in one line; each ≤ 64 characters) */
 export function ownLookLine(t: OwnLookTrouble): string {
+  if (t.reason === 'private') return 'Your robot’s look isn’t shared, so others see its outline.';
   const what = t.kind === 'mesh' ? 'Couldn’t share your 3D model' : 'Couldn’t share your robot’s look';
   switch (t.reason) {
+    case 'signin':
+      return `${what}: sign in to share it here.`;
     case 'budget':
       return `${what}: this room is out of space.`;
     case 'format':
@@ -182,6 +192,18 @@ const CONFIRM_MS = 10_000;
 const STALL_MS = 10_000;
 /** how many times one asset is asked for before this client settles for the footprint */
 const MAX_ASKS = 2;
+/**
+ * ⚠️ A `busy` REFUSAL IS NOT FINAL (merge audit 2026-11, M-IMP-TRUST-02). It means this viewer's
+ * serve window (`VISUAL_SERVE_CLIENT_BYTES` a minute) is spent, and signed-out seats and every
+ * watcher on one address share it: four players on one school network in a BIOBUZZ 2v2 want about
+ * 12.6 MiB against 8. Treated like any other refusal, the last viewers kept the outline for the rest
+ * of the room. So it is asked again once the window has room, 20 to 60 s later (jittered, so the
+ * viewers behind one address do not all come back in the same second), up to `MAX_BUSY_RETRIES`
+ * times, counted apart from `MAX_ASKS`.
+ */
+const BUSY_RETRY_MIN_MS = 20_000;
+const BUSY_RETRY_SPAN_MS = 40_000;
+const MAX_BUSY_RETRIES = 6;
 
 interface Upload {
   id: string;
@@ -209,6 +231,14 @@ export interface ImportVisualsOptions {
   meshWanted?: () => boolean;
   /** is the "show other players’ imported robots" preference on? */
   showOthers?: () => boolean;
+  /**
+   * MAY THIS DEVICE UPLOAD ITS OWNER'S LOOK? (`getShareOwnLook`: `'on'` only after the player said yes.)
+   *
+   * ⚠️ THE APP'S ONE CLIENT (`importVisuals`, below) PASSES THE REAL READER, and a smoke pin holds that
+   * it is the only construction in `src/`. The default here, `'on'`, is for a client a test builds on
+   * purpose with assets of its own: every client in the app reads the stored answer.
+   */
+  shareOwn?: () => ShareOwnLook;
 }
 
 export class ImportVisualsClient {
@@ -234,23 +264,46 @@ export class ImportVisualsClient {
   /** this seat's own assets not worth trying again: `${id}|${kind}` */
   private readonly noUpload = new Set<string>();
   private readonly uploadTries = new Map<string, number>();
+  /**
+   * A PUBLIC ROOM REFUSED THIS SEAT'S LOOK FOR WANT OF AN ACCOUNT (`'signin'`), and the room has not
+   * been seen Private since: `noteRoster` offers it again, once, when it turns Private (where a
+   * signed-out owner's look is relayed). `signinRetried` is that one go: a server that refuses again
+   * is not asked again until the room has been Public in between. An account cannot change on a
+   * connection, so signing in is a new seat (`onWelcome`), which forgets both.
+   */
+  private signinRefused = false;
+  private signinRetried = false;
   private upload: Upload | null = null;
   private readonly incoming = new Map<string, Incoming>();
   private readonly asks = new Map<string, number>();
+  /** `busy` refusals per `${owner}|${kind}`, and the timer that will ask again */
+  private readonly busyTries = new Map<string, number>();
+  private readonly busyTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private settle: ReturnType<typeof setTimeout> | null = null;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private readonly own: OwnAssets;
   private readonly settleMs: number;
   private readonly meshWanted: () => boolean;
   private readonly showOthers: () => boolean;
+  private readonly shareOwn: () => ShareOwnLook;
   /** robot ids this session handed to the renderers, so leaving the room takes them back */
   private readonly delivered = new Set<string>();
+  /** does this room's server understand `visualDrop` (`'imports2'`)? Sent only if it says so. */
+  private dropSupported = false;
+  /**
+   * OWNERS THIS VIEWER SHOWS AS AN OUTLINE FOR THIS ROOM SESSION (the lobby card's Outline button).
+   * Client ids, so a seat that leaves and comes back is a new one. Not persisted: `reset()` clears it.
+   */
+  private readonly hidden = new Set<string>();
+  private readonly hiddenListeners = new Set<() => void>();
+  private hiddenVersion = 0;
 
   constructor(opts: ImportVisualsOptions = {}) {
     this.own = opts.own ?? libraryOwnAssets;
     this.settleMs = opts.settleMs ?? SETTLE_MS;
     this.meshWanted = opts.meshWanted ?? (() => gameHasMeshView(this.game) && getViewPref() === '3d');
     this.showOthers = opts.showOthers ?? getShowOthersImported;
+    this.shareOwn = opts.shareOwn ?? (() => 'on');
   }
 
   // ---- the connection ----------------------------------------------------------------------
@@ -275,6 +328,11 @@ export class ImportVisualsClient {
     this.poke();
   }
 
+  /** does this room's server understand `visualDrop` (`'imports2'`)? An older one ignores it, so it is never sent there. */
+  setDropSupported(on: boolean): void {
+    this.dropSupported = on;
+  }
+
   setGame(game: GameId): void {
     if (this.game === game) return;
     this.game = game;
@@ -287,14 +345,17 @@ export class ImportVisualsClient {
     this.mine.clear();
     this.noUpload.clear();
     this.uploadTries.clear();
+    this.signinRefused = false;
+    this.signinRetried = false;
     this.cancelUpload();
     this.setTrouble(null);
     this.poke();
   }
 
   /** the roster changed: who holds an imported robot, and which */
-  noteRoster(selfId: string, players: readonly LobbyPlayer[]): void {
+  noteRoster(selfId: string, players: readonly LobbyPlayer[], settings?: { listed?: boolean }): void {
     if (selfId) this.selfId = selfId;
+    this.noteListed(settings);
     this.roster.clear();
     this.rosterImp.clear();
     const was = this.ownImp;
@@ -319,6 +380,26 @@ export class ImportVisualsClient {
     this.poke();
   }
 
+  /**
+   * The roster's settings (when the caller has them; an older server or a LAN room may send none, and
+   * then nothing here changes): a room that is Private no longer refuses a signed-out owner, so a look
+   * refused for want of an account is offered again, once. Only `poke`s: `maybeUpload` still sends
+   * nothing unless the owner's answer is yes.
+   */
+  private noteListed(settings: { listed?: boolean } | undefined): void {
+    if (!settings) return;
+    if (settings.listed === true) {
+      this.signinRetried = false;
+      return;
+    }
+    if (!this.signinRefused) return;
+    this.signinRefused = false;
+    this.signinRetried = true;
+    if (this.ownId) for (const k of this.ownKinds()) this.noUpload.delete(`${this.ownId}|${k}`);
+    if (this.trouble?.reason === 'signin') this.setTrouble(null);
+    this.poke();
+  }
+
   /** forget the room: stop sending, drop what is half received, give the renderers their blobs back */
   reset(): void {
     this.cancelUpload();
@@ -327,6 +408,10 @@ export class ImportVisualsClient {
     this.stopWatchdog();
     this.tx = null;
     this.offered = false;
+    this.dropSupported = false;
+    this.signinRefused = false;
+    this.signinRetried = false;
+    this.clearHidden();
     this.selfId = '';
     this.ownId = null;
     this.ownImp = null;
@@ -338,8 +423,15 @@ export class ImportVisualsClient {
     this.uploadTries.clear();
     this.incoming.clear();
     this.asks.clear();
+    this.clearBusy();
+    this.busyTries.clear();
     this.dropDelivered();
     this.setTrouble(null);
+  }
+
+  private clearBusy(): void {
+    for (const t of this.busyTimers.values()) clearTimeout(t);
+    this.busyTimers.clear();
   }
 
   private dropDelivered(): void {
@@ -359,6 +451,9 @@ export class ImportVisualsClient {
   private onReady(m: Extract<ServerMsg, { t: 'visualReady' }>): void {
     if (typeof m.owner !== 'string' || !isVisualKind(m.kind) || typeof m.id !== 'string' || !VISUAL_ID_RX.test(m.id)) return;
     if (m.owner === this.selfId) {
+      // ⚠️ the answer to an upload that was in flight when sharing was turned off: the room has been
+      // told to drop it (or will be, behind this frame), so it is not "ours in the room" any more
+      if (this.shareOwn() !== 'on') return;
       // the room holds our upload
       this.mine.add(`${m.id}|${m.kind}`);
       if (this.trouble?.kind === m.kind) this.setTrouble(null);
@@ -381,16 +476,36 @@ export class ImportVisualsClient {
         this.uploadTries.set(key, (this.uploadTries.get(key) ?? 0) + 1);
       } else {
         this.noUpload.add(key);
+        // a Public room refuses a signed-out owner's every frame: no point offering the other kind
+        if (m.reason === 'signin') {
+          for (const k of this.ownKinds()) this.noUpload.add(`${m.id}|${k}`);
+          this.signinRefused = !this.signinRetried; // refused again after the one retry: final until the room is Public again
+        }
         if (m.id === this.ownId) this.noteTrouble(m.kind, isVisualRefusal(m.reason) ? m.reason : 'seq');
       }
       if (this.upload && this.upload.id === m.id && this.upload.kind === m.kind) this.cancelUpload();
       this.poke();
       return;
     }
-    // a download was refused: the footprint stays, and this is not asked for again
+    // a download was refused: the footprint stays, and this is not asked for again...
     const key = `${m.owner}|${m.kind}`;
     this.incoming.delete(key);
     this.asks.set(key, MAX_ASKS);
+    // ...unless the room was only out of serve window (`BUSY_RETRY_MIN_MS`): held until it has room,
+    // then asked again as if never asked
+    const tries = this.busyTries.get(key) ?? 0;
+    if (m.reason !== 'busy' || tries >= MAX_BUSY_RETRIES || this.busyTimers.has(key)) return;
+    this.busyTries.set(key, tries + 1);
+    const tx = this.tx;
+    this.busyTimers.set(
+      key,
+      setTimeout(() => {
+        this.busyTimers.delete(key);
+        if (this.tx !== tx) return; // another room since
+        this.asks.delete(key);
+        this.poke();
+      }, BUSY_RETRY_MIN_MS + Math.random() * BUSY_RETRY_SPAN_MS),
+    );
   }
 
   // ---- acting on it ------------------------------------------------------------------------
@@ -417,6 +532,10 @@ export class ImportVisualsClient {
 
   private maybeUpload(): void {
     const tx = this.tx;
+    // ⚠️ THE PRIVACY GATE. Nothing of this device's imported robot leaves it until its owner said yes
+    // (`ShareOwnLook`): not on a join, a reconnect, a robot change, a room going Public or Private, or
+    // a page that loaded with an answer stored. `'ask'` and `'off'` both send nothing.
+    if (this.shareOwn() !== 'on') return;
     if (!tx || !this.offered || this.upload || !this.ownId) return;
     const id = this.ownId;
     for (const kind of this.ownKinds()) {
@@ -465,7 +584,8 @@ export class ImportVisualsClient {
     const sendNext = (): void => {
       up.timer = null;
       const tx = this.tx;
-      if (this.upload !== up || !tx || !tx.isOpen || this.ownId !== id) {
+      // ...and again at the frame itself: the answer may have changed while the library was read
+      if (this.upload !== up || !tx || !tx.isOpen || this.ownId !== id || this.shareOwn() !== 'on') {
         if (this.upload === up) this.cancelUpload();
         return;
       }
@@ -506,6 +626,8 @@ export class ImportVisualsClient {
     for (const [owner, id] of this.roster) {
       // ⚠️ never this seat's own robot id: a seat that claimed it cannot lend this viewer a look for it
       if (id === this.ownId) continue;
+      // this viewer chose the outline for this owner (the lobby card's Outline button): asks for nothing
+      if (this.hidden.has(owner)) continue;
       for (const kind of this.wantedKinds()) {
         const key = `${owner}|${kind}`;
         if (this.ready.get(key) !== id) continue; // the room does not say it has this robot's asset
@@ -571,7 +693,7 @@ export class ImportVisualsClient {
    *  · another owner's look already holds this id.
    */
   private async deliver(owner: string, id: string, kind: VisualKind, bytes: Uint8Array, tx: Transport | null): Promise<void> {
-    if (this.roster.get(owner) !== id || id === this.ownId) return;
+    if (this.roster.get(owner) !== id || id === this.ownId || this.hidden.has(owner)) return;
     if (hasRelayedAsset(owner, id, kind) || relayedIdTakenByOther(owner, id)) return;
     let mine = false;
     try {
@@ -581,7 +703,7 @@ export class ImportVisualsClient {
       mine = false;
     }
     // the room may have been left, or the robot changed, while the library answered
-    if (mine || this.tx !== tx || this.roster.get(owner) !== id || id === this.ownId || !this.showOthers()) return;
+    if (mine || this.tx !== tx || this.roster.get(owner) !== id || id === this.ownId || !this.showOthers() || this.hidden.has(owner)) return;
     if (registerRelayedAsset(owner, id, kind, bytes)) this.delivered.add(id);
   }
 
@@ -621,6 +743,7 @@ export class ImportVisualsClient {
       // off means the outline: take back what was delivered, and stop what is on its way
       this.incoming.clear();
       this.asks.clear();
+      this.clearBusy();
       this.dropDelivered();
       return;
     }
@@ -630,8 +753,14 @@ export class ImportVisualsClient {
 
   // ---- this seat's own look, for the lobby's line ---------------------------------------------
 
-  /** why this seat's own look is not in the room, or null (`OwnLookTrouble`) */
+  /**
+   * why this seat's own look is not in the room, or null (`OwnLookTrouble`). A seat that holds an
+   * import in a room that relays, on a device whose owner said NO, reads `'private'`: not a failure,
+   * but the line that tells them why the others see an outline. One constant object, so
+   * `useSyncExternalStore` sees a stable snapshot.
+   */
   ownLookTrouble(): OwnLookTrouble | null {
+    if (this.ownId && this.offered && this.shareOwn() === 'off') return PRIVATE_TROUBLE;
     return this.trouble;
   }
 
@@ -641,6 +770,112 @@ export class ImportVisualsClient {
     return () => {
       this.troubleListeners.delete(cb);
     };
+  }
+
+  /** TEST SEAM and the lobby's: tell the listeners `ownLookTrouble()` may have changed */
+  private notifyTrouble(): void {
+    for (const cb of [...this.troubleListeners]) {
+      try {
+        cb();
+      } catch {
+        /* a listener's throw is its own */
+      }
+    }
+  }
+
+  /**
+   * THE OWNER'S ANSWER CHANGED (`subscribeShareOwnLook`, below; this tab's switch or another tab's).
+   *
+   *  · Yes: look again, so what was held back goes now.
+   *  · Anything else: stop what is going out, forget what was confirmed (the room is told to drop it),
+   *    and, when the room's server understands it (`setDropSupported`), WITHDRAW the look with one
+   *    `visualDrop`. Players who already received it keep it until they leave; that is said in the
+   *    privacy text. Sent only when something may be held: an upload in flight or one confirmed.
+   */
+  shareChanged(): void {
+    if (this.shareOwn() === 'on') {
+      this.poke();
+      this.notifyTrouble();
+      return;
+    }
+    const held = this.upload !== null || this.mine.size > 0;
+    this.cancelUpload();
+    this.mine.clear();
+    this.noUpload.clear();
+    this.uploadTries.clear();
+    this.trouble = null;
+    const tx = this.tx;
+    if (held && this.dropSupported && this.offered && tx && tx.isOpen) tx.send(encodeMsg({ t: 'visualDrop' }));
+    this.notifyTrouble();
+  }
+
+  // ---- the viewer's Outline, per owner, for this room session ---------------------------------
+
+  /** is `owner`'s robot shown as an outline here by this viewer's choice? */
+  isHidden(owner: string): boolean {
+    return this.hidden.has(owner);
+  }
+
+  /** a number that changes whenever the hidden set does, for `useSyncExternalStore` */
+  hiddenSnapshot(): number {
+    return this.hiddenVersion;
+  }
+
+  subscribeHidden(cb: () => void): () => void {
+    this.hiddenListeners.add(cb);
+    return () => {
+      this.hiddenListeners.delete(cb);
+    };
+  }
+
+  /**
+   * Show `owner`'s robot as an outline (`on`), or as its look again. Hiding drops that owner's downloads
+   * in flight, takes back what was lent for its robot, and asks for nothing more of it; showing asks
+   * afresh. Never sent to the room: it concerns this screen only.
+   */
+  setHidden(owner: string, on: boolean): void {
+    if (this.hidden.has(owner) === on) return;
+    const id = this.roster.get(owner);
+    for (const kind of ['top', 'mesh'] as const) {
+      const key = `${owner}|${kind}`;
+      if (on) {
+        this.incoming.delete(key);
+        const t = this.busyTimers.get(key);
+        if (t) clearTimeout(t);
+        this.busyTimers.delete(key);
+      } else {
+        this.asks.delete(key);
+        this.busyTries.delete(key);
+      }
+    }
+    if (on) {
+      this.hidden.add(owner);
+      if (id && this.delivered.has(id)) {
+        unregisterRelayedAssets([id]);
+        this.delivered.delete(id);
+      }
+    } else {
+      this.hidden.delete(owner);
+      this.poke();
+    }
+    this.bumpHidden();
+  }
+
+  private bumpHidden(): void {
+    this.hiddenVersion++;
+    for (const cb of [...this.hiddenListeners]) {
+      try {
+        cb();
+      } catch {
+        /* a listener's throw is its own */
+      }
+    }
+  }
+
+  private clearHidden(): void {
+    if (!this.hidden.size) return;
+    this.hidden.clear();
+    this.bumpHidden();
   }
 
   /** the first trouble stands (the picture's, which every viewer needs, before the mesh's) */
@@ -668,8 +903,10 @@ export class ImportVisualsClient {
 }
 
 /** the app's one session (see the header) */
-export const importVisuals = new ImportVisualsClient();
+export const importVisuals = new ImportVisualsClient({ shareOwn: getShareOwnLook });
 
 // the two things that change what a viewer wants, for the life of the tab
 subscribeShowOthersImported(() => importVisuals.refresh());
 subscribeViewPref(() => importVisuals.refresh());
+// ...and the one that changes what this seat's owner lets go out: a no withdraws, a yes sends
+subscribeShareOwnLook(() => importVisuals.shareChanged());

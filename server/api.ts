@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { GameId } from '../src/types';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
@@ -11,7 +11,7 @@ import { coerceWindow, windowBounds } from './boardWindow';
 import { CHALLENGE_FORMATS, RETIRED_FORMATS, type AccessGroup } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
 import { replayHasImported } from '../src/net/imported';
-import { moderateName, scrubName } from './moderation';
+import { moderateName, scrubName, NAME_CHECK_BUSY } from './moderation';
 import { LAN_UPLOADS } from './lanUploads';
 import { handleCompetitionApi, placementsOf } from './competitions';
 import { dbEnabled } from './db/pool';
@@ -748,9 +748,12 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // authoritative content moderation via the hosted service (the client shows a
       // hint from the same check, but any client value is spoofable — the server is
       // the authority). Fails open on an outage; the admin console is the backstop.
-      if (!(await moderateName(clean)).allowed) {
+      const nameCheck = await moderateName(clean);
+      if (!nameCheck.allowed) {
         return json(400, { error: 'That name isn’t allowed. Please choose another.' }), true;
       }
+      // a claim that went unchecked ONLY because the hosted budget is spent is refused, not passed
+      if (nameCheck.budget) return json(400, { error: NAME_CHECK_BUSY }), true;
       if (dbEnabled) {
         await ensureProfile(user.userId, clean);
         await setHandle(user.userId, clean);
@@ -775,9 +778,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return json(400, { error: '4–20 characters, lowercase letters and numbers only' }), true;
       }
       // authoritative content moderation (fails open on an outage; admin is backstop)
-      if (!(await moderateName(username)).allowed) {
+      const nameCheck = await moderateName(username);
+      if (!nameCheck.allowed) {
         return json(400, { error: 'That username isn’t allowed. Please choose another.' }), true;
       }
+      if (nameCheck.budget) return json(400, { error: NAME_CHECK_BUSY }), true;
       if (dbEnabled) {
         await ensureProfile(user.userId, user.handle);
         try {
@@ -798,7 +803,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!username) return json(200, { valid: false, available: false }), true;
       // a blocked name is never claimable — surface it as invalid with a reason so
       // the client can show the "not allowed" hint (vs. a plain format error)
-      if (!(await moderateName(username)).allowed) {
+      // `probe`: this route is public and unthrottled, so it draws from its own small slice of the
+      // hosted budget and can never starve the claims above (see `takeProviderBudget`)
+      if (!(await moderateName(username, { probe: true })).allowed) {
         return json(200, { valid: false, available: false, reason: 'inappropriate' }), true;
       }
       const available = dbEnabled ? await usernameAvailable(username) : true;
@@ -1052,6 +1059,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!code || !state) return back('error');
       const who = readState(state);
       if (!who || who.provider !== provider) return back('error');
+      // THE CLOSED-SITE DOOR ABOVE ONLY SEES NON-GET REQUESTS, and this callback is a GET that
+      // writes (the link, and the reward sweep behind it). It is the one write the door skipped.
+      if (await lockdownRefusal(who.userId, 'site')) return back('closed');
       const providerUserId = await exchangeForId(provider, code, origin);
       if (!providerUserId) return back('error');
       if (!dbEnabled) return back('error');
@@ -1580,12 +1590,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return json(400, { error: 'bad request' }), true;
       }
 
-      // Constant-time-ish compare is overkill for a webhook token, but bail on a
-      // mismatch before touching the DB either way.
+      // Compared as two sha256 digests with `timingSafeEqual`, so the check takes the same time
+      // however much of the token a guess has right (a `!==` on the strings stops at the first
+      // differing character), and a non-string token cannot reach it.
       // Token check comes BEFORE the dbEnabled guard on purpose: an
       // unauthenticated caller should not be able to probe whether the database
       // is up, and it keeps the auth decision independent of deploy state.
-      if (payload.verification_token !== secret) {
+      const sha = (s: string): Buffer => createHash('sha256').update(s).digest();
+      const tokenOk = typeof payload?.verification_token === 'string' && timingSafeEqual(sha(payload.verification_token), sha(secret));
+      if (!tokenOk) {
         return json(401, { error: 'bad token' }), true;
       }
       if (!payload.message_id) return json(400, { error: 'missing message_id' }), true;
@@ -1857,8 +1870,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     // A season is an INTEGER key. `Number('abc')` is NaN and `Number('1.5')` is not a key, and
     // both went straight into a bound parameter, where Postgres refused them as a 500. Refused
     // here instead, as what they are.
-    if (seasonParam !== null && !Number.isSafeInteger(Number(seasonParam))) {
-      return json(400, { error: 'bad season' }), true;
+    // The column is int4, so an integer past 2147483647 (or below 0) is refused here too: it is a
+    // safe integer in JS and a 500 in Postgres ("out of range for type integer").
+    if (seasonParam !== null) {
+      const sn = Number(seasonParam);
+      if (!Number.isSafeInteger(sn) || sn < 0 || sn > 2147483647) return json(400, { error: 'bad season' }), true;
     }
     const season =
       seasonParam !== null

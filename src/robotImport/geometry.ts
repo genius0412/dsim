@@ -1577,6 +1577,9 @@ export interface OrientedMeasure {
   folds: FoldPlan[];
   /** bodies that float apart from the robot (`findFloatingParts`) */
   floating?: FloatingGroup[];
+  /** the box of EVERY part, parts left out of the footprint included, MODEL frame; only when parts are
+   *  left out (nothing else reaches past the drive base). `finishMeasure` moves it onto the origin. */
+  reach?: { min: V3; max: V3 };
 }
 
 /** what `orientParts` depends on in a setup: equal keys, equal `OrientedMeasure` */
@@ -1853,6 +1856,10 @@ export function orientParts(
   // here, not on the main thread: the bodies' boxes cost a pass over the measured copy (50–90 ms
   // on a 1.3–1.9 M copy, Node)
   const floating = empty ? [] : findFloatingParts(base);
+  // the box of the whole model, for Review (`meshReach`): the parts left out of the footprint are the
+  // only ones that can leave the box a room draws (everything else is inside the drive base's, which
+  // the 18 in check bounds), so a model with none pays nothing for it
+  const all = !empty && setup.apart?.length ? boxWithout(modelParts, new Set()) : null;
   return {
     oriented: {
       units,
@@ -1872,6 +1879,7 @@ export function orientParts(
       bandsModel,
       folds,
       floating,
+      ...(all ? { reach: all } : {}),
     },
     modelParts,
   };
@@ -2014,6 +2022,15 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
     trisIn: o.trisIn,
     checks,
     floating: o.floating ?? [],
+    // robot-local inches: the model frame less the origin, the height as it is
+    ...(o.reach
+      ? {
+          reach: {
+            min: [o.reach.min[0] - origin.x, o.reach.min[1] - origin.y, o.reach.min[2]] as [number, number, number],
+            max: [o.reach.max[0] - origin.x, o.reach.max[1] - origin.y, o.reach.max[2]] as [number, number, number],
+          },
+        }
+      : {}),
   };
 }
 

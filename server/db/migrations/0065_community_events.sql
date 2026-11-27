@@ -15,6 +15,11 @@
 --
 -- Purely ADDITIVE, like every migration here: rolling the server back leaves the table unread.
 
+-- The foreign keys take a lock on `profiles` that queues behind any open reader. Give up after 5 s
+-- instead (migrate() runs the file in one transaction, so `set local` applies; the boot retries,
+-- server/index.ts).
+set local lock_timeout = '5s';
+
 create table if not exists community_events (
   id         bigserial   primary key,
   -- closed vocabulary, `COMMUNITY_KINDS` in src/net/protocol.ts

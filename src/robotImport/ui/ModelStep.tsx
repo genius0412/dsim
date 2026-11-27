@@ -60,11 +60,18 @@ export function ModelStep({
   onStartPending,
   onKeepPending,
   checkFiles,
+  onDismissError,
   parts,
 }: {
   doc: EditorDoc;
   m: ImportMeasurement | null;
   phase: Phase | null;
+  /**
+   * What the last read or drop said. With no model it is the drop box's own state (Choose another
+   * file). With a model loaded it is a BANNER over the step, which stays usable: a failed Replace or
+   * Detail re-read, a refused file and a wrong-game share file used to replace the whole step, and
+   * nothing cleared them, so Units, Up axis, Front, Wheels, Parts and Detail were unreachable.
+   */
   error: DropError | null;
   /** FL FR BL BR, MODEL frame, with any drag in flight applied */
   wheels: Vec2[] | null;
@@ -92,6 +99,8 @@ export function ModelStep({
   onKeepPending: () => void;
   /** may these files be imported (`checkImportFiles`)? null, or the sentence that refuses them */
   checkFiles: (files: File[]) => Promise<string | null>;
+  /** put the banner away (absent: an error that is not the player's to dismiss, shown until it is resolved) */
+  onDismissError?: () => void;
   /** deleting parts (`PartsControls`) */
   parts: PartsControls;
 }) {
@@ -122,12 +131,34 @@ export function ModelStep({
     setStagedDetail(null);
     if (pendingFiles) onKeepPending();
   };
-  if (!m || phase || error || stagedFiles) {
+  // THE ERROR OF A MODEL THAT IS STILL LOADED is a banner, never a replacement for the step (MIMPUI-02).
+  // Its way out is on it: Dismiss, and the action the error offers (Try again, Set it up for …); the
+  // Replace button is under it. No model, no step to show: the drop box carries the error itself.
+  const banner =
+    m && error && !phase ? (
+      <div className="ds-field" role="alert">
+        <p className="ds-hint err">{error.text}</p>
+        <div className="ds-import-turns">
+          {error.extra ? (
+            <button type="button" className="ds-btn small" onClick={error.extra.run}>
+              {error.extra.label}
+            </button>
+          ) : null}
+          {onDismissError ? (
+            <button type="button" className="ds-btn ghost small" id="ri-dismiss" onClick={onDismissError}>
+              {COPY.dismiss}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    ) : null;
+  if (!m || phase || stagedFiles) {
     return (
       <>
+        {banner}
         <DropZone
           phase={phase}
-          error={error}
+          error={m ? null : error}
           onFiles={readFiles}
           onCancel={onCancel}
           detail={detail}
@@ -190,6 +221,7 @@ export function ModelStep({
   const turn = (by: 1 | 3): void => onSetup({ yaw: (((doc.setup.yaw + by) % 4) as QuarterTurns), wheels: null });
   return (
     <>
+      {banner}
       <div className="ds-field">
         <span className="cap">{COPY.fileCap}</span>
         <div className="ds-import-filerow">

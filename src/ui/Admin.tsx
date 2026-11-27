@@ -212,20 +212,29 @@ export function Admin({
   const [userStatus, setUserStatus] = useState<string | null>(null);
   const [userBusy, setUserBusy] = useState(false);
 
+  // WHICH BOARD THE LISTED ROWS CAME FROM. The three selects can be changed after LOAD without
+  // reloading, so a confirm that read them would name a board the row is not on.
+  const [recLoaded, setRecLoaded] = useState<{ gameName: string; mode: RecMode } | null>(null);
+
   const loadRecords = async (): Promise<void> => {
     setRecBusy(true);
     const rows = await adminFetchRecords(recMode, recDt, recGame);
     setRecBusy(false);
     setRecords(rows);
     const gameName = SEASONS.find((s) => s.key === recGame)?.name ?? recGame;
+    setRecLoaded({ gameName, mode: recMode });
     setRecStatus(rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'} · ${gameName}.` : 'No records in this bucket. If you expected some, check that you are still signed in as an admin.');
   };
+
+  /** "the driver, or the pair" — a duo board entry is two people and a delete removes the pair's run */
+  const entryOf = (row: AdminRecordRow): string =>
+    row.partnerId ? `${row.handle} and ${row.partnerHandle ?? 'a partner'}` : row.handle;
 
   const deleteRecord = async (row: AdminRecordRow): Promise<void> => {
     if (
       !confirmed(
         'Delete the',
-        `${row.score}-pt ${row.drivetrain} run by ${row.handle}`,
+        `${row.score}-pt ${row.drivetrain} ${recLoaded?.gameName ?? ''} ${recLoaded?.mode ?? ''} run by ${entryOf(row)}`.replace(/\s+/g, ' '),
         'The run and its replay go. This cannot be undone.',
       )
     )
@@ -242,7 +251,7 @@ export function Admin({
       !confirmed(
         'Delete every record run by',
         row.handle,
-        'Every mode and drivetrain, plus their replays. For a confirmed cheater. This cannot be undone.',
+        'Every game, every season, every mode and every drivetrain, archived seasons included, plus their replays. Not just this board. For a confirmed cheater. This cannot be undone.',
       )
     )
       return;
@@ -302,17 +311,28 @@ export function Admin({
       !confirmed(
         'Start',
         `${seasonGameName}: ${target}`,
-        `The live ${seasonGameName} leaderboards are archived; old boards stay viewable.` +
+        // THE ROLL PAYS REAL BADGES, NOW, OFF THE BOARDS AS THEY STAND (SOCIAL-01): it does not
+        // look at suspensions or cheats, and there is no route that takes a grant back
+        `This pays permanent ${newAct ? 'record holder and ranked podium' : 'record holder'} badges to ${seasonGameName} players right now, from the boards as they stand. ` +
+          'It cannot be undone, so clear cheated runs first. ' +
+          `The live ${seasonGameName} leaderboards are archived; old boards stay viewable.` +
           (newAct ? ' A new act resets the season count to 1.' : ''),
       )
     )
       return;
     setSeasonBusy(true);
-    const season = await adminStartSeason(seasonGame, seasonName, { newAct });
+    const rolled = await adminStartSeason(seasonGame, seasonName, { newAct });
     setSeasonBusy(false);
+    // WHAT WAS PAID, OR THAT NOTHING WAS: the route used to answer ok whatever the award job did,
+    // so a failed payout read as a clean roll and nobody was told it was still owed.
+    const paid = rolled?.rewardsError
+      ? ` The award job failed, so nobody has been paid yet: ${rolled.rewardsError}. The next server restart retries it.`
+      : rolled?.rewards
+        ? ` Awarded ${rolled.rewards.grants} badge grant${rolled.rewards.grants === 1 ? '' : 's'} over ${rolled.rewards.periods} closed period${rolled.rewards.periods === 1 ? '' : 's'}; players claim them in the app.`
+        : '';
     setSeasonStatus(
-      season != null
-        ? `Started a new ${seasonGameName} ${what}. New runs now score onto it; older periods are archived but still viewable.`
+      rolled != null
+        ? `Started a new ${seasonGameName} ${what}. New runs now score onto it; older periods are archived but still viewable.${paid}`
         : adminFail(`start the new ${what.toLowerCase()}`),
     );
   };
@@ -407,7 +427,7 @@ export function Admin({
       {tab === 'users' && (
         <>
           {openUser ? (
-            <AdminUser userId={openUser} onClose={() => setOpenUser(null)} onWatchReplay={onWatchReplay} />
+            <AdminUser key={openUser} userId={openUser} onClose={() => setOpenUser(null)} onWatchReplay={onWatchReplay} />
           ) : (
             <>
               <h2 className="ds-h2">Find an account</h2>
@@ -732,8 +752,10 @@ export function Admin({
       <h2 className="ds-h2">Moderation · records</h2>
       <p className="ds-sub adm-sub">
         Inspect a leaderboard bucket (live season) and remove cheated or invalid runs. Deleting a
-        run also deletes its replay. “Clear all” wipes every run by that player, for confirmed
-        cheaters. Both are written to the audit log.
+        run also deletes its replay. “Clear all” wipes every run by that player in every game and
+        every season, for confirmed cheaters. Both are written to the audit log. The list shows
+        the same runs the public board and the season awards read: full-length runs of the live
+        physics, one best per driver, or per pair in duo.
       </p>
       <div className="admin-card">
         <div className="admin-field">
@@ -761,9 +783,9 @@ export function Admin({
               onClick={() =>
                 downloadCsv(
                   `records-${recGame}-${recMode}-${recDt}.csv`,
-                  ['rank', 'userId', 'handle', 'score', 'drivetrain', 'recordId', 'replayId', 'createdAt'],
+                  ['rank', 'userId', 'handle', 'partnerId', 'partnerHandle', 'score', 'drivetrain', 'recordId', 'replayId', 'createdAt'],
                   records.map((r, i) => [
-                    i + 1, r.userId, r.handle, r.score, r.drivetrain, r.recordId, r.replayId ?? '', r.createdAt,
+                    i + 1, r.userId, r.handle, r.partnerId ?? '', r.partnerHandle ?? '', r.score, r.drivetrain, r.recordId, r.replayId ?? '', r.createdAt,
                   ]),
                 )
               }
@@ -779,6 +801,12 @@ export function Admin({
                 <span className="admin-rank">{i + 1}</span>
                 <span className="admin-grow">
                   <AccountName userId={r.userId} handle={r.handle} known onOpen={openAccount} />
+                  {r.partnerId && (
+                    <>
+                      <span className="ds-hint"> with </span>
+                      <AccountName userId={r.partnerId} handle={r.partnerHandle} known={!!r.partnerHandle} onOpen={openAccount} />
+                    </>
+                  )}
                   <span className="ds-hint">
                     {' '}
                     · {r.score} pts · {r.drivetrain} · <When at={r.createdAt} />

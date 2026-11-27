@@ -47,40 +47,59 @@ const TIMEOUT_MS = Number(envVar('MODERATION_TIMEOUT_MS') ?? 4000);
  * Every join can cost up to four uncached calls (driver, team, robot and robot-team name), and a
  * live rename one call per round trip per seat. Nothing bounded the total, so anyone opening
  * sockets with fresh names could spend the key's rate limit — after which every check fails, and
- * a failed check ALLOWS (see `moderateName`). Past the budget a name is treated the same way,
- * unchecked and allowed, but without the call: the key keeps working for everybody once the
- * minute rolls over. The blocklist still applies to every name either way. 300/min is several
- * times the busiest join rate the service has seen; `MODERATION_MAX_PER_MINUTE` overrides and
- * `0` removes the limit.
+ * a failed check ALLOWS (see `moderateName`). Past the budget a name is not checked, but without
+ * the call: the key keeps working for everybody once the minute rolls over. What happens to the
+ * unchecked name depends on who asked: a persistent CLAIM (username, display name, competition
+ * text) is REFUSED with `NAME_CHECK_BUSY` (`ModerationResult.budget`), a match-end write (record,
+ * replay setups: nobody to tell) is allowed. The blocklist still applies to every name either way.
+ * 300/min is several times the busiest join rate the service has seen;
+ * `MODERATION_MAX_PER_MINUTE` overrides and `0` removes the limit.
  */
 const BUDGET_PER_MIN = ((): number => {
   const n = Number(envVar('MODERATION_MAX_PER_MINUTE') ?? 300);
   return Number.isFinite(n) && n >= 0 ? n : 300;
 })();
+/**
+ * ⚠️ A PROBE MAY NEVER EXHAUST THE POOL A CLAIM DRAWS FROM. `GET /api/username-available` is public
+ * and unauthenticated, one fresh name is one hosted call, and nothing rate-limits it, so one `curl`
+ * loop at about five requests a second held the whole budget at zero, after which every name a
+ * signed-in account claimed passed unchecked. A probe (`moderateName(raw, { probe: true })`) now
+ * has its own cap, a fifth of the budget (60 of 300), counted inside the shared pool: past it a
+ * probe is answered unchecked WITHOUT touching the shared counter, so a flood leaves at least four
+ * fifths of the minute for real claims. The claim re-checks, so the hint is all a probe can lose.
+ */
+const PROBE_BUDGET_PER_MIN = Math.min(60, Math.ceil(BUDGET_PER_MIN / 5));
 let budgetWindowAt = 0;
 let budgetUsed = 0;
+let probeUsed = 0;
 let budgetWarnedAt = 0;
-export function takeProviderBudget(now = Date.now()): boolean {
+export function takeProviderBudget(now = Date.now(), probe = false): boolean {
   if (BUDGET_PER_MIN === 0) return true;
   if (now - budgetWindowAt >= 60_000) {
     budgetWindowAt = now;
     budgetUsed = 0;
+    probeUsed = 0;
   }
+  // a probe past its own cap stops here: the shared counter is not touched
+  if (probe && probeUsed >= PROBE_BUDGET_PER_MIN) return false;
   if (budgetUsed >= BUDGET_PER_MIN) {
     if (now - budgetWarnedAt >= 60_000) {
       budgetWarnedAt = now;
-      console.warn(`[moderation] hosted-check budget (${BUDGET_PER_MIN}/min) spent - names pass unchecked until it refills`);
+      console.warn(`[moderation] hosted-check budget (${BUDGET_PER_MIN}/min) spent - claims are refused and match-end names pass unchecked until it refills`);
     }
     return false;
   }
   budgetUsed++;
+  if (probe) probeUsed++;
   return true;
 }
-/** test seam: the budget as configured, and a reset */
+/** test seam: the budget as configured, the probe cap, and a reset */
 export const MODERATION_BUDGET_PER_MIN = BUDGET_PER_MIN;
+export const MODERATION_PROBE_PER_MIN = PROBE_BUDGET_PER_MIN;
 export function resetProviderBudgetForTests(): void {
   budgetWindowAt = 0;
   budgetUsed = 0;
+  probeUsed = 0;
 }
 
 /** the local word list — see `server/blocklist.ts`. Parsed once; only its SIZE is ever logged. */
@@ -98,7 +117,15 @@ export interface ModerationResult {
   allowed: boolean;
   /** whether the service actually ran (false ⇒ disabled / empty / failed-open) */
   checked: boolean;
+  /** true ONLY when the name went unchecked because the per-minute hosted budget was spent (a
+   * provider failure stays plain fail-open). A persistent claim (username, display name,
+   * competition text) refuses on it with `NAME_CHECK_BUSY`; a match-end write ignores it. */
+  budget?: true;
 }
+
+/** what a player is told when a claim met a spent budget; the callers answer 400 with it, which
+ * every form that claims a name already prints */
+export const NAME_CHECK_BUSY = 'Couldn’t check that name right now. Try again in a minute.';
 
 // bounded decision cache (normalized text → allowed). A plain Map with FIFO-ish
 // eviction is plenty: the working set is tiny and entries are cheap booleans.
@@ -138,7 +165,7 @@ async function callProvider(text: string): Promise<boolean> {
  * moderation-disabled case both resolve to allowed (length/emptiness is the caller's
  * own concern). Fails open on any provider error.
  */
-export async function moderateName(raw: string): Promise<ModerationResult> {
+export async function moderateName(raw: string, opts: { probe?: boolean } = {}): Promise<ModerationResult> {
   const text = (raw ?? '').trim();
   if (!text || !moderationEnabled) return { allowed: true, checked: false };
 
@@ -151,8 +178,9 @@ export async function moderateName(raw: string): Promise<ModerationResult> {
   if (cached !== undefined) return { allowed: cached, checked: true };
 
   // OVER BUDGET: not checked, exactly as if the provider had failed — but WITHOUT spending a
-  // call, so a flood of unique names cannot exhaust the key and fail every check after it.
-  if (!takeProviderBudget()) return { allowed: true, checked: false };
+  // call, so a flood of unique names cannot exhaust the key and fail every check after it. It is
+  // flagged `budget` so a persistent claim can REFUSE instead of passing the name.
+  if (!takeProviderBudget(Date.now(), opts.probe === true)) return { allowed: true, checked: false, budget: true };
 
   try {
     const allowed = await callProvider(text);

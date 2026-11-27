@@ -21,6 +21,7 @@ import type { Client } from './room';
 import type { ClientMsg, ServerMsg } from '../src/net/protocol';
 import {
   VISUAL_CHUNK_CHARS,
+  VISUAL_GETS_PER_SOURCE_MIN,
   VISUAL_ID_RX,
   VISUAL_MAX_BYTES,
   VISUAL_PROCESS_BYTES,
@@ -45,6 +46,56 @@ import {
   type VisualRefusal,
 } from '../src/net/importVisuals';
 import { validateVisual } from '../src/net/visualCheck';
+
+// ---- the machine-wide get gate (`'imports2'`) ------------------------------------------------------
+
+/**
+ * `visualGet`s per SOURCE per rolling minute, counted on the SOCKET THREAD before a request reaches
+ * any room (`server/index.ts`). The relay's serve caps are per room, so one source sitting in twelve
+ * rooms on a machine (`MAX_HOSTED_PER_IP`) could pull 8 MiB a minute from each, about $0.30 an hour
+ * of egress per machine with a modified client re-asking for its own uploads. This cuts that to
+ * 24 a minute, which an honest viewer does not reach in one room session.
+ *
+ * Pure (a clock is passed in), so a check can drive it. A source is a string (`u:<account>` or
+ * `ip:<address>`) that never leaves the socket thread. Accepted requests are counted; a refused one
+ * is not, so a client that backs off is served again as soon as its oldest request is a minute old.
+ * Entries are pruned when they empty, and the whole map is swept when it grows, so a source that
+ * never returns costs nothing for long.
+ */
+export class VisualGetGate {
+  private readonly bySource = new Map<string, number[]>();
+  constructor(
+    private readonly limit = VISUAL_GETS_PER_SOURCE_MIN,
+    private readonly windowMs = VISUAL_SERVE_WINDOW_MS,
+  ) {}
+
+  /** may `source` ask for one more look now? Counts it when yes. */
+  take(source: string, now: number): boolean {
+    let q = this.bySource.get(source);
+    if (q) {
+      while (q.length && now - q[0] >= this.windowMs) q.shift();
+      if (!q.length) {
+        this.bySource.delete(source);
+        q = undefined;
+      }
+    }
+    if (q && q.length >= this.limit) return false;
+    if (this.bySource.size >= 1024) this.sweep(now);
+    if (q) q.push(now);
+    else this.bySource.set(source, [now]);
+    return true;
+  }
+
+  /** drop every source whose requests have all left the window */
+  sweep(now: number): void {
+    for (const [k, q] of this.bySource) if (!q.length || now - q[q.length - 1] >= this.windowMs) this.bySource.delete(k);
+  }
+
+  /** sources being counted, for a check */
+  size(): number {
+    return this.bySource.size;
+  }
+}
 
 // ---- the per-process budget ---------------------------------------------------------------------
 
@@ -204,6 +255,21 @@ export interface RelayHost {
   recipients(): Iterable<Client>;
   /** a match is being played, so a viewer's stream is held to a slower pace */
   live(): boolean;
+  /**
+   * PUBLIC-ROOM RULES (`'imports2'`). Is the room listed in Browse rooms (`settings.listed`)? There,
+   * only a signed-in owner's look is relayed (anything shown to strangers traces to an account that
+   * can be reported and suspended), and a WATCHER never gets the mesh: the model is the closest
+   * thing to a team's CAD, seats need it to play in 3D, strangers watching do not.
+   *
+   * Optional only so a test's stub host reads as a Private room; `Room` supplies all three. With
+   * `listed` present, a missing `signedIn` reads as signed out and a missing `isWatcher` as a
+   * watcher, so a half-built host fails closed.
+   */
+  listed?(): boolean;
+  /** is `id` a watcher (not a seat)? */
+  isWatcher?(id: string): boolean;
+  /** is `id` signed in (`Client.userId`, set only from a verified token)? */
+  signedIn?(id: string): boolean;
 }
 
 interface Asset {
@@ -268,14 +334,36 @@ export class VisualRelay {
     private readonly clock: () => number = () => Date.now(),
   ) {}
 
-  /** `visualPut` / `visualGet` from a seat or a watcher. A client without the capability is
-   *  ignored, and is never answered: it cannot have meant to send either. */
+  /** `visualPut` / `visualGet` / `visualDrop` from a seat or a watcher. A client without the
+   *  capability is ignored, and is never answered: it cannot have meant to send any of them. */
   onMessage(id: string, msg: ClientMsg): void {
     if (this.disposed) return;
     const c = this.host.find(id);
     if (!c || !hasVisualsCap(c.caps)) return;
     if (msg.t === 'visualPut') this.put(c, msg as unknown as Raw);
     else if (msg.t === 'visualGet') this.get(c, msg as unknown as Raw);
+    else if (msg.t === 'visualDrop') this.drop(c.id);
+  }
+
+  /**
+   * THE OWNER WITHDREW ITS LOOK (`visualDrop`, `'imports2'`): sharing was turned off. Everything it
+   * uploaded, ready or on its way, is freed; a viewer mid-download loses the stream (the pump ends
+   * streams of a freed asset), and anyone who already has it keeps it until they leave. No reply.
+   * Keyed by the SENDER's own id, so a client can only ever withdraw its own look.
+   */
+  drop(owner: string): void {
+    if (this.disposed) return;
+    this.freeOwner(owner);
+  }
+
+  /** may `owner`'s look be relayed in this room? A Public room relays a signed-in owner's only. */
+  private mayShare(owner: string): boolean {
+    return !this.host.listed?.() || this.host.signedIn?.(owner) === true;
+  }
+
+  /** may `kind` go to `id`? A watcher of a Public room never gets the mesh. */
+  private mayReceive(id: string, kind: VisualKind): boolean {
+    return kind !== 'mesh' || !this.host.listed?.() || this.host.isWatcher?.(id) === false;
   }
 
   // ---- the owner's upload ----------------------------------------------------------------
@@ -287,6 +375,12 @@ export class VisualRelay {
     const refuse = (reason: VisualRefusal): void =>
       c.send({ t: 'visualRefused', op: 'put', owner: c.id, id, kind, reason, message: VISUAL_REFUSAL_COPY[reason] });
     if (!this.host.allows()) return refuse('room');
+    // a Public room relays only a signed-in owner's look: asked of EVERY frame, before anything is
+    // allocated, so an anonymous owner in a listed room never holds a byte of the budget
+    if (!this.mayShare(c.id)) {
+      this.freeUpload(c.id, kind);
+      return refuse('signin');
+    }
     const cur = this.host.importId(c.id);
     if (!cur || cur !== id) return refuse('id');
     const total = raw.total;
@@ -353,7 +447,7 @@ export class VisualRelay {
     const msg: ServerMsg = { t: 'visualReady', owner, id: a.id, kind: a.kind, bytes: a.total };
     let raw: string | null = null;
     for (const r of this.host.recipients()) {
-      if (!hasVisualsCap(r.caps)) continue;
+      if (!hasVisualsCap(r.caps) || !this.mayReceive(r.id, a.kind)) continue;
       if (r.sendRaw) r.sendRaw((raw ??= JSON.stringify(msg)));
       else r.send(msg);
     }
@@ -365,7 +459,7 @@ export class VisualRelay {
     for (const [owner, o] of this.owners) {
       for (const kind of ['top', 'mesh'] as const) {
         const a = o[kind];
-        if (a?.ready) c.send({ t: 'visualReady', owner, id: a.id, kind, bytes: a.total });
+        if (a?.ready && this.mayReceive(c.id, kind)) c.send({ t: 'visualReady', owner, id: a.id, kind, bytes: a.total });
       }
     }
   }
@@ -380,9 +474,11 @@ export class VisualRelay {
     const refuse = (reason: VisualRefusal): void =>
       c.send({ t: 'visualRefused', op: 'get', owner, id, kind, reason, message: VISUAL_REFUSAL_COPY[reason] });
     if (!this.host.allows()) return refuse('room');
+    // a watcher of a Public room never gets the mesh, whatever it asks for: refused as if absent
+    if (!this.mayReceive(c.id, kind)) return refuse('none');
     const o = this.owners.get(owner);
     const a = o?.[kind];
-    if (!o || !a || !a.ready || o.id !== id || owner === c.id || this.host.importId(owner) !== id) return refuse('none');
+    if (!o || !a || !a.ready || o.id !== id || owner === c.id || this.host.importId(owner) !== id || !this.mayShare(owner)) return refuse('none');
     const box = this.streams.get(c.id);
     if (box?.list.some((s) => s.owner === owner && s.asset === a)) return; // already on its way
     if ((box?.list.length ?? 0) >= VISUAL_STREAMS_PER_CLIENT) return refuse('busy');
@@ -443,7 +539,12 @@ export class VisualRelay {
         this.streams.delete(rid);
         continue;
       }
-      for (let i = box.list.length - 1; i >= 0; i--) if (!this.live(box.list[i])) box.list.splice(i, 1);
+      // a stream ends with its asset, and with the Public-room rules: a room that turned Public
+      // mid-download stops sending a watcher the mesh, and stops sending an anonymous owner's look
+      for (let i = box.list.length - 1; i >= 0; i--) {
+        const s = box.list[i];
+        if (!this.live(s) || !this.mayReceive(rid, s.asset.kind) || !this.mayShare(s.owner)) box.list.splice(i, 1);
+      }
       if (!box.list.length) {
         this.streams.delete(rid);
         continue;
@@ -520,9 +621,16 @@ export class VisualRelay {
     if (o && this.host.importId(seat) !== o.id) this.freeOwner(seat);
   }
 
-  /** every seat, after a change that may have stripped imports (`Room.beginMatch`) */
+  /**
+   * Every seat, after a change that may have stripped imports (`Room.beginMatch`) or changed the
+   * room's rules (`Room.changeSettings`, every applied change): an owner that may no longer share
+   * (a Private room turned Public under a signed-out owner) is freed with what it held.
+   */
   reconcile(): void {
-    for (const seat of [...this.owners.keys()]) this.specChanged(seat);
+    for (const seat of [...this.owners.keys()]) {
+      if (!this.mayShare(seat)) this.freeOwner(seat);
+      else this.specChanged(seat);
+    }
   }
 
   /** a viewer is gone: its streams go with it. Its serve window does NOT: it belongs to its

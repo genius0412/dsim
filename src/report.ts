@@ -26,6 +26,11 @@ export const REPORT_REASONS = [
   'dodging',
   'name',
   'other',
+  /** an imported robot's picture or 3D model (`'imports2'`). Offered only against an imported robot;
+   *  the server names the robot at the front of the stored note (`lookReportDetail`), because a
+   *  look is never stored. An older server drops the reason silently, as any unknown one. Appended,
+   *  so the order of the others is unchanged. */
+  'look',
 ] as const;
 
 export type ReportReason = (typeof REPORT_REASONS)[number];
@@ -37,11 +42,21 @@ export const REPORT_LABELS: Record<ReportReason, string> = {
   dodging: 'Repeatedly abandoning matches',
   name: 'Offensive name',
   other: 'Something else',
+  look: 'Offensive robot picture or model',
 };
 
 /** free-text cap. Long enough for a sentence of context, short enough that the field is not
  *  a channel for the abuse it exists to report. */
 export const REPORT_DETAIL_MAX = 300;
+
+/**
+ * The stored note of a `look` report: `[<robot name> <robot id>] <what the reporter wrote>`, cut to
+ * `REPORT_DETAIL_MAX`. The robot is the SERVER's (`Room.resolveReport`, off the room's own setups),
+ * so a moderator can tell which import was reported though its picture and model were never stored.
+ */
+export function lookReportDetail(robot: { id: string; name: string }, detail: string): string {
+  return `[${robot.name} ${robot.id}] ${detail}`.trimEnd().slice(0, REPORT_DETAIL_MAX);
+}
 
 export const isReportReason = (v: unknown): v is ReportReason =>
   typeof v === 'string' && (REPORT_REASONS as readonly string[]).includes(v);

@@ -17,6 +17,9 @@
  *     stored field (`sameButDropped`). Then the stored robot is kept whole, import and all. Any
  *     difference (another preset, a saved robot, a slider moved) is a deliberate change, and the
  *     incoming robot stands.
+ *     The SAVED robots of every game get the same test slot by slot, paired by position (1b): a saved
+ *     robot that carries what the older build cannot read and came back as its stored twin minus it
+ *     is restored whole, whichever fields were lost (plate font, coast, a fixed launcher, a feed...).
  *  2. **The last standard robot.** Kept from the store when the incoming blob has none, and only
  *     while that game's robot (after 1) is imported: it is what ranked and record runs play then,
  *     and nothing reads it otherwise.
@@ -161,6 +164,21 @@ export function keepImportsFromOlderClient(stored: unknown, incoming: Obj): Obj 
   const inActive = activeGame(incoming);
   for (const g of GAME_IDS) {
     const st = sliceOf(stored, g);
+    // 1b. the SAVED robots, paired by position (an older build keeps the list's order): each one that
+    // came back as its stored twin minus what the older build cannot write gets the stored one whole.
+    // Same test as rule 1, per slot, and a slot whose robot really changed (or was added, removed or
+    // moved, so the pairing no longer holds) stands as it was sent.
+    const sentOf = st ? sliceOf(incoming, g) : null;
+    if (st && sentOf && Array.isArray(st.savedRobots) && Array.isArray(sentOf.savedRobots)) {
+      const stSaved: unknown[] = st.savedRobots;
+      const restore = (r: unknown, i: number): boolean => carriesNew(stSaved[i]) && sameButDropped(r, stSaved[i]);
+      if (sentOf.savedRobots.some(restore)) {
+        const o = own();
+        const saved = sentOf.savedRobots.map((r, i) => (restore(r, i) ? stSaved[i] : r));
+        if (g === inActive) o.savedRobots = saved;
+        else (o.loadouts as Obj)[g] = { ...((o.loadouts as Obj)[g] as Obj), savedRobots: saved };
+      }
+    }
     if (!st || !carriesNew(st.spec)) continue;
     const sent = sliceOf(incoming, g);
     if (!sent) {

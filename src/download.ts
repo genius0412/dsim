@@ -4,8 +4,9 @@ import { LINKS } from './seasons';
  * Desktop-build download config.
  *
  * The Electron desktop shell is produced with electron-builder and published to
- * GitHub Releases by `.github/workflows/release.yml` on every `v*` tag, for
- * Windows / macOS / Linux, under STABLE asset names (DSIM-Setup.exe,
+ * GitHub Releases by `.github/workflows/release.yml` on every push to main that
+ * changes what ships inside the app (versioned 0.2.<run number>; no tag is
+ * pushed), for Windows / macOS / Linux, under STABLE asset names (DSIM-Setup.exe,
  * DSIM-Portable.exe, DSIM-mac.dmg, DSIM-linux.AppImage). So by DEFAULT the
  * buttons point at `releases/latest/download/<asset>` — always the newest build.
  * Override any URL with Vite env (e.g. to host on a CDN):

@@ -120,8 +120,8 @@ export function NoticeItem({
         </div>
       )}
       {view.meta && <span className="nt-meta">{view.meta}</span>}
-      {view.lines.map((line) => (
-        <p className="nt-line" key={line}>
+      {view.lines.map((line, i) => (
+        <p className="nt-line" key={`${i}-${line}`}>
           {line}
         </p>
       ))}

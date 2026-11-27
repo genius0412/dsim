@@ -14,7 +14,7 @@ import { ROBOT_LIBRARY_DB } from '../storageKeys';
 import type { GameId, ImportedRobot } from '../types';
 import type { LibraryEntry, LibraryRobot } from './types';
 import { libraryEntryFor } from './libraryIds';
-import { cleanIdentity, type RobotIdentity } from './identity';
+import { cleanIdentity, ROBOT_NAME_MAX, type RobotIdentity } from './identity';
 
 /** 2 added the two DRAFT stores (lane 4, the editor): `drafts` holds an unfinished import's editor
  *  state (keyPath `key`, index `game`), `draftModels` its simplified source-frame model, written
@@ -203,6 +203,52 @@ async function dbIfThere(): Promise<IDBDatabase | null> {
   return openDb();
 }
 
+/**
+ * ASK THE BROWSER NOT TO EVICT THIS (`navigator.storage.persist()`, MIMPUI-07). The stored mesh is the
+ * ONLY copy of an imported robot (the account syncs the spec, never the model), and a browser under
+ * storage pressure may clear an origin's IndexedDB (Safari after about a week of disuse): the robot
+ * then drives as its footprint and its whole setup has to be redone from the CAD.
+ *
+ * ⚠️ ASKED ONLY FROM THE PLAYER'S SAVE CLICK (merge audit, M7), by the editor's `save`, never by the
+ * library on its own. Chrome, Edge and Safari decide silently, but Firefox shows a permission prompt, and
+ * it used to appear from a timer 800 ms after the first draft was written, with nothing on screen to say
+ * why. Saving a robot is the moment it is worth keeping, and a click is a user gesture. Once per DEVICE:
+ * the first ask is written down (`PERSIST_MARK`, in the library's own database, so it needs no storage key
+ * of its own) before the browser is asked, so a prompt closed or a tab shut on it is not shown again.
+ * Never on a read, never blocking the save (the caller does not wait for it), and best effort: a browser
+ * without the API, one that refuses, or one that throws changes nothing here.
+ */
+let persistAsked = false;
+/** the FILES-store key that remembers this device was asked (a robot's files are `<id>:<kind>`, never this) */
+const PERSIST_MARK = 'meta:persist-asked';
+export function askPersistentStorage(): void {
+  if (persistAsked) return;
+  try {
+    const storage = (globalThis as { navigator?: { storage?: { persisted?: () => Promise<boolean>; persist?: () => Promise<boolean> } } }).navigator?.storage;
+    if (!storage) return; // no such API here: nothing to ask, so nothing is used up
+    persistAsked = true;
+    void Promise.resolve(storage.persisted?.())
+      .then(async (already) => {
+        if (already) return;
+        // a device that was asked on an earlier visit is not asked again; one whose database cannot be
+        // read or written has nothing worth keeping
+        const was = await withDb(async (db) => ok(!!(await request(db.transaction(FILES, 'readonly').objectStore(FILES).get(PERSIST_MARK)))), () => ok(false));
+        if (!was.ok || was.value) return;
+        const marked = await withDb(async (db) => {
+          const tx = db.transaction(FILES, 'readwrite');
+          tx.objectStore(FILES).put(true, PERSIST_MARK);
+          const e = await done(tx);
+          return e ? err<void>(e) : ok(undefined);
+        });
+        if (!marked.ok) return;
+        await storage.persist?.();
+      })
+      .catch(() => undefined);
+  } catch {
+    /* a throwing stub or a locked-down browser: nothing to do */
+  }
+}
+
 const entryOf = (r: LibraryRobot | LibraryEntry): LibraryEntry => ({
   id: r.id,
   game: r.game,
@@ -263,17 +309,29 @@ export function putRobot(robot: LibraryRobot): Promise<LibraryResult<LibraryEntr
  * change who a robot is: its name, team name and team number (`spec.name`, `teamName`,
  * `teamNumber`), whichever `patch` carries. Cleaned like every other door into a spec
  * (`cleanIdentity`); a patch that cannot be stored (an empty name) is refused, not half-applied.
+ *
+ * ⚠️ AN UNSAVED EDIT OF THE SAME ROBOT FOLLOWS (MIMPUI-15). The editor keeps an edit's unsaved changes as a
+ * draft (`<game>:<id>`, `draftKey`) whose document holds a whole copy of the spec, and restores it over the
+ * saved robot. A rename made on the robot page meanwhile was therefore put back to the old name by the
+ * next Save of that edit. The draft's name, team name and team number are rewritten in the SAME
+ * transaction when one exists, so a rename and its draft land together or not at all; the rest of the draft
+ * (the setup, the placements, `updated`) is left exactly as it was.
  */
 export function updateIdentity(id: string, patch: Partial<RobotIdentity>): Promise<LibraryResult<LibraryEntry>> {
   const clean = cleanIdentity(patch);
   if (!clean) return Promise.resolve(err('failed'));
   return withDb(async (db) => {
-    const tx = db.transaction(ROBOTS, 'readwrite');
+    const tx = db.transaction([ROBOTS, DRAFTS], 'readwrite');
     const store = tx.objectStore(ROBOTS);
     const entry = (await request(store.get(id))) as LibraryEntry | undefined;
     if (!entry) return err('not-found');
     const next: LibraryEntry = { ...entry, spec: { ...entry.spec, ...clean }, updated: Date.now() };
     store.put(next);
+    // the key is `draftKey(game, id)` in `ui/editorModel.ts`, which this main-safe module may not import
+    const drafts = tx.objectStore(DRAFTS);
+    const draft = (await request(drafts.get(`${entry.game}:${id}`))) as DraftRecord | undefined;
+    const held = draft?.spec;
+    if (draft && held && typeof held === 'object') drafts.put({ ...draft, spec: { ...(held as Record<string, unknown>), ...clean } });
     const e = await done(tx);
     return e ? err(e) : ok(next);
   }, () => err('not-found'));
@@ -293,7 +351,9 @@ export async function duplicateRobot(id: string): Promise<LibraryResult<LibraryE
   const now = Date.now();
   const spec = {
     ...src.spec,
-    name: `${src.spec.name} copy`.slice(0, 64),
+    // a robot's name is 24 characters (`ROBOT_NAME_MAX`) wherever it is read, so the copy's is made to fit
+    // rather than cut by the next door: "Offset Robotics Concept copy" (28) came back as the original's name
+    name: `${src.spec.name.slice(0, ROBOT_NAME_MAX - ' copy'.length).trimEnd()} copy`,
     ...(src.spec.imported ? { imported: { ...src.spec.imported, id: nid } } : {}),
   };
   // a copy is a robot of its own: it does not answer for the share file the original came from
@@ -414,7 +474,8 @@ export function putDraft(state: DraftRecord, model?: unknown): Promise<LibraryRe
     tx.objectStore(DRAFTS).put(state);
     if (model !== undefined) tx.objectStore(DRAFT_MODELS).put(model, state.key);
     const e = await done(tx);
-    return e ? err(e) : ok(undefined);
+    if (e) return err(e);
+    return ok(undefined);
   });
 }
 

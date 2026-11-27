@@ -1783,6 +1783,9 @@ export function warmBiobuzz3d(settings: GraphicsSettings = getGraphics().setting
  * beside the field's (`createBiobuzzScene`); `loadModel` then reads both from cache.
  */
 function prefetchVenue(settings: GraphicsSettings, tier: GraphicsTier): void {
+  // Data Saver: a speculative fetch of a multi-MB room the player may never be shown is the
+  // wrong default (the room still loads when the scene actually needs it)
+  if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) return;
   const def = environmentDefFor(settings.environment);
   const file = def.model?.file;
   if (!file || !bbModelDetail(settings, tier)) return;

@@ -1198,6 +1198,133 @@ const friendsOf = (table: Record<string, string[]>) => async (u: string): Promis
   check('host pick: a non-number accessMs reads 0, never string arithmetic', typeof junk.cost === 'number' && Number.isFinite(junk.cost));
 }
 
+{
+  // I1 (merge audit DB-03 / SECURITY-05). THE HOSTED MODERATION BUDGET HAS TWO POOLS. A public,
+  // unauthenticated probe (`GET /api/username-available`) may spend only 60 of the 300 calls a
+  // minute, so it can never exhaust what a real name claim draws from; and a claim that meets a
+  // spent pool is REFUSED (`budget: true`), not passed unchecked. A provider failure stays plain
+  // fail-open. A stub provider stands in for the network. `server/moderation.ts` reads its env at
+  // load, and `matchmaking` has already loaded one copy without a key, so each scenario imports a
+  // fresh copy by query string.
+  type Mod = typeof import('../server/moderation');
+  const BAD = new Set(['flaggedclaim', 'flaggedprobe']);
+  let calls = 0;
+  let broken = false;
+  const realFetch = globalThis.fetch;
+  const realWarn = console.warn;
+  const realNow = Date.now;
+  let clock = 1_000_000_000_000;
+  (globalThis as { fetch: unknown }).fetch = async (_u: unknown, init: { body: string }) => {
+    calls++;
+    if (broken) throw new Error('provider down');
+    const input = (JSON.parse(init.body) as { input: string }).input;
+    return { ok: true, json: async () => ({ results: [{ flagged: BAD.has(input) }] }) };
+  };
+  console.warn = () => {};
+  Date.now = () => clock;
+  const prevKey = process.env.MODERATION_API_KEY;
+  const prevMax = process.env.MODERATION_MAX_PER_MINUTE;
+  process.env.MODERATION_API_KEY = 'test-key';
+  delete process.env.MODERATION_MAX_PER_MINUTE;
+  const fresh = (tag: string): Promise<Mod> => import(`../server/moderation.ts?${tag}` as string) as Promise<Mod>;
+  try {
+    const m = await fresh('i1-flood');
+    check('I1: the stub moderation is on, 300 a minute, probes capped at 60', m.moderationEnabled && m.MODERATION_BUDGET_PER_MIN === 300 && m.MODERATION_PROBE_PER_MIN === 60);
+
+    // 301 distinct probe names (what a curl loop does): the provider sees 60, the rest pass unchecked
+    let probeOver = 0;
+    for (let i = 0; i < 301; i++) {
+      const r = await m.moderateName(`probename${i}`, { probe: true });
+      if (r.allowed !== true) probeOver++;
+      if (i >= 60 && (r.checked !== false || r.allowed !== true)) probeOver++;
+    }
+    check('I1: 301 probes cost the provider 60 calls and never refuse a name', calls === 60 && probeOver === 0, `calls=${calls}`);
+
+    // the claim pool is untouched: a flagged name is still REFUSED, with the flood in progress
+    const flagged = await m.moderateName('flaggedclaim');
+    check('I1: after the flood a flagged name is still refused by a claim', flagged.allowed === false && flagged.checked === true && flagged.budget === undefined);
+    // 240 more claims fit in the minute (60 probes + 1 flagged above + 239 = 300)
+    let claimed = 0;
+    for (let i = 0; i < 239; i++) if ((await m.moderateName(`claimname${i}`)).checked === true) claimed++;
+    check('I1: at least 240 of the 300 were left for claims (the whole rest of the pool)', claimed === 239 && calls === 300, `claimed=${claimed} calls=${calls}`);
+
+    // pool spent: a claim is told so, and a flagged name is NOT silently allowed as a plain pass
+    const spent = await m.moderateName('flaggedclaim2');
+    check('I1: a claim on a spent pool reports budget:true (allowed, unchecked) so the route can refuse', spent.allowed === true && spent.checked === false && spent.budget === true);
+    check('I1: ...and made no provider call', calls === 300);
+    const probeSpent = await m.moderateName('probeafter', { probe: true });
+    check('I1: a probe on a spent pool is answered unchecked, no call', probeSpent.checked === false && calls === 300);
+    check('I1: a CACHED name needs no budget, spent or not', (await m.moderateName('claimname0')).checked === true);
+
+    // the minute rolls: the pool refills and the same flagged name is refused again
+    clock += 61_000;
+    BAD.add('flaggedclaim2');
+    const back = await m.moderateName('flaggedclaim2');
+    check('I1: the next minute checks claims again and refuses the flagged name', back.allowed === false && back.checked === true && back.budget === undefined);
+
+    // match-end writes stay fail-open: scrubName on a spent pool returns the name unchanged
+    const m2 = await fresh('i1-scrub');
+    clock += 61_000;
+    for (let i = 0; i < 300; i++) await m2.moderateName(`spend${i}`);
+    check('I1: scrubName on a spent pool keeps the name (match-end writes stay fail-open)', (await m2.scrubName('flaggedprobe', 'Player')) === 'flaggedprobe');
+
+    // a provider FAILURE is plain fail-open, never `budget`
+    const m3 = await fresh('i1-down');
+    broken = true;
+    const down = await m3.moderateName('provider down name');
+    check('I1: a provider failure is allowed and unchecked, NOT flagged as budget', down.allowed === true && down.checked === false && down.budget === undefined);
+    broken = false;
+
+    // probe on a pool someone else already spent leaves the probe counter alone (no throw, no call)
+    const m4 = await fresh('i1-take');
+    clock += 61_000;
+    let took = 0;
+    for (let i = 0; i < 70; i++) if (m4.takeProviderBudget(clock, true)) took++;
+    check('I1: takeProviderBudget gives a probe 60 and the shared pool keeps 240', took === 60 && m4.takeProviderBudget(clock) === true);
+    let rest = 1;
+    for (let i = 0; i < 300; i++) if (m4.takeProviderBudget(clock)) rest++;
+    check('I1: ...exactly 240 non-probe takes in all', rest === 240, String(rest));
+    check('I1: ...and it refills after a minute, probes included', m4.takeProviderBudget(clock + 60_000, true));
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+    console.warn = realWarn;
+    Date.now = realNow;
+    if (prevKey === undefined) delete process.env.MODERATION_API_KEY;
+    else process.env.MODERATION_API_KEY = prevKey;
+    if (prevMax !== undefined) process.env.MODERATION_MAX_PER_MINUTE = prevMax;
+  }
+
+  // the doors, pinned in source: the public probe is a probe, every persistent claim refuses on `budget`
+  const api = readFileSync('server/api.ts', 'utf8').replace(/\r\n/g, '\n');
+  const comps = readFileSync('server/competitions.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('I1: /api/username-available is the ONLY probe', /moderateName\(username, \{ probe: true \}\)/.test(api) && (api.match(/probe: true/g) ?? []).length === 1);
+  check(
+    'I1: the handle and username claims answer 400 with NAME_CHECK_BUSY on budget',
+    (api.match(/if \(nameCheck\.budget\) return json\(400, \{ error: NAME_CHECK_BUSY \}\), true;/g) ?? []).length === 2,
+  );
+  check('I1: competition public text refuses on budget too', /if \(r\.budget\) refuse\(400, NAME_CHECK_BUSY\);/.test(comps));
+  check('I1: the refusal is a sentence with a next step', m_busy() === 'Couldn’t check that name right now. Try again in a minute.');
+  function m_busy(): string {
+    return (readFileSync('server/moderation.ts', 'utf8').replace(/\r\n/g, '\n').match(/NAME_CHECK_BUSY = '([^']*)'/) ?? [])[1] ?? '';
+  }
+}
+
+{
+  // I2, I3, I4, I6, I8 (merge audit server hardening), pinned in source: each is a door or a sentence
+  // that cannot be driven without a database and a token.
+  const rd = (f: string): string => readFileSync(f, 'utf8').replace(/\r\n/g, '\n');
+  const api = rd('server/api.ts');
+  check('I2: the account-link callback (a GET the closed-site door skips) is refused on a closed site, before the provider is asked',
+    /const who = readState\(state\);\n\s*if \(!who \|\| who\.provider !== provider\) return back\('error'\);\n[\s\S]{0,300}?if \(await lockdownRefusal\(who\.userId, 'site'\)\) return back\('closed'\);\n\s*const providerUserId = await exchangeForId/.test(api));
+  check('I2: the account page words link=closed', /p === 'closed'/.test(rd('src/ui/LinkedAccounts.tsx')));
+  check('I3: ?season= is refused outside int4 (400), not passed to Postgres (500)',
+    /sn < 0 \|\| sn > 2147483647\) return json\(400, \{ error: 'bad season' \}\)/.test(api));
+  check('I4: the Ko-fi token is compared as sha256 digests with timingSafeEqual, and never with !==',
+    /timingSafeEqual\(sha\(payload\.verification_token\), sha\(secret\)\)/.test(api) && !/verification_token !== secret/.test(api) && /import \{ createHash, timingSafeEqual \} from 'node:crypto'/.test(api));
+  check('I6: no comment claims a stored seed reproduces a draw', !/stored seed reproduces/.test(rd('src/competition/schedule.ts')) && /SEED is\n \* not stored/.test(rd('src/competition/schedule.ts')));
+  check('I8: the auth log line does not name the alpha branch', !/alpha branch/.test(rd('server/auth.ts')));
+}
+
 // ---- report ----------------------------------------------------------------
 if (failures.length) {
   console.error(`\n✗ matchmaker: ${failures.length} failed, ${passed} passed\n`);

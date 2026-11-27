@@ -11,9 +11,9 @@
  */
 import type { GameId, RobotSpec } from '../types';
 import { ULTRAPLANETARY_MAX_STAGES } from './drive';
-import { MAX_HULL_VERTS } from './geometry';
+import { defaultImportSetup, MAX_HULL_VERTS } from './geometry';
 import { shareModelRefusal } from './shareModelCheck';
-import { MOTION_DRIVES, MOTION_ROLES, type ImportSetup, type MotionRole } from './types';
+import { LENGTH_UNITS, MAX_MESH_BYTES, MOTION_DRIVES, MOTION_ROLES, UP_AXES, type DriveSetup, type ImportSetup, type MotionRole } from './types';
 
 const MAGIC = 0x46546c67; // 'glTF'
 const CHUNK_JSON = 0x4e4f534a; // 'JSON'
@@ -25,6 +25,30 @@ const MAX_NAME = 64;
 
 export const SHARE_FORMAT = 'dsim-robot';
 export const SHARE_VERSION = 1;
+
+/**
+ * THE LARGEST SHARE FILE THE EDITOR READS (IMPUI-08). A dropped `.glb` used to be read WHOLE before its
+ * header was looked at, so a multi-gigabyte file named `.glb` was pulled into memory by whoever dropped
+ * it. A file DSIM writes is the stored mesh (at most `MAX_MESH_BYTES`, 128 MiB) and its JSON setup, so
+ * this is that cap plus 1 MiB for the JSON. Written from `MAX_MESH_BYTES` (`types.ts`, a constants file:
+ * this module must not import the engine) so the two cannot drift apart.
+ */
+export const SHARE_MAX_FILE_BYTES = MAX_MESH_BYTES + 1024 * 1024;
+
+/**
+ * The first twelve bytes of a dropped `.glb`, judged against its size, before any more of it is read.
+ * Null when the header could belong to a file DSIM wrote. `'not-glb'` is a file that is no binary glTF at all
+ * (too short for a header, or no `glTF` magic: the editor says what it takes), `'bad-length'` one whose
+ * header length is not the file's size (cut short, or bytes after its end), which `parseGlb` would refuse
+ * too, only after the whole file had been read.
+ */
+export function shareHeaderRefusal(head: Uint8Array, size: number): { error: 'not-glb' | 'bad-length'; message: string } | null {
+  if (head.byteLength < HEADER || size < HEADER + 8) return { error: 'not-glb', message: 'Couldn’t read this file: it is not a binary glTF (.glb).' };
+  const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+  if (dv.getUint32(0, true) !== MAGIC) return { error: 'not-glb', message: 'Couldn’t read this file: it is not a binary glTF (.glb).' };
+  if (dv.getUint32(8, true) !== size) return { error: 'bad-length', message: BAD_LENGTH };
+  return null;
+}
 
 export interface SharePayload {
   format: typeof SHARE_FORMAT;
@@ -58,6 +82,12 @@ interface Parsed {
   total: number;
 }
 
+/** the next step for a share file whose DSIM setup is not one DSIM wrote */
+const REEXPORT = 'Ask for it to be exported from DSIM again.';
+
+/** a header whose length is not the file's: the download was cut short or damaged */
+const BAD_LENGTH = 'Couldn’t read this file: it is cut short or damaged. Download it again.';
+
 const fail = (error: ShareReadError, message: string): { ok: false; error: ShareReadError; message: string } => ({ ok: false, error, message });
 
 function parseGlb(bytes: Uint8Array): Parsed | { ok: false; error: ShareReadError; message: string } {
@@ -67,22 +97,22 @@ function parseGlb(bytes: Uint8Array): Parsed | { ok: false; error: ShareReadErro
   if (dv.getUint32(4, true) !== 2) return fail('bad-version', 'Couldn’t read this file: only glTF 2.0 .glb files are supported.');
   const total = dv.getUint32(8, true);
   if (total > bytes.byteLength || total < HEADER + 8 || total % 4 !== 0) {
-    return fail('bad-length', 'Couldn’t read this file: it is cut short or damaged. Download it again.');
+    return fail('bad-length', BAD_LENGTH);
   }
   const jsonLen = dv.getUint32(HEADER, true);
   const jsonType = dv.getUint32(HEADER + 4, true);
   if (jsonType !== CHUNK_JSON || jsonLen % 4 !== 0 || HEADER + 8 + jsonLen > total) {
-    return fail('bad-chunk', 'Couldn’t read this file: its first chunk is not glTF JSON.');
+    return fail('bad-chunk', 'Couldn’t read this file: its first chunk is not glTF JSON. Download it again.');
   }
   // every chunk after the JSON one must tile the rest of the file exactly
   let at = HEADER + 8 + jsonLen;
   const restAt = at;
   while (at < total) {
-    if (at + 8 > total) return fail('bad-chunk', 'Couldn’t read this file: a chunk runs past the end.');
+    if (at + 8 > total) return fail('bad-chunk', 'Couldn’t read this file: a chunk runs past the end. Download it again.');
     const len = dv.getUint32(at, true);
     const type = dv.getUint32(at + 4, true);
     if (len % 4 !== 0 || at + 8 + len > total || (type === CHUNK_JSON)) {
-      return fail('bad-chunk', 'Couldn’t read this file: a chunk is damaged.');
+      return fail('bad-chunk', 'Couldn’t read this file: a chunk is damaged. Download it again.');
     }
     at += 8 + len;
   }
@@ -90,9 +120,9 @@ function parseGlb(bytes: Uint8Array): Parsed | { ok: false; error: ShareReadErro
   try {
     json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(HEADER + 8, HEADER + 8 + jsonLen)));
   } catch {
-    return fail('bad-json', 'Couldn’t read this file: its glTF JSON is damaged.');
+    return fail('bad-json', 'Couldn’t read this file: its glTF JSON is damaged. Download it again.');
   }
-  if (!json || typeof json !== 'object' || Array.isArray(json)) return fail('bad-json', 'Couldn’t read this file: its glTF JSON is not an object.');
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return fail('bad-json', 'Couldn’t read this file: its glTF JSON is not an object. Download it again.');
   return { json: json as Record<string, unknown>, restAt, total };
 }
 
@@ -211,6 +241,49 @@ export function isImportSetup(v: unknown): boolean {
   );
 }
 
+/**
+ * A setup the editor can OPEN, from whatever a library record holds (`LibraryRobot.setup`). A record
+ * added from a share file before `isImportSetup` (and `isMotionList`, `isBodyList`) existed was stored as
+ * the sender wrote it, and opening one threw by field: no or a malformed `drive` in `buildSpec` and in
+ * render, `removed` or `apart` that is no array in `orientKey` at the top of a render, a `motion` whose
+ * rows or `bodies` are no arrays in the measure worker (and then on the main thread). Exporting such a
+ * record wrote the same setup into a new share file, which every recipient then refused.
+ *
+ * It keeps every field `isImportSetup` accepts, exactly as it is; a drive it does not accept becomes
+ * `defaultImportSetup().drive` (the editor opens, and the player picks the drivetrain again); an optional
+ * field it does not accept is dropped, as if never set (a dropped `motion` is looked for again, a dropped
+ * body list is empty). A good setup comes back equal, field for field, so the call is free on every
+ * record the editor wrote. Fields the setup does not have (`ImportSetup` is closed) are not carried over.
+ */
+export function coerceImportSetup(raw: unknown): ImportSetup {
+  const base = defaultImportSetup();
+  const s: Record<string, unknown> = isObj(raw) ? raw : {};
+  const out: ImportSetup = {
+    ...base,
+    units: s.units === 'auto' || LENGTH_UNITS.includes(s.units as never) ? (s.units as ImportSetup['units']) : base.units,
+    up: s.up === 'auto' || UP_AXES.includes(s.up as never) ? (s.up as ImportSetup['up']) : base.up,
+    yaw: s.yaw === 0 || s.yaw === 1 || s.yaw === 2 || s.yaw === 3 ? s.yaw : base.yaw,
+    hullMaxVerts:
+      Number.isInteger(s.hullMaxVerts) && (s.hullMaxVerts as number) >= 3 && (s.hullMaxVerts as number) <= MAX_HULL_VERTS ? (s.hullMaxVerts as number) : base.hullMaxVerts,
+    wheels:
+      Array.isArray(s.wheels) && s.wheels.length === 4 && s.wheels.every((p) => isObj(p) && Number.isFinite(p.x) && Number.isFinite(p.y))
+        ? s.wheels.map((p) => ({ x: (p as { x: number }).x, y: (p as { y: number }).y }))
+        : null,
+    bands: typeof s.bands === 'boolean' ? s.bands : base.bands,
+    triBudget:
+      typeof s.triBudget === 'number' && Number.isFinite(s.triBudget) && s.triBudget >= 0 && s.triBudget <= MAX_TRI_BUDGET ? s.triBudget : base.triBudget,
+    drive: isDriveSetup(s.drive) ? (s.drive as DriveSetup) : base.drive,
+  };
+  if (s.wheelLayout === 'rect' || s.wheelLayout === 'free') out.wheelLayout = s.wheelLayout;
+  if (isMotionList(s.motion)) out.motion = s.motion as ImportSetup['motion'];
+  if (Number.isInteger(s.motionFinder) && (s.motionFinder as number) >= 0) out.motionFinder = s.motionFinder as number;
+  if (isObj(s.tune) && TUNE_KEYS.every((k) => num((s.tune as Record<string, unknown>)[k]))) out.tune = s.tune as ImportSetup['tune'];
+  if (isBodyList(s.removed)) out.removed = s.removed as number[];
+  if (isBodyList(s.apart)) out.apart = s.apart as number[];
+  if (isBodyList(s.keepFloating)) out.keepFloating = s.keepFloating as number[];
+  return out;
+}
+
 /** the `asset.extras.dsim` block of a GLB, validated for shape (the spec is coerced by the caller) */
 export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -224,18 +297,18 @@ export function readShareFile(input: ArrayBuffer | Uint8Array): ShareReadResult 
   if (typeof dsim.v !== 'number' || dsim.v > SHARE_VERSION) {
     return fail('newer-version', 'This robot was exported by a newer version of DSIM. Reload the page and try again.');
   }
-  if (dsim.v !== SHARE_VERSION) return fail('bad-payload', 'Couldn’t read this robot’s setup: its version is not one DSIM wrote.');
+  if (dsim.v !== SHARE_VERSION) return fail('bad-payload', `Couldn’t read this robot’s setup: its version is not one DSIM wrote. ${REEXPORT}`);
   if (typeof dsim.game !== 'string' || !GAMES.includes(dsim.game as GameId)) {
-    return fail('bad-payload', 'Couldn’t read this robot’s setup: it names a game DSIM doesn’t have.');
+    return fail('bad-payload', `Couldn’t read this robot’s setup: it names a game DSIM doesn’t have. ${REEXPORT}`);
   }
-  if (!isObj(dsim.spec) || !isObj(dsim.setup)) return fail('bad-payload', 'Couldn’t read this robot’s setup: the robot or its setup is missing.');
-  if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', 'Couldn’t read this robot’s setup: its name is missing or too long.');
+  if (!isObj(dsim.spec) || !isObj(dsim.setup)) return fail('bad-payload', `Couldn’t read this robot’s setup: the robot or its setup is missing. ${REEXPORT}`);
+  if (typeof dsim.name !== 'string' || dsim.name.length > MAX_NAME) return fail('bad-payload', `Couldn’t read this robot’s setup: its name is missing or too long. ${REEXPORT}`);
   if ((dsim.setup.apart !== undefined && !isBodyList(dsim.setup.apart)) || (dsim.setup.motion !== undefined && !isMotionList(dsim.setup.motion))) {
-    return fail('bad-payload', 'Couldn’t read this robot’s setup: its list of parts is damaged.');
+    return fail('bad-payload', `Couldn’t read this robot’s setup: its list of parts is damaged. ${REEXPORT}`);
   }
   // the rest of the setup: the drivetrain above all, which the editor reads on every render
   if (!isImportSetup(dsim.setup)) {
-    return fail('bad-payload', 'Couldn’t read this robot’s setup: its drivetrain or its settings are missing or damaged. Ask for it to be exported from DSIM again.');
+    return fail('bad-payload', `Couldn’t read this robot’s setup: its drivetrain or its settings are missing or damaged. ${REEXPORT}`);
   }
   // THE MODEL IS STORED AS IT IS, so it is held to what DSIM's exporters write (`shareModelCheck.ts`)
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

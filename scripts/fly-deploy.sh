@@ -2,18 +2,18 @@
 # Deploy the DECODE game server to Fly, then RE-APPLY the per-region VM sizes.
 #
 # Why this wrapper exists: `fly deploy` re-applies fly.toml's single `[[vm]]`
-# (shared-cpu-4x) to EVERY machine, which resets the cheaper satellite regions.
-# fly.toml has no way to express per-region VM sizes, so we shrink the satellites
-# back here. ALWAYS deploy via this script, not a bare `fly deploy`.
+# (performance-2x, 4096 MB: the primary's size) to EVERY machine, which resets the cheaper
+# satellite regions. fly.toml has no way to express per-region VM sizes, so we re-apply
+# each satellite's own size back here. ALWAYS deploy via this script, not a bare `fly deploy`.
 #
-# Sizing policy: iad (matchmaker + always-warm primary) runs shared-cpu-4x (from
-# fly.toml — 4 shared vCPUs, ample headroom for the 60Hz loop without a dedicated
-# vCPU's cost). [SUPERSEDED 2026-09-13: see LAUNCH SIZING below — iad is performance-2x and
-# each satellite has its own size in SATELLITE_SIZES.] EVERY other region, INCLUDING sjc, runs shared-cpu-1x — much cheaper,
-# but SHARED: a sustained match there can burn burst
-# credits and throttle the 60Hz loop (the flap risk fly.toml warns about). They rarely
-# host a match and auto-stop when idle, so the cost win outweighs it; bump back to a
-# performance-* size if a far region starts flapping under real matches. Tune below.
+# Sizing policy: iad (matchmaker + always-warm primary) takes fly.toml's [[vm]] as it is.
+# EVERY other region is a satellite with its OWN size and its own MAX_ROOMS, listed in
+# SATELLITE_SIZES below (shared-cpu-4x or 8x, from the capacity checkup; see LAUNCH SIZING).
+# A region missing from that list is NOT left alone, it is upsized to the primary's size.
+# A shared size can burn burst credits and throttle the 60Hz loop (the flap risk fly.toml
+# warns about), but the satellites rarely host a match and auto-stop when idle, so the cost
+# win outweighs it; bump a far region to a performance-* size if it starts flapping under
+# real matches. Tune below.
 #
 # ALPHA: `./scripts/fly-deploy.sh --alpha` deploys the PREVIEW app from fly.alpha.toml
 # instead — one region, its own database, and no satellites to re-shrink. The two are kept
@@ -91,6 +91,22 @@ elif [ "${FLY_ALPHA_APP:-}" = "dohun-sim-decode" ]; then
   echo "!! refused: FLY_ALPHA_APP names the PRODUCTION app, and --alpha deploys fly.alpha.toml (SERVER_CHANNEL=alpha) onto it."
   exit 1
 fi
+# The image `npm ci`s the vendored Zenith tarballs (`COPY vendor`), which are never committed.
+# A no-op when they are present (or when Zenith comes from npm); otherwise it fetches them with
+# ZENITH_VENDOR_* from the environment and checks them against the lockfile, or stops here with
+# a message rather than letting the remote build fail on a missing file. The packages are OPTIONAL
+# dependencies (a contributor's clone builds without them), so the Dockerfile checks after each
+# `npm ci` that all three installed and fails the image by name if not: a server never ships without.
+# ⚠️ IT RUNS BEFORE THE `--check` EXIT, because `--check` is what announce-deploy.sh asks before it
+# tells every player a restart is coming: with the fetch after it, a fresh worktree with no tarballs
+# and no ZENITH_VENDOR_* said "ok to deploy", the countdown ran, and the deploy then died here with
+# nothing deployed. It has no deploy side effect and is idempotent. Skipped for `--router` (the
+# router app has no Zenith) and when this checkout has no fetch script (the day Zenith comes from
+# npm, docs/area/autos.md; the guard test's throwaway repositories).
+if [ "$ROUTER" -eq 0 ] && [ -f scripts/fetch-zenith.mjs ]; then
+  node scripts/fetch-zenith.mjs
+fi
+
 if [ "$CHECK" -eq 1 ]; then
   echo "==> ok to deploy $([ "$ALPHA" -eq 1 ] && echo 'the alpha preview' || echo 'PRODUCTION') from $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?') @ $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
   exit 0
@@ -117,14 +133,6 @@ if [ "$ROUTER" -eq 1 ]; then
   echo "    machines:     fly machine list -a $RAPP  (one, $RREGION)"
   exit 0
 fi
-
-# The image `npm ci`s the vendored Zenith tarballs (`COPY vendor`), which are never committed.
-# A no-op when they are present (or when Zenith comes from npm); otherwise it fetches them with
-# ZENITH_VENDOR_* from the environment and checks them against the lockfile, or stops here with
-# a message rather than letting the remote build fail on a missing file. The packages are OPTIONAL
-# dependencies (a contributor's clone builds without them), so the Dockerfile checks after each
-# `npm ci` that all three installed and fails the image by name if not: a server never ships without.
-node scripts/fetch-zenith.mjs
 
 if [ "$ALPHA" -eq 1 ]; then
   APP="${FLY_ALPHA_APP:-dsim-alpha}"
@@ -231,8 +239,8 @@ for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 # bites again while `/api/perf` shows headroom, raise the dedicated figure toward 13, not 24.
 # ⚠️ IT MUST BE APPLIED HERE, NOT IN fly.toml. `fly deploy` regenerates machine config
 # from fly.toml, so a hand-run `fly machine update --env` reverts on the next deploy,
-# silently. A fly.toml `[env]` block is the wrong fix in the other direction: it would
-# cap iad at 6 too.
+# silently. Putting MAX_ROOMS in fly.toml's `[env]` (which does exist: SIM_WORKERS and
+# LAN_*) is the wrong fix in the other direction: it would cap iad at 6 too.
 # ⚠️ THE COST OF A CAP THAT BITES, stated because the matchmaker cannot see it. A staged
 # RANKED match is created through the same `join` path this cap gates (server/index.ts), and
 # the matchmaker is NOT load-aware — so a satellite already at its cap refuses the room with
@@ -320,9 +328,9 @@ while read -r region id; do
     performance-*) max_rooms="$SATELLITE_MAX_ROOMS_DEDICATED" ;;
     *) max_rooms="$SATELLITE_MAX_ROOMS" ;;
   esac
-  # --env is safe to pass alongside the size flags only because fly.toml has NO `[env]`
-  # block, so there is nothing else in machine env for it to clobber (Fly SECRETS are a
-  # separate mechanism and are untouched). Re-check that if an `[env]` block is ever added.
+  # `--env` MERGES into the machine's env (flyctl `maps.Copy` over the machine's existing
+  # config): the keys fly.toml's `[env]` set, `SIM_WORKERS` and `LAN_*`, survive, and so do Fly
+  # SECRETS (a separate mechanism). Only MAX_ROOMS is added here.
   # ⚠️ TOLERATE A FAILURE HERE, for the same reason the `fly deploy` line above is guarded.
   # `set -euo pipefail` is on (line 21), so an unguarded non-zero exit on the FIRST satellite
   # aborts the script and leaves EVERY remaining satellite on fly.toml's size with MAX_ROOMS 24

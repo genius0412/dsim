@@ -49,6 +49,7 @@ import { PAD_HOLD_REMOVE_MS, PadCapture } from '../input/padChords';
 import { padButtonDown } from '../input/gamepad';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { activePad, anyPadConnected, nonStandardPad, padInSlot } from '../input/padSelect';
+import { canonicalKey } from '../input/keyboard';
 import { StickCapture, type PadStickMap } from '../input/padAxes';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
@@ -279,8 +280,11 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
    * there is no combo to wait for; Escape cancels.
    */
   const [menuCapture, setMenuCapture] = useState(false);
+  /** a trigger was pressed for the Menu button while the triggers turn the robot: refused (INPUT-05) */
+  const [menuRefused, setMenuRefused] = useState(false);
   useEffect(() => {
     if (!menuCapture) return;
+    setMenuRefused(false);
     suspendPadNav('capture');
     let raf = 0;
     const alreadyDown = new Set<number>();
@@ -299,6 +303,12 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         }
         if (!down || alreadyDown.has(i)) {
           if (!down) alreadyDown.delete(i);
+          continue;
+        }
+        // REFUSED, AND STILL ARMED: while the triggers turn the robot, LT and RT are held all the time
+        // it drives, so as the Menu button they would open it mid-turn
+        if (bindingsRef.current.pad.turnWith === 'triggers' && PAD_TRIGGERS.includes(i)) {
+          setMenuRefused(true);
           continue;
         }
         const b0 = cloneBindings(bindingsRef.current);
@@ -447,7 +457,8 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         return;
       }
       if (capture.kind !== 'key') return;
-      const k = e.key.toLowerCase();
+      // stored layout-independently: the W key on a Russian layout binds as `w`, not `ц` (`canonicalKey`)
+      const k = canonicalKey(e.key, e.code);
       // REFUSED, AND STILL ARMED: the next key the player tries lands on the same slot
       const taken = keyConflict(b, g, capture.action, k);
       if (taken) {
@@ -683,7 +694,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               : `Press a button or combo for ${ACTION_LABELS[capture.action]}. Hold one to ${armedFilled ? 'remove' : 'cancel'}, or Esc.`,
       }
     : menuCapture
-      ? { panel: 'match', text: 'Press a gamepad button for Menu. Esc cancels.' }
+      ? menuRefused
+        ? { panel: 'match', text: 'The triggers turn the robot, so Menu can’t be LT or RT. Press another button.', error: true }
+        : { panel: 'match', text: 'Press a gamepad button for Menu. Esc cancels.' }
       : stickCapture
         ? { panel: 'driving', text: STICK_PROMPTS[stickRole] }
         : notice;

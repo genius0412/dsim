@@ -103,7 +103,17 @@ export function redo<T>(h: History<T>, current: T): { doc: T; history: History<T
 
 /** the same document, the edit time aside (an edit that changes nothing records nothing) */
 export function sameDoc(a: EditorDoc, b: EditorDoc): boolean {
-  return JSON.stringify({ ...a, updated: 0 }) === JSON.stringify({ ...b, updated: 0 });
+  // `edited` is the draft's mark that the player touched it, not part of what an edit changes
+  const key = (d: EditorDoc): string => {
+    const { edited: _edited, ...rest } = d;
+    return JSON.stringify({ ...rest, updated: 0 });
+  };
+  return key(a) === key(b);
+}
+
+/** the document after an edit: marked as the player's (`EditorDoc.edited`) unless the editor did it by itself */
+export function withEditMark(doc: EditorDoc, how: EditHow): EditorDoc {
+  return how !== 'auto' && !doc.edited ? { ...doc, edited: true } : doc;
 }
 
 /**

@@ -123,6 +123,8 @@ export const ZENITH_AUTOS_KEY = 'decodesim.zenithAutos.v1';
 export const ROBOT_LIBRARY_DB = 'decodesim.robots';
 /** show other players’ imported robots as their real picture/model (default on), or as an outline — per device */
 export const IMPORT_VISUALS_KEY = 'decodesim.importVisuals';
+/** may this device send your imported robot’s picture and 3D model to the rooms you play it in? Absent = not asked yet, and nothing is sent */
+export const IMPORT_SHARE_KEY = 'decodesim.shareImportLook';
 /** Home's player and game counts as last fetched, shown until the fresh ones land (`HomeMenu.tsx`) */
 export const HOME_STATS_KEY = 'decodesim.homeStats.v1';
 /** the reward grants a toast has already announced on this device, so a reload does not repeat one (`src/eventToasts.ts`) */
@@ -177,7 +179,7 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'indexeddb',
     category: 'necessary',
     purpose:
-      'Robots you imported from CAD: a simplified 3D model of each, its pictures, and the setup that makes it drive like the real one. An import you have not saved yet is kept here too, so a reload does not lose it. The models stay on this device; only a robot’s measurements travel with your settings. When you play an imported robot in a custom or LAN room, its top picture (and, in BIOBUZZ, a lighter copy of its model) is also sent to the other people in that room, kept in memory only for as long as the room lasts.',
+      'Robots you imported from CAD: a simplified 3D model of each, its pictures, and the setup that makes it drive like the real one. An import you have not saved yet is kept here too, so a reload does not lose it. The models stay on this device. A robot’s measurements (its outline, heights, wheel and mechanism positions) travel with your settings, go to everyone in a room you play it in, and are kept in that room’s saved replay. Its top picture and, in BIOBUZZ, a lighter copy of its model go to the room only if you share them (Configure, Network), and the room keeps them in memory only while it lasts.',
     retention:
       'Until you delete a robot from your imported robots or clear your browser data. An unsaved import goes when you save or discard it, or after 30 days.',
   },
@@ -281,6 +283,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     purpose:
       'The site-wide player and game counts the home page last showed, so they are on screen while the current ones load. Public totals; nothing about you.',
     retention: 'Until you clear your browser data. Replaced each time the home page loads the counts.',
+  },
+  {
+    key: IMPORT_SHARE_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Whether your imported robot’s picture and 3D model are sent to the rooms you play it in. Absent means you have not chosen yet, and nothing is sent until you do.',
+    retention: 'Until you clear your browser data.',
   },
   {
     key: IMPORT_VISUALS_KEY,

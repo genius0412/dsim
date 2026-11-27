@@ -1,8 +1,11 @@
 /**
  * QUALIFICATION SCHEDULES: balanced (FTC's model), round robin and swiss.
  *
- * Pure and seeded: the same entries, settings and seed always draw the same schedule, so the
- * server can store just the matches and a re-draw with the stored seed reproduces them exactly.
+ * Pure and seeded: the same entries, settings and seed always draw the same schedule. The SEED is
+ * not stored, though: the server draws a qualification schedule from the competition's seed plus
+ * `Date.now()` (a re-draw is meant to differ), so a draw cannot be reproduced afterwards. The
+ * schedule stored in the matches table is the record. Swiss rounds use the competition's seed plus
+ * the round number and are the exception.
  * Entries are opaque ids here; nothing in this file knows what an entry is.
  */
 import type { CompSlot } from './types';

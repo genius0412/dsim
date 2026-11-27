@@ -3593,6 +3593,7 @@ export class GameController {
    * measurement). The room snapshots every other tick; the parity is read off the last snapshot.
    */
   private saveForRollback(): void {
+    if (!this.gotSnapshot) return; // no snapshot yet: nothing to roll back to, and each save is ~1.2 MB
     if ((this.world.tick - this.lastServerTick) % 2 !== 0) return;
     physics3dImpl().saveEngineState(this.world, this.lastServerTick + 1);
   }

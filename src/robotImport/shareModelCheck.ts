@@ -20,6 +20,8 @@
  * in a worker); it bounds what the loader may be asked to do. Null when the model is fine, else a
  * short reason.
  */
+import { MAX_MESH_BYTES } from './types';
+
 type Json = Record<string, unknown>;
 
 /** the extensions the stored mesh names (`STORED_GLB_EXTENSIONS`; repeated here to stay three-free) */
@@ -51,11 +53,27 @@ const MESHOPT_FILTERS = new Set<unknown>([undefined, 'NONE', 'OCTAHEDRAL', 'QUAT
 /** objects of one kind a file may list; the largest robot read so far has a few thousand parts */
 const MAX_ITEMS = 200_000;
 /**
- * Triangles the scene may be asked to draw, counted per NODE that draws a mesh (a thousand nodes
- * drawing one mesh draw it a thousand times). Full detail keeps every triangle of the CAD: the
- * largest kit read so far is 5.66M.
+ * Triangles the scene may be asked to draw. Full detail keeps every triangle of the CAD: the largest
+ * kit read so far is 7.36M (goBILDA's DECODE bot with its fasteners, `docs/area/robot-import.md`).
+ * ⚠️ THE CAP IS WHAT THE BYTE CAP ADMITS, NOT A GUESS AT A ROBOT (merge audit RI-05). A bake over
+ * `MAX_MESH_BYTES` (128 MiB) is simplified until it fits, so what DSIM writes is bounded by BYTES, and
+ * the stored mesh is 4.6 to 5.0 bytes a triangle on the vendors' kits at Full (REV, goBILDA) and 6.5 on
+ * the dense stress robot (`stress.ts`, measured 2026-11-26: 1.55M triangles in 9.62 MiB): the byte cap
+ * fills at 27 to 29M triangles on the kits and 20.7M on the stress robot, so the 20M this was, from "about
+ * 14M" at 9 bytes, would have refused a file the editor itself saved and exported (a STEP near its 1 GB
+ * cap). A quarter of the byte cap is 33.5M: no mesh of up to 128 MiB at 4 bytes a triangle or more can
+ * pass it, and it still bounds what a stranger's file can ask the reader to draw (it was 50M).
  */
-export const SHARE_MAX_TRIANGLES = 50_000_000;
+export const SHARE_MAX_TRIANGLES = Math.floor(MAX_MESH_BYTES / 4);
+/**
+ * Vertices the readers may be asked to copy, counted per primitive that draws (a POSITION accessor
+ * named by several primitives is read once for each: the importer's reader flattens every one).
+ * Both writers store only the corners of their triangles (`creasedNormals` makes a vertex per
+ * corner it keeps), so a stored mesh has at most 3 a triangle, and every fixture's stored and float
+ * mesh 1.22 (440 for 360, measured). Without this a primitive of one triangle could name a POSITION
+ * accessor of millions, a thousand times.
+ */
+export const SHARE_MAX_VERTICES = 60_000_000;
 /**
  * Bytes a compressed mesh may decode to: 1 GiB, and never more than 64 times the file plus 16 MiB.
  * The stored mesh decodes to about 8 times its size (27 MB to roughly 210 MB at 5.66M triangles).
@@ -158,9 +176,11 @@ export function shareModelRefusal(json: Json, binBytes: number, fileBytes: numbe
   const meshes = list(json.meshes);
   if (!meshes) return 'meshes';
   const meshTris: number[] = [];
+  const meshVerts: number[] = [];
   for (const m of meshes) {
     if (!isObj(m) || !keysOk(m, KEYS.mesh) || !Array.isArray(m.primitives) || m.primitives.length > 4096) return 'mesh';
     let t = 0;
+    let vs = 0;
     for (const p of m.primitives as unknown[]) {
       if (!isObj(p) || !keysOk(p, KEYS.primitive) || !isObj(p.attributes)) return 'primitive';
       if (p.mode !== undefined && p.mode !== 4) return 'primitive mode';
@@ -171,23 +191,36 @@ export function shareModelRefusal(json: Json, binBytes: number, fileBytes: numbe
       if (p.material !== undefined && !isCount(p.material, materials.length - 1)) return 'primitive material';
       if (p.indices !== undefined && !isCount(p.indices, accessors.length - 1)) return 'primitive indices';
       t += Math.floor(accCount[p.indices === undefined ? p.attributes.POSITION : p.indices] / 3);
+      vs += accCount[p.attributes.POSITION];
     }
     meshTris.push(t);
+    meshVerts.push(vs);
   }
 
-  // ---- the node graph: a forest, not too deep, its triangles counted per node that draws
+  // ---- the node graph: a forest, not too deep, each mesh drawn by one node at most
   const nodes = list(json.nodes);
   if (!nodes) return 'nodes';
   const parent = new Int32Array(nodes.length).fill(-1);
+  // ⚠️ A MESH DRAWN BY TWO NODES IS REFUSED (2026-11-26). The importer's reader flattens every node
+  // that draws (`mergedPartsFromObject`), so one mesh under a thousand nodes was a thousand copies:
+  // a 1 MB file asked for 50M triangles and about 0.9 GiB of arrays (M-IMP-ENGINE-03). Both
+  // writers give every node its own mesh (`storedGlb.ts` one per part, `floatGlb.ts` one geometry
+  // per part), so no file DSIM wrote has one drawn twice.
+  const drawnBy = new Uint8Array(meshes.length);
   let drawn = 0;
+  let drawnVerts = 0;
   for (let i = 0; i < nodes.length; i++) {
     const nd = nodes[i];
     // no `extensions` (instancing), `camera`, `skin` or `weights`: none is in the list
     if (!isObj(nd) || !keysOk(nd, KEYS.node)) return 'node';
     if (nd.mesh !== undefined) {
       if (!isCount(nd.mesh, meshes.length - 1)) return 'node';
+      if (drawnBy[nd.mesh]) return 'mesh reused';
+      drawnBy[nd.mesh] = 1;
       drawn += meshTris[nd.mesh];
       if (drawn > SHARE_MAX_TRIANGLES) return 'too many triangles';
+      drawnVerts += meshVerts[nd.mesh];
+      if (drawnVerts > SHARE_MAX_VERTICES) return 'too many vertices';
     }
     if (nd.matrix !== undefined && !finiteList(nd.matrix, 16)) return 'node transform';
     if (nd.translation !== undefined && !finiteList(nd.translation, 3)) return 'node transform';

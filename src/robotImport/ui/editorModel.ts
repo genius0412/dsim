@@ -10,13 +10,13 @@
 import type { GameId } from '../../games/types';
 import type { ImportedEdge, ImportedMech, RobotSpec, Vec2 } from '../../types';
 import { coerceSpec } from '../../sim/spawn';
-import { IMPORT_MIN_SIDE } from '../../sim/imported';
+import { IMPORT_MIN_SIDE, IMPORT_ORIGIN_MARGIN, polyPointDepth } from '../../sim/imported';
 import { driveParams, massLimits, pushForce, rpmLimits } from '../../sim/drivetrain';
 import { chainMassFloorBump } from '../../games/chain/config';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
 import { bbox, buildDescriptor, isRectangle, linesToWheels, q64, squareWheels, WHEEL_SQUARE_TOL_IN, wheelLines, type WheelLines } from '../geometry';
 import { driveReadout, driveRpmFor, importedDriveFields } from '../drive';
-import type { FloatingGroup, FrontDetection, ImportCheck, ImportMeasurement, ImportSetup, LengthUnit, LibrarySource, MotionGroup, QuarterTurns, UpAxis, WheelLayout } from '../types';
+import { ROBOT_MESH_BOX_IN, type FloatingGroup, type FrontDetection, type ImportCheck, type ImportMeasurement, type ImportSetup, type LengthUnit, type LibrarySource, type MotionGroup, type QuarterTurns, type UpAxis, type WheelLayout } from '../types';
 import { validateMechFor } from './placement';
 import type { CadBuild } from '../motion';
 import { bbIntakeKindOf, bbLauncherOf, bbScoreModeMirror, type BbIntakeFeed, type BbIntakeKind } from '../../games/biobuzz/mechs';
@@ -56,6 +56,13 @@ export interface EditorDoc {
   source: LibrarySource | null;
   /** the model is a saved robot's stored mesh (re-open), not the file it came from */
   savedModel: boolean;
+  /**
+   * the PLAYER has changed this document (an edit that is not `'auto'`, or a file read over it). An edit of a
+   * saved robot that was only OPENED is not worth keeping or announcing: the library has it, so it is not
+   * written as a draft (`draftStore.ts`) and a restore says nothing about it (MIMPUI-15a, merge audit RI-02).
+   * Sticky: an undo to where it began leaves it set. Absent in drafts from before this field.
+   */
+  edited?: true;
   /** what reading the file left out or assumed, in the reader's words (Review shows them as notes) */
   notes?: string[];
   /** created time of the library robot being edited */
@@ -95,9 +102,9 @@ export interface EditorDoc {
 
 export const draftKey = (game: GameId, editId: string | null): string => `${game}:${editId ?? 'new'}`;
 
-/** the file's name without its extension, cut to the name field's 24 */
+/** the file's name without its extension (and the `.dsim` of a share file's `.dsim.glb`), cut to the name field's 24 */
 export function baseName(file: string): string {
-  return (file.replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' ').trim() || 'Robot').slice(0, 24);
+  return (file.replace(/\.[a-z0-9]+$/i, '').replace(/\.dsim$/i, '').replace(/[_]+/g, ' ').trim() || 'Robot').slice(0, 24);
 }
 
 /** extra lb a game adds to the mass floor (the same value `coerceSpec` uses) */
@@ -219,10 +226,47 @@ export function frontAssumed(doc: Pick<EditorDoc, 'detected' | 'savedModel' | 's
   return !!doc && !doc.savedModel && doc.detected?.front === 'assumed' && doc.setup.yaw === (doc.detected.yaw ?? 0);
 }
 
+/**
+ * WHAT TO SAY WHEN READING A DROPPED FILE FAILED (`readModel`'s catch). The engine's own sentence when it
+ * has one (`ImportError`: it names the file's problem and what to export instead); else, when the
+ * failure was the MEASUREMENT of a model that read fine (`measuring`), a sentence of its own, since
+ * exporting the file again cannot change that (RI-03); else the generic read failure.
+ */
+export function readFailureText(err: unknown, measuring: boolean, name: string, full: boolean): string {
+  if (err instanceof Error && err.name === 'ImportError') return err.message;
+  return measuring ? COPY.readMeasureFailed(name, full) : `Couldn’t read ${name}. Export it again and retry.`;
+}
+
 /** the step each check belongs to, for the step rail's counts */
 export function stepOf(item: ReviewItem): StepIndex {
   return item.fix?.step ?? 4;
 }
+
+/**
+ * HOW FAR the model's box (`ImportMeasurement.reach`, robot-local inches) is past the box a room draws
+ * (`ROBOT_MESH_BOX_IN`, the relay validator's and the viewer's own), side by side, only the sides that
+ * are past it, biggest first. Held `MESH_REACH_MARGIN_IN` inside the limit: the stored mesh is quantised
+ * (0.022 mm) and the room's copy is cut from it, so a part within a tenth of an inch of the edge could
+ * come out the other side of it. Empty for a model inside, and for one with no `reach` (no part left out).
+ */
+export const MESH_REACH_MARGIN_IN = 0.1;
+export function meshReachOver(reach: ImportMeasurement['reach']): { side: 'front' | 'back' | 'left' | 'right' | 'up' | 'down'; over: number }[] {
+  if (!reach) return [];
+  const { min: lo, max: hi } = ROBOT_MESH_BOX_IN;
+  const m = MESH_REACH_MARGIN_IN;
+  const all = [
+    { side: 'front' as const, over: reach.max[0] - (hi[0] - m) },
+    { side: 'back' as const, over: lo[0] + m - reach.min[0] },
+    { side: 'left' as const, over: reach.max[1] - (hi[1] - m) },
+    { side: 'right' as const, over: lo[1] + m - reach.min[1] },
+    { side: 'up' as const, over: reach.max[2] - (hi[2] - m) },
+    { side: 'down' as const, over: lo[2] + m - reach.min[2] },
+  ];
+  // a NaN passes no comparison: refuse it as an infinite reach rather than let it through
+  return all.map((r) => (Number.isNaN(r.over) ? { ...r, over: Infinity } : r)).filter((r) => r.over > 0).sort((a, b) => b.over - a.over);
+}
+
+const REACH_WORDS = { front: 'too far forward', back: 'too far back', left: 'too far left', right: 'too far right', up: 'too high', down: 'below the floor' } as const;
 
 /**
  * Every check, passes included, in step order. `block` disables Save, Test drive and Export.
@@ -242,6 +286,14 @@ export function reviewItems(
   // parts left out of the footprint (`ImportSetup.apart`) are drawn, but nothing else knows them: no
   // collision, and the 18 in check measures the drive base without them
   if (apart > 0) items.push({ id: 'apart', level: 'warn', text: COPY.apartWarn(apart), fix: { step: 0, focus: 'ri-parts' } });
+  // ...and a part that reaches past the box a room can draw (a deployed ramp left out, a tall lift): the
+  // relay and the viewer refuse such a model, so every screen would show the outline, the owner's own
+  // drive included, and nothing else here says so (RI-01)
+  const reachOver = meshReachOver(m.reach);
+  if (reachOver.length) {
+    const said = reachOver.map((r) => (Number.isFinite(r.over) ? `${r.over.toFixed(1)} in ${REACH_WORDS[r.side]}` : REACH_WORDS[r.side])).join(' and ');
+    items.push({ id: 'mesh-reach', level: 'block', text: COPY.meshReach(said, Math.floor(ROBOT_MESH_BOX_IN.max[0] - MESH_REACH_MARGIN_IN), Math.floor(ROBOT_MESH_BOX_IN.max[2] - MESH_REACH_MARGIN_IN)), fix: { step: 0, focus: 'ri-parts' } });
+  }
   // the reader's own notes (a large STEP's left-out fasteners, an .obj without its .mtl)
   notes.forEach((text, i) => items.push({ id: `read-note-${i}`, level: 'info', text }));
   const codes = new Set(m.checks.map((c) => c.code));
@@ -257,7 +309,19 @@ export function reviewItems(
   if (!codes.has('empty') && !codes.has('oversize') && (!imp || sideMin < IMPORT_MIN_SIDE)) {
     items.push({ id: 'tiny', level: 'block', text: COPY.tooSmall(sideMin, IMPORT_MIN_SIDE), fix: { step: 0, focus: 'ri-units' } });
   } else if (!codes.has('oversize') && !codes.has('empty')) items.push({ id: 'fits', level: 'ok', text: COPY.passFits });
-  if (!codes.has('no-floor') && !codes.has('few-wheels') && !codes.has('wheels-off-hull')) {
+  // WHEELS AT THE EDGE. The origin (the wheels' mean) is the centre of mass the sim pins, and
+  // `coerceImported` wants it `IMPORT_ORIGIN_MARGIN` inside the hull; when it is not, it moves the HULL to
+  // put the hull's centroid there. The bake still places the 3D mesh and frames the top picture about the
+  // measurement's origin, so the collider and the pinned centre of mass would sit up to 7 in from where the
+  // mesh is drawn, and the top picture would crop the robot. Asked of the descriptor the bake gets, the
+  // hull the sim is handed: blocked here, fixed by moving the wheels (`m.origin` is their mean).
+  let originEdge = false;
+  if (imp && !codes.has('oversize') && !codes.has('empty') && m.hull.length >= 3) {
+    const hull = buildDescriptor({ id: imp.id, measurement: { ...m, bands: undefined } }).hull;
+    originEdge = polyPointDepth(hull, { x: 0, y: 0 }) < IMPORT_ORIGIN_MARGIN;
+    if (originEdge) items.push({ id: 'origin-edge', level: 'block', text: COPY.originEdge, fix: { step: 0, focus: 'ri-wheels' } });
+  }
+  if (!originEdge && !codes.has('no-floor') && !codes.has('few-wheels') && !codes.has('wheels-off-hull')) {
     items.push({ id: 'wheels', level: 'ok', text: COPY.passWheels });
   }
   const dn = driveNumbers(built, game);

@@ -32,9 +32,11 @@ import { RoomScreen, type RoomBots, type RoomHostPanel } from './RoomScreen';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
-import { roomTakesImportedRobots, roomTakesImportVisuals, serverCaps } from '../net/api';
+import { roomServerHas, roomTakesImportedRobots, roomTakesImportSettings, roomTakesImportVisuals, serverCaps } from '../net/api';
 import { importVisuals, ownLookLine } from '../net/importVisualsClient';
-import { IMPORT_FELL_BACK, isImportedSpec } from '../net/imported';
+import { getShareOwnLook, getShowOthersImported, subscribeShareOwnLook, subscribeShowOthersImported } from '../net/importVisualsPref';
+import { IMPORT_FELL_BACK, IMPORT_HOST_OFF_CODE, IMPORTS2_CAP, isImportedSpec } from '../net/imported';
+import { ShareLookDialog } from './ShareLookDialog';
 import { standardRobotFor } from '../settings';
 import { zeroPowerOf } from '../sim/zeroPower';
 import { activeZenithAuto } from '../auto/library';
@@ -170,6 +172,23 @@ const SIDE_ANSWER_MS = 1500;
 /** why this seat's own imported look is not reaching the room (the relay client's), for one line */
 const subscribeOwnLook = (cb: () => void): (() => void) => importVisuals.subscribeOwnLook(cb);
 const ownLookNow = () => importVisuals.ownLookTrouble();
+
+/** the store reads behind the share dialog, the Outline buttons and "Show other players’ imported robots" */
+const subscribeShare = (cb: () => void): (() => void) => subscribeShareOwnLook(() => cb());
+const subscribeShowOthers = (cb: () => void): (() => void) => subscribeShowOthersImported(() => cb());
+const subscribeHidden = (cb: () => void): (() => void) => importVisuals.subscribeHidden(cb);
+const hiddenNow = (): number => importVisuals.hiddenSnapshot();
+
+/**
+ * ROOMS WHOSE HOST TURNED IMPORTED ROBOTS OFF, as this tab learned from a refusal at the door
+ * (`IMPORT_HOST_OFF_CODE`). Module-level so it outlives this screen: a player who leaves and comes back to
+ * the same code goes in with the standard robot at once instead of being refused first. The roster's
+ * own setting overrules it as soon as there is one (the host may have turned them back on).
+ */
+const hostOffRooms = new Set<string>();
+
+/** the one line "Your robot" shows while the room does not take imports (the lobby's own words, as `IMPORT_FELL_BACK` is) */
+const IMPORT_HOST_OFF_LINE = 'The host turned imported robots off here, so you are using your last standard robot.';
 
 /** The lobby is a full-screen surface, so it cannot use AppShell's side panel.
  * Keep the actual room UI and the shared FriendsPanel as siblings here instead.
@@ -329,6 +348,8 @@ export function Lobby({
    *  watchers, any member's way back after a match. Null until the answer lands. */
   const [serverRooms3, setServerRooms3] = useState<boolean | null>(null);
   const serverRooms3Ref = useRef<boolean | null>(null);
+  /** this cloud server creates a PUBLIC room with imported robots off (`'imports2'`); an older one never did, so nothing changes there */
+  const serverImports2Ref = useRef(false);
   const creatingRef = useRef(false);
   useEffect(() => {
     let alive = true;
@@ -339,6 +360,7 @@ export function Lobby({
         // a LAN room is a tab or a LAN box, never this cloud server, so it never takes the messages
         const r3 = c.includes(ROOMS3_CAP) && !lanActive();
         serverRooms3Ref.current = r3;
+        serverImports2Ref.current = c.includes(IMPORTS2_CAP) && !lanActive();
         setServerRooms3(r3);
       }
     });
@@ -396,12 +418,54 @@ export function Lobby({
       alive = false;
     };
   }, [importedActive, hasImports]);
-  const sendImport = importedActive && !isRecord && importOk === true;
+  /**
+   * THE HOST TURNED IMPORTED ROBOTS OFF (`RoomSettings.importedRobots`, `'imports2'`). Known from the
+   * roster once there is one; before it, from what this join knows: a PUBLIC room this client is creating
+   * starts off on a server that says so, and a room whose door refused an import this tab session
+   * (`hostOffRooms`). Then the room takes no import, the cards are not offered and the wire carries the
+   * standard robot, exactly as for a server that cannot play imports (`IMPORT_FELL_BACK`).
+   */
+  const forcedOffRef = useRef(false);
+  const roomSetRef = useRef<RoomSettings | undefined>(undefined);
+  roomSetRef.current = roomSet;
+  const roomOffNow = (): boolean => (roomSetRef.current ? roomSetRef.current.importedRobots === 'off' : forcedOffRef.current);
+  const roomOff = roomSet ? roomSet.importedRobots === 'off' : forcedOffRef.current || hostOffRooms.has(code);
+  const sendImport = importedActive && !isRecord && importOk === true && !roomOff;
   // an imported look the room refused (out of space, a junk file, an id taken) or never got: said in
   // the robot's own line, so the owner learns why the others see an outline
   const ownLook = useSyncExternalStore(subscribeOwnLook, ownLookNow, ownLookNow);
-  /** the spec this client puts on the wire: the active robot, or the standard one standing in for an import */
-  const wireSpec = (s: GS): RobotSpec => (isImportedSpec(s.spec) && !sendImport ? standardRobotFor(s) : s.spec);
+  /** the spec this client puts on the wire: the active robot, or the standard one standing in for an import.
+   *  ⚠️ `roomOffNow()` and not `roomOff`: this runs inside handlers registered once, which close over an old render */
+  const wireSpec = (s: GS): RobotSpec => (isImportedSpec(s.spec) && (!sendImport || roomOffNow()) ? standardRobotFor(s) : s.spec);
+  // THE OWNER'S OWN LOOK (`ShareOwnLook`): asked once, per device, the first time an imported robot is
+  // about to go online. `relays` is whether this room's server holds the look relay at all.
+  const shareAnswer = useSyncExternalStore(subscribeShare, getShareOwnLook, getShareOwnLook);
+  const [relays, setRelays] = useState(false);
+  useEffect(() => {
+    if (!importedActive || !importerOn) return;
+    let alive = true;
+    void roomTakesImportVisuals().then((ok) => {
+      if (alive) setRelays(ok);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [importedActive, importerOn]);
+  // THE VIEWER'S SIDE: "Show other players’ imported robots" (device-wide) and the Outline chosen per robot
+  const showOthers = useSyncExternalStore(subscribeShowOthers, getShowOthersImported, getShowOthersImported);
+  useSyncExternalStore(subscribeHidden, hiddenNow, hiddenNow);
+  // the host's "Imported robots" row: only a server that holds the setting (`'robotImport'` and `'imports2'`)
+  const [importSettingsOk, setImportSettingsOk] = useState(false);
+  useEffect(() => {
+    if (!importerOn) return;
+    let alive = true;
+    void roomTakesImportSettings().then((ok) => {
+      if (alive) setImportSettingsOk(ok);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [importerOn]);
   /** the tier the host's next "Add a bot" seats. Remembered for the session only: it is a
    *  property of the room being set up, not of the account. */
   const [botTier, setBotTier] = useState<string>(() => moduleFor(roomGame).bot?.defaultTier ?? '');
@@ -669,6 +733,11 @@ export function Lobby({
     refusedRef.current = false;
     setSlowConnect(false);
     setErrorCode(undefined); // this attempt's refusal is not the last one's — see `errorCode`
+    // WHAT THIS ATTEMPT KNOWS ABOUT THE HOST'S IMPORTED-ROBOTS SETTING, before any roster says: a room
+    // refused at the door this tab session, or a PUBLIC room being created here (it starts off, on a
+    // server that says so). Another room's roster is not this one's, so a fresh join forgets it.
+    if (!how.inRoom) roomSetRef.current = undefined;
+    forcedOffRef.current = hostOffRooms.has(roomCode) || (creatingRef.current && listed && signedIn && serverImports2Ref.current);
     /**
      * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
      *
@@ -835,6 +904,8 @@ export function Lobby({
        the client exists, because binding a new transport starts the relay's state clean. */
     importVisuals.setGame(roomGame);
     void roomTakesImportVisuals().then((ok) => importVisuals.setOffered(ok));
+    /* ...and may withdraw it (`visualDrop`) only from a server that understands the message (`'imports2'`): an older one ignores it */
+    void roomServerHas(IMPORTS2_CAP).then((ok) => importVisuals.setDropSupported(ok));
 
     /**
      * SAY THAT IT IS STILL TRYING.
@@ -909,6 +980,29 @@ export function Lobby({
           setSpectating(true);
           lobby.spectate(roomCode, name.trim() || undefined);
         }
+        return;
+      }
+      /**
+       * ⚠️ THE HOST TURNED IMPORTED ROBOTS OFF, AND THE DOOR SAID SO (`IMPORT_HOST_OFF_CODE`, `'imports2'`).
+       *
+       * This client offered an imported robot and has no seat yet (`lobby.clientId` is the seat's id, set
+       * by `welcome`, which a refused join never gets). It comes in again with its last standard robot,
+       * and it does so on a NEW socket, exactly as the Join action does: the refused client is disposed
+       * and `join` builds another. NEVER a second `join` frame on the refused socket: a socket whose
+       * first join was refused stays bound to nothing in the room, and the server drops the second (RV-04).
+       * Once per room code per tab (`hostOffRooms`), so a refusal that persists is shown, not looped on.
+       * A code that arrives on a SEATED `update` refusal (`lobby.clientId` set) is an ordinary message.
+       */
+      if (
+        code === IMPORT_HOST_OFF_CODE &&
+        lobby.clientId === '' &&
+        !spectatingRef.current &&
+        !hostOffRooms.has(roomCode) &&
+        isImportedSpec(settingsRef.current.spec)
+      ) {
+        hostOffRooms.add(roomCode);
+        lobby.dispose();
+        join(roomCode, hostRegionRef.current || undefined, { inRoom: phaseRef.current === 'room' });
         return;
       }
       /**
@@ -1790,6 +1884,7 @@ export function Lobby({
         onSettings: (patch) => lobbyRef.current?.roomSettings(patch),
         runLength: !!serverRooms3 && serverAutoOnly,
         visibility: !!serverRooms3 && !group && !lanActive(),
+        imports: importerOn && importSettingsOk && !isRecord && !lanActive(),
         signedIn,
         onUnlock: isRecord && roomSet ? () => lobbyRef.current?.unlockRoom() : undefined,
       }
@@ -1803,7 +1898,9 @@ export function Lobby({
       ? 'Server is restarting shortly. Starting is paused for a moment.'
       : importedActive && !isRecord && importOk === false
         ? IMPORT_FELL_BACK
-        : null;
+        : importedActive && !isRecord && importOk === true && roomOff
+          ? IMPORT_HOST_OFF_LINE
+          : null;
   const react = (k: number): void => {
     if (reactBusy) return;
     lobbyRef.current?.react(k);
@@ -1864,6 +1961,11 @@ export function Lobby({
         onMove={(id, a) => lobbyRef.current?.moveMember(id, a)}
         bots={bots}
         host={hostPanel}
+        outline={
+          importerOn && showOthers
+            ? { isHidden: (id) => importVisuals.isHidden(id), toggle: (id) => importVisuals.setHidden(id, !importVisuals.isHidden(id)) }
+            : undefined
+        }
         bubbles={bubbles}
         onReact={serverRooms3 ? react : undefined}
         reactBusy={reactBusy}
@@ -1963,6 +2065,7 @@ export function Lobby({
             {/* an imported robot that is NOT going out, and why (see `importOk`): one line */}
             {importedActive && isRecord && <p className="ds-hint">Record runs use a standard robot.</p>}
             {importedActive && !isRecord && importOk === false && <p className="ds-hint">{IMPORT_FELL_BACK}</p>}
+            {importedActive && !isRecord && importOk === true && roomOff && <p className="ds-hint">{IMPORT_HOST_OFF_LINE}</p>}
             {/* WHAT YOU ARE BRINGING, said once. When it is one of your saved robots, the lit
                 card below says it; this line is for a build that is not saved, which no card
                 can show. It used to print over the lit card too, in a second vocabulary. */}
@@ -1995,7 +2098,7 @@ export function Lobby({
               ))}
               {/* imported robots, where this room can play them (never a record room) and this build
                   has the importer */}
-              {importerOn && importOk === true && !isRecord
+              {importerOn && importOk === true && !isRecord && !roomOff
                 ? (importLibrary.entries ?? []).map((e) => (
                     <RobotCard
                       key={e.id}
@@ -2029,6 +2132,11 @@ export function Lobby({
         drawerOpen={setupOpen && !!me && !spectating}
         onCloseDrawer={() => setSetupOpen(false)}
       />
+      {/* THE FIRST TIME AN IMPORTED ROBOT GOES ONLINE ON THIS DEVICE, its owner is asked whether its look (the
+          top picture and, in BIOBUZZ, a lighter 3D model: both made from their CAD) may be sent to the
+          room. Seated, an import on the wire, a room that relays, and no answer yet: nothing is uploaded
+          until it is `on` (`ImportVisualsClient.maybeUpload`), whatever this dialog shows. */}
+      {phase === 'room' && !!me && !spectating && sendImport && relays && shareAnswer === 'ask' && <ShareLookDialog />}
     </RoomFriendsLayout>
   );
 }

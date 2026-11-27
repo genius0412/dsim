@@ -1,5 +1,6 @@
 /**
- * ROBOT IMPORT — the importer's own types. Types only, plus three frame constants: no DOM, no
+ * ROBOT IMPORT — the importer's own types. Types only, plus the frame constants (the stored mesh's
+ * matrices and the box a model may fill, `ROBOT_MESH_BOX_M`) and the size caps: no DOM, no
  * three.js, safe for the main chunk and the server. The contract (`ImportedRobot`) lives in
  * `src/types.ts`; `docs/robot-import-plan.md` §3 binds both; `docs/area/robot-import.md` names the
  * frames every number below is in.
@@ -50,6 +51,25 @@ export const ROBOT_TO_STORED_MESH: readonly number[] = (() => {
   const k = MESH_METRES_PER_INCH;
   // gltf.x = robot.y·k, gltf.y = robot.z·k, gltf.z = robot.x·k
   return [0, 0, k, 0, /**/ k, 0, 0, 0, /**/ 0, k, 0, 0, /**/ 0, 0, 0, 1];
+})();
+
+/**
+ * WHERE A ROBOT'S 3D MODEL MAY BE, ONE BOX FOR EVERY CHECK (merge audit RI-01). The relay's GLB
+ * validator (`validateMeshGlb`, `VISUAL_MESH_BOX`) refuses a vertex outside it, the viewer
+ * (`importedMeshFits`) draws nothing that leaves it, and Review blocks a model that does (`meshReach`),
+ * so the three can never disagree: a viewer stricter than the relay drew a placeholder for a model the
+ * room had stored and served, the owner's own drive included.
+ * `ROBOT_MESH_BOX_M` is the box in the STORED frame (glTF metres, +Y up, +Z front, +X left, origin on
+ * the floor at the wheelbase centre): x and z ±1 m, y −0.5..2 m. Measured legit meshes span ±0.2 m and
+ * 0..0.43 m up. `ROBOT_MESH_BOX_IN` is the same box in ROBOT-LOCAL inches (+x front, +y left, +z up),
+ * converted the way a mesh is (`STORED_MESH_TO_ROBOT`: x = z/0.0254, y = x/0.0254, z = y/0.0254), so a
+ * point at the validator's limit is exactly at the viewer's.
+ */
+export const ROBOT_MESH_BOX_M: { readonly min: readonly [number, number, number]; readonly max: readonly [number, number, number] } = { min: [-1, -0.5, -1], max: [1, 2, 1] };
+export const ROBOT_MESH_BOX_IN: { readonly min: readonly [number, number, number]; readonly max: readonly [number, number, number] } = (() => {
+  const k = 1 / MESH_METRES_PER_INCH;
+  const { min: lo, max: hi } = ROBOT_MESH_BOX_M;
+  return { min: [lo[2] * k, lo[0] * k, lo[1] * k], max: [hi[2] * k, hi[0] * k, hi[1] * k] };
 })();
 
 /** the top-down PNG's side, px */
@@ -321,9 +341,11 @@ export function readStoredMotion(x: unknown): StoredMotion | null {
 }
 
 /**
- * The stored GLB's ceiling: a bake over it is simplified until it fits (`bakeSceneHere`). About 14M
- * triangles at ~9 bytes each, over twice the largest kit measured (goBILDA's DECODE bot, 6.24M);
- * it was 4 MiB while every robot was simplified to 250k.
+ * The stored GLB's ceiling: a bake over it is simplified until it fits (`bakeSceneHere`). 14M
+ * triangles at the ~9 bytes each of a Light mesh, but 27 to 29M at the 4.6 to 5.0 of the vendors' kits
+ * at Full (6.5 on the dense stress robot: 20.7M), over three times the largest kit measured (goBILDA's
+ * DECODE bot, 7.36M); it was 4 MiB while every robot was simplified to 250k. `SHARE_MAX_TRIANGLES`
+ * (`shareModelCheck.ts`) is a quarter of it.
  */
 export const MAX_MESH_BYTES = 128 * 1024 * 1024;
 
@@ -436,6 +458,13 @@ export interface ImportMeasurement {
   /** bodies that float apart from the robot, nearest first (`findFloatingParts`; the deleted ones
    *  are not looked at) */
   floating?: FloatingGroup[];
+  /**
+   * the box of EVERY part, parts left out of the footprint included, in ROBOT-LOCAL inches (the model
+   * frame less `origin`, z the height above the floor). Present only when parts are left out of the
+   * footprint (`ImportSetup.apart`): nothing else can reach past the drive base's own box, which the
+   * 18 in check bounds. Review holds it to `ROBOT_MESH_BOX_IN` (`meshReach`).
+   */
+  reach?: { min: [number, number, number]; max: [number, number, number] };
 }
 
 // ---- the library record (plan §3.2) ------------------------------------------------------

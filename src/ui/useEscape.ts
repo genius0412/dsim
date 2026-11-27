@@ -35,8 +35,11 @@ export function escapePressed(): boolean {
 let listening = false;
 const onKey = (e: KeyboardEvent): void => {
   // a child that already consumed this Escape (Select closing its listbox, a `useDialog`: both
-  // run before this window listener) must not also exit the screen
-  if (e.key === 'Escape' && !e.defaultPrevented) escapePressed();
+  // run before this window listener) must not also exit the screen.
+  // ⚠️ A HELD KEY IS NOT ANOTHER PRESS: the first keydown closes the top surface, its holder leaves the
+  // stack, and the auto-repeat keydown would then land on the surface UNDER it (the sheet closes, then
+  // the room is left). Only the press itself counts.
+  if (e.key === 'Escape' && !e.defaultPrevented && !e.repeat) escapePressed();
 };
 
 /**

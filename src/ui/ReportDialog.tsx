@@ -29,19 +29,29 @@ export function ReportDialog({
   onSubmit,
   onClose,
 }: {
-  /** the opponents this player may report: robot id + the name they played under */
-  drivers: { robotId: number; name: string }[];
+  /** the opponents this player may report: robot id + the name they played under, and whether
+   *  their robot was an IMPORTED one (the only kind that has a picture or model to report) */
+  drivers: { robotId: number; name: string; imported?: boolean }[];
   onSubmit: (robotId: number, reason: ReportReason, detail: string) => void;
   onClose: () => void;
 }) {
   const [robotId, setRobotId] = useState<number | null>(drivers.length === 1 ? drivers[0].robotId : null);
   const [reason, setReason] = useState<ReportReason | null>(null);
+  // "Offensive robot picture or model" is offered against an imported robot ONLY: a standard robot has
+  // no picture or model of its owner's to object to, and the report would reach a moderator with nothing
+  // to look at. It is cleared if the pick moves to a driver who has none.
+  const pickedImported = drivers.find((d) => d.robotId === robotId)?.imported === true;
+  const reasons = REPORT_REASONS.filter((r) => r !== 'look' || pickedImported);
+  const pickDriver = (d: { robotId: number; imported?: boolean }): void => {
+    setRobotId(d.robotId);
+    if (reason === 'look' && !d.imported) setReason(null);
+  };
   const [detail, setDetail] = useState('');
   const [sent, setSent] = useState(false);
   // "Something else" without a description is not actionable — a moderator opening it learns
   // nothing at all — so it is the one category that requires the note.
   const needsDetail = reason === 'other';
-  const ready = robotId !== null && reason !== null && (!needsDetail || detail.trim().length > 0);
+  const ready = robotId !== null && reason !== null && reasons.includes(reason) && (!needsDetail || detail.trim().length > 0);
   const id = useId();
   // THE FORM OPENS INLINE, so focus has to be carried into it or a keyboard user is left
   // where the link that opened it used to be (design review 06-03). Escape closes it, and
@@ -87,7 +97,7 @@ export function ReportDialog({
                 type="button"
                 className={`ds-opt mini ${robotId === d.robotId ? 'on' : ''}`}
                 aria-pressed={robotId === d.robotId}
-                onClick={() => setRobotId(d.robotId)}
+                onClick={() => pickDriver(d)}
               >
                 <span className="ot">{d.name}</span>
               </button>
@@ -102,7 +112,7 @@ export function ReportDialog({
           ("Not playing / AFK" / "Present but not driving, for most of the match"). The
           "Who" grid above is already mini; these now match it. */}
       <div className="ds-opts two" role="group" aria-labelledby={`${id}-why`}>
-        {REPORT_REASONS.map((r) => (
+        {reasons.map((r) => (
           <button
             key={r}
             type="button"

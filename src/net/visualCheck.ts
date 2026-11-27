@@ -11,6 +11,7 @@
  * this file by `import()` (`importVisualsClient.ts`), so it is its own lazy chunk; the server
  * imports it directly. Same pure functions, same DOM-free / no-`node:` rule as `importVisuals.ts`.
  */
+import { ROBOT_MESH_BOX_IN, ROBOT_MESH_BOX_M } from '../robotImport/types';
 import { VISUAL_MAX_BYTES, type VisualKind } from './importVisuals';
 
 // ---- validation: a PNG ----------------------------------------------------------------------
@@ -115,11 +116,91 @@ const REFUSED_COLLECTIONS = ['images', 'textures', 'samplers', 'skins', 'animati
 /** the deepest node a scene may nest (a cycle is infinitely deep) */
 export const VISUAL_GLB_MAX_DEPTH = 32;
 
+/**
+ * WHERE A RELAYED MESH MAY BE: every drawn vertex, through its node's transforms, inside this box of
+ * the STORED MESH FRAME (glTF metres, +Y up, the origin on the floor at the wheelbase centre:
+ * `docs/area/robot-import.md` "Frames"). Measured 2026-11-26 on every mesh the importer bakes from
+ * `scripts/fixtures/robot-import/` (GLB, STL, OBJ, PLY, 3MF, at Full and Light, as the float stored
+ * mesh and as `liteMesh`'s copy), the synthetic robot with seven moving parts, and the 0.47 M-triangle
+ * stress robot: x −0.20..0.20, y 0..0.43, z −0.20..0.25. So a metre either side and two up leave
+ * five times that, while a node scale of 10⁶ or a vertex at 10³⁰ (a wall, or a field-sized sheet, in
+ * every viewer's camera) is refused. ⚠️ THE VIEWER HOLDS A MESH TO THIS SAME BOX (`importedMeshFits`,
+ * `renderImported.ts`, through `VISUAL_MESH_BOX_ROBOT_IN`) and the editor's Review blocks a model that
+ * leaves it: a viewer stricter than the relay drew a placeholder for a model the room stored and served
+ * (merge audit RI-01). The box itself is `ROBOT_MESH_BOX_M` (`robotImport/types.ts`, main-safe), so
+ * the viewer need not load this file.
+ */
+export const VISUAL_MESH_BOX: { readonly min: readonly [number, number, number]; readonly max: readonly [number, number, number] } = ROBOT_MESH_BOX_M;
+/** the same box in robot-local inches (+x front, +y left, +z up): what the viewer and Review test */
+export const VISUAL_MESH_BOX_ROBOT_IN = ROBOT_MESH_BOX_IN;
+/**
+ * DRAW CALLS: the primitives each node that draws a mesh draws, summed. One mesh of 64 primitives
+ * drawn by 512 nodes was 32,768 draw calls (twice that with shadows) in a 42 KB file. The importer
+ * writes one primitive per colour and per moving part's colour: 1 to 14 on the measured meshes
+ * above, 10 on the stress robot's relay copy; 64 moving parts in 16 colours would be 1,024.
+ */
+export const VISUAL_MAX_DRAWN_PRIMITIVES = 1024;
+/** the distinct POSITION values read, summed over accessors: three per triangle at the triangle cap.
+ *  Accessors may alias one buffer view, so without it 4,096 of them could each read 87k vertices */
+export const VISUAL_MAX_POSITIONS = 3 * VISUAL_MAX_TRIANGLES;
+/** a node's scale, per axis (a matrix column's length): the exporter writes 1; 0 makes three's
+ *  decomposition divide by zero */
+const NODE_SCALE_MIN = 1e-6;
+const NODE_SCALE_MAX = 1e6;
+/** how far a rotation may be from unit length, and a matrix's columns from square to each other:
+ *  three composes a rotation as it is given, so a quaternion of length 100 scales by 10⁴ */
+const NODE_UNIT_TOL = 1e-3;
+
 type Json = Record<string, unknown>;
 const isObj = (x: unknown): x is Json => typeof x === 'object' && x !== null && !Array.isArray(x);
 const isCount = (x: unknown, max: number): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0 && x <= max;
 const keysOk = (o: Json, allowed: ReadonlySet<string>): boolean => Object.keys(o).every((k) => allowed.has(k));
 const finiteList = (x: unknown, len: number): boolean => Array.isArray(x) && x.length === len && x.every((v) => typeof v === 'number' && Number.isFinite(v));
+const finiteNum = (x: unknown): boolean => typeof x === 'number' && Number.isFinite(x);
+
+/**
+ * A node's local transform as a column-major 4×4, or null when three would not draw it as the file
+ * says: a matrix AND a translation, rotation or scale (three takes the matrix and drops the rest), a
+ * matrix that is not a rotation and a scale (three DECOMPOSES it, so a shear or a projective row is
+ * not what is drawn), a rotation that is not unit length, or a scale per axis outside
+ * [`NODE_SCALE_MIN`, `NODE_SCALE_MAX`]. The values are already known to be finite.
+ */
+function localMatrix(nd: Json): Float64Array | null {
+  const m = new Float64Array(16);
+  if (nd.matrix !== undefined) {
+    if (nd.translation !== undefined || nd.rotation !== undefined || nd.scale !== undefined) return null;
+    const a = nd.matrix as number[];
+    for (let i = 0; i < 16; i++) m[i] = a[i];
+    if (Math.abs(m[3]) > 1e-6 || Math.abs(m[7]) > 1e-6 || Math.abs(m[11]) > 1e-6 || Math.abs(m[15] - 1) > 1e-6) return null;
+    const len = [0, 1, 2].map((c) => Math.hypot(m[4 * c], m[4 * c + 1], m[4 * c + 2]));
+    if (len.some((l) => !(l >= NODE_SCALE_MIN && l <= NODE_SCALE_MAX))) return null;
+    for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+      const dot = m[4 * p] * m[4 * q] + m[4 * p + 1] * m[4 * q + 1] + m[4 * p + 2] * m[4 * q + 2];
+      if (Math.abs(dot) > NODE_UNIT_TOL * len[p] * len[q]) return null;
+    }
+    return m;
+  }
+  const [tx, ty, tz] = (nd.translation as number[] | undefined) ?? [0, 0, 0];
+  const [x, y, z, w] = (nd.rotation as number[] | undefined) ?? [0, 0, 0, 1];
+  const [sx, sy, sz] = (nd.scale as number[] | undefined) ?? [1, 1, 1];
+  if (Math.abs(Math.hypot(x, y, z, w) - 1) > NODE_UNIT_TOL) return null;
+  for (const s of [sx, sy, sz]) if (!(Math.abs(s) >= NODE_SCALE_MIN && Math.abs(s) <= NODE_SCALE_MAX)) return null;
+  // three's Matrix4.compose, term for term
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2, wx = w * x2, wy = w * y2, wz = w * z2;
+  m.set([(1 - (yy + zz)) * sx, (xy + wz) * sx, (xz - wy) * sx, 0, (xy - wz) * sy, (1 - (xx + zz)) * sy, (yz + wx) * sy, 0, (xz + wy) * sz, (yz - wx) * sz, (1 - (xx + yy)) * sz, 0, tx, ty, tz, 1]);
+  return m;
+}
+
+/** `a × b` (column-major 4×4, affine), into a new array */
+function mulAffine(a: Float64Array, b: Float64Array): Float64Array {
+  const o = new Float64Array(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 3; r++) o[4 * c + r] = a[r] * b[4 * c] + a[4 + r] * b[4 * c + 1] + a[8 + r] * b[4 * c + 2] + (c === 3 ? a[12 + r] : 0);
+  }
+  o[15] = 1;
+  return o;
+}
 
 /**
  * Walk the whole JSON once (iterative, node-capped): is there a `uri` anywhere, and an `extensions`
@@ -170,6 +251,19 @@ function scanJson(root: unknown): { uri: boolean; extension: boolean } | 'huge' 
  * as many entries as the positions and every index value names one of them, the node graph is a
  * forest no deeper than `VISUAL_GLB_MAX_DEPTH`, and the triangle count, taken per NODE that draws a
  * mesh (512 nodes drawing one 150k mesh are 77M triangles), is the importer's own ceiling.
+ *
+ * ⚠️ AND IT MUST BE ROBOT-SIZED, OPAQUE AND FEW DRAW CALLS (merge audit 2026-11, M-IMP-TRUST-01). A
+ * file that passed everything above still put a wall in every viewer's camera (a node scale of 10⁶,
+ * vertices at 10³⁰), NaN vertices, 32,768 draw calls, or 150,000 copies of a 200 m translucent
+ * triangle. So every POSITION value is read (finite, inside its accessor's `min`/`max`), each node's
+ * transform is composed down from its root as three would draw it (`localMatrix`), every drawn
+ * vertex must land inside `VISUAL_MESH_BOX`, a material is opaque, and the primitives drawn are at
+ * most `VISUAL_MAX_DRAWN_PRIMITIVES`. The work is bounded by the file, not by what it claims:
+ * index values are counted against the triangle cap BEFORE they are read, positions are read once
+ * per accessor up to `VISUAL_MAX_POSITIONS`, nothing recurses, and nothing is allocated by a count
+ * the file states past the 512 nodes and 4,096 accessors already capped. The viewer then holds the
+ * parsed mesh to this same box and caps its surface area, which is what bounds overdraw
+ * (`importedMeshFits`, `renderImported.ts`).
  */
 export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh): string | null {
   if (b.length > maxBytes) return 'too large';
@@ -245,7 +339,7 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
     viewStride.push((v.byteStride as number | undefined) ?? 0);
   }
   const accessors = (g.accessors ?? []) as unknown[];
-  const acc: { count: number; comp: number; ctype: number; per: number; view: number; at: number; stride: number }[] = [];
+  const acc: { count: number; comp: number; ctype: number; per: number; view: number; at: number; stride: number; min?: number[]; max?: number[] }[] = [];
   for (const a of accessors) {
     if (!isObj(a) || !keysOk(a, KEYS.accessor)) return 'accessor';
     const comp = COMPONENT_BYTES.get(a.componentType);
@@ -260,18 +354,25 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
     const stride = viewStride[a.bufferView] || elem;
     if (stride < elem) return 'accessor stride';
     if (at + (a.count - 1) * stride + elem > viewLen[a.bufferView]) return 'accessor range';
-    acc.push({ count: a.count, comp, ctype: a.componentType as number, per, view: a.bufferView, at, stride });
+    acc.push({ count: a.count, comp, ctype: a.componentType as number, per, view: a.bufferView, at, stride, min: a.min as number[] | undefined, max: a.max as number[] | undefined });
   }
   const materials = (g.materials ?? []) as unknown[];
   for (const m of materials) {
     if (!isObj(m)) return 'material';
     if (Object.keys(m).some((k) => /Texture$/.test(k))) return 'textures';
     if (!keysOk(m, KEYS.material)) return 'material';
+    // ⚠️ OPAQUE ONLY: the importer writes opaque materials (`buildMeshGroup`), and BLEND turns off the
+    // depth write, so 150,000 copies of one translucent triangle are each shaded over everything
+    if (m.alphaMode !== undefined && m.alphaMode !== 'OPAQUE') return 'material blending';
+    if (m.doubleSided !== undefined && typeof m.doubleSided !== 'boolean') return 'material';
+    if ((m.alphaCutoff !== undefined && !finiteNum(m.alphaCutoff)) || (m.emissiveFactor !== undefined && !finiteList(m.emissiveFactor, 3))) return 'material';
     if (m.pbrMetallicRoughness !== undefined) {
       const p = m.pbrMetallicRoughness;
       if (!isObj(p)) return 'material';
       if (Object.keys(p).some((k) => /Texture$/.test(k))) return 'textures';
       if (!keysOk(p, KEYS.pbr)) return 'material';
+      if (p.baseColorFactor !== undefined && !finiteList(p.baseColorFactor, 4)) return 'material';
+      if ((p.metallicFactor !== undefined && !finiteNum(p.metallicFactor)) || (p.roughnessFactor !== undefined && !finiteNum(p.roughnessFactor))) return 'material';
     }
   }
   /** the index values of accessor `i`, each checked against `n` vertices */
@@ -287,9 +388,13 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
   };
   const meshes = (g.meshes ?? []) as unknown[];
   const meshTris: number[] = [];
+  /** each mesh's primitives (its draw calls) and their POSITION accessors */
+  const meshPos: number[][] = [];
   let tris = 0;
   let prims = 0;
   for (const m of meshes) {
+    const posOf: number[] = [];
+    meshPos.push(posOf);
     if (!isObj(m) || !keysOk(m, KEYS.mesh) || !Array.isArray(m.primitives) || m.primitives.length > 64) return 'mesh';
     let t = 0;
     for (const p of m.primitives as unknown[]) {
@@ -311,12 +416,18 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
       if (p.indices !== undefined) {
         if (!isCount(p.indices, accessors.length - 1)) return 'primitive indices';
         const ia = acc[p.indices];
-        if (ia.per !== 1 || !INDEX_TYPES.has(ia.ctype) || ia.count % 3 !== 0) return 'primitive indices';
+        // glTF gives an index buffer no stride, and three would read one as interleaved
+        if (ia.per !== 1 || !INDEX_TYPES.has(ia.ctype) || ia.count % 3 !== 0 || viewStride[ia.view]) return 'primitive indices';
+        // ⚠️ COUNTED BEFORE THEY ARE READ: thousands of primitives may name ONE index accessor of
+        // 450,000 values, and reading it for each held the room's thread 5.1 s on a 694 KB file
+        if (tris + t + ia.count / 3 > VISUAL_MAX_TRIANGLES) return 'too many triangles';
         if (!indicesInRange(p.indices, nv)) return 'index out of range';
         t += ia.count / 3;
       } else {
         t += Math.floor(nv / 3);
+        if (tris + t > VISUAL_MAX_TRIANGLES) return 'too many triangles';
       }
+      posOf.push(pos);
       prims++;
     }
     meshTris.push(t);
@@ -327,18 +438,24 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
   // ---- the node graph: a forest, not too deep, and its triangles counted per node that draws
   const nodes = (g.nodes ?? []) as unknown[];
   const parent = new Int32Array(nodes.length).fill(-1);
+  const local: Float64Array[] = [];
   let drawn = 0;
+  let drawCalls = 0;
   for (let i = 0; i < nodes.length; i++) {
     const nd = nodes[i];
     if (!isObj(nd) || !keysOk(nd, KEYS.node)) return 'node';
     if (nd.mesh !== undefined) {
       if (!isCount(nd.mesh, meshes.length - 1)) return 'node';
       drawn += meshTris[nd.mesh];
+      drawCalls += meshPos[nd.mesh].length;
     }
     if (nd.matrix !== undefined && !finiteList(nd.matrix, 16)) return 'node transform';
     if (nd.translation !== undefined && !finiteList(nd.translation, 3)) return 'node transform';
     if (nd.rotation !== undefined && !finiteList(nd.rotation, 4)) return 'node transform';
     if (nd.scale !== undefined && !finiteList(nd.scale, 3)) return 'node transform';
+    const lm = localMatrix(nd);
+    if (!lm) return 'node transform';
+    local.push(lm);
     if (nd.children !== undefined) {
       if (!Array.isArray(nd.children)) return 'node';
       for (const c of nd.children) {
@@ -350,11 +467,67 @@ export function validateMeshGlb(b: Uint8Array, maxBytes = VISUAL_MAX_BYTES.mesh)
   }
   // a node more than VISUAL_GLB_MAX_DEPTH parents deep is too deep, and one on a cycle is
   // infinitely deep (with one parent each, a walk up either ends or loops)
+  const depth = new Int32Array(nodes.length);
   for (let i = 0; i < nodes.length; i++) {
     let d = 0;
     for (let p = parent[i]; p !== -1; p = parent[p]) if (++d > VISUAL_GLB_MAX_DEPTH) return 'node graph';
+    depth[i] = d;
   }
   if (drawn > VISUAL_MAX_TRIANGLES) return 'too many triangles';
+  if (drawCalls > VISUAL_MAX_DRAWN_PRIMITIVES) return 'too many draw calls';
+  // ---- the positions: every value read, finite, and inside what the accessor declares --------------
+  /** per POSITION accessor: its box [minX, minY, minZ, maxX, maxY, maxZ], read once */
+  const posBox = new Map<number, Float64Array>();
+  let posRead = 0;
+  for (const list of meshPos) {
+    for (const ai of list) {
+      if (posBox.has(ai)) continue;
+      const a = acc[ai];
+      posRead += a.count;
+      if (posRead > VISUAL_MAX_POSITIONS) return 'too many vertices';
+      const box = new Float64Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+      const base = binAt + viewOff[a.view] + a.at;
+      for (let k = 0; k < a.count; k++) {
+        const at = base + k * a.stride;
+        for (let c = 0; c < 3; c++) {
+          const v = dv.getFloat32(at + 4 * c, true);
+          if (!Number.isFinite(v)) return 'position not finite';
+          if (v < box[c]) box[c] = v;
+          if (v > box[c + 3]) box[c + 3] = v;
+        }
+      }
+      // three sizes its culling volumes from `min`/`max` without reading the data, so they must hold
+      // it (to a float32's rounding: an exporter may print the double it computed them in)
+      const slack = (x: number): number => 1e-5 * (1 + Math.abs(x));
+      if (a.min && [0, 1, 2].some((c) => box[c] < a.min![c] - slack(a.min![c]))) return 'accessor bounds';
+      if (a.max && [0, 1, 2].some((c) => box[c + 3] > a.max![c] + slack(a.max![c]))) return 'accessor bounds';
+      posBox.set(ai, box);
+    }
+  }
+  // ---- where it is drawn: each node's transform composed down from its root, every drawn box inside
+  // VISUAL_MESH_BOX (the box's eight corners, so a rotation can only make it stricter) ----------------
+  const order = Array.from({ length: nodes.length }, (_, i) => i).sort((a, b) => depth[a] - depth[b]);
+  const world: Float64Array[] = new Array(nodes.length);
+  const { min: lo, max: hi } = VISUAL_MESH_BOX;
+  for (const i of order) {
+    world[i] = parent[i] === -1 ? local[i] : mulAffine(world[parent[i]], local[i]);
+    const W = world[i];
+    if (!W.every(Number.isFinite)) return 'node transform';
+    const mi = (nodes[i] as Json).mesh;
+    if (mi === undefined) continue;
+    for (const ai of meshPos[mi as number]) {
+      const b = posBox.get(ai)!;
+      for (let corner = 0; corner < 8; corner++) {
+        const x = corner & 1 ? b[3] : b[0];
+        const y = corner & 2 ? b[4] : b[1];
+        const z = corner & 4 ? b[5] : b[2];
+        for (let r = 0; r < 3; r++) {
+          const v = W[r] * x + W[4 + r] * y + W[8 + r] * z + W[12 + r];
+          if (!(v >= lo[r] && v <= hi[r])) return 'outside the robot box';
+        }
+      }
+    }
+  }
   const scenes = (g.scenes ?? []) as unknown[];
   for (const sc of scenes) {
     if (!isObj(sc) || !keysOk(sc, KEYS.scene)) return 'scene';

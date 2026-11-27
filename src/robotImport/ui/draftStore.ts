@@ -46,7 +46,11 @@ export async function restoreDraft(key: string): Promise<LiveDraft | null> {
 
 /** keep `d` in memory now and on disk shortly */
 export function keepDraft(d: LiveDraft): void {
+  // a draft that is new here starts with a clean slate: a failure said about an earlier one (or about a
+  // robot since saved) must not show over it. It is said again by its own first failed write.
+  if (!live.has(d.doc.key)) setFailure(null);
   live.set(d.doc.key, d);
+  watchLifecycle();
   const key = d.doc.key;
   const t = timers.get(key);
   if (t) window.clearTimeout(t);
@@ -88,27 +92,93 @@ function setFailure(next: LibraryError | null): void {
   failureListeners.forEach((f) => f(next));
 }
 
-async function persist(key: string): Promise<void> {
+/** the write in flight per draft, so a flush that finds nothing pending can still wait for it */
+const writing = new Map<string, Promise<boolean>>();
+
+function persist(key: string): Promise<boolean> {
+  const p = write(key);
+  writing.set(key, p);
+  void p.finally(() => {
+    if (writing.get(key) === p) writing.delete(key);
+  });
+  return p;
+}
+
+/**
+ * A saved robot that was only OPENED for edit, never touched and never stored: the library holds all of
+ * it, so writing it was a draft of nothing. Every open wrote the whole document (and, at Full detail,
+ * tens of MB of model) 800 ms later, and every later open then "restored unsaved changes" that were
+ * none (merge audit RI-02). Nothing is lost by not writing it, and `flushDraft` counts it as safe to
+ * forget (the way back reads the library record again).
+ */
+function untouched(d: LiveDraft): boolean {
+  return !!d.doc.editId && !d.doc.edited && !d.modelStored;
+}
+
+/** resolves true when the write landed (or there was nothing to write: no model yet, or nothing changed) */
+async function write(key: string): Promise<boolean> {
   const d = live.get(key);
-  if (!d || !d.model) return;
+  if (!d || !d.model || untouched(d)) return true;
   const record = { ...d.doc, updated: Date.now() } as unknown as DraftRecord;
   const r = await putDraft(record, d.modelStored ? undefined : d.model);
   if (r.ok) {
     d.modelStored = true;
     setFailure(null);
-  } else {
-    console.warn('[import] draft not saved', r.message);
-    setFailure(r.error);
+    return true;
   }
+  console.warn('[import] draft not saved', r.message);
+  setFailure(r.error);
+  return false;
 }
 
-/** write now (the editor is leaving) */
-export function flushDraft(key: string): void {
+/**
+ * Write now (the editor is leaving, or the tab is going away). Resolves true when forgetting the
+ * in-memory copy loses nothing: the write landed, or there is nothing pending and the draft is already
+ * on this device. False while a write is failing or the model has not been stored, so the caller keeps
+ * the live copy for a way back in the same session.
+ */
+export function flushDraft(key: string): Promise<boolean> {
   const t = timers.get(key);
-  if (!t) return;
-  window.clearTimeout(t);
-  timers.delete(key);
-  void persist(key);
+  if (t) {
+    window.clearTimeout(t);
+    timers.delete(key);
+    return persist(key);
+  }
+  // a write already begun (the Back button flushed, then the editor unmounted) is the answer
+  const begun = writing.get(key);
+  if (begun) return begun;
+  const d = live.get(key);
+  return Promise.resolve(!d || !d.model || untouched(d) || (d.modelStored && failure === null));
+}
+
+/** let the in-memory copy go (the draft on this device stays): the editor left for good and it is stored */
+export function forgetLiveDraft(key: string): void {
+  live.delete(key);
+}
+
+/**
+ * THE LAST 800 ms OF EDITS (IMPUI-06): a draft is written 800 ms after the last edit, so a tab closed,
+ * a phone tab swiped away or a browser quit within that window lost them. Every draft with a write
+ * pending is written when the page is hidden or goes away. Best effort (an IndexedDB write begun in
+ * `pagehide` usually completes); attached once, by the first draft kept.
+ */
+let watching = false;
+function watchLifecycle(): void {
+  if (watching) return;
+  watching = true;
+  const flushAll = (): void => {
+    for (const k of [...timers.keys()]) void flushDraft(k);
+  };
+  try {
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushAll();
+      });
+    }
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener('pagehide', flushAll);
+  } catch {
+    /* no page to watch (a test, a worker): the debounce alone */
+  }
 }
 
 /** forget a draft everywhere (saved, or discarded) */
@@ -117,5 +187,7 @@ export async function dropDraft(key: string): Promise<void> {
   if (t) window.clearTimeout(t);
   timers.delete(key);
   live.delete(key);
+  // what was said about this draft's writes goes with it (a saved robot has no draft to lose)
+  setFailure(null);
   await deleteDraft(key);
 }

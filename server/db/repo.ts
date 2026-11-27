@@ -269,7 +269,15 @@ export async function startNewSeason(
   name?: string,
   bumpAct = false,
   game?: Game,
-): Promise<{ season: number; act: number; seasonNo: number }> {
+): Promise<{
+  season: number;
+  act: number;
+  seasonNo: number;
+  /** what the award job paid straight after the roll; absent when it failed */
+  rewards?: { periods: number; grants: number };
+  /** the award job's failure, so the console says nobody was paid yet (the next boot retries it) */
+  rewardsError?: string;
+}> {
   const closing = await currentSeasonNumber(fallback, game);
   const next = closing + 1;
   const cur = await q<{ act: number | null }>(
@@ -299,6 +307,10 @@ export async function startNewSeason(
     return Number(cnt[0]?.n ?? 1);
   });
   clearSeasonsCache();
+  // the act the matchmaker reads ratings under is memoised for 60 s per process (`actFor`): drop
+  // it with the seasons list. THIS machine only; the others expire on their own (the runbook
+  // keeps maintenance up for a minute after a roll).
+  clearActCache();
 
   /**
    * THE CLOSED PERIODS ARE PAID OUT NOW, BY THE SAME JOB THE BOOT BACKFILL RUNS
@@ -317,10 +329,12 @@ export async function startNewSeason(
   try {
     const paid = await runRewardJob({ games: [g(game)], fallback });
     if (paid.grants) console.log(`[rewards] roll paid ${paid.grants} grant(s) over ${paid.periods} period(s)`);
+    return { season: next, act, seasonNo, rewards: { periods: paid.periods, grants: paid.grants } };
   } catch (e) {
     console.error('[rewards] the award job after a season roll failed; the next boot retries it:', e);
+    // reported to the console, which used to say "started" whatever happened here
+    return { season: next, act, seasonNo, rewardsError: e instanceof Error ? e.message : String(e) };
   }
-  return { season: next, act, seasonNo };
 }
 
 /** Delete all replays stamped with a given (archived) game×season. The record/match
@@ -3438,10 +3452,17 @@ export interface AdminRecordRow {
   drivetrain: string;
   replayId: string | null;
   createdAt: string;
+  /** a duo run's other driver (null for a solo run or a guest partner); the board entry is the PAIR */
+  partnerId: string | null;
+  partnerHandle: string | null;
 }
 
 /** admin: the moderation view of a leaderboard bucket — same best-per-entry
- * ranking the public board shows, but carrying the record id for deletion. */
+ * ranking the public board shows, but carrying the record id for deletion.
+ * ⚠️ IT MUST READ THE SAME ROWS THE BOARD AND THE AWARDS READ: only full-length runs, and only the
+ * board's physics era, both INSIDE `best` (filtering after it would pick a player's 2D or auto-only
+ * best, drop it, and hide the best that actually ranks). A moderator clears this view before a
+ * season roll pays the same rows out as permanent badges. */
 export async function adminListRecords(opts: {
   mode: 'solo' | 'duo';
   drivetrain?: string;
@@ -3456,18 +3477,27 @@ export async function adminListRecords(opts: {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let physFilter = '';
+  const phys = await boardPhysics(g(opts.game), opts.balanceVersion);
+  if (phys) {
+    params.push(phys);
+    physFilter = `and r.physics = $${params.length}`;
+  }
   params.push(opts.limit ?? 100);
   return q<AdminRecordRow>(
     `with best as (
        select distinct on (${lo}, ${hi})
-         r.id, r.user_id, r.score, r.drivetrain, r.replay_id, r.created_at
+         r.id, r.user_id, r.partner_id, r.score, r.drivetrain, r.replay_id, r.created_at
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
+       where r.balance_version = $1 and r.mode = $2 and r.game = $3 and r.run_length = 'full' ${dtFilter} ${physFilter}
        order by ${lo}, ${hi}, r.score desc, r.created_at asc
      )
      select b.id as "recordId", b.user_id as "userId", p.handle, b.score,
-            b.drivetrain, b.replay_id as "replayId", b.created_at as "createdAt"
-     from best b join profiles p on p.user_id = b.user_id
+            b.drivetrain, b.replay_id as "replayId", b.created_at as "createdAt",
+            b.partner_id as "partnerId", pp.handle as "partnerHandle"
+     from best b
+       join profiles p on p.user_id = b.user_id
+       left join profiles pp on pp.user_id = b.partner_id
      order by b.score desc, b.created_at asc
      limit $${params.length}`,
     params,
@@ -3648,6 +3678,18 @@ export async function deleteAccount(userId: string): Promise<boolean> {
     /* COMPETITION ENTRIES KEEP THEIR ROW, NOT THEIR NAME (0059). An entry's `user_id` is SET NULL
        by the cascade so a played schedule keeps both sides of every match, but the name is the
        person's own handle or team name, and the account is gone. The private note goes too. */
+    /* A MATCH'S `call_note` NAMES WHO DID NOT CONNECT ("@x did not connect", 0059) and is shown to
+       the referee. Cleared on every match the account was in, as captain OR partner, while the
+       entries still point at it: after the delete below the cascade has nulled that link. */
+    await query(
+      `update competition_matches set call_note = null
+        where call_note is not null
+          and id in (select s.match_id
+                       from competition_match_slots s
+                       join competition_entries e on e.id = s.entry_id
+                      where e.user_id = $1 or e.partner_id = $1)`,
+      [userId],
+    );
     await query(
       `update competition_entries set name = 'Deleted account', note = null where user_id = $1`,
       [userId],

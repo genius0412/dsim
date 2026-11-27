@@ -12,7 +12,7 @@ import { polyGrow } from '../../../sim/imported';
 import { frontArrowSpot } from '../../../render/drawImported';
 import { BB_DECK_Z } from '../config';
 import { loader } from './renderElementsGlb';
-import { readStoredMotion, type StoredMotion } from '../../../robotImport/types';
+import { readStoredMotion, ROBOT_MESH_BOX_IN, type StoredMotion } from '../../../robotImport/types';
 import { finishOf, OLD_FINISH } from '../../../robotImport/finish';
 
 /**
@@ -215,10 +215,136 @@ export function floatAttribute(geo: THREE.BufferGeometry, name: string): void {
 }
 
 /**
+ * A geometry's bounding box and sphere from its POSITIONS, as three's `computeBoundingBox` /
+ * `computeBoundingSphere` make them (the box's centre, the farthest vertex from it), straight off the
+ * Float32 array `floatAttribute` leaves. GLTFLoader sizes them from the accessor's `min`/`max`
+ * without reading the data, so a file that lies there is culled, and measured, as something it is not.
+ */
+function exactBounds(geo: THREE.BufferGeometry): void {
+  const a = geo.getAttribute('position');
+  if (!a || !(a.array instanceof Float32Array) || a.itemSize !== 3 || (a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute) {
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+    return;
+  }
+  const p = a.array;
+  const n = a.count * 3;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < n; i += 3) {
+    const x = p[i], y = p[i + 1], z = p[i + 2];
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+    if (z < z0) z0 = z;
+    if (z > z1) z1 = z;
+    // a NaN passes no comparison: poison the box so `importedMeshFits` sees it
+    if (x !== x || y !== y || z !== z) x0 = NaN;
+  }
+  geo.boundingBox = new THREE.Box3(new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y1, z1));
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2;
+  let r2 = 0;
+  for (let i = 0; i < n; i += 3) {
+    const dx = p[i] - cx, dy = p[i + 1] - cy, dz = p[i + 2] - cz;
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d > r2) r2 = d;
+  }
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), Math.sqrt(r2));
+}
+
+/** a geometry's surface area in its own units², off its (Float32, non-interleaved) positions */
+function surfaceArea(geo: THREE.BufferGeometry): number {
+  const a = geo.getAttribute('position');
+  if (!a || !(a.array instanceof Float32Array) || a.itemSize !== 3 || (a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute) return Infinity;
+  const p = a.array;
+  const idx = geo.getIndex()?.array;
+  const tris = idx ? Math.floor(idx.length / 3) : Math.floor(a.count / 3);
+  let sum = 0;
+  for (let t = 0; t < tris; t++) {
+    const i = (idx ? idx[3 * t] : 3 * t) * 3;
+    const j = (idx ? idx[3 * t + 1] : 3 * t + 1) * 3;
+    const k = (idx ? idx[3 * t + 2] : 3 * t + 2) * 3;
+    const ux = p[j] - p[i], uy = p[j + 1] - p[i + 1], uz = p[j + 2] - p[i + 2];
+    const vx = p[k] - p[i], vy = p[k + 1] - p[i + 1], vz = p[k + 2] - p[i + 2];
+    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    sum += Math.sqrt(cx * cx + cy * cy + cz * cz);
+  }
+  return sum / 2;
+}
+
+/**
+ * THE MOST SURFACE A MESH MAY DRAW, m². It is what bounds OVERDRAW: 150,000 copies of one large
+ * triangle inside the box below shade the robot's whole screen area 150,000 times a frame. A mesh's
+ * area is its CAD's own surface, not its tessellation's: measured on the stress robots (every screw
+ * thread, gear tooth and chain link; `scripts/robot-import/stress.ts`) it is 1.49 m² at 0.47 M
+ * triangles, 1.49 at 1.55 M and 1.54 at 3.85 M, so finer detail adds almost none. The fixtures are
+ * 0.85 m², the robot with moving parts 1.05, the stress robot's relay copy 1.25. The vendors' own
+ * STEP files are not in the repo to measure; by count, 11,000 bodies (goBILDA's BIOBUZZ bot at Full)
+ * of 10 cm² each is 11 m². The whole box below (2 m × 2 m × 2.5 m) as plain walls is 28 m². 100 m²
+ * is sixty-odd times the stress robot, nine times that estimate and over three times the walled box.
+ */
+export const IMPORTED_MESH_MAX_AREA_M2 = 100;
+const IN_PER_M = 1 / 0.0254;
+/** float slack on the box, inches: the relay composes a node chain and then the point, this composes the
+ *  matrices first, so a vertex exactly at the limit can differ by a rounding (1e-14) either way */
+const BOX_SLACK_IN = 1e-6;
+
+/**
+ * ⚠️ DOES THIS PARSED MESH FIT? (merge audit 2026-11, M-IMP-TRUST-01, defence in depth). A relayed
+ * mesh is validated by the room and by this viewer (`validateMeshGlb`), but a LAN host or an older
+ * room runs an older check, and a share file a stranger made is drawn from this device's library
+ * without one. So the template itself is measured, in the robot frame (`prepareImportedMesh` put it
+ * there, and `exactBounds` sized each geometry from its data): its box must be finite and inside
+ * `ROBOT_MESH_BOX_IN`, THE SAME BOX THE RELAY'S VALIDATOR ENFORCES (`VISUAL_MESH_BOX`; about ±39 in sideways,
+ * 20 below the floor, 79 up), and its surface no more than `IMPORTED_MESH_MAX_AREA_M2`. One that does not
+ * is not drawn: the robot is its placeholder.
+ *
+ * ⚠️ NEVER STRICTER THAN THE RELAY (RI-01). A box tied to the robot's own hull refused the model of a
+ * robot with a deployed ramp or a tall lift left out of the footprint (`ImportSetup.apart`) that the
+ * room had accepted, stored and served, so every screen drew a placeholder, the owner's drive included.
+ * The editor's Review blocks a model that leaves the box (`meshReach`), so a saved robot fits.
+ *
+ * The area is each geometry's own times its node's largest axis scale squared (three composes every
+ * node from a rotation and a scale, so that is exact for a mesh with no skew under it). `_imp` is the
+ * robot the slot answers for; the box does not depend on it.
+ */
+export function importedMeshFits(root: THREE.Object3D, _imp: ImportedRobot): boolean {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const part = new THREE.Box3();
+  let area = 0;
+  let ok = true;
+  root.traverse((o) => {
+    // what the importer never writes, and what would move or multiply vertices past the box below:
+    // instances (GPU instancing), skinning, morph targets, points, lines and sprites
+    const x = o as THREE.Object3D & { isInstancedMesh?: boolean; isSkinnedMesh?: boolean; isPoints?: boolean; isLine?: boolean; isSprite?: boolean };
+    if (x.isInstancedMesh || x.isSkinnedMesh || x.isPoints || x.isLine || x.isSprite) ok = false;
+    const m = o as THREE.Mesh;
+    if (!ok || !m.isMesh || !m.geometry) return;
+    if (Object.keys(m.geometry.morphAttributes).length) ok = false;
+    if (!m.geometry.boundingBox) exactBounds(m.geometry);
+    part.copy(m.geometry.boundingBox!).applyMatrix4(m.matrixWorld);
+    const s = m.matrixWorld.getMaxScaleOnAxis();
+    const a = surfaceArea(m.geometry) * s * s;
+    if (![part.min.x, part.min.y, part.min.z, part.max.x, part.max.y, part.max.z, a].every(Number.isFinite)) ok = false;
+    box.union(part);
+    area += a;
+  });
+  if (!ok || box.isEmpty()) return false;
+  const { min: lo, max: hi } = ROBOT_MESH_BOX_IN;
+  return (
+    box.min.x >= lo[0] - BOX_SLACK_IN && box.max.x <= hi[0] + BOX_SLACK_IN &&
+    box.min.y >= lo[1] - BOX_SLACK_IN && box.max.y <= hi[1] + BOX_SLACK_IN &&
+    box.min.z >= lo[2] - BOX_SLACK_IN && box.max.z <= hi[2] + BOX_SLACK_IN &&
+    area <= IMPORTED_MESH_MAX_AREA_M2 * IN_PER_M * IN_PER_M
+  );
+}
+
+/**
  * A parsed glTF scene → a TEMPLATE in the robot frame: wrapped in one node carrying
  * `IMPORTED_MESH_TO_ROBOT` (inches, +x front, +z up), positions and normals as plain Float32,
- * normals computed where the file has none, no emissive anywhere, every resource registered as
- * shared.
+ * normals computed where the file has none, bounds sized from the positions, opaque, no emissive
+ * anywhere, every resource registered as shared. Whether it may be drawn is `importedMeshFits`.
  */
 export function prepareImportedMesh(scene: THREE.Object3D): THREE.Group {
   const root = new THREE.Group();
@@ -238,11 +364,18 @@ export function prepareImportedMesh(scene: THREE.Object3D): THREE.Group {
     // the body ids are the editor's (picking parts); here they would only be uploaded and never read
     m.geometry.deleteAttribute('_body');
     if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals();
+    exactBounds(m.geometry);
     SHARED.add(m.geometry);
     for (const mat of materialsOf(m)) {
       // ⚠️ A ROBOT PART NEVER GLOWS — whatever the CAD exporter wrote
       const e = mat as THREE.MeshStandardMaterial;
       if (e.emissive) e.emissive.setRGB(0, 0, 0);
+      // ...and is OPAQUE: the importer writes nothing else, and a blended material writes no depth,
+      // so every layer of it is shaded (the relay refuses one; a share file is not relayed)
+      e.transparent = false;
+      e.opacity = 1;
+      e.depthWrite = true;
+      e.alphaTest = 0;
       // a mesh stored before finishes existed (every part matte plastic) gets its colour's finish
       if (e.isMeshStandardMaterial && Math.abs(e.metalness - OLD_FINISH.metalness) < 1e-3 && Math.abs(e.roughness - OLD_FINISH.roughness) < 1e-3) {
         Object.assign(e, finishOf([e.color.r, e.color.g, e.color.b]));
@@ -271,8 +404,16 @@ async function load(imp: ImportedRobot, k: string, s: MeshSlot): Promise<void> {
         disposeTemplate(gltf.scene);
         return;
       }
-      s.root = prepareImportedMesh(gltf.scene);
-      s.state = 'ready';
+      const root = prepareImportedMesh(gltf.scene);
+      if (importedMeshFits(root, imp)) {
+        s.root = root;
+        s.state = 'ready';
+      } else {
+        // not robot-sized, not finite, or too much surface: the placeholder, never the file
+        console.warn(`[import] the 3D model of ${id} does not fit its robot; drawing its outline`);
+        disposeTemplate(root);
+        s.state = 'none';
+      }
     }
   } catch {
     s.state = 'none';
@@ -408,8 +549,29 @@ export function importedMotionNodes(mesh: THREE.Object3D): ImportedMotionNode[] 
     const a = new THREE.Vector3(...info.axis).applyMatrix4(new THREE.Matrix4().extractRotation(toRobot)).normalize();
     out.push({ node: o, info, axis: new THREE.Vector3(...info.axis), at: { x: p.x, y: p.y }, axisRobot: { x: a.x, y: a.y, z: a.z }, angle: 0, rest: o.position.clone(), perInch });
   });
+  // ⚠️ A SLIDE DOES NOT FOLLOW A PART THAT TURNS WITHOUT END (merge audit RI-06). A follower's travel is its
+  // leader's running value times the ratio, and a wheel, roller, flywheel or `spin` adds to its value for
+  // as long as the robot runs, so a relayed mesh whose slide followed one (the ratio is capped at ±100,
+  // the product was not) carried that part further every frame, across the field and the camera. A turn
+  // is periodic and harmless; a travel is not. Its `follow` is dropped, which leaves the slide to its own
+  // drive and amount. Followed through a chain (a slide following a slide following a spin).
+  const byId = new Map<number, ImportedMotionNode>();
+  for (const m of out) if (m.info.id !== undefined) byId.set(m.info.id, m);
+  const endless = (m: ImportedMotionNode, seen: Set<ImportedMotionNode>): boolean => {
+    if (UNBOUNDED_ROLES.has(m.info.role)) return true;
+    const lead = m.info.follow ? byId.get(m.info.follow.id) : undefined;
+    if (!lead || seen.has(lead)) return false;
+    seen.add(lead);
+    return endless(lead, seen);
+  };
+  // decided for every slide first, then dropped, so the answer does not depend on the order they are stored in
+  const drop = out.filter((m) => m.info.role === 'slide' && m.info.follow && endless(m, new Set([m])));
+  for (const m of drop) delete m.info.follow;
   return out;
 }
+
+/** the roles whose running value only ever grows while the robot runs (a spinning part's angle) */
+const UNBOUNDED_ROLES: ReadonlySet<string> = new Set(['wheel', 'roller', 'flywheel', 'spin']);
 
 /** stored-mesh units per robot inch (`IMPORTED_MESH_TO_ROBOT` scales stored units to inches) */
 const perInch = 1 / new THREE.Vector3().setFromMatrixColumn(new THREE.Matrix4().fromArray(IMPORTED_MESH_TO_ROBOT as number[]), 0).length();

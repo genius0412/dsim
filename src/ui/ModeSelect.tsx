@@ -13,7 +13,7 @@ import { APP_NAME } from '../seasons';
 import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
 
 /**
- * THE PLAY PAGE (owner, 2026-10-18, after MoSim's robot select; the right column rebuilt 2026-11-01).
+ * THE PLAY PAGE (owner, 2026-10-18, after another simulator's robot select; the right column rebuilt 2026-11-01).
  * It sits over the menu stage, which flew the camera down to the player's robot on the way in: the
  * robot is the picture and the picker row is bottom-left.
  *
@@ -60,8 +60,9 @@ export function ModeSelect({
   onChange: (s: GameSettings) => void;
   /** open the builder (Configure ▸ Robot) on the active robot */
   onEditRobot: () => void;
-  /** open the robot importer: a new import, or `id` to edit a library robot */
-  onImport: (id?: string) => void;
+  /** open the robot importer: a new import, or `id` to edit a library robot. ABSENT where the
+   * importer is closed (`importerEnabled`): the Import button is then not drawn. */
+  onImport?: (id?: string) => void;
   multiplayer: boolean;
   signedIn: boolean;
   /** show ranked, records and competitions. Off inside a Discord Activity, which has no account
@@ -105,6 +106,13 @@ export function ModeSelect({
    * under a "Uses your last standard robot" note, which picked a robot the player had not.
    */
   const importedActive = !!settings.spec.imported;
+  /**
+   * ⚠️ A DISABLED TILE SAYS WHY ON SCREEN (`Menu.tsx` "THE DISABLED REASON IS SPOKEN"). A disabled
+   * button takes no focus, so a keyboard or pad player never meets a tooltip; the line under the label
+   * is the only place the reason can be read. Shown only when the import is the cause, i.e. online play
+   * is there (`multiplayer`), since the page already says when it is not.
+   */
+  const importedNote = importedActive && multiplayer ? 'Imported robots can’t play this. Pick a standard robot.' : null;
   /**
    * TWO OF THE ENTRIES BELOW ARE DEAD ENDS INSIDE A DISCORD ACTIVITY, and the embed asks the
    * question itself (`inDiscordActivity()`, host-based, cannot be lost). `activityCode` is the
@@ -237,9 +245,13 @@ export function ModeSelect({
             <button className="ds-btn small" onClick={onEditRobot}>
               Edit
             </button>
-            <button className="ds-btn small" onClick={() => onImport()}>
-              Import
-            </button>
+            {/* ONLY WHERE THE IMPORTER IS OPEN: the caller passes `onImport` only when
+                `importerEnabled()` is true, so on production this button is not drawn at all */}
+            {onImport && (
+              <button className="ds-btn small" onClick={() => onImport()}>
+                Import
+              </button>
+            )}
           </div>
         </div>
         <div className="ds-panel-body">
@@ -266,7 +278,7 @@ export function ModeSelect({
             <div className="ds-play-tiles">
               {entry('Solo practice', onSoloMatch, { primary: true })}
               {entry('Free drive', onFreeDrive)}
-              {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer || importedActive })}
+              {compete && entry('Solo record', onRecordRun, { disabled: !multiplayer || importedActive, note: importedNote })}
             </div>
           </div>
           <div className="ds-play-group">
@@ -284,9 +296,13 @@ export function ModeSelect({
                     <QueueCounts className="tile" />
                   </>,
                   onRanked,
-                  { disabled: !multiplayer || !signedIn || importedActive, note: multiplayer && !signedIn ? 'Sign in to play ranked' : null },
+                  {
+                    disabled: !multiplayer || !signedIn || importedActive,
+                    // the import comes first: signing in would not enable the tile
+                    note: importedNote ?? (multiplayer && !signedIn ? 'Sign in to play ranked' : null),
+                  },
                 )}
-              {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer || importedActive })}
+              {compete && entry('Duo record', onDuoRecord, { disabled: !multiplayer || importedActive, note: importedNote })}
               {entry('New room', onCustomRoom, { disabled: !multiplayer })}
               {/* ⚠️ THE LIST CAN NEVER HOLD THIS ACTIVITY'S OWN MATCH: every activity room is a custom
                   room, reachable only by its code, so the code is printed where the player looks */}

@@ -71,6 +71,16 @@ export const VISUAL_SERVE_ROOM_BYTES = 24 * 1024 * 1024;
 /** concurrent downloads per viewer: a top and a mesh for each of four owners */
 export const VISUAL_STREAMS_PER_CLIENT = 8;
 
+/**
+ * THE MACHINE-WIDE GET GATE (`'imports2'`): `visualGet`s one SOURCE (an account, else an address)
+ * may send in a rolling minute, counted on the socket thread before the request reaches any room
+ * (`VisualGetGate`, `server/importVisuals.ts`). The serve caps above are per ROOM, so one source
+ * holding twelve rooms on a machine could pull 8 MiB a minute from each. 24 is a full 2v2 BIOBUZZ
+ * room's looks four times over (3 owners × 2 kinds per viewer). Over it the request is answered
+ * `busy` and the client asks again later. LAN tab hosts have no socket thread and no gate.
+ */
+export const VISUAL_GETS_PER_SOURCE_MIN = 24;
+
 /** an upload that has gone quiet this long is dropped (and its reservation with it) */
 export const VISUAL_PUT_STALE_MS = 60_000;
 /** how often a room with an upload open sweeps for quiet ones (a timer, not the next upload) */
@@ -150,7 +160,9 @@ export function base64ToBytes(s: unknown): Uint8Array | null {
 
 // ---- refusals -----------------------------------------------------------------------------------
 
-export type VisualRefusal = 'room' | 'id' | 'size' | 'format' | 'budget' | 'seq' | 'dup' | 'none' | 'busy';
+/** `'signin'` (`'imports2'`): a Public room relays only a signed-in owner's look. An older client
+ *  reads an unknown reason as an interrupted upload and stops sending, which is the right outcome. */
+export type VisualRefusal = 'room' | 'id' | 'size' | 'format' | 'budget' | 'seq' | 'dup' | 'none' | 'busy' | 'signin';
 
 /** plain sentences (docs/area/ui.md): what happened, and what the viewer sees instead */
 export const VISUAL_REFUSAL_COPY: Readonly<Record<VisualRefusal, string>> = {
@@ -163,4 +175,5 @@ export const VISUAL_REFUSAL_COPY: Readonly<Record<VisualRefusal, string>> = {
   dup: 'Couldn’t share your robot’s look. Another driver here already uses a robot with the same id. Others see its outline.',
   none: 'That robot’s look isn’t available. It is shown as an outline.',
   busy: 'Couldn’t download that robot’s look right now. It is shown as an outline.',
+  signin: 'Couldn’t share your robot’s look. In a public room only signed-in players can share one. Others see its outline.',
 };

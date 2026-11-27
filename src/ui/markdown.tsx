@@ -19,12 +19,13 @@ const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 const HR_RE = /^\s*([-*_])\1{2,}\s*$/;
 
 /** allow only http(s), mailto, and same-origin relative links; everything else → '#'
- *  ⚠️ `\/(?!\/)` — ONE slash, never two. A bare `/` prefix test also admits a
+ *  ⚠️ `\/(?![\/\\])` — ONE slash, never two, and never `/\`. A bare `/` prefix test also admits a
  *  PROTOCOL-RELATIVE `//evil.example`, which the browser resolves against the page's
- *  own scheme and follows off-site; it reads as a relative path and is not one. */
-function safeHref(href: string): string {
+ *  own scheme and follows off-site; it reads as a relative path and is not one. Browsers
+ *  treat a backslash as a slash in a special-scheme URL, so `/\evil.example` is the same hole. */
+export function safeHref(href: string): string {
   const h = href.trim();
-  return /^(https?:\/\/|mailto:|\/(?!\/))/i.test(h) ? h : '#';
+  return /^(https?:\/\/|mailto:|\/(?![\/\\]))/i.test(h) ? h : '#';
 }
 
 /** inline spans: code, bold, italic, links. Recurses for nested emphasis. */

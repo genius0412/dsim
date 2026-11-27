@@ -324,6 +324,19 @@ export const SIM_VERSION = 7;
  *      stops at the mouth's outer line instead of rolling in under the lintel
  *      (`sim3d/bodies.ts`'s `import3dShapes`). A standard robot steps bit-identically.
  *      2026-11-06, `alpha`.
+ *
+ *  LEDGER NOTES (comment only; the next patch is 15).
+ *  · TWO BRANCHES NUMBER PATCHES, AND `main` CAN BE BEHIND. A port of an alpha patch to `main` must never
+ *    take alpha's `SIM_VERSION` without the merge that brings the rest of alpha's ledger with it, or the
+ *    replays `main` already stamped under that number play under rules they were not recorded with.
+ *    Patch 8 is the worked example (`main` took 3 above under a number alpha had not used).
+ *  · COAST WAS CHANGED THREE TIMES WITHOUT A PATCH (`src/sim/zeroPower.ts`, 2026-11-04: 977a65ae
+ *    14:01, 6ddaaf41 14:28 and 00a8e481 14:37, with `SIM_PATCH` still 13). Coast robots recorded on
+ *    alpha from about 08:47Z to about 19:40Z that day replay under the LATER coast model and read as
+ *    exact. It is contained: `zeroPower` exists only on alpha, so no replay on production's database
+ *    carries coast, and replays do not move between the two databases (`sync:alpha` copies production
+ *    into alpha only). Any later change to `zeroPower.ts`, the coast branch of `updateRobot`,
+ *    `DISABLED_CMD`/`ZERO_CMD` or `settleCoast` takes a `SIM_PATCH` gate (`docs/area/physics.md`).
  */
 export const SIM_PATCH = 14;
 

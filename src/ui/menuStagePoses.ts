@@ -16,7 +16,7 @@ export const STAGE_SEED = 1;
 /** HOME IS A HIGH SHOT (150 in up). It stands because every venue is real geometry: the photographed
  * venues (2026-10-10 to 2026-11-04) smeared from up here, which is one reason they were retired. */
 export const POSES: Record<StageView, ScenePose> = {
-  // high over the audience-LEFT corner, looking diagonally across the field (MoSim's shot)
+  // high over the audience-LEFT corner, looking diagonally across the field (another simulator's shot)
   home: { eye: [-175, -205, 150], target: [10, 20, 0], fovDeg: 38 },
   // low in front of the robot, the rear wall and the stands behind it
   setup: {

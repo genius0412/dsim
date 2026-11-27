@@ -62,6 +62,8 @@ import type {
   Winner,
 } from '../src/competition/types';
 import { TIEBREAKERS } from '../src/competition/types';
+import { entryActionRefusal } from '../server/competitions';
+import { readFileSync } from 'node:fs';
 
 let failures = 0;
 let checks = 0;
@@ -1313,6 +1315,39 @@ check(
     threw2 = true;
   }
   check('comp bracket: duplicate keys, self-feeds and no alliances do not throw', !threw2);
+}
+
+// =============================================================================================
+// staff actions follow the entry's and the competition's state (merge audit COMPS-06)
+// =============================================================================================
+{
+  const live = ['draft', 'published', 'qualification', 'selection', 'playoffs'];
+  const over = ['completed', 'cancelled'];
+  // a finished competition's entries are final
+  for (const act of ['disqualify', 'remove', 'reinstate']) {
+    for (const cs of over) {
+      const said = entryActionRefusal(act, act === 'reinstate' ? 'disqualified' : 'registered', cs);
+      check(`comp staff: ${act} is refused on a ${cs} competition`, typeof said === 'string' && said.includes(cs) && said.startsWith('Couldn’t '), String(said));
+    }
+    for (const cs of live) {
+      const said = entryActionRefusal(act, act === 'reinstate' ? 'disqualified' : 'registered', cs);
+      check(`comp staff: ${act} on a ${act === 'reinstate' ? 'disqualified' : 'registered'} entry is allowed while the competition is ${cs}`, said === null, String(said));
+    }
+  }
+  // reinstate undoes a disqualification or a withdrawal and nothing else
+  check('comp staff: a disqualified entry can be reinstated', entryActionRefusal('reinstate', 'disqualified', 'qualification') === null);
+  check('comp staff: a withdrawn entry can be reinstated (a referee’s correction)', entryActionRefusal('reinstate', 'withdrawn', 'playoffs') === null);
+  for (const es of ['registered', 'waitlist', 'pending']) {
+    check(`comp staff: a ${es} entry cannot be reinstated`, (entryActionRefusal('reinstate', es, 'qualification') ?? '').startsWith('Couldn’t reinstate'));
+  }
+  // the route asks before it acts, and answers 409 with the sentence
+  const route = readFileSync('server/competitions.ts', 'utf8').replace(/\r\n/g, '\n');
+  check('comp staff: the entries route refuses on the state check before the action switch',
+    /const stateRefusal = entryActionRefusal\(act, entry\.status, comp\.status\);\n\s*if \(stateRefusal\) refuse\(409, stateRefusal\);\n\s*switch \(act\) \{/.test(route));
+  // the corrections a referee may need at any time are not touched
+  for (const act of ['note', 'seed', 'rename', 'checkin', 'uncheckin', 'promote', 'demote', 'add']) {
+    check(`comp staff: ${act} is not restricted by the state check`, entryActionRefusal(act, 'registered', 'completed') === null && entryActionRefusal(act, 'withdrawn', 'cancelled') === null);
+  }
 }
 
 console.log(failures === 0 ? `\nALL PASS (${checks} checks)` : `\n${failures} FAILURES (of ${checks} checks)`);

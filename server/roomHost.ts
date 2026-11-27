@@ -86,6 +86,8 @@ export interface RoomHandle {
   /** a worker room answers with the socket key the spectator's `detach` must carry */
   addSpectator(client: Client): number | void;
   hideSpectator(id: string): void;
+  /** a watcher's token verified: its look-serve window moves to its account (`Room.rekeyWatcher`) */
+  rekeyWatcher(id: string, key: number): void;
   detach(id: string, conn?: number, clean?: boolean): void;
   reattach(
     id: string,
@@ -387,11 +389,16 @@ export class RemoteRoom implements RoomHandle {
   importState(): ImportRoomState {
     const ids = [...(this.facts.imports.ids ?? [])];
     for (const u of this.unacked) if (u.iid) ids.push(u.iid);
+    // `Room.allowsImportedRobots`, the host's setting included: `config.settings` follows the
+    // worker's room through `applyFacts`, so it is at most a message behind, and `Room.add` asks again
+    const eligible = this.config.imports && this.config.kind === 'versus' && !this.pending;
+    const hostOff = eligible && this.config.settings?.importedRobots === 'off';
     return {
-      allows: this.config.imports && this.config.kind === 'versus' && !this.pending,
+      allows: eligible && !hostOff,
       hasImport: this.facts.imports.hasImport || this.unacked.some((u) => u.imp),
       capless: this.facts.imports.capless || this.unacked.some((u) => u.nocap),
       ids,
+      ...(hostOff ? { hostOff: true } : {}),
     };
   }
 
@@ -442,6 +449,11 @@ export class RemoteRoom implements RoomHandle {
 
   hideSpectator(id: string): void {
     this.pool.post(this.slot, { k: 'hide', rid: this.rid, id });
+  }
+
+  rekeyWatcher(id: string, key: number): void {
+    // posted after the `spec` op that attached it, so the worker applies them in that order
+    this.pool.post(this.slot, { k: 'rekey', rid: this.rid, id, key: key >>> 0 });
   }
 
   detach(id: string, conn?: number, clean = false): void {

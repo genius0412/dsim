@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { authClient, authEnabled } from '../lib/authClient';
 import { fetchFiledReports } from '../net/api';
 import { filedStatus, filedWhat, noticeView, type FiledReport } from '../notices';
+import { fmtDay } from './fmtDate';
 import { NoticeItem } from './NoticeDialog';
 import { acknowledgeNotices, ensureNotices, useNotices } from './noticesStore';
 
@@ -90,6 +91,3 @@ export function NoticeInbox() {
 /** a status's tone as the house badge tones (`.ds-badge.ok|accent|danger`); "no action" is plain */
 const BADGE_TONE: Record<string, string> = { good: 'ok', bad: 'danger', open: 'accent' };
 
-function fmtDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}

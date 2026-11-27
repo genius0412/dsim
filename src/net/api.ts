@@ -10,7 +10,7 @@ import { appBuild, gameServerHttpUrl, lanActive, lanServerHttpUrl, setLanFromSer
 import { tabHosting } from '../lan/hosting';
 // (not in the smoke import graph: this file reads `./env` at load already)
 import { importerEnabled } from '../seasonVisibility';
-import { ROBOT_IMPORT_CAP, replayHasImported } from './imported';
+import { IMPORTS2_CAP, ROBOT_IMPORT_CAP, replayHasImported } from './imported';
 import { IMPORT_VISUALS_CAP } from './importVisuals';
 import { SETTINGS_KEEPS_IMPORTS, SETTINGS_KEEPS_TUNE, SETTINGS_KEEPS_ZERO_POWER } from './settingsKeep';
 import { getAuthToken } from '../lib/authClient';
@@ -529,6 +529,26 @@ export function roomTakesImportedRobots(): Promise<boolean> {
 export function roomTakesImportVisuals(): Promise<boolean> {
   if (tabHosting()) return Promise.resolve(importerEnabled());
   return roomServerCaps().then((c) => c.includes(IMPORT_VISUALS_CAP));
+}
+
+/**
+ * DOES THE SERVER THIS ROOM IS ON ADVERTISE `cap`? The same three answers as
+ * `roomTakesImportedRobots` (a LAN address answers for itself, the cloud's `serverCaps()` otherwise),
+ * and the same safe direction: a failed read is no. A room THIS TAB hosts runs this build's own `Room`,
+ * which has every capability this build knows, so for it the answer is yes (whether the IMPORTER is
+ * open is `roomTakesImportedRobots`'s question, not this one's).
+ */
+export function roomServerHas(cap: string): Promise<boolean> {
+  return tabHosting() ? Promise.resolve(true) : roomServerCaps().then((c) => c.includes(cap));
+}
+
+/**
+ * MAY THE HOST'S "IMPORTED ROBOTS" SETTING BE OFFERED, AND SENT, TO THE SERVER THIS ROOM IS ON? The
+ * server needs `'robotImport'` (it plays imports) AND `'imports2'` (it knows `RoomSettings.importedRobots`
+ * and `visualDrop`): an older one ignores the patch, and a button that does nothing is worse than none.
+ */
+export function roomTakesImportSettings(): Promise<boolean> {
+  return Promise.all([roomTakesImportedRobots(), roomServerHas(IMPORTS2_CAP)]).then(([a, b]) => a && b);
 }
 
 /**
@@ -1775,8 +1795,19 @@ export async function adminCancelNotice(): Promise<boolean> {
   return res.ok;
 }
 
+/** what a roll answered: the new period, and what the award job paid straight after it. */
+export interface SeasonRollResult {
+  season: number;
+  act?: number;
+  seasonNo?: number;
+  /** badge grants written (and the closed periods they came from); absent from an older server */
+  rewards?: { periods: number; grants: number };
+  /** the award job failed: the roll happened and nobody has been paid yet (the next server boot retries) */
+  rewardsError?: string;
+}
+
 /** archive ONE GAME's live boards and open a fresh period; `newAct` opens a new ACT
- * (else a new season in the current act). Returns the new balance_version.
+ * (else a new season in the current act). Returns the new balance_version and what was paid.
  *
  * ⚠️ `game` IS REQUIRED AND ALWAYS SENT, DECODE included. Periods are per game, and the server
  * reads an absent `game` as DECODE: the console sent none, so a roll meant for BIOBUZZ archived
@@ -1785,7 +1816,7 @@ export async function adminStartSeason(
   game: GameId,
   name?: string,
   opts?: { newAct?: boolean },
-): Promise<number | null> {
+): Promise<SeasonRollResult | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -1797,8 +1828,8 @@ export async function adminStartSeason(
     method: 'POST',
     });
   if (!res.ok) return null;
-  const data = (await res.json().catch(() => ({}))) as { season?: number };
-  return data.season ?? null;
+  const data = (await res.json().catch(() => ({}))) as Partial<SeasonRollResult>;
+  return data.season == null ? null : { ...data, season: data.season };
 }
 
 /** delete the replays of ONE GAME's archived season (omit `season` to purge every one
@@ -1830,6 +1861,9 @@ export interface AdminRecordRow {
   drivetrain: string;
   replayId: string | null;
   createdAt: string;
+  /** a duo entry is the PAIR: the other driver (null for a solo run, a guest, or an older server) */
+  partnerId?: string | null;
+  partnerHandle?: string | null;
 }
 
 /** fetch the moderation view of a record-board bucket (live season) */

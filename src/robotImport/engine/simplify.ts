@@ -148,6 +148,12 @@ function joinUnits(units: readonly Unit[], res: readonly Uint32Array[]): { posit
   return compact(positions, indices, body);
 }
 
+/**
+ * The largest side of the box of every vertex. ⚠️ A NON-FINITE VERTEX IS NOT PART OF IT (merge audit M8):
+ * one ±Infinity made the extent Infinity, so `eps` was Infinity and the weld joined the whole mesh into
+ * one point (a NaN never passed a comparison, so it was already left out). A finite model measures as it
+ * always did; only the two infinities are skipped, and cost two comparisons in a rare branch.
+ */
 function extentOf(parts: readonly MeshPart[]): number {
   const mn = [Infinity, Infinity, Infinity];
   const mx = [-Infinity, -Infinity, -Infinity];
@@ -155,8 +161,9 @@ function extentOf(parts: readonly MeshPart[]): number {
     const a = p.positions;
     for (let i = 0; i < a.length; i += 3) {
       for (let k = 0; k < 3; k++) {
-        if (a[i + k] < mn[k]) mn[k] = a[i + k];
-        if (a[i + k] > mx[k]) mx[k] = a[i + k];
+        const v = a[i + k];
+        if (v < mn[k] && v > -Infinity) mn[k] = v;
+        if (v > mx[k] && v < Infinity) mx[k] = v;
       }
     }
   }

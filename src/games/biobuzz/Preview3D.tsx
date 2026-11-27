@@ -72,6 +72,7 @@ const THUMB_CAPTURE_PX = 192;
  * the light rig changed (silently, and looking plausible), and regenerating it costs one frame.
  */
 const thumbs = new Map<string, string>();
+const THUMB_CACHE_MAX = 100;
 
 function thumbKey(spec: RobotSpec, alliance: Alliance, tier: CardTier): string {
   return `${bbSpecKey(spec)}|${alliance}|${tier ?? getGraphics().tier}`;
@@ -177,7 +178,14 @@ async function drain(): Promise<void> {
       await scene.ready();
       await idle();
       const url = scene.capture(THUMB_CAPTURE_PX, req.spec, req.alliance);
-      if (url) thumbs.set(req.key, url);
+      if (url) {
+        thumbs.set(req.key, url);
+        // bounded: a long session of spec edits would otherwise keep every thumbnail data URL
+        if (thumbs.size > THUMB_CACHE_MAX) {
+          const oldest = thumbs.keys().next().value;
+          if (oldest !== undefined) thumbs.delete(oldest);
+        }
+      }
       req.resolve(url);
       batch.shift();
     }

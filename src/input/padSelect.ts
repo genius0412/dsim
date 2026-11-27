@@ -14,8 +14,9 @@
  * stop gives none and can only ever be the fallback. Rules, in order:
  *   1. the current pad stays while it is in the list;
  *   2. another pad takes over on an event of its own, unless the current one is BUSY (a button it
- *      was seen to press is still down, or it gave an event inside `PAD_BUSY_MS`). A held button
- *      does not protect a pad that has been silent for `PAD_INSIST_MS` from a pad that INSISTS
+ *      was seen to press is still down, an axis of it is held `PAD_WAKE_AXIS` or more from the value
+ *      it RESTED at when first seen, or it gave an event inside `PAD_BUSY_MS`). A held button
+ *      or a held stick does not protect a pad that has been silent for `PAD_INSIST_MS` from a pad that INSISTS
  *      (its last `PAD_INSIST_EVENTS` events all inside `PAD_INSIST_MS`): a latched switch on a
  *      throttle would otherwise keep the player's real pad out for ever;
  *   3. a current pad that leaves the list reads as no pad for `PAD_DROPOUT_GRACE_MS` (a Bluetooth
@@ -66,6 +67,10 @@ interface Slot {
   watched: Set<number>;
   /** each axis where it last counted */
   anchor: number[];
+  /** each axis where it was when the pad was first seen: its rest value (a throttle rests at -1) */
+  rest: number[];
+  /** an axis is `PAD_WAKE_AXIS` or more from its rest value right now: a stick HELD out */
+  deflected: boolean;
   lastEvent: number;
   /** the times of the last `PAD_INSIST_EVENTS` input events, oldest first */
   recent: number[];
@@ -137,12 +142,15 @@ export class PadPicker {
     const id = p.id ?? '';
     let s = this.slots.get(key);
     if (!s || s.id !== id) {
-      s = { id, down: [], watched: new Set(), anchor: [], lastEvent: -Infinity, recent: [], wokeDown: false, standard: p.mapping === 'standard' };
+      s = { id, down: [], watched: new Set(), anchor: [], rest: [], deflected: false, lastEvent: -Infinity, recent: [], wokeDown: false, standard: p.mapping === 'standard' };
       for (let i = 0; i < p.buttons.length; i++) {
         s.down[i] = isDown(p.buttons[i]);
         if (s.down[i]) s.wokeDown = true;
       }
-      for (let i = 0; i < p.axes.length; i++) s.anchor[i] = p.axes[i] ?? 0;
+      for (let i = 0; i < p.axes.length; i++) {
+        s.anchor[i] = p.axes[i] ?? 0;
+        s.rest[i] = s.anchor[i];
+      }
       this.slots.set(key, s);
       return false;
     }
@@ -155,13 +163,18 @@ export class PadPicker {
       else s.watched.delete(i);
       s.down[i] = d;
     }
+    let deflected = false;
     for (let i = 0; i < p.axes.length; i++) {
       const v = p.axes[i] ?? 0;
       if (Math.abs(v - (s.anchor[i] ?? 0)) >= PAD_WAKE_AXIS) {
         event = true;
         s.anchor[i] = v;
       }
+      // a held deflection is a level, not an event, so it needs its own mark: measured from where THIS
+      // pad's axis rested, never from zero (a throttle resting at -1 is not a stick held out)
+      if (Math.abs(v - (s.rest[i] ?? v)) >= PAD_WAKE_AXIS) deflected = true;
     }
+    s.deflected = deflected;
     if (event) {
       s.lastEvent = now;
       s.recent.push(now);
@@ -178,7 +191,7 @@ export class PadPicker {
 
   private busy(key: number, now: number): boolean {
     const s = this.slots.get(key);
-    return !!s && (s.watched.size > 0 || now - s.lastEvent < PAD_BUSY_MS);
+    return !!s && (s.watched.size > 0 || s.deflected || now - s.lastEvent < PAD_BUSY_MS);
   }
 
   /** rule 4's order over the given slots */

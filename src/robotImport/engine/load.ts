@@ -94,7 +94,9 @@ export function checkFiles(input: readonly File[] | FileList): { files: File[]; 
       return { files, file: zip, format: 'zip' };
     }
     const names = files.map((f) => f.name).join(', ');
-    throw new ImportError('unsupported', `Couldn’t read ${names}: DSIM imports GLB, glTF, STEP, STL, OBJ, 3MF and PLY, or a zip holding one. Export the robot in one of those and try again.`);
+    // the engine still reads the mesh formats (stored meshes, share files, the dev harness), but a
+    // player is only ever offered STEP: the editor refuses the rest (`fileSelection.ts`)
+    throw new ImportError('unsupported', `Couldn’t read ${names}: DSIM imports a STEP file (.step or .stp), or a zip holding one. ${EXPORT_HINT}`);
   }
   const { file, format } = pick;
   if (file.size > capFor(format)) throw tooLarge(file.name, file.size, format);
@@ -140,7 +142,7 @@ export async function resolveFiles(input: readonly File[] | FileList, opts: Reso
     if (only?.length === 1 && only[0] === 'step') {
       throw new ImportError('zip', `Couldn’t find a STEP file in ${zip.name}: it holds ${inside}${more}. Drop a zip with a .step or .stp file in it, or the STEP file itself.`);
     }
-    throw new ImportError('zip', `Couldn’t find a robot model in ${zip.name}: it holds ${inside}${more}. Drop a zip with a GLB, glTF, STEP, STL, OBJ, 3MF or PLY in it, or the model itself.`);
+    throw new ImportError('zip', `Couldn’t find a robot model in ${zip.name}: it holds ${inside}${more}. Drop a zip with a .step or .stp file in it, or the STEP file itself.`);
   }
   const { item: entry, format } = pick;
   const name = entryBaseName(entry.name);
@@ -149,6 +151,12 @@ export async function resolveFiles(input: readonly File[] | FileList, opts: Reso
   // a .gltf's buffers and an .obj's materials travel with it
   const companions = format === 'gltf' ? ['bin'] : format === 'obj' ? ['mtl'] : [];
   const extra = entries.filter((e) => e !== entry && companions.includes(extOf(e.name)));
+  // ⚠️ THE CAP IS ON EVERYTHING INFLATED (2026-11-26, IMPORTER-ENGINE-03). Only the model's own size
+  // was checked, and every `.bin` or `.mtl` in the zip is inflated beside it into a buffer of the
+  // size its directory entry states: a zip claiming a 3 GB `.bin` asked for 3 GB. A file dropped
+  // without a zip is the player's own bytes, read as it is, so only a zip's stated sizes are summed.
+  const total = extra.reduce((s, e) => s + e.size, entry.size);
+  if (total > capFor(format)) throw tooLarge(name, total, format);
   return { files: c.files, file: zip, format, zip: { zip, entry, entries: [entry, ...extra], format, name } };
 }
 

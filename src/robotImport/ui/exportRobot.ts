@@ -37,7 +37,10 @@ export async function exportLibraryRobot(id: string): Promise<string | null> {
   if (!got.ok) return got.message;
   const r = got.value;
   try {
-    const bytes = await shareBytes(r.mesh, { game: r.game, spec: r.spec, setup: r.setup, name: r.spec.name || 'Robot' });
+    // a record added from a share file before the setup checks can hold any setup, and exporting it
+    // as it is would hand every recipient a file they refuse: the setup goes out as the editor can open it
+    const { coerceImportSetup } = await import('../shareFile');
+    const bytes = await shareBytes(r.mesh, { game: r.game, spec: r.spec, setup: coerceImportSetup(r.setup), name: r.spec.name || 'Robot' });
     downloadBytes(bytes, shareFileName(r.spec.name));
     return null;
   } catch (e) {

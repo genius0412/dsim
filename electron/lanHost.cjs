@@ -88,7 +88,7 @@ function paths(app) {
  *
  * A packaged app's files live in `app.asar`, which Electron's own `fs` can read but a spawned
  * process cannot — so the bundle is copied to `userData` on first host. It is re-copied when
- * the sizes differ, which is what makes an app UPDATE take effect instead of the host
+ * the sizes differ or the app's bundle is newer (`bundleStale`), which is what makes an app UPDATE take effect instead of the host
  * silently running the previous version's server all season.
  */
 function serverScript(app) {
@@ -99,15 +99,40 @@ function serverScript(app) {
     const src = fs.statSync(bundle);
     let stale = true;
     try {
-      stale = fs.statSync(out).size !== src.size;
+      stale = bundleStale(src, fs.statSync(out));
     } catch {
       /* not copied yet */
     }
-    if (stale) fs.copyFileSync(bundle, out);
+    if (stale) {
+      fs.copyFileSync(bundle, out);
+      // Stamp the copy with the SOURCE's modification time. A plain copy is dated "now", which is
+      // newer than any build, so the next app update's bundle would never look newer than it.
+      try {
+        fs.utimesSync(out, src.atime, src.mtime);
+      } catch {
+        /* best effort: the size check still catches most updates */
+      }
+    }
     return out;
   } catch {
     return bundle; // let the spawn fail with a real error rather than inventing one
   }
+}
+
+/** a modification time within this of the source's is the same file (filesystems round times) */
+const MTIME_SLACK_MS = 1000;
+
+/**
+ * Is the copy in `userData` older than the bundle in the app? Pure (two `{ size, mtimeMs }`),
+ * so the smoke suite can test it. A different SIZE was the only signal, so an update whose
+ * server bundle kept its byte count (a changed constant, a swapped digit) left the host running
+ * the previous version's server for the whole season. Now it is also stale when the app's
+ * bundle is NEWER than the copy.
+ */
+function bundleStale(src, out) {
+  if (!src || !out) return true;
+  if (src.size !== out.size) return true;
+  return src.mtimeMs - out.mtimeMs > MTIME_SLACK_MS;
 }
 
 /**
@@ -186,6 +211,10 @@ function childEnv(client, port) {
   // the server enforces the unofficial / no-database policy on ITSELF from this; see the
   // header of this file and `server/lanMode.ts`
   env.LAN_MODE = '1';
+  // NO `ROBOT_IMPORT` here, on purpose: a LAN server's importer follows the stable channel's rule
+  // (`importsOpen`, server/channel.ts), so the release that opens production opens this host too
+  // and closing production closes it. The environment is an allowlist, so the parent's value never
+  // reaches the child either.
   // serve the client on the same origin as the socket — the whole point; see
   // `server/static.ts` for why a guest cannot reach this box any other way. The server
   // REFUSES TO START on this without LAN_MODE, so the pair is checked from both sides.
@@ -304,4 +333,4 @@ function stop() {
   return stopping;
 }
 
-module.exports = { start, stop, status, lanAddresses, childEnv, DEFAULT_PORT };
+module.exports = { start, stop, status, lanAddresses, childEnv, bundleStale, DEFAULT_PORT };

@@ -134,6 +134,41 @@ export const IMPORT_ID_TAKEN =
 /** the client's own one-liner when it falls back to a standard robot */
 export const IMPORT_FELL_BACK = 'This server can’t play imported robots yet, so you are using your last standard robot.';
 
+/**
+ * THE HOST TURNED IMPORTED ROBOTS OFF (`RoomSettings.importedRobots: 'off'`, server capability
+ * `'imports2'`). Every `error` frame carrying this sentence also carries `code: IMPORT_HOST_OFF_CODE`
+ * (`importErrorFrame`), so a joiner can reconnect with its last standard robot instead of reading
+ * the sentence back. An older client reads the sentence alone.
+ */
+export const IMPORT_HOST_OFF =
+  'Couldn’t use an imported robot here. The host turned imported robots off for this room, so pick one of your saved robots and try again.';
+export const IMPORT_HOST_OFF_CODE = 'imports_off' as const;
+
+/** the host asked for "Not allowed" while a seat (a held one included) holds an imported robot:
+ *  refused and nothing changes, as a seat shrink is. The server never demotes anyone, and a
+ *  server-side swap would desync that player's own prediction. */
+export const IMPORT_OFF_REFUSED =
+  'Couldn’t turn imported robots off. A driver here is using one, so ask them to pick a standard robot first.';
+
+/**
+ * SERVER capability (`SERVER_CAPS`, `/api/presence`): this server understands
+ * `RoomSettings.importedRobots`, `visualDrop`, the Public-room relay rules (only a signed-in owner's
+ * look is relayed; watchers of a Public room never get the mesh) and the `look` report reason.
+ * Advertised whether imports are open or closed here (`advertisedCaps` keeps it). No CLIENT cap
+ * pairs it: every field the server adds is ignored by an older client, and a client sends
+ * `visualDrop` or `importedRobots` only to a server that says this.
+ */
+export const IMPORTS2_CAP = 'imports2';
+
+/**
+ * The `error` frame for an import refusal: the sentence, and the machine-readable code when the
+ * refusal is the host's setting. ONE builder for every door (the join door, `Room.add`,
+ * `vetImportedPatch`, `reattach`, `addSpectator`), so no door can forget the code.
+ */
+export function importErrorFrame(message: string): { t: 'error'; message: string; code?: typeof IMPORT_HOST_OFF_CODE } {
+  return message === IMPORT_HOST_OFF ? { t: 'error', message, code: IMPORT_HOST_OFF_CODE } : { t: 'error', message };
+}
+
 /** the robot id (`ImportedRobot.id`) a spec carries, read off the RAW value, or undefined. The id
  *  rule is `coerceImported`'s (16 lowercase hex), so a raw id that passes here survives coercion. */
 export function importIdOf(spec: unknown): string | undefined {
@@ -164,6 +199,13 @@ export interface ImportRoomState {
    * Absent on a mirror that predates it (then the room's own `add` decides).
    */
   ids?: readonly string[];
+  /**
+   * The room would allow an imported robot but for its HOST's setting (`importedRobots: 'off'`).
+   * Only ever true when `allows` is false for that reason alone, so a refusal can say so
+   * (`IMPORT_HOST_OFF`) rather than read as "this room uses a standard robot". Absent on a mirror
+   * that predates it.
+   */
+  hostOff?: boolean;
 }
 
 /**
@@ -182,7 +224,7 @@ export function importAdmission(
 ): string | null {
   const cap = hasImportCap(who.caps);
   if (who.imported) {
-    if (!state.allows) return IMPORT_REFUSED_HERE;
+    if (!state.allows) return state.hostOff ? IMPORT_HOST_OFF : IMPORT_REFUSED_HERE;
     if (!cap) return IMPORT_ROOM_NEEDS_UPDATE;
     // `capless` is read over every seat and spectator; this client has the cap, so it adds nothing
     if (state.capless) return IMPORT_MEMBER_NEEDS_UPDATE;
