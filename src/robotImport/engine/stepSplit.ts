@@ -22,6 +22,7 @@
  */
 import { ImportError } from './importError';
 import type { StepColourHint, StepLostBody } from './stepConvert';
+import { placementsJoin } from './stepConvert';
 
 /**
  * the bytes one piece may carry of geometry (its skeleton comes on top). 6 MB, was 12 (measured
@@ -46,17 +47,323 @@ export function pieceBytesFor(fileBytes: number, pool: number): number {
 }
 
 /**
- * OCCT WORKERS TO RUN AT ONCE. The read is CPU-bound and splits evenly (measured, 2026-10-03, REV's
- * 125 MB STEP: 3 workers 64.6 s, 6 36.0 s, 8 30.5 s, 13 22.6 s, with the occt time summed over the
- * pieces unchanged), so the limit is memory: each worker keeps its heap's high-water mark, 368 MB
- * at 6 MB pieces. Every core but two (the page and the import worker keep theirs); on a device
- * that says it has 8 GB or more (`deviceMemory` stops at 8), six, or eight with 16 cores, which
- * no 8 GB machine has (2.2 / 2.9 GB of occt heap, against the 1.9 GB of three 12 MB readers before);
- * three on 4 GB, two on 2 GB, else one.
+ * OCCT WORKERS THAT MAY RUN AT ONCE. The read is CPU-bound and splits evenly (measured, 2026-10-03,
+ * REV's 125 MB STEP: 3 workers 64.6 s, 6 36.0 s, 8 30.5 s, 13 22.6 s, with the occt time summed over
+ * the pieces unchanged). Every core but two (the page and the import worker keep theirs); on a device
+ * that says it has 8 GB or more (`deviceMemory` stops at 8), six, or eight with 16 cores; three on
+ * 4 GB, two on 2 GB, else one. That is a CEILING: memory is held to `readerBudget` read by read
+ * (`HeapGate`), because a reader's heap is not a constant: on a real team assembly the faces of a few
+ * large solids took a fresh occt to its 2 GB ceiling however they were packed, where every other piece
+ * stayed under half a GB, and a reader keeps its high-water, so eight readers held over 8 GB
+ * (measured 2026-11-27).
  */
 export function poolSize(pieces: number, cores: number, memGb: number): number {
   const byMem = memGb >= 8 ? (cores >= 16 ? 8 : 6) : memGb >= 4 ? 3 : memGb >= 2 ? 2 : 1;
   return Math.max(1, Math.min(pieces, byMem, cores - 2));
+}
+
+const MB = 1024 * 1024;
+
+/**
+ * The occt heap all readers together may hold, by the memory the device reports: the envelope
+ * `poolSize` was first sized to (six 368 MB readers at 8 GB, three at 4, two at 2), 3.0, 1.1 and
+ * 0.75 GB. Under 2 GB there is one reader and nothing to share.
+ */
+export function readerBudget(memGb: number): number {
+  return memGb >= 8 ? 3072 * MB : memGb >= 4 ? 1126 * MB : memGb >= 2 ? 768 * MB : Infinity;
+}
+
+/** occt-import-js 0.0.23's heap ceiling (`getHeapMax`): no read can hold more */
+export const HEAP_MAX = 2048 * MB;
+/** a fresh occt before it reads anything */
+export const HEAP_BASE = 34 * MB;
+/**
+ * Heap per byte of a piece's STEP text, above `HEAP_BASE`. Measured on real team assemblies at Light
+ * and Full, every piece in a fresh occt (2026-11-27): one piece alone ranges widely (the heap grows in
+ * 20 % steps, and what a face costs is its geometry, not its length), but summed over a file's pieces
+ * 24 is within 15 % (costly solids aside, which `CostlyPricing` prices).
+ */
+export const HEAP_PER_BYTE = 24;
+
+/** what reading `textBytes` of STEP takes a fresh occt's heap to, bytes, at most `HEAP_MAX` */
+export function pieceHeap(textBytes: number): number {
+  return Math.min(HEAP_MAX, HEAP_BASE + HEAP_PER_BYTE * textBytes);
+}
+
+/**
+ * A SOLID THIS BIG IS COSTLY UNTIL IT HAS BEEN MEASURED (`CostlyPricing`): only the faces of solids
+ * over a whole piece were seen to take a fresh occt to its ceiling (real team assemblies, 2026-11-27).
+ */
+export const COSTLY_ROOT_BYTES = STEP_PIECE_BYTES;
+
+/**
+ * THE READERS' MEMORY, READ BY READ. Each reader holds its occt heap's high-water (it never shrinks);
+ * a read RESERVES its estimate on top of what its reader holds, and starts only when the readers'
+ * total stays inside the budget (or when nothing else is reading, so the read always moves). The
+ * first read waiting in line keeps its room: nothing behind it may take what it needs. A reader
+ * whose heap ends over its share (`budget / readers`) is ended, which frees its heap at once.
+ */
+export class HeapGate {
+  private held: number[];
+  private reserved: number[];
+  constructor(
+    readonly budget: number,
+    readers: number,
+  ) {
+    this.held = new Array(readers).fill(0);
+    this.reserved = new Array(readers).fill(0);
+  }
+  get share(): number {
+    return this.budget / this.held.length;
+  }
+  /** the heap the readers hold and reserve now */
+  get used(): number {
+    let s = 0;
+    for (let i = 0; i < this.held.length; i++) s += Math.max(this.held[i], this.reserved[i]);
+    return s;
+  }
+  get reading(): number {
+    return this.reserved.filter((r) => r > 0).length;
+  }
+  /**
+   * What to keep free for the read first in line (`est`): its room, unless it cannot run beside the
+   * biggest read in flight anyway, when keeping room would only idle the other readers until that
+   * one ends (and the reads that took the room end long before it).
+   */
+  keepFor(est: number): number {
+    let top = 0;
+    for (const r of this.reserved) if (r > top) top = r;
+    return top + est <= this.budget ? est : 0;
+  }
+  /** may reader `slot` start a read of `est` now, keeping `keep` free for the read first in line */
+  fits(slot: number, est: number, keep = 0): boolean {
+    if (this.reading === 0) return true;
+    const mine = Math.max(this.held[slot], this.reserved[slot]);
+    return this.used - mine + Math.max(this.held[slot], est) + keep <= this.budget;
+  }
+  start(slot: number, est: number): void {
+    this.reserved[slot] = Math.max(1, est);
+  }
+  /** the read ended with its reader's heap at `heap`; true when the reader should be ended */
+  end(slot: number, heap: number): boolean {
+    this.reserved[slot] = 0;
+    this.held[slot] = heap;
+    if (heap > this.share) {
+      this.held[slot] = 0;
+      return true;
+    }
+    return false;
+  }
+  /** the reader was ended (or started over) */
+  drop(slot: number): void {
+    this.held[slot] = 0;
+  }
+  /**
+   * The next read to start: the first in line (`ests`, the waiting reads' estimates in order) that
+   * fits on an idle reader, a read behind the first leaving it `keepFor` its room. [index in line,
+   * reader], or null when none may start yet.
+   */
+  pick(ests: readonly number[], idle: readonly number[]): [number, number] | null {
+    if (!ests.length) return null;
+    const keep = this.keepFor(ests[0]);
+    for (let k = 0; k < ests.length; k++) for (const s of idle) if (this.fits(s, ests[k], k === 0 ? 0 : keep)) return [k, s];
+    return null;
+  }
+}
+
+/** the costly solid (over `COSTLY_ROOT_BYTES`) whose faces a read of `units` holds, or −1 */
+export function costlyRootOf(plan: Pick<StepPlan, 'units' | 'roots'>, units: readonly number[]): number {
+  for (const u of units) {
+    const unit = plan.units[u];
+    if (unit.face >= 0 && plan.roots[unit.root].bytes > COSTLY_ROOT_BYTES) return unit.root;
+  }
+  return -1;
+}
+
+/**
+ * How many pieces of ONE unmeasured costly solid may be read at once, each at its own `pieceHeap`, on
+ * a device reporting 8 GB or more (`CostlyPricing`): the smallest count at which every real team robot
+ * we measured with such a solid read within 15 % of its time with no gate, simulated over each piece's
+ * measured heap and read time with this scheduler (2026-11-27). One at a time, a solid whose largest
+ * piece was slow but cheap held its siblings until that piece ended. What it can cost: the readers'
+ * heap may pass the budget by up to this many reads at the ceiling, while that one solid is unmeasured.
+ */
+export const COSTLY_TOGETHER = 4;
+
+/**
+ * WHAT A READ OF A COSTLY SOLID'S FACES IS PRICED AT (`HeapGate`'s estimate). Every other read is
+ * `pieceHeap`. A solid's price comes from ITS OWN reads only: it is MEASURED once one of its pieces
+ * has ended and none of its unmeasured pieces is still running, and is then priced at the most its
+ * pieces took. Nothing another solid took ever lowers it (a cheap solid measured first once let a dear
+ * one's six pieces start together). Before it is measured:
+ *
+ * - **8 GB or more** (`strict` false): up to `COSTLY_TOGETHER` of its pieces at their own
+ *   `pieceHeap`; another unmeasured solid waits (Infinity: `HeapGate.fits` admits it only when nothing
+ *   is reading). Two unmeasured solids never overlap, and the readers' heap passes the budget by at
+ *   most `COSTLY_TOGETHER` reads at the ceiling, while one solid is unmeasured.
+ * - **Under 8 GB** (`strict`): one unmeasured costly read at a time, priced at the room the other
+ *   readers leave (`firstCostlyHeap`): the budget plus at most one read at the ceiling.
+ *
+ * A small PROBE read cannot stand in for a measurement: on a real team assembly (2026-11-27) the first
+ * faces of a solid whose pieces reached the ceiling took no more heap than a cheap solid's.
+ */
+export class CostlyPricing {
+  private solid = new Map<number, number>();
+  private took = new Map<number, number>();
+  private running = new Map<number, number>();
+  constructor(
+    readonly strict: boolean,
+    readonly budget: number,
+    private readonly readers: number,
+    /** the heap of the file's biggest ordinary read (`pieceHeap`) */
+    private readonly typical: number,
+  ) {}
+  /** is `root` a costly solid not measured yet? */
+  unknown(root: number): boolean {
+    return root >= 0 && !this.solid.has(root);
+  }
+  price(root: number, textBytes: number): number {
+    const own = pieceHeap(textBytes);
+    if (root < 0) return own;
+    const known = this.solid.get(root);
+    if (known !== undefined) return Math.max(own, known);
+    let all = 0;
+    let other = false;
+    for (const [k, n] of this.running) {
+      all += n;
+      if (n > 0 && k !== root) other = true;
+    }
+    if (this.strict) return firstCostlyHeap(textBytes, this.budget, this.readers, all > 0, this.typical);
+    const mine = this.running.get(root) ?? 0;
+    if (other || mine >= COSTLY_TOGETHER) return Infinity;
+    return own;
+  }
+  /** a read of `root`'s faces started; true when it is unmeasured (pass it back to `end`) */
+  start(root: number): boolean {
+    const u = this.unknown(root);
+    if (u) this.running.set(root, (this.running.get(root) ?? 0) + 1);
+    return u;
+  }
+  /** the read ended with its reader's heap at `heap` (not a number: priced as the ceiling) */
+  end(root: number, heap: number, unknown: boolean): void {
+    if (root < 0) return;
+    const h = Number.isFinite(heap) ? heap : HEAP_MAX;
+    if (!unknown) {
+      this.solid.set(root, Math.max(this.solid.get(root) ?? 0, h));
+      return;
+    }
+    const left = Math.max(0, (this.running.get(root) ?? 1) - 1);
+    this.running.set(root, left);
+    this.took.set(root, Math.max(this.took.get(root) ?? 0, h));
+    if (left === 0) this.solid.set(root, this.took.get(root)!);
+  }
+}
+
+/**
+ * What the FIRST costly read of a file is priced at on a device under 8 GB (`CostlyPricing`, strict):
+ * the room the other readers leave (`budget` less `readers − 1` of the file's biggest ordinary reads,
+ * `typical`), at least its own `pieceHeap`, at most the ceiling, and `HEAP_MAX` for any other while
+ * it runs. A dear solid's first read can pass the budget by at most one read at the ceiling.
+ */
+export function firstCostlyHeap(textBytes: number, budget: number, readers: number, oneRunning: boolean, typical: number): number {
+  if (oneRunning || !Number.isFinite(budget)) return HEAP_MAX;
+  const own = pieceHeap(textBytes);
+  return Math.min(HEAP_MAX, Math.max(own, budget - (readers - 1) * typical));
+}
+
+/** the occt readers of one file: their slots (a reader, or none), the memory gate and the pricing */
+export interface ReaderPool<R> {
+  gate: HeapGate;
+  pricing: CostlyPricing;
+  slots: (R | null)[];
+}
+
+/** what `runRound` needs to start, end and use a reader */
+export interface ReaderIo<R, T> {
+  open(): R;
+  close(reader: R): void;
+  /** read job `i` of the round on `reader` */
+  read(reader: R, i: number): Promise<T>;
+  /** the reader's heap after the read, bytes */
+  heap(read: T): number;
+}
+
+/**
+ * ONE ROUND OF READS ON THE POOL, the STEP worker's own scheduler (pure: `npm test` drives it with
+ * readers of its own). `jobs` give each read's STEP bytes (`text`) and the costly solid it reads
+ * (`costly`, −1 for none). The rules:
+ *
+ * - the costliest first (a costly solid's first piece, then the biggest), so the long reads start
+ *   early; a read starts when `HeapGate.pick` admits it at its `CostlyPricing` price;
+ * - when nothing waiting fits and idle readers hold heap, they are ended (that can be all that keeps
+ *   the first read out);
+ * - a read made again (`first` false), a read of a costly solid's faces, and any read priced over a
+ *   reader's share, gets a FRESH occt: a read near the 2 GB ceiling on a reader that already holds
+ *   heap can come back blank or with holes, so its verdict would depend on which reader it landed on,
+ *   and the same file must give the same model on every run;
+ * - a reader whose heap ends over its share is ended; a heap that is not a number counts as none
+ *   for the gate and as the ceiling for the pricing.
+ *
+ * `settle` is called as each read ends; the promise rejects with the first read that failed.
+ */
+export function runRound<R, T>(pool: ReaderPool<R>, jobs: readonly { text: number; costly: number }[], first: boolean, io: ReaderIo<R, T>, settle: (i: number, read: T) => void): Promise<void> {
+  const { gate, pricing, slots } = pool;
+  return new Promise<void>((resolve, reject) => {
+    const est = (i: number): number => pricing.price(jobs[i].costly, jobs[i].text);
+    // unmeasured costly solids' pieces first (the sooner one ends, the sooner its siblings are priced),
+    // then the dearest, then the biggest
+    const first0 = (i: number): number => (pricing.unknown(jobs[i].costly) ? 0 : 1);
+    const queue = jobs.map((_, i) => i).sort((a, b) => first0(a) - first0(b) || est(b) - est(a) || jobs[b].text - jobs[a].text || a - b);
+    const idle = slots.map((_, s) => s);
+    let running = 0;
+    let failed = false;
+    const drop = (s: number): void => {
+      const r = slots[s];
+      if (r !== null && r !== undefined) io.close(r);
+      slots[s] = null;
+      gate.drop(s);
+    };
+    const pump = (): void => {
+      while (!failed && queue.length && idle.length) {
+        let picked = gate.pick(queue.map(est), idle);
+        if (!picked && idle.some((s) => slots[s] !== null)) {
+          for (const s of idle) drop(s);
+          picked = gate.pick(queue.map(est), idle);
+        }
+        if (!picked) break;
+        const [q, slot] = picked;
+        const i = queue.splice(q, 1)[0];
+        idle.splice(idle.indexOf(slot), 1);
+        running++;
+        const price = est(i);
+        if (slots[slot] !== null && (!first || price > gate.share || jobs[i].costly >= 0)) drop(slot);
+        const reader = (slots[slot] ??= io.open());
+        gate.start(slot, price);
+        const unknown = pricing.start(jobs[i].costly);
+        io.read(reader, i).then(
+          (r) => {
+            running--;
+            const heap = Number(io.heap(r));
+            pricing.end(jobs[i].costly, heap, unknown);
+            if (gate.end(slot, Number.isFinite(heap) ? heap : 0) || !first) {
+              io.close(reader);
+              if (slots[slot] === reader) slots[slot] = null;
+              gate.drop(slot);
+            }
+            idle.push(slot);
+            settle(i, r);
+            pump();
+          },
+          (err) => {
+            failed = true;
+            reject(err);
+          },
+        );
+      }
+      if (!failed && !queue.length && running === 0) resolve();
+    };
+    pump();
+  });
 }
 
 // ---- what a file is, before reading it ------------------------------------------------------
@@ -1306,7 +1613,7 @@ function styleColour(ix: StepIndex, e: number, depth = 0): [number, number, numb
  * and styled colours in list order, solids and shells as two runs; and a read of one split solid's
  * faces and nothing else gives that solid's colour to every mesh occt leaves grey.
  */
-export function colourHint(ix: StepIndex, plan: StepPlan, units: readonly number[]): StepColourHint {
+export function colourHint(ix: StepIndex, plan: StepPlan, units: readonly number[], oneRoot = false): StepColourHint {
   const whole = new Map<number, number>(); // root entity → ordinal
   const split = new Set<number>();
   for (const u of units) {
@@ -1346,7 +1653,8 @@ export function colourHint(ix: StepIndex, plan: StepPlan, units: readonly number
     if (solids.length) runs.push(solids);
     if (shells.length) runs.push(shells);
   }
-  const fill = whole.size === 0 && split.size === 1 ? colour([...split][0]) : null;
+  // `oneRoot` (a read again of one root, whole or some of its faces): its colour for what occt leaves grey
+  const fill = whole.size === 0 && split.size === 1 ? colour([...split][0]) : oneRoot && whole.size === 1 && split.size === 0 ? colour([...whole.values()][0]) : null;
   return { runs, fill };
 }
 
@@ -1359,4 +1667,643 @@ export function wholeHint(bytes: Uint8Array): StepColourHint | null {
   } catch {
     return null;
   }
+}
+
+// ---- a read that came back with faces and no triangles ----------------------------------------
+
+/**
+ * Root `k` of `plan` as FACE units, for a retry: a unit per face is appended to `plan.units`, with the
+ * carriers and styles `pieceText` needs to write a piece of some of them (what `planPieces` does for a
+ * root over half a piece). The face units' ordinals, the same ones when asked again; null when the root
+ * is not a solid or shell of two faces or more.
+ */
+export function faceUnitsOf(ix: StepIndex, plan: StepPlan, k: number): number[] | null {
+  if (plan.carriers.has(k)) {
+    const have: number[] = [];
+    plan.units.forEach((u, i) => {
+      if (u.root === k && u.face >= 0) have.push(i);
+    });
+    return have.length >= 2 ? have : null;
+  }
+  const split = shellsAndFaces(ix, plan.roots[k].entity);
+  if (!split) return null;
+  plan.carriers.set(k, split.carriers);
+  // the styles on the solid, and the presentation listing each (as `planPieces` finds them)
+  const target = plan.roots[k].entity;
+  const items: number[] = [];
+  for (const e of plan.skeleton) {
+    if (!plan.decorationType[ix.type[e]]) continue;
+    for (let r = ix.refStart[e]; r < ix.refStart[e + 1]; r++) {
+      if (!(ix.refFlags[r] & 1) && ix.refs[r] === target) {
+        items.push(e);
+        break;
+      }
+    }
+  }
+  if (items.length) {
+    const want = new Set(items);
+    const holder = new Map<number, number>();
+    for (const e of plan.skeleton) {
+      for (let r = ix.refStart[e]; r < ix.refStart[e + 1]; r++) {
+        const t = ix.refs[r];
+        if (t >= 0 && ix.refFlags[r] & 1 && want.has(t) && !holder.has(t)) holder.set(t, e);
+      }
+    }
+    const styles = items.filter((item) => holder.has(item)).map((item) => ({ item, holder: holder.get(item)! }));
+    if (styles.length) plan.splitStyles.set(k, styles);
+  }
+  const seen = new Int32Array(ix.count);
+  const stack: number[] = [];
+  const out: number[] = [];
+  split.faces.forEach((f, i) => {
+    out.push(plan.units.length);
+    plan.units.push({ root: k, face: f, bytes: closure(ix, f, seen, i + 1, null, stack) });
+  });
+  return out;
+}
+
+/** the STEP text of a read of `units` of `plan` (a piece, or part of one being read again) */
+export function unitsText(ix: StepIndex, plan: StepPlan, units: number[]): Uint8Array {
+  return pieceText(ix, { ...plan, pieces: [units] }, 0);
+}
+
+/**
+ * How a read that came back BLANK (B-rep faces, no triangles) is read again: a read of several roots,
+ * root by root; one root, by its faces in `RETRY_FAN` parts; a run of faces, in `RETRY_FAN` parts.
+ * Empty when there is nothing smaller to read (one face, or a root that does not split into faces):
+ * that is what is left out. `facesOf` gives a root's face units (`faceUnitsOf`).
+ */
+export function retrySplit(units: readonly number[], rootOf: (u: number) => number, isFace: (u: number) => boolean, facesOf: (root: number) => number[] | null): number[][] {
+  const roots: number[] = [];
+  const byRoot = new Map<number, number[]>();
+  for (const u of units) {
+    const r = rootOf(u);
+    let list = byRoot.get(r);
+    if (!list) {
+      byRoot.set(r, (list = []));
+      roots.push(r);
+    }
+    list.push(u);
+  }
+  if (roots.length > 1) return roots.map((r) => byRoot.get(r)!);
+  let list: readonly number[] = units;
+  if (list.length === 1 && !isFace(list[0])) list = facesOf(roots[0]) ?? [];
+  if (list.length < 2) return [];
+  const parts = Math.min(RETRY_FAN, list.length);
+  const out: number[][] = [];
+  for (let i = 0; i < parts; i++) out.push(list.slice(Math.floor((i * list.length) / parts), Math.floor(((i + 1) * list.length) / parts)));
+  return out;
+}
+
+/**
+ * See `retrySplit`. Four: a run of faces with one occt cannot mesh is narrowed to that face in about
+ * as many reads by quarters as by halves, in half the rounds (the pool runs a round's reads side by
+ * side), measured on a real team assembly, 2026-11-27.
+ */
+export const RETRY_FAN = 4;
+
+/**
+ * THE BOUND ON READING AGAIN, per blank piece, so it never runs out on a file with many pieces that
+ * each hold one bad face: a piece may be read again at most `RETRY_READS_PER_PIECE` times, reading at
+ * most `RETRY_GEOMETRY_PER_PIECE` times its own geometry. One bad face among ten solids of fifty faces
+ * takes 22 reads and under twice the piece's geometry; a file that will not mesh at all stops at the
+ * bound, piece by piece (every read again costs the skeleton too, about one MB a second of occt).
+ * What a bound stops is said as THAT (`RetryOutcome.stopped`), never as unreadable.
+ */
+export const RETRY_READS_PER_PIECE = 64;
+export const RETRY_GEOMETRY_PER_PIECE = 4;
+
+/**
+ * One read of the pieces: `units` of the plan, and its place in the whole read. `key` is `[k]` for
+ * piece k and the path of child indices below it for a retry, so the results are put together in key
+ * order, never in the order readers finish in.
+ */
+export interface PieceJob {
+  key: number[];
+  units: number[];
+}
+
+/** what a read gave: `blank` when occt reported B-rep faces and no triangles */
+export interface JobRead<T> {
+  blank: boolean;
+  value: T;
+}
+
+export function compareKeys(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < a.length && i < b.length; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+}
+
+export interface RetryIo<T> {
+  /** what a read of these units costs (bytes of STEP text, the skeleton included): the bar */
+  cost(units: readonly number[]): number;
+  /** their geometry bytes (no skeleton): the bound */
+  geometry(units: readonly number[]): number;
+  /** what a blank read is read again as (`retrySplit`) */
+  split(units: readonly number[]): number[][];
+  /** read every job (`first`: the pieces, else retries), calling `settle` as each one ends */
+  run(jobs: PieceJob[], first: boolean, settle: (i: number, read: JobRead<T>) => void): Promise<void>;
+  /** the bar, 0..1: it never goes back, and every read that keeps triangles moves it */
+  progress?(frac: number): void;
+  /**
+   * The final refusal's own test over what is left out so far (`unreadRefused` on `unreadOf` and
+   * `stoppedOf` bytes): true when it already refuses the file. Default: their geometry over half.
+   */
+  refused?(lost: readonly PieceJob[], stopped: readonly PieceJob[]): boolean;
+  /** blank pieces read again at once while the early refusal is possible (`RETRY_BATCH`): the pool's size */
+  batch?: number;
+}
+
+export interface RetryOutcome<T> {
+  /** the reads that kept triangles, in key order */
+  kept: { key: number[]; value: T }[];
+  /** UNREADABLE: blank reads of one face, or of one solid that does not split into faces, in key order */
+  lost: PieceJob[];
+  /** blank reads NOT read again because their piece reached its bound (may hold readable parts) */
+  stopped: PieceJob[];
+  /**
+   * REFUSED EARLY (`RETRY_BATCH`): what is left out (`lost` and `stopped`) already makes the final
+   * refusal certain, so `unread` blank pieces were not read again. The refusal is the one the whole
+   * read would have reached: it is made by the same test.
+   */
+  early?: { unread: PieceJob[] };
+  /** reads made again, and their geometry bytes */
+  retryReads: number;
+  retryBytes: number;
+}
+
+/**
+ * THE FILE-WIDE RULE ON READING AGAIN, EXACT. While the blank pieces could still hold more than half the
+ * file's geometry, they are read again in key order in batches of `batch` (the pool's size), each
+ * batch to its end; after every round, if what is already left out (unreadable, or stopped by a
+ * piece's bound) makes the final refusal's own test refuse the file, it is refused then, because no
+ * later read can put back what is left out. Once what is left out plus every blank piece not yet
+ * finished can no longer refuse it, the rest is read again all at once. So an early refusal is always
+ * one the whole read would have reached, a mostly good file is read to its end, and a file whose every
+ * face fails stops after about one batch's retries (fifteen such pieces on eight readers: 15 plain reads
+ * and about 500 read again in rounds of up to eight at a time, where reading every piece again was 930).
+ * Results are put together by key, whatever the batch size.
+ */
+export const RETRY_BATCH_DEFAULT = 8;
+
+/**
+ * Read `pieces`, then read every blank one again in smaller units (`io.split`), round by round, until
+ * nothing blank is left to split, within each piece's bound and the file-wide rule (`RETRY_BATCH`). A
+ * round's blank reads are admitted in KEY order once the round has ended, so what is read again, and
+ * what a bound stops, does not depend on which reader finished first.
+ */
+export async function readPieces<T>(pieces: number[][], io: RetryIo<T>, perPiece = { reads: RETRY_READS_PER_PIECE, geometry: RETRY_GEOMETRY_PER_PIECE }): Promise<RetryOutcome<T>> {
+  let round: PieceJob[] = pieces.map((units, k) => ({ key: [k], units }));
+  const kept: { key: number[]; value: T }[] = [];
+  const lost: PieceJob[] = [];
+  const stopped: PieceJob[] = [];
+  const reads = new Map<number, number>();
+  const bytes = new Map<number, number>();
+  let retryBytes = 0;
+  let retryReads = 0;
+  const total = pieces.reduce((s, p) => s + io.geometry(p), 0);
+  const refused =
+    io.refused ??
+    ((l: readonly PieceJob[], s: readonly PieceJob[]): boolean => [...l, ...s].reduce((t, j) => t + io.geometry(j.units), 0) > UNREAD_REFUSE_SHARE * total);
+  // the bar: each read that keeps triangles moves it by its share of what is left to read, so retries
+  // added later stretch what is left instead of pulling the bar back
+  let left = round.reduce((s, j) => s + io.cost(j.units), 0);
+  let shown = 0;
+  const advance = (w: number): void => {
+    if (left > 0) shown += ((1 - shown) * Math.min(w, left)) / left;
+    left = Math.max(0, left - w);
+    if (left === 0) shown = 1;
+    io.progress?.(shown);
+  };
+  // the blank reads of a round, in key order, become the next round (or are left out, or stopped)
+  const expand = (blank: PieceJob[]): PieceJob[] => {
+    const next: PieceJob[] = [];
+    for (const b of blank) {
+      const kids = io.split(b.units);
+      const was = io.cost(b.units);
+      if (!kids.length) {
+        lost.push(b);
+        advance(was);
+        continue;
+      }
+      const k = b.key[0];
+      const geo = kids.reduce((s, u) => s + io.geometry(u), 0);
+      const r = (reads.get(k) ?? 0) + kids.length;
+      const g = (bytes.get(k) ?? 0) + geo;
+      if (r > perPiece.reads || g > perPiece.geometry * io.geometry(pieces[k])) {
+        stopped.push(b);
+        advance(was);
+        continue;
+      }
+      reads.set(k, r);
+      bytes.set(k, g);
+      retryBytes += geo;
+      left += kids.reduce((s, u) => s + io.cost(u), 0) - was;
+      kids.forEach((units, i) => next.push({ key: [...b.key, i], units }));
+    }
+    retryReads += next.length;
+    return next;
+  };
+  const batch = Math.max(1, io.batch ?? RETRY_BATCH_DEFAULT);
+  // the blank pieces not yet read again, in key order, while the early refusal is possible
+  let waiting: PieceJob[] = [];
+  // could what is left out plus every blank piece not finished still refuse the file?
+  const possible = (inFlight: readonly PieceJob[]): boolean => refused(lost, [...stopped, ...inFlight, ...waiting]);
+  const finish = (): RetryOutcome<T> => {
+    kept.sort((a, b) => compareKeys(a.key, b.key));
+    lost.sort((a, b) => compareKeys(a.key, b.key));
+    stopped.sort((a, b) => compareKeys(a.key, b.key));
+    return { kept, lost, stopped, retryReads, retryBytes };
+  };
+  for (let first = true; round.length; first = false) {
+    const jobs = round;
+    const got: (JobRead<T> | undefined)[] = new Array(jobs.length);
+    await io.run(jobs, first, (i, read) => {
+      if (got[i]) return;
+      got[i] = read;
+      if (!read.blank) advance(io.cost(jobs[i].units));
+    });
+    let blank: PieceJob[] = [];
+    jobs.forEach((job, i) => {
+      const read = got[i];
+      if (!read) throw new Error(`piece ${job.key.join('.')} was not read`);
+      if (read.blank) blank.push(job);
+      else kept.push({ key: job.key, value: read.value });
+    });
+    blank.sort((a, b) => compareKeys(a.key, b.key));
+    if (first && blank.length > batch && possible(blank)) {
+      waiting = blank.slice(batch);
+      blank = blank.slice(0, batch);
+    }
+    round = expand(blank);
+    // already certain: no later read can put back what is left out
+    if (waiting.length && refused(lost, stopped)) {
+      const out = finish();
+      return { ...out, early: { unread: waiting } };
+    }
+    if (!round.length && waiting.length) {
+      if (possible([])) {
+        round = expand(waiting.slice(0, batch));
+        waiting = waiting.slice(batch);
+      } else {
+        round = expand(waiting);
+        waiting = [];
+      }
+    }
+  }
+  return finish();
+}
+
+/**
+ * ONE SOLID IS ONE BODY, ALSO AFTER A RE-READ, WHEN THE DATA PROVES IT. A blank solid read again by its
+ * faces comes back in several reads (`retrySplit`'s quarters), each a body per mesh. When EVERY kept
+ * read of the solid knows each mesh's placement (`placementRuns`), and all of them the same number of
+ * placements, and together each placement is one placed solid (`placementsJoin`), they become ONE read
+ * at the place of the first, a body per placement in order, as the solid read whole would have been. If
+ * any of that fails, none is merged: the solid keeps a body per mesh, as it would on HEAD, rather than
+ * mix the two. Reads of no solid pass unchanged. Body ids in place.
+ */
+export function mergeSolidReads<T extends { parts: readonly { body?: Uint32Array }[]; trisIn: number; solid?: number; placementOf?: number[]; boxes?: number[] }>(
+  kept: readonly { key: number[]; value: T }[],
+): { key: number[]; value: T }[] {
+  const groups = new Map<number, { key: number[]; value: T }[]>();
+  for (const k of kept) {
+    const s = k.value.solid;
+    if (s === undefined || s < 0) continue;
+    const g = groups.get(s) ?? [];
+    g.push(k);
+    groups.set(s, g);
+  }
+  const count = (p: number[]): number => (p.length ? Math.max(...p) + 1 : 0);
+  const proved = new Set<number>();
+  for (const [s, g] of groups) {
+    const first = g[0].value.placementOf;
+    if (!first || !g.every((x) => x.value.placementOf && x.value.boxes && count(x.value.placementOf) === count(first))) continue;
+    if (placementsJoin(g.map((x) => ({ placementOf: x.value.placementOf!, boxes: x.value.boxes! })))) proved.add(s);
+  }
+  const out: { key: number[]; value: T }[] = [];
+  for (const k of kept) {
+    const s = k.value.solid;
+    if (s === undefined || s < 0 || !proved.has(s)) {
+      out.push(k);
+      continue;
+    }
+    const g = groups.get(s)!;
+    if (g[0] !== k) continue;
+    for (const x of g) {
+      const map = x.value.placementOf!;
+      for (const p of x.value.parts) if (p.body) for (let i = 0; i < p.body.length; i++) p.body[i] = map[p.body[i]];
+    }
+    out.push({ key: k.key, value: { ...k.value, parts: g.flatMap((x) => x.value.parts), trisIn: g.reduce((t, x) => t + x.value.trisIn, 0) } });
+  }
+  return out;
+}
+
+/**
+ * `StepSolidRead.placements` for a solid read again: the meshes its blank whole read gave (one a placed
+ * solid), trusted only when the assembly counts the same (`placementCount`); else null (a body per
+ * mesh). A count of one for many would merge every placement into one body.
+ */
+export function trustedPlacements(blankMeshes: number, assemblyCount: number | null): number | null {
+  return blankMeshes > 0 && blankMeshes === assemblyCount ? blankMeshes : null;
+}
+
+/**
+ * How many times root `k`'s part is placed in the assembly: the paths from a top product definition
+ * down `NEXT_ASSEMBLY_USAGE_OCCURRENCE`s to the part's definition (found as `partNames` finds its
+ * product). Null when the file does not say. A second source for `StepSolidRead.placements`, which
+ * cannot count one placement for many.
+ */
+export function placementCount(ix: StepIndex, plan: StepPlan, k: number): number | null {
+  const sdr = ix.typeNames.indexOf('SHAPE_DEFINITION_REPRESENTATION');
+  const srr = ix.typeNames.indexOf('SHAPE_REPRESENTATION_RELATIONSHIP');
+  const nauo = ix.typeNames.indexOf('NEXT_ASSEMBLY_USAGE_OCCURRENCE');
+  const direct = (e: number): number[] => {
+    const out: number[] = [];
+    for (let r = ix.refStart[e]; r < ix.refStart[e + 1]; r++) if (ix.refs[r] >= 0 && !(ix.refFlags[r] & 1)) out.push(ix.refs[r]);
+    return out;
+  };
+  const defined = new Map<number, number>();
+  const linked = new Map<number, number[]>();
+  const parents = new Map<number, number[]>();
+  for (const e of plan.skeleton) {
+    const t = ix.type[e];
+    if (t === sdr) {
+      const r = direct(e);
+      if (r.length >= 2) defined.set(r[1], r[0]);
+    } else if (t === srr) {
+      const r = direct(e);
+      if (r.length >= 2) {
+        (linked.get(r[0]) ?? linked.set(r[0], []).get(r[0])!).push(r[1]);
+        (linked.get(r[1]) ?? linked.set(r[1], []).get(r[1])!).push(r[0]);
+      }
+    } else if (t === nauo) {
+      const r = direct(e);
+      if (r.length >= 2) (parents.get(r[1]) ?? parents.set(r[1], []).get(r[1])!).push(r[0]);
+    }
+  }
+  const start = plan.roots[k]?.rep ?? -1;
+  if (start < 0) return null;
+  let pd = -1;
+  const seen = new Set<number>([start]);
+  const queue = [start];
+  while (queue.length && pd < 0 && seen.size < 64) {
+    const rep = queue.shift()!;
+    const pds = defined.get(rep);
+    if (pds !== undefined) {
+      const r = direct(pds);
+      if (r.length) pd = r[0];
+      break;
+    }
+    for (const n of linked.get(rep) ?? []) if (!seen.has(n)) (seen.add(n), queue.push(n));
+  }
+  if (pd < 0) return null;
+  const memo = new Map<number, number>();
+  const paths = (d: number, depth: number): number => {
+    const m = memo.get(d);
+    if (m !== undefined) return m;
+    if (depth > 64) return 0;
+    const ps = parents.get(d);
+    const n = ps && ps.length ? ps.reduce((s, p) => s + paths(p, depth + 1), 0) : 1;
+    memo.set(d, n);
+    return n;
+  };
+  return paths(pd, 0);
+}
+
+/**
+ * Each read numbers its bodies from 0: move every read's past the last one's, in the order given (key
+ * order), so a body id names one solid across the whole file. In place.
+ */
+export function renumberBodies(reads: readonly { parts: readonly { body?: Uint32Array }[] }[]): void {
+  let base = 0;
+  for (const r of reads) {
+    let top = -1;
+    for (const p of r.parts) {
+      if (!p.body) continue;
+      for (let i = 0; i < p.body.length; i++) {
+        const b = p.body[i];
+        if (b > top) top = b;
+        p.body[i] = b + base;
+      }
+    }
+    base += top + 1;
+  }
+}
+
+/** what the left-out reads were: parts left out whole, and faces left out of the others */
+export interface Unread {
+  /** root ordinals left out whole, in order */
+  whole: number[];
+  /** root ordinal → faces left out of it, for roots that kept some */
+  partial: Map<number, number>;
+  /** the geometry bytes left out (a root's at most, however many of its faces) */
+  bytes: number;
+}
+
+export function unreadOf(plan: StepPlan, lost: readonly PieceJob[]): Unread {
+  const whole = new Set<number>();
+  const partial = new Map<number, number>();
+  const faceBytes = new Map<number, number>();
+  for (const job of lost) {
+    for (const u of job.units) {
+      const unit = plan.units[u];
+      if (unit.face < 0) whole.add(unit.root);
+      else {
+        partial.set(unit.root, (partial.get(unit.root) ?? 0) + 1);
+        faceBytes.set(unit.root, (faceBytes.get(unit.root) ?? 0) + unit.bytes);
+      }
+    }
+  }
+  // a root none of whose faces was kept is left out whole
+  for (const [k, n] of partial) {
+    let all = 0;
+    for (const u of plan.units) if (u.root === k && u.face >= 0) all++;
+    if (n >= all) {
+      partial.delete(k);
+      whole.add(k);
+    }
+  }
+  let bytes = 0;
+  for (const k of whole) bytes += plan.roots[k].bytes;
+  for (const k of partial.keys()) bytes += Math.min(plan.roots[k].bytes, faceBytes.get(k) ?? 0);
+  return { whole: [...whole].sort((a, b) => a - b), partial, bytes };
+}
+
+/** the parts a bound stopped (`RetryOutcome.stopped`), and their geometry bytes (a part's at most) */
+export function stoppedOf(plan: StepPlan, stopped: readonly PieceJob[]): Unread {
+  return unreadOf(plan, stopped);
+}
+
+/**
+ * ⚠️ REFUSE ONLY WHEN MOST OF THE ROBOT IS MISSING: when what is left out is more than half of the
+ * geometry the plan read (by bytes of STEP text, which is what a face costs, and which is known
+ * without occt: a blank read's own face count is not, as occt stops counting where its mesher gave
+ * up). Under that the footprint, the size and the wheels are still read from most of the robot and
+ * the note says what is missing; over it they would be measured on what happened to survive.
+ */
+export const UNREAD_REFUSE_SHARE = 0.5;
+
+export function unreadRefused(lostBytes: number, geometryBytes: number): boolean {
+  return geometryBytes > 0 && lostBytes > UNREAD_REFUSE_SHARE * geometryBytes;
+}
+
+/** a part name as the notes show it: at most `NAME_MAX` characters */
+export const NAME_MAX = 40;
+const shortName = (s: string): string => (s.length > NAME_MAX ? `${s.slice(0, NAME_MAX - 1).trimEnd()}…` : s);
+
+/** "A", "A and B", "A, B and C", "A, B, C and 2 more" */
+function nameList(names: readonly string[]): string {
+  const shown = names.slice(0, 3).map(shortName);
+  const more = names.length - shown.length;
+  if (!shown.length) return '';
+  if (more > 0) return `${shown.join(', ')} and ${more.toLocaleString('en-US')} more`;
+  return shown.length === 1 ? shown[0] : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+}
+
+const count = (n: number, one: string, many: string): string => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+
+/**
+ * The Review note for what the reader could not turn into triangles (null when nothing): parts left
+ * out whole, and surfaces of the others, named (up to three) when the file names them. Only what was
+ * read ALONE and came back blank (`RetryOutcome.lost`) is said so.
+ */
+export function unreadNote(whole: number, faces: number, partialParts: number, names: readonly string[]): string | null {
+  if (!whole && !faces) return null;
+  const named = names.length ? ` (${nameList(names)})` : '';
+  const what =
+    whole && faces
+      ? `${count(whole, 'part', 'parts')}, and ${count(faces, 'surface', 'surfaces')} of ${count(partialParts, 'other part', 'other parts')}`
+      : whole
+        ? count(whole, 'part', 'parts')
+        : `${count(faces, 'surface', 'surfaces')} of ${count(partialParts, 'part', 'parts')}`;
+  return `Left out ${what}${named}: the STEP reader couldn’t turn them into triangles. The robot may have holes there.`;
+}
+
+/**
+ * The Review note for parts a bound stopped (`RetryOutcome.stopped`, null when none): they were not
+ * read alone, so they are not called unreadable.
+ */
+export function stoppedNote(whole: number, faces: number, partialParts: number, names: readonly string[]): string | null {
+  if (!whole && !faces) return null;
+  const named = names.length ? ` (${nameList(names)})` : '';
+  return `Left out ${leftOut(whole, faces, partialParts)}${named}: the STEP reader stopped reading them again at its limit for one piece, so they may be whole in the file. The robot may have gaps there.`;
+}
+
+/** "2 parts", "3 surfaces of 2 parts", "1 part, and 3 surfaces of 2 other parts" */
+function leftOut(whole: number, faces: number, partialParts: number): string {
+  return whole && faces
+    ? `${count(whole, 'part', 'parts')}, and ${count(faces, 'surface', 'surfaces')} of ${count(partialParts, 'other part', 'other parts')}`
+    : whole
+      ? count(whole, 'part', 'parts')
+      : `${count(faces, 'surface', 'surfaces')} of ${count(partialParts, 'part', 'parts')}`;
+}
+
+/** the STEP schema a file's header names: 'AP242', 'AP214', 'AP203' or null */
+export function stepSchema(ix: StepIndex): 'AP242' | 'AP214' | 'AP203' | null {
+  const head = latin1(ix.buf.subarray(0, Math.min(ix.dataAt, 1 << 16))).toUpperCase();
+  const m = /FILE_SCHEMA\s*\(\s*\(([^)]*)\)/.exec(head);
+  const s = m ? m[1] : '';
+  if (/AP242|MANAGED_MODEL_BASED/.test(s)) return 'AP242';
+  if (/AP214|AUTOMOTIVE_DESIGN/.test(s)) return 'AP214';
+  if (/AP203|CONFIG_CONTROL_DESIGN/.test(s)) return 'AP203';
+  return null;
+}
+
+/**
+ * What the editor says when most of a file is left out (`unreadRefused`). TRUE, and not `EXPORT_HINT`
+ * ("export it again" is how the file was made): it counts what could not be turned into triangles and
+ * what a bound stopped, names the parts, and the next step is the parts themselves, or the other STEP
+ * schema the editor reads.
+ */
+export function unreadRefusal(name: string, unreadable: number, stopped: number, parts: number, names: readonly string[], schema: 'AP242' | 'AP214' | 'AP203' | null): ImportError {
+  const named = names.length ? ` (${nameList(names)})` : '';
+  const other = schema === 'AP242' ? 'AP214' : schema === 'AP214' || schema === 'AP203' ? 'AP242' : null;
+  const swap = other ? `, or export the robot as STEP ${other} instead of ${schema}` : '';
+  const what = unreadable
+    ? `the STEP reader couldn’t turn ${unreadable.toLocaleString('en-US')} of ${count(parts, 'part', 'parts')} into triangles${stopped ? ` and stopped reading ${count(stopped, 'more', 'more')} again at its limit` : ''}`
+    : `the STEP reader stopped reading ${stopped.toLocaleString('en-US')} of ${count(parts, 'part', 'parts')} again at its limit`;
+  const check = names.length ? 'Check those parts in your CAD tool and repair or simplify them' : 'Check the robot’s parts in your CAD tool and repair or simplify any that are damaged';
+  return new ImportError('step-failed', `Couldn’t read ${name}: ${what}${named}. ${check}${swap}.`);
+}
+
+/**
+ * A STEP string's text: `''` is a quote, `\X\hh` a Latin-1 byte, `\X2\…\X0\` UTF-16, `\S\c` c + 128;
+ * and bytes past ASCII written raw (an exporter writing UTF-8, which the index reads as Latin-1) are
+ * read as UTF-8 when they are valid UTF-8.
+ */
+export function stepString(raw: string): string {
+  let s = raw;
+  if (/[\x80-\xff]/.test(s)) {
+    try {
+      s = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(s, (c) => c.charCodeAt(0) & 0xff));
+    } catch {
+      // not UTF-8: Latin-1 as read
+    }
+  }
+  return s
+    .replace(/''/g, "'")
+    .replace(/\\X2\\((?:[0-9A-Fa-f]{4})*)\\X0\\/g, (_, hex: string) => {
+      let t = '';
+      for (let i = 0; i < hex.length; i += 4) t += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+      return t;
+    })
+    .replace(/\\X\\([0-9A-Fa-f]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\S\\(.)/g, (_, c: string) => String.fromCharCode(c.charCodeAt(0) + 128))
+    .replace(/\\\\/g, '\\');
+}
+
+/**
+ * The part names of roots `ks` (null where the file gives none): root → its shape representation →
+ * (through plain `SHAPE_REPRESENTATION_RELATIONSHIP`s, never an assembly's placed ones) the one a
+ * `SHAPE_DEFINITION_REPRESENTATION` defines → product definition → formation → `PRODUCT`'s name.
+ */
+export function partNames(ix: StepIndex, plan: StepPlan, ks: readonly number[]): (string | null)[] {
+  const sdr = ix.typeNames.indexOf('SHAPE_DEFINITION_REPRESENTATION');
+  const srr = ix.typeNames.indexOf('SHAPE_REPRESENTATION_RELATIONSHIP');
+  const defined = new Map<number, number>(); // rep → product definition shape
+  const linked = new Map<number, number[]>(); // rep → reps it is related to
+  const link = (a: number, b: number): void => {
+    const l = linked.get(a) ?? [];
+    l.push(b);
+    linked.set(a, l);
+  };
+  for (const e of plan.skeleton) {
+    const t = ix.type[e];
+    if (t !== sdr && t !== srr) continue;
+    const refs: number[] = [];
+    for (let r = ix.refStart[e]; r < ix.refStart[e + 1]; r++) if (ix.refs[r] >= 0 && !(ix.refFlags[r] & 1)) refs.push(ix.refs[r]);
+    if (t === sdr && refs.length >= 2) defined.set(refs[1], refs[0]);
+    else if (t === srr && refs.length >= 2) {
+      link(refs[0], refs[1]);
+      link(refs[1], refs[0]);
+    }
+  }
+  const firstRef = (e: number): number => (ix.refStart[e + 1] > ix.refStart[e] ? ix.refs[ix.refStart[e]] : -1);
+  const strings = (e: number): string[] => [...entityText(ix, e).matchAll(/'((?:[^']|'')*)'/g)].map((m) => stepString(m[1]).trim());
+  return ks.map((k) => {
+    const start = plan.roots[k]?.rep ?? -1;
+    if (start < 0) return null;
+    const seen = new Set<number>([start]);
+    const queue = [start];
+    while (queue.length && seen.size < 64) {
+      const rep = queue.shift()!;
+      const pds = defined.get(rep);
+      if (pds !== undefined) {
+        const pd = firstRef(pds);
+        const pdf = pd >= 0 ? firstRef(pd) : -1;
+        const product = pdf >= 0 ? firstRef(pdf) : -1;
+        if (product < 0 || ix.typeNames[ix.type[product]] !== 'PRODUCT') return null;
+        const [id, nm] = strings(product);
+        return nm || id || null;
+      }
+      for (const next of linked.get(rep) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    return null;
+  });
 }

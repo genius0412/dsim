@@ -19,20 +19,20 @@ const ctx = self as unknown as {
 let occt: Promise<Occt> | null = null;
 
 ctx.onmessage = async (e: MessageEvent<OcctRequest>) => {
-  const { id, bytes, params, hint } = e.data;
+  const { id, bytes, params, hint, solid } = e.data;
   try {
     occt ??= occtimportjs({ locateFile: () => wasmUrl });
     const o = await occt;
     ctx.postMessage({ kind: 'reading', id });
     const res = o.ReadStepFile(bytes, params);
-    const out = stepToParts(res, hint);
+    const out = stepToParts(res, hint, solid);
     if (out.kind !== 'done') {
       ctx.postMessage({ kind: 'error', id, message: out.message });
       return;
     }
     const transfer: Transferable[] = [];
     for (const p of out.parts) transfer.push(p.positions.buffer, p.indices.buffer);
-    ctx.postMessage({ kind: 'done', id, parts: out.parts, trisIn: out.trisIn, faces: out.faces }, transfer);
+    ctx.postMessage({ kind: 'done', id, parts: out.parts, trisIn: out.trisIn, faces: out.faces, heap: o.HEAPU8?.length ?? 0, meshes: out.meshes, ...(out.placementOf && out.boxes ? { placementOf: out.placementOf, boxes: out.boxes } : {}) }, transfer);
   } catch (err) {
     ctx.postMessage({ kind: 'error', id, message: err instanceof Error ? err.message : String(err) });
   }

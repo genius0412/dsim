@@ -12,8 +12,8 @@
  * editor on exactly the robot that was saved.
  */
 import type { ImportedBand, ImportedCut, ImportedEdge, ImportedMech, ImportedRobot, Vec2 } from '../types';
-import { applyFolds, deriveMotion, foldKey, planFolds, wheelAxleVotes, type FoldPlan } from './motion';
-import { findFloatingParts } from './floating';
+import { applyFolds, bodyStats, deriveMotion, foldKey, planFolds, wheelAxleVotes, type FoldPlan } from './motion';
+import { findFloatingParts, findGamePieces, hangingParts } from './floating';
 import {
   INCHES_PER_UNIT,
   LENGTH_UNITS,
@@ -637,19 +637,57 @@ export function detectUp(parts: readonly MeshPart[], inchesPerUnit: number, prio
   if (areaSum > 0) for (let k = 0; k < 3; k++) com[k] /= areaSum;
   else for (let k = 0; k < 3; k++) com[k] = (min[k] + max[k]) / 2;
 
-  for (const up of UP_AXES) {
-    const k = up[1] === 'x' ? 0 : up[1] === 'y' ? 1 : 2;
+  const units = standUnits(parts);
+  const axisOf = (up: UpAxis): 0 | 1 | 2 => (up[1] === 'x' ? 0 : up[1] === 'y' ? 1 : 2);
+  // one axis's score: from its lowest point (`stand` null), or from a raised floor (`standFloor`), as if
+  // what hangs below that floor were not there
+  const score = (up: UpAxis, stand: StandFloor | null): number => {
+    const k = axisOf(up);
     const neg = up[0] === '-';
     const u = (k + 1) % 3;
     const v = (k + 2) % 3;
     const footArea = Math.max((max[u] - min[u]) * (max[v] - min[v]), 1e-9);
+    const floorAt = stand ? (neg ? -max[k] : min[k]) + stand.raise : 0;
     const support: number[] = [];
-    for (const p of parts) {
-      const a = p.positions;
-      for (let i = 0; i < a.length; i += 3) {
-        const h = a[i + k] * inchesPerUnit;
-        if (neg ? h >= max[k] - UP_SUPPORT_SLAB_IN : h <= min[k] + UP_SUPPORT_SLAB_IN) {
-          support.push(a[i + u] * inchesPerUnit, a[i + v] * inchesPerUnit);
+    if (stand) {
+      parts.forEach((p, pi) => {
+        const a = p.positions;
+        for (let i = 0; i < a.length / 3; i++) {
+          if (stand.units.has(p.body ? p.body[i] : units.top + pi)) continue;
+          const h = (neg ? -a[3 * i + k] : a[3 * i + k]) * inchesPerUnit;
+          if (h >= floorAt - STAND_EPS_IN && h <= floorAt + UP_SUPPORT_SLAB_IN) support.push(a[3 * i + u] * inchesPerUnit, a[3 * i + v] * inchesPerUnit);
+        }
+      });
+      // the flat downward area at that floor, of what is not below it
+      let f = 0;
+      parts.forEach((p, pi) => {
+        const a = p.positions;
+        const idx = p.indices;
+        const n = idx ? idx.length : a.length / 3;
+        for (let t = 0; t + 2 < n; t += 3) {
+          const i = idx ? idx[t] : t;
+          if (stand.units.has(p.body ? p.body[i] : units.top + pi)) continue;
+          const j = idx ? idx[t + 1] : t + 1;
+          const l = idx ? idx[t + 2] : t + 2;
+          const A: V3 = [a[3 * i] * inchesPerUnit, a[3 * i + 1] * inchesPerUnit, a[3 * i + 2] * inchesPerUnit];
+          const B: V3 = [a[3 * j] * inchesPerUnit, a[3 * j + 1] * inchesPerUnit, a[3 * j + 2] * inchesPerUnit];
+          const C: V3 = [a[3 * l] * inchesPerUnit, a[3 * l + 1] * inchesPerUnit, a[3 * l + 2] * inchesPerUnit];
+          const nrm = crossV([B[0] - A[0], B[1] - A[1], B[2] - A[2]], [C[0] - A[0], C[1] - A[1], C[2] - A[2]]);
+          const len = Math.hypot(nrm[0], nrm[1], nrm[2]);
+          if (len === 0 || Math.abs(nrm[k] / len) < 0.95) continue;
+          const hi = neg ? -Math.min(A[k], B[k], C[k]) : Math.max(A[k], B[k], C[k]);
+          if (hi <= floorAt + UP_FLAT_SLAB_IN) f += len / 2;
+        }
+      });
+      flat[k * 2 + (neg ? 1 : 0)] = f;
+    } else {
+      for (const p of parts) {
+        const a = p.positions;
+        for (let i = 0; i < a.length; i += 3) {
+          const h = a[i + k] * inchesPerUnit;
+          if (neg ? h >= max[k] - UP_SUPPORT_SLAB_IN : h <= min[k] + UP_SUPPORT_SLAB_IN) {
+            support.push(a[i + u] * inchesPerUnit, a[i + v] * inchesPerUnit);
+          }
         }
       }
     }
@@ -666,10 +704,29 @@ export function detectUp(parts: readonly MeshPart[], inchesPerUnit: number, prio
       stab = -0.3;
     }
     const flatFrac = Math.min(0.5, flat[k * 2 + (neg ? 1 : 0)] / footArea);
-    scores[up] = spread + stab - 2 * flatFrac + (up === prior ? UP_PRIOR_BONUS : 0);
-  }
+    return spread + stab - 2 * flatFrac + (up === prior ? UP_PRIOR_BONUS : 0);
+  };
+  for (const up of UP_AXES) scores[up] = score(up, null);
   let best: UpAxis = prior;
   for (const u of UP_AXES) if (scores[u] > scores[best]) best = u;
+  // A SMALL PART BELOW THE WHEELS (`standFloor`, 2026-11-27): THE FALLBACK IS TRIED EXACTLY WHEN THE
+  // ANSWER ABOVE STANDS ON NO WHEELS. When the winner's own lowest point shows wheels (the search
+  // `orientParts` runs there, so its measurement would find them), it is the answer, bit for bit as
+  // before. Otherwise only the FORMAT'S OWN UP AXIS (`prior`: the CAD's +Z for a STEP) may be scored from
+  // a raised floor, and wins if that beats the rest. Never another axis: a robot with no wheels on its
+  // belly pan (the winner, showing none) must not be turned onto another face by four round parts
+  // there (lift pulleys at its top under a camera read as wheels upside down). An axis that is not the
+  // winner showing "wheels" (bolt heads proud of a side plate) decides nothing.
+  const seen = { wheelsAtLowest: false };
+  standFloor(parts, axisOf(best), best[0] === '-', inchesPerUnit, undefined, seen);
+  if (!seen.wheelsAtLowest) {
+    const stand = standFloor(parts, axisOf(prior), prior[0] === '-', inchesPerUnit);
+    if (stand) {
+      scores[prior] = score(prior, stand);
+      best = prior;
+      for (const u of UP_AXES) if (scores[u] > scores[best]) best = u;
+    }
+  }
   let second = -Infinity;
   for (const u of UP_AXES) if (u !== best && scores[u] > second) second = scores[u];
   return { up: best, scores, margin: scores[best] - second };
@@ -796,16 +853,19 @@ const clusterCentre = (c: Cluster): Vec2 => ({ x: (c.minX + c.maxX) / 2, y: (c.m
 
 /**
  * Every vertex at or below `slab` (MODEL frame, so the floor is z = 0), as flat [x, y, …], and
- * every triangle edge with both ends in that set, as pairs of indices into it.
+ * every triangle edge with both ends in that set, as pairs of indices into it. `under`: what hangs
+ * below a raised floor (`standFloor`'s units, numbered over these parts) is left out, and so is
+ * anything under z = 0.
  */
-export function floorContacts(modelParts: readonly MeshPart[], slab: number): { xy: number[]; edges: number[] } {
+export function floorContacts(modelParts: readonly MeshPart[], slab: number, under?: { units: ReadonlySet<number>; top: number }): { xy: number[]; edges: number[] } {
   const xy: number[] = [];
   const edges: number[] = [];
-  for (const p of modelParts) {
+  modelParts.forEach((p, pi) => {
     const a = p.positions;
     const nV = a.length / 3;
     const local = new Int32Array(nV).fill(-1);
     for (let i = 0; i < nV; i++) {
+      if (under && (a[3 * i + 2] < -STAND_EPS_IN || under.units.has(p.body ? p.body[i] : under.top + pi))) continue;
       if (a[3 * i + 2] <= slab) {
         local[i] = xy.length / 2;
         xy.push(a[3 * i], a[3 * i + 1]);
@@ -821,7 +881,7 @@ export function floorContacts(modelParts: readonly MeshPart[], slab: number): { 
         if (s >= 0 && e >= 0) edges.push(s, e);
       }
     }
-  }
+  });
   return { xy, edges };
 }
 
@@ -969,6 +1029,279 @@ export function isRectangle(w: readonly Vec2[], tol = 0): boolean {
     Math.abs(w[0].y - w[2].y) <= tol &&
     Math.abs(w[1].y - w[3].y) <= tol
   );
+}
+
+// ---- where the robot stands --------------------------------------------------------------
+
+/**
+ * A SMALL PART BELOW THE WHEELS DOES NOT DECIDE WHERE THE FLOOR IS (2026-11-27). The floor was the
+ * model's lowest point. A small part hanging below a robot's wheels was its only floor contact with its
+ * true up axis, so `detectUp` turned the robot onto its back (a broad flat face scored better), and with
+ * the up axis set by hand no wheel was found (measured on a real team assembly, 2026-11-27).
+ *
+ * So when the lowest point shows no wheels (the floor-contact search `orientParts` runs: `WHEEL_SLABS_IN`,
+ * then `WHEEL_THIN_SLAB_IN`), the floor is looked for HIGHER: at each body's lowest point up to
+ * `STAND_RAISE_MAX_IN` above it, lowest first, the floor is the first level where
+ *  · FOUR WHEELS stand, by the same contact search over what is not below the level (`WHEEL_SLABS_IN`),
+ *    in a rectangle (`WHEEL_SQUARE_TOL_IN`) at least `STAND_WHEEL_SPAN_IN` along each side,
+ *  · each of the four is WHEEL-LIKE (`wheelLike`): a body standing on the level at it, centred over it
+ *    within `STAND_WHEEL_CENTRE_IN`, `STAND_WHEEL_H_IN` tall and as long as it is tall along one level
+ *    axis (the box test `wheelRadiusAt` in `motion.ts` reads a wheel by): four posts on a top plate
+ *    are contacts in a rectangle too, and turned a robot upside down before this rule, and
+ *  · what lies below it is SMALL: under `STAND_BELOW_AREA_SHARE` of the model's surface area, and its
+ *    plan (the hull of its bodies' boxes) under `STAND_BELOW_PLAN_SHARE` of the model's plan box. The
+ *    search stops at the first level past either, since what lies below only grows.
+ * Levels closer than `STAND_LEVEL_STEP_IN` to the last one looked at are skipped, so at most
+ * `STAND_RAISE_MAX_IN / STAND_LEVEL_STEP_IN` (60) levels are searched, however many bodies there are
+ * (a level skipped is within the contact slab of the one looked at). Measured: 20,000 bodies starting at
+ * as many heights in the 3 in, 0.30 s an axis (Node, 2026-11-27).
+ * Null when the lowest point already shows wheels, or no higher level passes: the old floor.
+ */
+const STAND_RAISE_MAX_IN = 3;
+const STAND_BELOW_AREA_SHARE = 0.05;
+const STAND_BELOW_PLAN_SHARE = 0.1;
+const STAND_WHEEL_SPAN_IN = 4;
+/** a wheel-like body at a contact: centred over it within this, inches (`wheelRadiusAt`'s 0.6) */
+const STAND_WHEEL_CENTRE_IN = 0.6;
+/** ...standing within this of the level (`WHEEL_FLOOR_IN`, `motion.ts`), inches */
+const STAND_WHEEL_FOOT_IN = 0.35;
+/** ...this tall, inches: a 1-in body is the smallest a wheel's tyre, plate or roller ring is */
+const STAND_WHEEL_H_IN: readonly [number, number] = [1, 8];
+/** levels this close to the last one looked at are skipped, inches */
+const STAND_LEVEL_STEP_IN = 0.05;
+/** heights within this of a level are on it, inches */
+const STAND_EPS_IN = 1e-4;
+
+export interface StandFloor {
+  /** how far above the model's lowest point the floor is, inches */
+  raise: number;
+  /** the bodies below the floor (`MeshPart.body`), ascending; a part with no ids has none */
+  bodies: number[];
+  /** what is below the floor, by unit (`standUnits`): a body id, or `top + part index` for a part
+   *  with no ids */
+  units: Set<number>;
+  /** what lies below, as a share of the model's surface area and of its plan box */
+  share: { area: number; plan: number };
+}
+
+/** the unit of every vertex: its body id, else (a part with no ids) `top + part index` */
+function standUnits(parts: readonly MeshPart[]): { top: number; count: number } {
+  let top = 0;
+  for (const p of parts) if (p.body) for (let i = 0; i < p.body.length; i++) if (p.body[i] + 1 > top) top = p.body[i] + 1;
+  return { top, count: top + parts.length };
+}
+
+/** each unit's surface area and the model's (axis-free, so `detectUp` reads it once for six axes) */
+export function standAreas(parts: readonly MeshPart[], scale: number): { unit: Float64Array; total: number } {
+  const { top, count } = standUnits(parts);
+  const unit = new Float64Array(count);
+  let total = 0;
+  parts.forEach((p, pi) => {
+    const a = p.positions;
+    const idx = p.indices;
+    const n = idx ? idx.length : a.length / 3;
+    for (let t = 0; t + 2 < n; t += 3) {
+      const i = idx ? idx[t] : t;
+      const j = idx ? idx[t + 1] : t + 1;
+      const l = idx ? idx[t + 2] : t + 2;
+      const ux = a[3 * j] - a[3 * i];
+      const uy = a[3 * j + 1] - a[3 * i + 1];
+      const uz = a[3 * j + 2] - a[3 * i + 2];
+      const vx = a[3 * l] - a[3 * i];
+      const vy = a[3 * l + 1] - a[3 * i + 1];
+      const vz = a[3 * l + 2] - a[3 * i + 2];
+      const area = (0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) * scale * scale) || 0;
+      unit[p.body ? p.body[i] : top + pi] += area;
+      total += area;
+    }
+  });
+  return { unit, total };
+}
+
+/**
+ * WHERE THE ROBOT STANDS along source axis `k` (0 x, 1 y, 2 z; `neg`: the robot's up is −k), the
+ * positions times `scale` in inches: null for its lowest point, as always, else the raised floor (see
+ * `STAND_RAISE_MAX_IN`).
+ */
+export function standFloor(
+  parts: readonly MeshPart[],
+  k: 0 | 1 | 2,
+  neg: boolean,
+  scale: number,
+  areas = standAreas(parts, scale),
+  /** set to true when the lowest point itself shows wheels (the null that means "stands as drawn") */
+  seen?: { wheelsAtLowest: boolean },
+): StandFloor | null {
+  const sg = neg ? -scale : scale;
+  const ku = (k + 1) % 3;
+  const kv = (k + 2) % 3;
+  const { top, count } = standUnits(parts);
+  const unitMin = new Float64Array(count).fill(Infinity);
+  const unitMax = new Float64Array(count).fill(-Infinity);
+  const boxes = new Float64Array(4 * count);
+  for (let u = 0; u < count; u++) boxes.set([Infinity, -Infinity, Infinity, -Infinity], 4 * u);
+  let hMin = Infinity;
+  let pu0 = Infinity;
+  let pu1 = -Infinity;
+  let pv0 = Infinity;
+  let pv1 = -Infinity;
+  parts.forEach((p, pi) => {
+    const a = p.positions;
+    for (let i = 0; i < a.length / 3; i++) {
+      const h = a[3 * i + k] * sg;
+      const u = a[3 * i + ku] * scale;
+      const v = a[3 * i + kv] * scale;
+      if (!Number.isFinite(h) || !Number.isFinite(u) || !Number.isFinite(v)) continue;
+      const id = p.body ? p.body[i] : top + pi;
+      if (h < hMin) hMin = h;
+      if (h < unitMin[id]) unitMin[id] = h;
+      if (h > unitMax[id]) unitMax[id] = h;
+      const b = 4 * id;
+      if (u < boxes[b]) boxes[b] = u;
+      if (u > boxes[b + 1]) boxes[b + 1] = u;
+      if (v < boxes[b + 2]) boxes[b + 2] = v;
+      if (v > boxes[b + 3]) boxes[b + 3] = v;
+      if (u < pu0) pu0 = u;
+      if (u > pu1) pu1 = u;
+      if (v < pv0) pv0 = v;
+      if (v > pv1) pv1 = v;
+    }
+  });
+  if (!Number.isFinite(hMin)) return null;
+  // the band a level reads: its points up to `reach`, their units, and the mesh edges inside it. The
+  // lowest point's is built first and the higher one only once a level is small enough below to look at
+  const bu: number[] = [];
+  const bv: number[] = [];
+  const bh: number[] = [];
+  const bid: number[] = [];
+  const bEdges: number[] = [];
+  const band = (reach: number): void => {
+    bu.length = bv.length = bh.length = bid.length = bEdges.length = 0;
+    parts.forEach((p, pi) => {
+      const a = p.positions;
+      const nV = a.length / 3;
+      const local = new Int32Array(nV).fill(-1);
+      for (let i = 0; i < nV; i++) {
+        const h = a[3 * i + k] * sg;
+        if (!(h <= reach)) continue;
+        local[i] = bh.length;
+        bu.push(a[3 * i + ku] * scale);
+        bv.push(a[3 * i + kv] * scale);
+        bh.push(h);
+        bid.push(p.body ? p.body[i] : top + pi);
+      }
+      const idx = p.indices;
+      const n = idx ? idx.length : nV;
+      for (let t = 0; t + 2 < n; t += 3) {
+        for (let c = 0; c < 3; c++) {
+          const s = local[idx ? idx[t + c] : t + c];
+          const e = local[idx ? idx[t + ((c + 1) % 3)] : t + ((c + 1) % 3)];
+          if (s >= 0 && e >= 0) bEdges.push(s, e);
+        }
+      }
+    });
+  };
+  const slabTop = WHEEL_SLABS_IN[WHEEL_SLABS_IN.length - 1] + STAND_EPS_IN;
+  band(hMin + slabTop);
+  const contacts = (level: number, slab: number, below: Uint8Array | null): WheelDetection => {
+    const map = new Int32Array(bh.length).fill(-1);
+    const xy: number[] = [];
+    for (let i = 0; i < bh.length; i++) {
+      if (bh[i] < level - STAND_EPS_IN || bh[i] > level + slab || (below && below[bid[i]])) continue;
+      map[i] = xy.length / 2;
+      xy.push(bu[i], bv[i]);
+    }
+    const edges: number[] = [];
+    for (let e = 0; e < bEdges.length; e += 2) {
+      const s = map[bEdges[e]];
+      const t = map[bEdges[e + 1]];
+      if (s >= 0 && t >= 0) edges.push(s, t);
+    }
+    return detectWheels(xy, edges);
+  };
+  // the lowest point first, as `orientParts` searches it: any wheels there and the floor stays
+  let found: Vec2[] | null = null;
+  for (const slab of WHEEL_SLABS_IN) {
+    found = contacts(hMin, slab, null).wheels;
+    if (found) break;
+  }
+  if (!found || !isRectangle(found, WHEEL_SQUARE_TOL_IN)) {
+    const thin = contacts(hMin, WHEEL_THIN_SLAB_IN, null).wheels;
+    if (thin && isRectangle(thin, WHEEL_SQUARE_TOL_IN)) found = thin;
+  }
+  if (found) {
+    if (seen) seen.wheelsAtLowest = true;
+    return null;
+  }
+  // higher levels: each unit's lowest point, lowest first
+  const order: number[] = [];
+  for (let u = 0; u < count; u++) if (unitMin[u] > hMin + STAND_EPS_IN && unitMin[u] <= hMin + STAND_RAISE_MAX_IN) order.push(u);
+  const lowAt0: number[] = [];
+  for (let u = 0; u < count; u++) if (unitMin[u] <= hMin + STAND_EPS_IN) lowAt0.push(u);
+  order.sort((a, b) => unitMin[a] - unitMin[b] || a - b);
+  const plan = Math.max((pu1 - pu0) * (pv1 - pv0), 1e-9);
+  const below = new Uint8Array(count);
+  // the plan hull of what is below, kept as a hull: each level adds its new boxes' corners to it
+  let corners: Vec2[] = [];
+  let belowArea = 0;
+  const sink = (u: number): void => {
+    below[u] = 1;
+    belowArea += areas.unit[u] ?? 0;
+    corners.push({ x: boxes[4 * u], y: boxes[4 * u + 2] }, { x: boxes[4 * u + 1], y: boxes[4 * u + 2] }, { x: boxes[4 * u + 1], y: boxes[4 * u + 3] }, { x: boxes[4 * u], y: boxes[4 * u + 3] });
+  };
+  // a WHEEL stands at contact `w` on `level` (`STAND_WHEEL_*`): a body not below it, its foot on the
+  // level, centred over `w`, a wheel's height, as long as it is tall along one level axis and no wider
+  // than a wheel along the other (`wheelRadiusAt`'s box test, `motion.ts`)
+  const near = (u: number, w: Vec2): boolean =>
+    boxes[4 * u] <= w.x + STAND_WHEEL_CENTRE_IN && boxes[4 * u + 1] >= w.x - STAND_WHEEL_CENTRE_IN && boxes[4 * u + 2] <= w.y + STAND_WHEEL_CENTRE_IN && boxes[4 * u + 3] >= w.y - STAND_WHEEL_CENTRE_IN;
+  const wheelLike = (level: number, w: Vec2): boolean => {
+    // its foot is read from the lowest point at the contact (in the contact slab: the wheel's own ground,
+    // as `wheelGround` reads it), not from the level
+    let g = Infinity;
+    for (let u = 0; u < count; u++) if (!below[u] && unitMin[u] >= level - STAND_EPS_IN && unitMin[u] < g && near(u, w)) g = unitMin[u];
+    for (let u = 0; u < count; u++) {
+      if (below[u] || unitMin[u] < level - STAND_EPS_IN || unitMin[u] > g + STAND_WHEEL_FOOT_IN) continue;
+      const h = unitMax[u] - unitMin[u];
+      if (h < STAND_WHEEL_H_IN[0] || h > STAND_WHEEL_H_IN[1]) continue;
+      const b = 4 * u;
+      if (Math.hypot((boxes[b] + boxes[b + 1]) / 2 - w.x, (boxes[b + 2] + boxes[b + 3]) / 2 - w.y) > STAND_WHEEL_CENTRE_IN) continue;
+      const du = boxes[b + 1] - boxes[b];
+      const dv = boxes[b + 3] - boxes[b + 2];
+      for (const [roll, across] of [[du, dv], [dv, du]]) if (roll >= 0.8 * h && roll <= 1.8 * h && across <= 3.2) return true;
+    }
+    return false;
+  };
+  for (const u of lowAt0) sink(u);
+  let last = -Infinity;
+  let next = 0;
+  let wide = false;
+  for (const u of order) {
+    const level = unitMin[u];
+    // levels are looked at no closer than `STAND_LEVEL_STEP_IN`: at most 60 in the 3 in, however many
+    // bodies start in it (the units in between are sunk at the next level looked at)
+    if (level - last < STAND_LEVEL_STEP_IN) continue;
+    last = level;
+    // every unit wholly lower is below this level
+    while (next < order.length && unitMin[order[next]] < level - STAND_EPS_IN) sink(order[next++]);
+    corners = convexHull(corners);
+    const share = { area: areas.total > 0 ? belowArea / areas.total : 1, plan: corners.length >= 3 ? Math.abs(polygonArea(corners)) / plan : 0 };
+    if (share.area > STAND_BELOW_AREA_SHARE || share.plan > STAND_BELOW_PLAN_SHARE) break;
+    if (!wide) {
+      band(hMin + STAND_RAISE_MAX_IN + slabTop);
+      wide = true;
+    }
+    for (const slab of WHEEL_SLABS_IN) {
+      const w = contacts(level, slab, below).wheels;
+      if (!w || !isRectangle(w, WHEEL_SQUARE_TOL_IN)) continue;
+      const l = wheelLines(w);
+      if (l.front - l.back < STAND_WHEEL_SPAN_IN || l.left - l.right < STAND_WHEEL_SPAN_IN) continue;
+      if (!w.every((p) => wheelLike(level, p))) continue;
+      const units = new Set<number>();
+      for (let x = 0; x < count; x++) if (below[x]) units.add(x);
+      return { raise: level - hMin, bodies: [...units].filter((x) => x < top).sort((a, b) => a - b), units, share };
+    }
+  }
+  return null;
 }
 
 // ---- front -------------------------------------------------------------------------------
@@ -1539,6 +1872,9 @@ export interface MeasureOptions {
   format: ModelFormat;
   /** the unit the file itself declares (STEP via occt, 3MF's `unit`), when it does */
   fileUnit?: LengthUnit | null;
+  /** the games' balls, inches across: a body shaped as one is offered for deleting (`findGamePieces`;
+   *  the editor passes `GAME_BALL_DIAMETERS_IN`, `measureSession.ts`). None: nothing is looked for */
+  pieceDiameters?: readonly number[];
 }
 
 const UNIT_WORD: Record<LengthUnit, string> = { mm: 'millimetres', cm: 'centimetres', m: 'metres', in: 'inches', ft: 'feet' };
@@ -1580,6 +1916,10 @@ export interface OrientedMeasure {
   /** the box of EVERY part, parts left out of the footprint included, MODEL frame; only when parts are
    *  left out (nothing else reaches past the drive base). `finishMeasure` moves it onto the origin. */
   reach?: { min: V3; max: V3 };
+  /** with `floating`: the box of the drive base without every offered body (`rest`, null when nothing
+   *  else is left), and each offered group's box, in `floating`'s order, MODEL frame. The size without any
+   *  subset of the offer is their union, exactly (`finishMeasure`'s oversize sentence) */
+  offerBoxes?: { rest: { min: V3; max: V3 } | null; groups: { min: V3; max: V3 }[]; raised: boolean };
 }
 
 /** what `orientParts` depends on in a setup: equal keys, equal `OrientedMeasure` */
@@ -1803,7 +2143,15 @@ export function orientParts(
     }
   }
   const empty = trisIn === 0 || !Number.isFinite(mn[0]);
-  const t: V3 = empty ? [0, 0, 0] : [-(mn[0] + mx[0]) / 2, -(mn[1] + mx[1]) / 2, -mn[2]];
+  // THE FLOOR IS WHERE THE WHEELS STAND when a small part hangs below them (`standFloor`): the model
+  // frame's z = 0 is there, what hangs below it is offered for deleting (`hanging`), and kept, it
+  // stays below the floor; the robot still stands on its wheels. One shift, so `toModelFrame` rebuilds
+  // these arrays bit for bit. ONE RULE FOR THE FLOOR once the axis is chosen, by `detectUp` or by hand:
+  // a saved robot stores the axis Auto chose and re-opens with it set, so the first read and every
+  // re-open must measure the same (`detectUp` alone decides which axis may WIN from a raised floor).
+  const stand = empty ? null : standFloor(withoutBodies(rotated, setup.apart), 2, false, 1);
+  const floorZ = empty ? 0 : mn[2] + (stand?.raise ?? 0);
+  const t: V3 = empty ? [0, 0, 0] : [-(mn[0] + mx[0]) / 2, -(mn[1] + mx[1]) / 2, -floorZ];
   const sourceToModel = mat4(rows, t);
   const modelParts = rotated.map((p) => {
     const a = p.positions;
@@ -1816,11 +2164,13 @@ export function orientParts(
   });
   const size = empty
     ? { length: 0, width: 0, height: 0 }
-    : { length: mx[0] - mn[0], width: mx[1] - mn[1], height: mx[2] - mn[2] };
+    : { length: mx[0] - mn[0], width: mx[1] - mn[1], height: mx[2] - floorZ };
 
   // everything below measures the DRIVE BASE: the model frame's parts less the ones left out of the
   // footprint (the same arrays, filtered after the shift; `modelParts` itself when none are)
   const base = withoutBodies(modelParts, setup.apart);
+  // what hangs below a raised floor is no floor contact
+  const under = stand ? { units: stand.units, top: standUnits(base).top } : undefined;
 
   // footprint: hull of per-part hulls
   const hullPts: Vec2[] = [];
@@ -1839,13 +2189,13 @@ export function orientParts(
   let wheels: WheelDetection = { wheels: null, contacts: [], note: 'Couldn’t find any wheels touching the floor. Drag the wheel markers onto the wheels.' };
   if (!empty) {
     for (const slab of WHEEL_SLABS_IN) {
-      const { xy, edges } = floorContacts(base, slab);
+      const { xy, edges } = floorContacts(base, slab, under);
       const d = detectWheels(xy, edges);
       if (slab === WHEEL_SLABS_IN[0] || d.wheels) wheels = d;
       if (d.wheels) break;
     }
     if (!wheels.wheels || !isRectangle(wheels.wheels, WHEEL_SQUARE_TOL_IN)) {
-      const { xy, edges } = floorContacts(base, WHEEL_THIN_SLAB_IN);
+      const { xy, edges } = floorContacts(base, WHEEL_THIN_SLAB_IN, under);
       const d = detectWheels(xy, edges);
       if (d.wheels && isRectangle(d.wheels, WHEEL_SQUARE_TOL_IN)) wheels = d;
     }
@@ -1855,7 +2205,33 @@ export function orientParts(
   const front: FrontDetection = empty ? { yaw: 0, confidence: 0, detected: false, cue: null } : detectFront(base, wheels.wheels, size.height, yaw);
   // here, not on the main thread: the bodies' boxes cost a pass over the measured copy (50–90 ms
   // on a 1.3–1.9 M copy, Node)
-  const floating = empty ? [] : findFloatingParts(base);
+  const floats = empty ? [] : findFloatingParts(base);
+  // and what hangs below a raised floor, offered the same way (a body offered as floating is not
+  // offered twice)
+  const offered = new Set(floats.flatMap((g) => g.bodies));
+  const hanging = stand && stand.bodies.length ? hangingParts(base, stand.bodies.filter((b) => !offered.has(b))) : [];
+  for (const g of hanging) for (const b of g.bodies) offered.add(b);
+  // and the games' balls modelled in the robot (`findGamePieces`)
+  const pieces = empty || !opts.pieceDiameters?.length ? [] : findGamePieces(base, opts.pieceDiameters).filter((g) => !g.bodies.some((b) => offered.has(b)));
+  const floating = hanging.length || pieces.length ? [...floats, ...hanging, ...pieces] : floats;
+  // where the offer and the rest of the robot are, so Review can tell when the offer is what makes the
+  // robot too big (one pass over the measured copy, only when something is offered)
+  let offerBoxes: OrientedMeasure['offerBoxes'];
+  if (floating.length) {
+    const st = bodyStats(base);
+    const groups = floating.map((g) => {
+      const min: V3 = [Infinity, Infinity, Infinity];
+      const max: V3 = [-Infinity, -Infinity, -Infinity];
+      for (const b of g.bodies) {
+        for (let k = 0; k < 3; k++) {
+          if (st.min[3 * b + k] < min[k]) min[k] = st.min[3 * b + k];
+          if (st.max[3 * b + k] > max[k]) max[k] = st.max[3 * b + k];
+        }
+      }
+      return { min, max };
+    });
+    offerBoxes = { rest: boxWithout(base, new Set(floating.flatMap((g) => g.bodies))), groups, raised: !!stand };
+  }
   // the box of the whole model, for Review (`meshReach`): the parts left out of the footprint are the
   // only ones that can leave the box a room draws (everything else is inside the drive base's, which
   // the 18 in check bounds), so a model with none pays nothing for it
@@ -1880,9 +2256,49 @@ export function orientParts(
       folds,
       floating,
       ...(all ? { reach: all } : {}),
+      ...(offerBoxes ? { offerBoxes } : {}),
     },
     modelParts,
   };
+}
+
+/**
+ * WHEN THE OFFER MAKES THE ROBOT TOO BIG: the parts still offered for deleting (`floating` less what
+ * `keepFloating` holds, as the Model step offers them), what they are in words, and the size without them,
+ * when that fits the 18 in cube. Exact from `offerBoxes`: the size without any of the offer is the union
+ * of the rest's box and the kept groups' boxes (its height from the floor the robot stands on, which a
+ * raised floor keeps, else from the union's lowest point). Null when nothing is offered or the robot is
+ * too big without it too.
+ */
+function offerCause(o: OrientedMeasure, setup: ImportSetup): { n: number; what: string; size: { length: number; width: number; height: number } } | null {
+  const fl = o.floating ?? [];
+  const boxes = o.offerBoxes;
+  if (!fl.length || !boxes || boxes.groups.length !== fl.length) return null;
+  const keep = new Set(setup.keepFloating ?? []);
+  const pending = fl.map((g) => !g.bodies.every((b) => keep.has(b)));
+  if (!pending.some(Boolean)) return null;
+  const min: V3 = boxes.rest ? [...boxes.rest.min] : [Infinity, Infinity, Infinity];
+  const max: V3 = boxes.rest ? [...boxes.rest.max] : [-Infinity, -Infinity, -Infinity];
+  boxes.groups.forEach((b, i) => {
+    if (pending[i]) return;
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], b.min[k]);
+      max[k] = Math.max(max[k], b.max[k]);
+    }
+  });
+  if (!Number.isFinite(min[0])) return null;
+  const size = { length: max[0] - min[0], width: max[1] - min[1], height: boxes.raised ? max[2] : max[2] - min[2] };
+  if (Math.max(size.length, size.width, size.height) > ROBOT_MAX_IN + HULL_QUANTUM) return null;
+  const count = (f: (g: FloatingGroup) => boolean): number => fl.reduce((s, g, i) => s + (pending[i] && f(g) ? g.bodies.length : 0), 0);
+  const floats = count((g) => g.hangIn === undefined && g.pieceIn === undefined);
+  const hangs = count((g) => g.hangIn !== undefined);
+  const balls = count((g) => g.pieceIn !== undefined);
+  const said = [
+    floats ? `${floats} ${floats === 1 ? 'part that floats' : 'parts that float'} apart from it` : '',
+    hangs ? `${hangs} ${hangs === 1 ? 'part that hangs' : 'parts that hang'} below the floor` : '',
+    balls ? `${balls} ${balls === 1 ? 'part that looks like a game piece' : 'parts that look like game pieces'}` : '',
+  ].filter(Boolean);
+  return { n: floats + hangs + balls, what: said.join(' and '), size };
 }
 
 /**
@@ -1938,11 +2354,24 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
     const over = (['length', 'width', 'height'] as const).filter((d) => size[d] > ROBOT_MAX_IN + HULL_QUANTUM);
     if (over.length) {
       const worst = Math.max(size.length, size.width, size.height);
-      checks.push({
-        code: 'oversize',
-        level: 'block',
-        message: `The robot is ${fmtIn(size.length)} × ${fmtIn(size.width)} × ${fmtIn(size.height)} in; ${over.join(' and ')} ${over.length === 1 ? 'is' : 'are'} over 18 in. Check the units. A ramp or arm the file shows deployed can be marked under Mechanisms, Moving parts, and it is measured folded.`,
-      });
+      const offered = offerCause(o, setup);
+      checks.push(
+        offered
+          ? // THE OFFER IS WHY (2026-11-27): parts the Model step offers for deleting (floating, hanging
+            // below the floor, game pieces) and the player has not answered make it too big, and without
+            // them it fits. The units are right; the sentence names the parts and sends the player there
+            {
+              code: 'oversize',
+              level: 'block',
+              focus: 'ri-parts',
+              message: `The robot is ${fmtIn(size.length)} × ${fmtIn(size.width)} × ${fmtIn(size.height)} in with ${offered.what}, and ${fmtIn(offered.size.length)} × ${fmtIn(offered.size.width)} × ${fmtIn(offered.size.height)} in without ${offered.n === 1 ? 'it' : 'them'}. Delete ${offered.n === 1 ? 'it' : 'them'} under Parts in the Model step.`,
+            }
+          : {
+              code: 'oversize',
+              level: 'block',
+              message: `The robot is ${fmtIn(size.length)} × ${fmtIn(size.width)} × ${fmtIn(size.height)} in; ${over.join(' and ')} ${over.length === 1 ? 'is' : 'are'} over 18 in. Check the units. A ramp or arm the file shows deployed can be marked under Mechanisms, Moving parts, and it is measured folded.`,
+            },
+      );
       // a units hint when a different unit would make it robot-sized
       const alt = detectUnits(worst / INCHES_PER_UNIT[units], null).unit;
       if (alt !== units && (worst > 40 || worst < 4)) {
@@ -1971,7 +2400,11 @@ export function finishMeasure(o: OrientedMeasure, setup: ImportSetup): ImportMea
         level: 'warn',
         message:
           few <= 1
-            ? 'Only one part of the robot touches the floor. Check the up axis, or drag the wheel markers onto the wheels.'
+            ? // what helps: a small part below the wheels is found and offered when four wheels stand
+              // above it (`standFloor`); past that (a bigger part, no four wheels) it is still the
+              // floor, and deleting it helps as much as the up axis does. A warning, not a block: a
+              // robot right as it is can stand on one long part (a CAD with no wheels, on a belly pan)
+              'Only one part of the robot touches the floor. If a part hangs below the wheels, delete it under Parts. If the robot lies on its side or back, set the up axis. Or drag the wheel markers onto the wheels.'
             : guess
               ? 'Couldn’t find any wheels touching the floor, so they stand at the corners of the drive base. Drag the wheel markers onto the wheels.'
               : wheels.note,

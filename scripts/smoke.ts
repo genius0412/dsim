@@ -40221,7 +40221,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
         JSON.stringify({ spool: st2.map((g) => g.bodies.map((b) => b < prisms.length ? prisms[b].name : 'spool_shaft')), side: sideOn.map((g) => g.bodies.map((b) => prisms[b].name)) }),
       );
     }
-    check('the finders’ version moved (a stowed ramp apart from the intake arm), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 10);
+    check('the finders’ version moved (wheels read from their own level, a wheel row only where a ring stands), so a draft found by the old ones is looked for again', motion.MOTION_FINDER === 11);
   }
 
   // ---- a spinning part turns about its own shaft, not the middle of its box (`onOwnShaft`; owner,
@@ -40680,7 +40680,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   );
   {
     const { restoreDoc, applyEdit, undoDoc } = await import('../src/robotImport/ui/editorHistory');
-    const at = (triBudget: number, removed?: number[]): typeof doc => ({ ...doc, setup: { ...doc.setup, triBudget, removed } }) as typeof doc;
+    const at = (triBudget: number, removed?: number[]): typeof doc => ({ ...doc, readId: triBudget === 0 ? 1 : 2, setup: { ...doc.setup, triBudget, removed } }) as typeof doc;
     // a deletion is one undo step, and its undo brings the bodies back
     const r = applyEdit(at(0, undefined), undefined, (d) => em.deleteBodies(d, [cubeId], true), { label: 'delete 1 part' }, 1);
     const u = r ? undoDoc(r.doc, r.history, 2) : null;
@@ -40968,7 +40968,7 @@ const IMP_REVIEW_HULLS: Record<string, ImportedRobot> = {
   ];
   const missing = autoSites.filter((re) => !re.test(ed)).map(String);
   check('import UI undo: the editor’s own edits (placements defaulting in, the finders, a step change, a Detail change) go through update as auto', missing.length === 0, missing.join(' | '));
-  check('import UI undo: a new file starts the history empty; a Detail re-read keeps it', /history: opts\.keepHistory \? draftRef\.current\?\.history : undefined/.test(ed) && /readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)/.test(ed));
+  check('import UI undo: a new file starts the history empty; a Detail re-read keeps it', /history: opts\.keepHistory \? foldAcrossRead\(draftRef\.current\?\.history, baseDoc\) : undefined/.test(ed) && /readModel\(files, \{ setup, keepHistory: true \}\)/.test(ed));
   check('import UI undo: the shortcut leaves text fields alone', /if \(!dir \|\| ownsUndo\(e\.target/.test(ed));
   const ds = readFileSync('src/robotImport/ui/draftStore.ts', 'utf8');
   check('import UI undo: the draft written to disk is the document alone, so the history is never persisted', /const record = \{ \.\.\.d\.doc, updated: Date\.now\(\) \}/.test(ds) && /putDraft\(record, /.test(ds));
@@ -43100,8 +43100,9 @@ function fxImportFixed(): RobotSpec {
   check(
     'detail: the Model step offers Full and Light; a new choice re-reads the files in memory with the whole setup, puts the placements back and keeps how the front was found (an assumed front stays assumed); a saved robot is greyed (source pins)',
     /sourceFiles\.current = opts\.savedModel \? null : files;/.test(ed) &&
-      /const keepFront = doc\.detected \? \{ yaw: doc\.detected\.yaw, front: doc\.detected\.front, cue: doc\.detected\.cue \} : null;/.test(ed) &&
-      /void readModel\(files, \{ setup, spec: doc\.spec, keepHistory: true \}\)\.then\(\(\) => \{\s*update\(\(d\) => \(\{ \.\.\.d, \.\.\.\(keepMech \? \{ mech: keepMech, mechAt: keepAt \} : \{\}\), detected: d\.detected && keepFront \? \{ \.\.\.d\.detected, \.\.\.keepFront \} : d\.detected \}\), 'auto'\);/.test(ed) &&
+      /const keptFront = opts\.keepHistory && baseDoc\.detected \? \{ yaw: baseDoc\.detected\.yaw, front: baseDoc\.detected\.front, cue: baseDoc\.detected\.cue \} : null;/.test(ed) &&
+      /void readModel\(files, \{ setup, keepHistory: true \}\);/.test(ed) &&
+      /mech: opts\.keepHistory \? baseDoc\.mech : null,/.test(ed) &&
       /\{ v: FULL_DETAIL, t: COPY\.detailFull/.test(ms) &&
       /\{ v: LIGHT_TRI_BUDGET, t: COPY\.detailLight/.test(ms) &&
       /disabled=\{doc\.savedModel\}/.test(ms) &&
@@ -43199,7 +43200,7 @@ function fxImportFixed(): RobotSpec {
     'drop box: a staged file is read at the tile’s Detail as a new file (nothing of the loaded model’s setup, its build not kept); a Detail change re-reads and keeps the build; a saved robot keeps its left-out parts and has no deleted ones',
     staged.triBudget === geo.FULL_DETAIL && staged.units === 'auto' && staged.up === 'auto' && staged.yaw === 0 && staged.removed === undefined && staged.apart === undefined &&
       staged.keepFloating === undefined && staged.motion === undefined && staged.wheels === null &&
-      !em.readKeepsBuild({ setup: { triBudget: geo.FULL_DETAIL } }) && em.readKeepsBuild({ setup: loaded, keepHistory: true }) && em.readKeepsBuild({ savedModel: true }) &&
+      !em.readKeepsBuild({ setup: { triBudget: geo.FULL_DETAIL } }) && em.readKeepsBuild({ setup: loaded, keepHistory: true }) && !em.readKeepsBuild({ savedModel: true }) &&
       JSON.stringify(saved.apart) === '[4]' && !('removed' in saved) && saved.triBudget === geo.LIGHT_TRI_BUDGET,
   );
   check(
@@ -46555,8 +46556,7 @@ function fxImportFixed(): RobotSpec {
   // ---- E3: nothing stores or drives the old model while a file is being read ----
   {
     check('E3: header Save, Export, Test drive and Review’s Save are disabled while a file is read, and say why (source pins)',
-      /disabled=\{blocked \|\| busy \|\| measuring \|\| !autoDone \|\| !!phase\}\s*title=\{why\}/.test(edSrc) && (edSrc.match(/disabled=\{blocked \|\| busy \|\| measuring \|\| !!phase\}/g) ?? []).length === 3 &&
-        /const why = phase \? COPY\.waitRead : blocked \? COPY\.fixFirst : undefined;/.test(edSrc) && /^Wait for/.test(ECOPY.waitRead));
+      (edSrc.match(/disabled=\{!gate\.ok\}/g) ?? []).length === 4 && /const gate = leaveGate\(\{ reading: !!phase, busy, measuring, blocked, autoDone: autoDoneOf\(doc\) \}\);/.test(edSrc) && /const why = gate\.why \?\? undefined;/.test(edSrc) && /^Wait for/.test(ECOPY.waitRead));
   }
 
   // ---- E4: a draft that never measures has its way out; a throw in the editor has a boundary ----
@@ -48808,6 +48808,1100 @@ function fxImportFixed(): RobotSpec {
   check('T1: the sentence still exists for an alpha build without its packages',
     /Autonomous isn’t included in this build\./.test(readFileSync('src/auto/available.ts', 'utf8')) &&
       /<p className="ds-hint">\{AUTOS_UNAVAILABLE\}<\/p>/.test(solo));
+}
+
+// ---- BATCH U: the desktop shell, run for real (scripts/shellcheck.cjs) -----------------------------
+// The harness runs electron/ in an actual Electron and found the permission handler refusing two things
+// the app uses (a LAN host's wake lock, the robot library's durable-storage request). Electron cannot
+// run here, so this pins the allow list those findings produced.
+{
+  const ureq = (await import('node:module')).createRequire(import.meta.url);
+  const uperms = ureq(pathResolve('electron/permissions.cjs'));
+  const usrc = (p: string): string => readFileSync(p, 'utf8');
+  check('U1: the shell allows the wake lock and durable storage the app asks for, besides fullscreen, pointer lock and clipboard write',
+    ['screen-wake-lock', 'persistent-storage', 'fullscreen', 'pointerLock', 'clipboard-sanitized-write'].every((p) => uperms.permissionAllowed(p)));
+  check('U1: the allow list is exactly those five (nothing else was widened)',
+    [...uperms.ALLOWED_PERMISSIONS].sort().join(',') === 'clipboard-sanitized-write,fullscreen,persistent-storage,pointerLock,screen-wake-lock');
+  check('U1: camera, microphone, location, notifications, MIDI, screen capture, clipboard read, openExternal and unknown names stay refused',
+    ['media', 'camera', 'microphone', 'geolocation', 'notifications', 'midi', 'midiSysex', 'display-capture', 'clipboard-read', 'openExternal', 'idle-detection', 'unknown', '', undefined, null]
+      .every((p) => !uperms.permissionAllowed(p as never)));
+  check('U1: each permission-gated feature the app uses is allowed (wake lock in hostRuntime, durable storage in the robot library)',
+    (!/wakeLock\??\.request/.test(usrc('src/lan/hostRuntime.ts')) || uperms.permissionAllowed('screen-wake-lock')) &&
+      (!/storage\.persist\?\.\(\)/.test(usrc('src/robotImport/library.ts')) || uperms.permissionAllowed('persistent-storage')));
+  check('U1: the harness that runs the shell exists and says how to run it',
+    /npx electron scripts\/shellcheck\.cjs/.test(usrc('scripts/shellcheck.cjs')) && /scripts\/shellcheck\.cjs/.test(usrc('docs/area/sponsor.md')));
+}
+
+/**
+ * THE FLOOR, THE WHEELS AND WHAT HANGS BELOW THEM (`docs/area/robot-import.md`, "Detection" and "Moving
+ * parts"; 2026-11-27), on synthetic geometry: a small part hanging below the wheels decides neither the
+ * up axis nor the floor (`standFloor`) and is offered as hanging (`hangingParts`); a wheel row is bounded
+ * by a wheel (`wheelRim`); a wheel standing above a lower odometry pod still turns (`wheelGround`); a
+ * corner whose spot is a ramp's small wheel takes the drive wheel on its side; the games' balls modelled
+ * in a robot are offered as game pieces (`findGamePieces`).
+ */
+{
+  const geo = await import('../src/robotImport/geometry');
+  const motion = await import('../src/robotImport/motion');
+  const synth = await import('./robot-import/synthRobot');
+  type P = import('../src/robotImport/geometry').MeshPart;
+  type Prism = import('./robot-import/synthRobot').Prism;
+  type Row = import('../src/robotImport/types').MotionGroup;
+  const grey: [number, number, number] = [0.5, 0.5, 0.5];
+  // the file as CAD writes it (Z up, front −Y, millimetres), one body id per solid
+  const partsOf = (prisms: Prism[]): P[] => synth.synthParts(prisms, synth.FRAMES.cadMm).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+  const opts = { format: 'stl' as const };
+  const setup = geo.defaultImportSetup();
+  const fixed = { ...setup, units: 'mm' as const, up: '+z' as const };
+  const robot = synth.synthRobot();
+  const WHEELS = ['wheel_5.5_5.5', 'wheel_5.5_-5.5', 'wheel_-5.5_5.5', 'wheel_-5.5_-5.5'];
+  const idOf = (prisms: Prism[], name: string): number => prisms.findIndex((p) => p.name === name);
+  const near = (a: number, b: number, eps = 1e-3): boolean => Math.abs(a - b) <= eps;
+  const spots = (w: readonly { x: number; y: number }[] | null | undefined): string => JSON.stringify((w ?? []).map((p) => [+p.x.toFixed(3), +p.y.toFixed(3)]));
+  /** four rows, corner c holding wheel c's body alone */
+  const wheelRows = (rows: Row[], prisms: Prism[]): boolean =>
+    rows.length === 4 && WHEELS.every((n, c) => rows.some((g) => g.role === 'wheel' && g.corner === c && g.bodies.length === 1 && g.bodies[0] === idOf(prisms, n)));
+  const rowsText = (rows: Row[]): string => JSON.stringify(rows.map((g) => [g.corner ?? '-', g.bodies]));
+
+  // ---- W1: a 1 × 1 in post hanging 2 in below the wheels
+  const hung = [...robot, synth.box('hanging post', grey, 1, 2, -0.5, 0.5, -2, 1.2)];
+  const post = hung.length - 1;
+  const a = geo.measureParts(partsOf(hung), setup, opts);
+  const b = geo.measureParts(partsOf(robot), setup, opts);
+  const am = a.measurement;
+  const bm = b.measurement;
+  check('W1: a small part 2 in below the wheels does not decide the up axis: +z, the wheels’ own', am.up === '+z' && bm.up === '+z', `${am.up} ${bm.up}`);
+  check(
+    'W1: the floor is where the wheels stand: four wheels found where the robot without the part has them, the same size',
+    am.wheelSource === 'detected' && spots(am.wheelsUsed) === spots(bm.wheelsUsed) && near(am.size.length, bm.size.length) && near(am.size.width, bm.size.width) && near(am.size.height, bm.size.height),
+    `${am.wheelSource} ${spots(am.wheelsUsed)} ${spots(bm.wheelsUsed)} ${JSON.stringify(am.size)} ${JSON.stringify(bm.size)}`,
+  );
+  check(
+    'W1: the part is offered, said to hang 2 in below the floor, and no floor warning is left',
+    JSON.stringify(am.floating?.map((g) => g.bodies)) === JSON.stringify([[post]]) && near(am.floating?.[0]?.hangIn ?? -1, 2, 0.01) && !am.checks.some((c) => c.code === 'no-floor' || c.code === 'few-wheels'),
+    `${JSON.stringify(am.floating)} ${am.checks.map((c) => c.code)}`,
+  );
+  {
+    const st = motion.bodyStats(a.modelParts);
+    check(
+      'W1: kept, it stays 2 in below z = 0 and the robot stands on its wheels',
+      near(st.min[3 * post + 2], -2, 0.01) && WHEELS.every((n) => near(st.min[3 * idOf(hung, n) + 2], 0, 0.01)),
+      `${st.min[3 * post + 2]}`,
+    );
+  }
+  check(
+    'W1: the measured frame is one shift: `toModelFrame` rebuilds the arrays bit for bit',
+    geo.toModelFrame(partsOf(hung), am.sourceToModel).every((p, i) => p.positions.every((v, j) => v === a.modelParts[i].positions[j])),
+  );
+  {
+    const rows = motion.findWheelGroups(a.modelParts, am.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    check('W1: four wheel rows, each its wheel alone', wheelRows(rows, hung), rowsText(rows));
+  }
+  {
+    const del = geo.measureParts(partsOf(hung), { ...setup, removed: [post] }, opts).measurement;
+    check(
+      'W1: deleted, it measures as the file without it and nothing is offered',
+      del.up === '+z' && spots(del.wheelsUsed) === spots(bm.wheelsUsed) && JSON.stringify(del.size) === JSON.stringify(bm.size) && !del.floating?.length,
+      `${JSON.stringify(del.size)} ${JSON.stringify(del.floating)}`,
+    );
+  }
+  check(
+    'W1: without the part the lowest point shows wheels: no floor raised, nothing offered, as before',
+    geo.standFloor(partsOf(robot), 2, false, 1 / 25.4) === null && !bm.floating?.length && bm.wheelSource === 'detected',
+  );
+  // a part too big to be passed over (a 6 × 6 in plate 2 in down): still the floor, and the warning says
+  // what helps
+  {
+    const plate = [...robot, synth.box('low plate', grey, -3, 3, -3, 3, -2, -1.5), synth.box('plate post', grey, -0.5, 0.5, -0.5, 0.5, -1.5, 1.2)];
+    const m = geo.measureParts(partsOf(plate), fixed, opts).measurement;
+    const w = m.checks.find((c) => c.code === 'no-floor');
+    check('W1: a big part below the wheels stays the floor, and the warning names deleting it as well as the up axis', m.wheelSource === 'none' && !!w && /delete it under Parts/.test(w.message) && /up axis/.test(w.message), `${m.wheelSource} ${w?.message}`);
+  }
+  // a chassis with no wheels lying on its broad face: nothing to raise to, the answer as before
+  {
+    const deck = [synth.box('deck', grey, -7, 7, -6, 6, 0, 1), synth.box('mast', grey, -1, 1, -1, 1, 1, 8), synth.box('bracket', grey, 3, 4, -5, -4, 1, 2.5)];
+    const parts = partsOf(deck);
+    const none = ([0, 1, 2] as const).every((k) => [false, true].every((neg) => geo.standFloor(parts, k, neg, 1 / 25.4) === null));
+    const m = geo.measureParts(parts, setup, opts).measurement;
+    check('W1: a wheel-less chassis on its broad face raises no floor on any axis and reads as before (+z)', none && m.up === '+z', `${none} ${m.up}`);
+  }
+  // a wheel spot with no wheel, but a beam and two screws inside the catalogue wheel's cylinder: no row
+  {
+    const bare = [...robot.filter((p) => p.name !== WHEELS[0]), synth.box('beam', grey, 4.5, 6.5, 5.2, 5.8, 0, 0.3), synth.box('screw', grey, 5, 5.3, 5.35, 5.65, 0.3, 0.55), synth.box('screw', grey, 5.8, 6.1, 5.35, 5.65, 0.3, 0.55)];
+    const m = geo.measureParts(partsOf(bare), fixed, opts);
+    const rows = motion.findWheelGroups(m.modelParts, bm.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    check(
+      'W1: a spot holding chassis and no round wheel gives no wheel row; the other three are their wheels',
+      rows.length === 3 && !rows.some((g) => g.corner === 0) && WHEELS.slice(1).every((n, i) => rows.some((g) => g.corner === i + 1 && g.bodies.length === 1 && g.bodies[0] === idOf(bare, n))),
+      rowsText(rows),
+    );
+  }
+  // a mecanum wheel of many bodies (two side plates off its middle, a hub, twelve rollers) whose radius
+  // nothing reads off the model (the catalogue's): its row holds every body, its plates stopping 0.5 in
+  // or 0.2 in off the floor (the ring is the wheel's proof, never its radial bound)
+  for (const plateR of [1.55, 1.85]) {
+    const R = synth.WHEEL_R;
+    const mecanum = (x: number, y: number): Prism[] => [
+      synth.cylY(`plate ${x} ${y}`, grey, x, R, plateR, y - 0.8, y - 0.7, 24),
+      synth.cylY(`plate ${x} ${y}`, grey, x, R, plateR, y + 0.7, y + 0.8, 24),
+      synth.cylY(`hub ${x} ${y}`, grey, x, R, 0.6, y - 0.7, y + 0.7, 16),
+      ...Array.from({ length: 12 }, (_, k) => {
+        const cx = x + 1.78 * Math.sin((2 * Math.PI * k) / 12);
+        const cz = R - 1.78 * Math.cos((2 * Math.PI * k) / 12);
+        return synth.box(`roller ${x} ${y}`, grey, cx - 0.27, cx + 0.27, y - 0.7, y + 0.7, cz - 0.27, cz + 0.27);
+      }),
+    ];
+    const mec = [...robot.filter((p) => !p.name.startsWith('wheel_')), ...mecanum(5.5, 5.5), ...mecanum(5.5, -5.5), ...mecanum(-5.5, 5.5), ...mecanum(-5.5, -5.5)];
+    const m = geo.measureParts(partsOf(mec), fixed, opts);
+    const rows = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    const whole = (c: number, x: number, y: number): boolean => {
+      const want = mec.map((p, i) => (p.name.endsWith(` ${x} ${y}`) ? i : -1)).filter((i) => i >= 0);
+      const g = rows.find((r) => r.corner === c);
+      return !!g && JSON.stringify(g.bodies) === JSON.stringify(want);
+    };
+    check(
+      `W1: a many-body mecanum with the catalogue radius, plates ${plateR === 1.55 ? '0.5' : '0.2'} in off the floor: four rows, each all 15 of its wheel’s bodies`,
+      rows.length === 4 && whole(0, 5.5, 5.5) && whole(1, 5.5, -5.5) && whole(2, -5.5, 5.5) && whole(3, -5.5, -5.5),
+      `${rows.length} ${rows.map((g) => g.bodies.length)}`,
+    );
+  }
+  // upside down, four posts on a top plate under a taller camera are four contacts in a rectangle, but no
+  // wheels: they raise no floor, and the robot reads the right way up
+  {
+    const top = [
+      ...robot,
+      synth.box('top plate', grey, -8, 10, -7.2, 7.2, 15, 15.25),
+      ...[[9.5, 6.9], [9.5, -6.9], [-7.7, 6.9], [-7.7, -6.9]].map(([x, y]) => synth.cylZ('post', grey, x, y, 0.25, 15.25, 17, 8)),
+      synth.box('camera', grey, 0, 1, -0.5, 0.5, 15.25, 18.5),
+    ];
+    const parts = partsOf(top);
+    const m = geo.measureParts(parts, { ...setup, units: 'mm' }, opts).measurement;
+    check(
+      'W1: four posts on a top plate are no wheels: no floor raised upside down, up +z, nothing offered',
+      geo.standFloor(parts, 2, true, 1 / 25.4) === null && m.up === '+z' && !m.floating?.length,
+      `${m.up} ${JSON.stringify(m.floating)}`,
+    );
+  }
+
+  // upside down, four pulleys on level axles at the top under a taller camera ARE wheel-like, but the
+  // robot already stands on its wheels the right way up: a raised floor never outvotes that axis
+  {
+    const top = [
+      ...robot,
+      synth.box('top plate', grey, -8, 10, -7.2, 7.2, 15, 15.25),
+      ...[[9.5, 6.9], [9.5, -6.9], [-7.7, 6.9], [-7.7, -6.9]].map(([x, y]) => synth.cylY('pulley', grey, x, 16, 0.75, y - 0.2, y + 0.2, 16)),
+      synth.box('camera', grey, 0, 1, -0.5, 0.5, 15.25, 17.6),
+    ];
+    const r = geo.measureParts(partsOf(top), { ...setup, units: 'mm' }, opts);
+    const rows = motion.findWheelGroups(r.modelParts, r.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    check(
+      'W1: four pulleys on a top plate do not turn a robot that stands on its wheels upside down: +z, nothing offered, four wheel rows',
+      r.measurement.up === '+z' && !r.measurement.floating?.length && wheelRows(rows, top),
+      `${r.measurement.up} ${JSON.stringify(r.measurement.floating)} ${rowsText(rows)}`,
+    );
+  }
+
+  // bolt heads proud of one side plate show "wheels" on that side, but the answer stood on none: the
+  // format's own up axis is still scored from the floor its wheels stand on, and a wheel-less robot on a
+  // belly pan with the same pulleys on top is not turned over
+  {
+    const plates = [
+      ...robot.filter((p) => !p.name.startsWith('rail_') && p.name !== 'flag'),
+      synth.box('plate L', grey, -8, 8, 6.3, 7, 0.4, 5),
+      synth.box('plate R', grey, -8, 8, -7, -6.3, 0.4, 5),
+      ...[[6, 1.5], [6, 4], [-6, 1.5], [-6, 4]].map(([x, z]) => synth.box('bolt', grey, x - 0.2, x + 0.2, 7, 7.12, z - 0.2, z + 0.2)),
+      synth.box('hanging post', grey, 1, 2, -0.5, 0.5, -2, 1.2),
+    ];
+    const m = geo.measureParts(partsOf(plates), { ...setup, units: 'mm' }, opts).measurement;
+    check(
+      'W1: bolt heads on one side plate do not stop the floor being found: +z, four wheels, the hanging part offered',
+      m.up === '+z' && m.wheelSource === 'detected' && JSON.stringify(m.floating?.map((g) => g.bodies)) === JSON.stringify([[plates.length - 1]]),
+      `${m.up} ${m.wheelSource} ${JSON.stringify(m.floating)}`,
+    );
+    const pan = [
+      synth.box('belly pan', grey, -8, 8, -7, 7, 0, 0.25),
+      synth.box('tower', grey, -4, 0, -3, 3, 0.25, 15),
+      synth.box('top plate', grey, -8, 8, -7, 7, 15, 15.25),
+      ...[[7, 6.6], [7, -6.6], [-7, 6.6], [-7, -6.6]].map(([x, y]) => synth.cylY('pulley', grey, x, 16, 0.75, y - 0.2, y + 0.2, 16)),
+      synth.box('camera', grey, 0, 1, -0.5, 0.5, 15.25, 17.6),
+    ];
+    const p = geo.measureParts(partsOf(pan), { ...setup, units: 'mm' }, opts).measurement;
+    // (it reads +y as it always did: its pan is a flat face; what matters is that no raise turns it over)
+    check('W1: a wheel-less robot on a belly pan with four pulleys on top is not turned over by them: +y as before, nothing offered', p.up === '+y' && !p.floating?.length, `${p.up} ${JSON.stringify(p.floating)}`);
+  }
+
+  // the same robot measures the same on its first read and on a re-open: a saved robot re-opens with the
+  // axis Auto chose set by hand. A Y-up model in a Z-up format (Auto's winner is not the format's axis),
+  // a plate hanging 1 in under its wheels and a knob on each other face
+  {
+    const yUp = (v: [number, number, number]): [number, number, number] => [v[1] * 25.4, v[2] * 25.4, v[0] * 25.4];
+    const knob = (x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): Prism => synth.box('knob', grey, x0, x1, y0, y1, z0, z1);
+    const model = [
+      ...robot,
+      synth.box('hanging plate', grey, -2.5, 0.5, -1.5, 1.5, -1, 1.2),
+      knob(10, 11, 5, 5.5, 3, 3.5),
+      knob(-9, -8, -5, -4.5, 6, 6.5),
+      knob(5, 5.5, 7.5, 8.5, 3, 3.5),
+      knob(-5, -4.5, -8, -7, 6, 6.5),
+      knob(2, 2.5, 2, 2.5, 15, 16),
+    ];
+    const yParts = (): P[] => synth.synthParts(model, yUp).map((p, i) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(i) }));
+    const auto = geo.measureParts(yParts(), { ...setup, units: 'mm' }, opts).measurement;
+    const hand = geo.measureParts(yParts(), { ...setup, units: 'mm', up: auto.up }, opts).measurement;
+    const facts = (m: typeof auto): string => JSON.stringify([m.up, m.size, m.sourceToModel, m.wheelSource, m.wheelsUsed, (m.floating ?? []).map((g) => g.bodies)]);
+    check(
+      'W1: Auto’s first read equals the re-open with its axis set by hand (size, floor, wheels, offers), on an axis that is not the format’s',
+      auto.up === '+y' && facts(auto) === facts(hand) && auto.wheelSource === 'detected',
+      `${facts(auto)} | ${facts(hand)}`,
+    );
+  }
+
+  // too big only because of a part the Model step offers: Review names it and sends the player there;
+  // too big by itself: the units sentence as before
+  {
+    const oversize = (m: { checks: { code: string; message: string; focus?: string }[] }) => m.checks.find((c) => c.code === 'oversize');
+    const above = [...robot, synth.box('stray', grey, -1, 1, -1, 1, 17, 19.5)];
+    const tall = geo.measureParts(partsOf(above), fixed, opts).measurement;
+    const t = oversize(tall);
+    check(
+      'W6: a robot that fits, with a part floating 2 in above it: the block names the floating part, its size without it, and goes to Parts',
+      !!t && t.focus === 'ri-parts' && /with 1 part that floats apart from it, and 18\.0 × 14\.5 × 15\.0 in without it\. Delete it under Parts/.test(t.message) && !/units/.test(t.message),
+      t?.message,
+    );
+    const gone = geo.measureParts(partsOf(above), { ...fixed, removed: [above.length - 1] }, opts).measurement;
+    check('W6: deleted, nothing is over 18 in', !oversize(gone), oversize(gone)?.message);
+    const kept = geo.measureParts(partsOf(above), { ...fixed, keepFloating: [above.length - 1] }, opts).measurement;
+    check('W6: kept, the block is the units sentence again (the offer is answered)', /Check the units/.test(oversize(kept)?.message ?? '') && !oversize(kept)?.focus);
+    const ahead = [...robot, synth.box('stray', grey, 11, 12.5, -0.5, 0.5, 2, 3)];
+    const long = oversize(geo.measureParts(partsOf(ahead), fixed, opts).measurement);
+    check('W6: a floating part that makes it too long is named the same way', !!long && /20\.5 × 14\.5 × 15\.0 in with 1 part that floats/.test(long.message) && long.focus === 'ri-parts', long?.message);
+    const boom = [...robot, synth.box('boom', grey, 9, 14, -0.5, 0.5, 2, 2.5), synth.box('stray', grey, -1, 1, -1, 1, 17, 19.5)];
+    const big = oversize(geo.measureParts(partsOf(boom), fixed, opts).measurement);
+    check('W6: too big without the offer too: the units sentence, as before', !!big && /Check the units/.test(big.message) && !big.focus, big?.message);
+  }
+
+  // ---- W2: an odometry pod's wheel drawn 0.44 in below the drive wheels sets the floor
+  {
+    const pod = [...robot, synth.cylY('pod wheel', grey, 0, 0.63 - 0.44, 0.63, 2.5, 3, 16)];
+    const m = geo.measureParts(partsOf(pod), setup, opts);
+    check(
+      'W2: the pod is the floor, as before (the wheels found in the 0.5 in slab, 15.44 in tall, nothing raised or offered)',
+      m.measurement.up === '+z' && m.measurement.wheelSource === 'detected' && near(m.measurement.size.height, 15.44, 0.01) && !m.measurement.floating?.length,
+      `${m.measurement.up} ${m.measurement.wheelSource} ${m.measurement.size.height}`,
+    );
+    const rows = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    check('W2: the four drive wheels standing 0.44 in above that floor are four wheel rows, each its wheel alone', wheelRows(rows, pod), rowsText(rows));
+  }
+  // a ramp the file shows down with small wheels at its tip: they are the outermost contacts
+  {
+    const tip = [...robot, synth.cylY('ramp wheel', grey, 10.6, 0.63, 0.63, 5, 5.6, 16), synth.cylY('ramp wheel', grey, 10.6, 0.63, 0.63, -5.6, -5, 16)];
+    const m = geo.measureParts(partsOf(tip), fixed, opts);
+    const rows = motion.findWheelGroups(m.modelParts, m.measurement.wheelsUsed ?? [], 'mecanum', 104 / 25.4);
+    check('W2: a corner whose spot is a ramp’s small wheel takes the drive wheel on its side; the small wheels are no row', wheelRows(rows, tip), rowsText(rows));
+  }
+
+  // an intake shaft whose line passes a piece of a wheel (a mecanum's roller near the top of the wheel) is
+  // still an intake roller: only a body centred and round on its axle makes it a drive axle
+  {
+    const nubbed = [
+      ...robot.filter((p) => p.name !== 'intake'),
+      synth.cylY('intake shaft roller', grey, 7.2, 2.1, 0.5, -4, 4, 16),
+      synth.cylY('intake shaft', grey, 7.2, 2.1, 0.15, -5.6, 5.6, 12),
+      synth.box('wheel nub', grey, 7.1, 7.3, 5.2, 5.8, 2.0, 2.2),
+    ];
+    const m = geo.measureParts(partsOf(nubbed), fixed, opts);
+    const { findMoving } = await import('../src/robotImport/findMoving');
+    const rows = findMoving(m.modelParts, { kind: 'motion', wheels: m.measurement.wheelsUsed, drivetrain: 'mecanum', wheelDiaIn: 104 / 25.4, have: [], intakes: [{ edge: 'front', from: -6, to: 6 }], shooter: null, turret: false, rampIntake: false, elementD: 2.8 });
+    const roller = idOf(nubbed, 'intake shaft roller');
+    const nub = idOf(nubbed, 'wheel nub');
+    check(
+      'W2: an intake shaft passing a wheel’s own piece is still a roller, and the piece stays the wheel’s',
+      rows.some((g) => g.role === 'roller' && g.bodies.includes(roller) && !g.bodies.includes(nub)) && rows.some((g) => g.role === 'wheel' && g.corner === 0 && g.bodies.includes(nub)),
+      rowsText(rows),
+    );
+  }
+
+  // ---- W3: the games' balls modelled in the robot are offered as game pieces
+  {
+    const { GAME_BALL_DIAMETERS_IN } = await import('../src/robotImport/engine/measureSession');
+    const { BALL_RADIUS } = await import('../src/config');
+    const { CHAIN_PARTICLE_R } = await import('../src/games/chain/config');
+    const { BB_POLLEN_R } = await import('../src/games/biobuzz/config');
+    check(
+      'W3: the balls looked for are the three games’ own (DECODE’s artifact, Chain Reaction’s particle, BIOBUZZ’s pollen)',
+      JSON.stringify(GAME_BALL_DIAMETERS_IN) === JSON.stringify([2 * BALL_RADIUS, 2 * CHAIN_PARTICLE_R, 2 * BB_POLLEN_R]),
+      JSON.stringify(GAME_BALL_DIAMETERS_IN),
+    );
+    // a UV sphere of diameter d centred at c (robot inches), in the same file frame as `partsOf`
+    const ball = (name: string, c: [number, number, number], d: number, body: number, n = 16): P => {
+      const pos: number[] = [];
+      const idx: number[] = [];
+      const rings = n / 2;
+      for (let i = 0; i <= rings; i++) {
+        const th = (Math.PI * i) / rings;
+        for (let j = 0; j < n; j++) {
+          const ph = (2 * Math.PI * j) / n;
+          pos.push(...synth.FRAMES.cadMm([c[0] + (d / 2) * Math.sin(th) * Math.cos(ph), c[1] + (d / 2) * Math.sin(th) * Math.sin(ph), c[2] + (d / 2) * Math.cos(th)]));
+        }
+      }
+      for (let i = 0; i < rings; i++) for (let j = 0; j < n; j++) {
+        const a = i * n + j;
+        const b = i * n + ((j + 1) % n);
+        idx.push(a, a + n, b, b, a + n, b + n);
+      }
+      return { positions: new Float32Array(pos), indices: new Uint32Array(idx), color: grey, name, body: new Uint32Array(pos.length / 3).fill(body) };
+    };
+    const base = partsOf(robot);
+    const k = base.length;
+    const parts: P[] = [
+      ...base,
+      ball('pollen', [2, 0, 3.2], 2 * BB_POLLEN_R, k),
+      ball('artifact', [4, -3, 4.3], 2 * BALL_RADIUS, k + 1),
+      ball('knob', [-2, 4, 6], 4, k + 2),
+      ...partsOf([synth.cylY('Pollen intake roller', grey, 6, 3, 1.4, 1.6, 4.4, 24)]).map((p) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(k + 3) })),
+      ...partsOf([synth.box('Pollen', grey, -6, -3.2, -2, 0.8, 4, 6.8)]).map((p) => ({ ...p, body: new Uint32Array(p.positions.length / 3).fill(k + 4) })),
+    ];
+    const m = geo.measureParts(parts, setup, { ...opts, pieceDiameters: GAME_BALL_DIAMETERS_IN }).measurement;
+    const got = (m.floating ?? []).filter((g) => g.pieceIn !== undefined).map((g) => [g.bodies, g.pieceIn]);
+    check(
+      'W3: a 2.8 in and a 5 in ball in the robot are offered as game pieces of those sizes, and nothing else is',
+      JSON.stringify(got) === JSON.stringify([[[k], 2 * BB_POLLEN_R], [[k + 1], 2 * BALL_RADIUS]]) && (m.floating ?? []).length === 2,
+      JSON.stringify(m.floating),
+    );
+    check(
+      'W3: a 4 in sphere, a 2.8 in roller as long as it is wide and a 2.8 in cube are not, whatever their names say',
+      !(m.floating ?? []).some((g) => g.bodies.some((b) => b >= k + 2)),
+    );
+    const plain = geo.measureParts(parts, setup, opts).measurement;
+    check('W3: without the games’ diameters nothing is looked for', !(plain.floating ?? []).length, JSON.stringify(plain.floating));
+  }
+}
+
+/*
+ * A DETAIL RE-READ KEEPS NOTHING THAT NAMES A BODY (`REREAD_KEEPS`, `setupForReread`, `restoreDoc`). A big
+ * STEP is read in pieces and Light leaves its small parts out, so a body id names another solid at the
+ * other detail: 2026-11-27, a real team assembly kept its Light moving parts across Light → Full, its
+ * deployed ramp stayed down and Review blocked it as over 18 in.
+ */
+{
+  const em = await import('../src/robotImport/ui/editorModel');
+  const H = await import('../src/robotImport/ui/editorHistory');
+  const geo = await import('../src/robotImport/geometry');
+  type Setup = import('../src/robotImport/types').ImportSetup;
+  type Doc = import('../src/robotImport/ui/editorModel').EditorDoc;
+  const J = JSON.stringify;
+  // a setup with EVERY field set, `Required` so a new field fails to compile here too; body ids 1..40
+  const full: Required<Setup> = {
+    ...geo.defaultImportSetup(),
+    units: 'mm',
+    up: '+z',
+    yaw: 1,
+    hullMaxVerts: 12,
+    wheels: [{ x: 5, y: 6 }, { x: 5, y: -6 }, { x: -5, y: 6 }, { x: -5, y: -6 }],
+    wheelLayout: 'free',
+    bands: false,
+    triBudget: geo.LIGHT_TRI_BUDGET,
+    motion: [
+      { role: 'wheel', bodies: [3, 4], corner: 0, found: true },
+      { role: 'ramp', bodies: [20, 21, 22], found: true },
+      { role: 'spin', bodies: [30], axis: 'part', axisBody: 31, follows: { group: 0, ratio: -1 } },
+    ],
+    motionFinder: 5,
+    tune: { topSpeed: 60 },
+    removed: [1, 2],
+    apart: [10, 11],
+    keepFloating: [40],
+    removedFound: 2,
+  };
+  const BODY_KEYED = ['apart', 'keepFloating', 'motion', 'motionFinder', 'removed', 'removedFound'];
+  const r = em.setupForReread(full, geo.FULL_DETAIL);
+  const keys = Object.keys(full) as (keyof Setup)[];
+  const kept = keys.filter((k) => !BODY_KEYED.includes(k) && k !== 'triBudget');
+  check(
+    'X1: a Detail re-read starts from a setup naming no body of the old read (moving parts and their finder version, deleted, left-out and kept-floating parts), every other field as it was, at the new detail',
+    BODY_KEYED.every((k) => !(k in r)) && kept.every((k) => J(r[k]) === J(full[k])) && r.triBudget === geo.FULL_DETAIL && kept.length === 10 &&
+      !('removedFound' in em.savedSetup(full)),
+    J(r),
+  );
+  check(
+    'X1: the re-read table classifies every field of the setup and nothing else, and drops exactly the body-keyed ones; a new file’s read drops them too',
+    J(Object.keys(em.REREAD_KEEPS).sort()) === J([...keys].sort()) &&
+      Object.keys(geo.defaultImportSetup()).every((k) => k in em.REREAD_KEEPS) &&
+      J(keys.filter((k) => em.REREAD_KEEPS[k] === 'drop').sort()) === J(BODY_KEYED) &&
+      BODY_KEYED.every((k) => em.readSetup(full, { setup: { triBudget: geo.FULL_DETAIL } })[k as keyof Setup] === undefined),
+    J(Object.keys(em.REREAD_KEEPS)),
+  );
+  // undo and redo across reads (`EditorDoc.readId`): the snapshots of another read hold its ids
+  const doc = (setup: Setup, readId?: number): Doc => ({ setup, step: 4, mech: null, spec: {}, ...(readId === undefined ? {} : { readId }) }) as unknown as Doc;
+  const light = doc(full, 1);
+  const fullRows = [{ role: 'wheel' as const, bodies: [5, 6, 7], corner: 0, found: true }];
+  const atFull = doc({ ...em.setupForReread(full, geo.FULL_DETAIL), motion: fullRows, motionFinder: 5 }, 2);
+  const back = H.restoreDoc(light, atFull);
+  // a Detail change with no files to re-read (after a test drive): the number changes, the model and its read do not
+  const noFiles = H.restoreDoc(light, doc({ ...full, triBudget: geo.FULL_DETAIL, motion: fullRows }, 1));
+  check(
+    'X1: an undo to a snapshot of another READ puts back the player’s setup but no body id of it (they come from the model in memory); a snapshot of the same read is restored whole, whatever the Detail number says',
+    J(back.setup.motion) === J(fullRows) && back.setup.motionFinder === 5 && BODY_KEYED.filter((k) => k !== 'motion' && k !== 'motionFinder').every((k) => !(k in back.setup)) &&
+      back.setup.units === 'mm' && back.setup.triBudget === geo.FULL_DETAIL && back.readId === 2 &&
+      J(noFiles.setup.motion) === J(full.motion) && J(noFiles.setup.removed) === J(full.removed) && noFiles.setup.triBudget === geo.FULL_DETAIL,
+    J({ back: back.setup.motion, noFiles: noFiles.setup.motion }),
+  );
+  {
+    // ⚠️ THE EDITOR'S OWN ORDER: the Detail is written when the re-read STARTS ('auto'), a player's edit can
+    // land while it runs (the rail stays live), and the model lands a minute later with its own rows
+    const flip = (d: Doc): Doc => ({ ...d, setup: { ...d.setup, motion: d.setup.motion!.map((g, i) => (i === 0 ? { ...g, flip: true, found: undefined } : g)) } });
+    const s0 = H.applyEdit(light, undefined, (d) => ({ ...d, setup: { ...d.setup, triBudget: geo.FULL_DETAIL } }), 'auto', 1)!;
+    const s1 = H.applyEdit(s0.doc, s0.history, flip, { label: 'change the front-left wheel' }, 2)!;
+    const s2 = H.applyEdit(s1.doc, s1.history, (d) => ({ ...d, readId: 2, setup: em.setupForReread(d.setup, geo.FULL_DETAIL) }), 'auto', 3)!;
+    const s3 = H.applyEdit(s2.doc, s2.history, (d) => ({ ...d, setup: { ...d.setup, motion: fullRows, motionFinder: 5 } }), 'auto', 4)!;
+    const u = H.undoDoc(s3.doc, s3.history, 5)!;
+    const rd = H.redoDoc(u.doc, u.history, 6)!;
+    check(
+      'X1: an edit made WHILE a Detail re-read runs, undone after the model lands, brings no id of the old read back (and a redo neither)',
+      s1.history!.past.length === 1 && J(u.doc.setup.motion) === J(fullRows) && J(rd.doc.setup.motion) === J(fullRows) && u.doc.readId === 2 && !('removed' in u.doc.setup),
+      J({ u: u.doc.setup.motion, rd: rd.doc.setup.motion }),
+    );
+    // after a test drive the files are gone: a Detail change writes only the number, and an earlier edit still undoes
+    const t1 = H.applyEdit(light, undefined, flip, { label: 'change the front-left wheel' }, 1)!;
+    const t2 = H.applyEdit(t1.doc, t1.history, (d) => ({ ...d, setup: { ...d.setup, triBudget: geo.FULL_DETAIL } }), 'auto', 2)!;
+    const tu = H.undoDoc(t2.doc, t2.history, 3)!;
+    check(
+      'X1: after a Detail change that re-read nothing (no files in memory), an undo of an earlier moving-part edit takes it back',
+      J(t2.doc.setup.motion![0]) !== J(full.motion[0]) && J(tu.doc.setup.motion) === J(full.motion) && tu.doc.setup.triBudget === geo.FULL_DETAIL,
+      J(tu.doc.setup.motion),
+    );
+    // ⚠️ AN UNDO STEP IS NEVER A NO-OP: when the model lands, a step whose only change was in the old read's
+    // body-keyed fields (the row reversed during the read) is folded out; a real edit before it stays
+    const e0 = H.applyEdit(light, undefined, (d) => ({ ...d, setup: { ...d.setup, hullMaxVerts: 8 } }), { label: 'x' }, 1)!;
+    const m0 = H.applyEdit(e0.doc, e0.history, (d) => ({ ...d, setup: { ...d.setup, triBudget: geo.FULL_DETAIL } }), 'auto', 2)!;
+    const m1 = H.applyEdit(m0.doc, m0.history, flip, { label: 'change the front-left wheel' }, 3)!;
+    const folded = H.foldAcrossRead(m1.history, m1.doc)!;
+    const landed = { ...m1.doc, readId: 2, setup: { ...em.setupForReread(m1.doc.setup, geo.FULL_DETAIL), motion: fullRows } } as Doc;
+    const fu = H.undoDoc(landed, folded, 4)!;
+    // the same for redo: a redo whose only change was the old read's rows goes too
+    const r0 = H.undoDoc(m1.doc, m1.history, 4)!;
+    const foldedR = H.foldAcrossRead(r0.history, r0.doc)!;
+    check(
+      'X1: when a re-read lands, an undo or redo step that could change only the old read’s body-keyed fields is folded out (its label with it); the steps that still change something stay',
+      m1.history!.past.length === 2 && folded.past.length === 1 && H.nextUndo(folded)?.label === 'x' && fu.doc.setup.hullMaxVerts === 12 && J(fu.doc.setup.motion) === J(fullRows) &&
+        r0.history.future.length === 1 && foldedR.future.length === 0 && foldedR.past.length === 1 &&
+        H.foldAcrossRead(undefined, light) === undefined,
+      J({ past: folded.past.map((e) => e.label), future: foldedR.future.map((e) => e.label) }),
+    );
+  }
+  // the line once a re-read's rows are in (`rereadNote`), from the document the read replaced as it was when the model landed
+  const found = [{ role: 'wheel' as const, bodies: [1], corner: 0, found: true }, { role: 'roller' as const, bodies: [2], found: true }];
+  const again = [{ role: 'roller' as const, bodies: [9], found: true }, { role: 'wheel' as const, bodies: [8], corner: 0, found: true }];
+  const changed = { motion: [{ ...found[0], flip: true, found: undefined }, found[1]] };
+  check(
+    'X1: after a Detail re-read the line says what was lost unasked (rows changed by hand, during the read too; deleted or left-out parts), "found again" when the player agreed or the rows differ in kind, a failed search as failed, and nothing when found rows came back alike',
+    em.rereadNote(changed, again) === 'rows' &&
+      em.rereadNote({ motion: found, removed: [3] }, again) === 'parts' &&
+      em.rereadNote(changed, again, { agreed: em.rereadLoses(changed).key }) === 'refound' &&
+      em.rereadNote({ motion: found }, again.slice(1)) === 'refound' &&
+      em.rereadNote(changed, [], { failed: true }) === 'failed' &&
+      em.rereadNote({ motion: undefined }, [], { failed: true }) === null &&
+      em.rereadNote({ motion: found }, again) === null &&
+      em.rereadNote({ motion: [] }, again) === null &&
+      em.rereadNote({ motion: found, removedFound: 1 }, [...again, { role: 'flywheel', bodies: [4], found: true }]) === 'rows',
+  );
+  // EVERY hand choice a Detail change loses is counted and asked about: rows changed, found rows removed,
+  // parts deleted or left out, and a Keep on parts offered for deleting
+  const X = (await import('../src/robotImport/ui/copy')).COPY;
+  const keepOnly = em.rereadLoses({ motion: found, keepFloating: [7, 8] });
+  const keepText = X.detailLoseBody(keepOnly);
+  const all = em.rereadLoses({ motion: changed.motion, removedFound: 2, removed: [3], apart: [4, 5], keepFloating: [7] });
+  check(
+    'X1: the Detail question is asked whenever a hand choice would be lost, a found row removed and a Keep on offered parts included, and names only what is lost (a Keep alone: the kept parts, nothing about moving parts)',
+    J({ ...all, key: '' }) === J({ rows: 1, removedRows: 2, parts: 3, kept: 1, key: '' }) &&
+      em.rereadAsks(keepOnly) && em.rereadAsks(em.rereadLoses({ motion: found, removedFound: 1 })) && !em.rereadAsks(em.rereadLoses({ motion: found })) &&
+      /2 parts you kept when the editor offered to delete them/.test(keepText) && !/moving part|deleted or left out/.test(keepText) &&
+      em.foundRowsRemoved(found, found.slice(1)) === 1 && em.foundRowsRemoved(changed.motion, changed.motion.slice(1)) === 0 && em.foundRowsRemoved(found, found) === 0 &&
+      em.rereadLoses({ motion: found }).key !== em.rereadLoses({ motion: found, keepFloating: [7] }).key,
+    keepText,
+  );
+  // ONE GATE for every way out of the editor (`leaveGate`), and what the editor reads by itself (`autoDone`)
+  const g = (o: Partial<Parameters<typeof em.leaveGate>[0]>) => em.leaveGate({ reading: false, busy: false, measuring: false, blocked: false, autoDone: true, ...o });
+  const reread = { savedModel: false, editId: null, cadBuild: [], setup: em.setupForReread(full, geo.FULL_DETAIL) };
+  check(
+    'X1: Save, Export and Test drive share one gate: not while a file is read, baked, measured or blocked, nor until the rows are found again after a Detail change (in a new import and in an edit)',
+    g({}).ok && g({}).why === null && !g({ reading: true }).ok && !g({ busy: true }).ok && !g({ measuring: true }).ok && !g({ blocked: true }).ok &&
+      !g({ autoDone: false }).ok && g({ autoDone: false }).why === (await import('../src/robotImport/ui/copy')).COPY.waitMoving &&
+      !em.autoDone(reread) && !em.autoDone({ ...reread, editId: 'e1' }) && em.autoDone({ ...reread, setup: { ...reread.setup, motion: [] } }) &&
+      em.autoDone({ ...reread, savedModel: true }) && !em.autoDone(null),
+  );
+  // what a read keeps of the last model's build and placements (`docForRead`)
+  const built = { ...light, cadBuild: ['x'], cadMech: { place: { x: 1, y: 2, z: 3 } }, cadKey: 'k', cadReread: true, mechAuto: {}, turretRing: { x: 1, y: 1 }, mechAt: [1] } as unknown as Doc;
+  const carried = (o: Doc) => em.BUILD_KEYS.filter((k) => o[k] !== undefined).length;
+  check(
+    'X1: only a Detail re-read keeps the last model’s build and placements; a new file (Replace), a share file set up for this game and a saved robot opened start without them',
+    em.BUILD_KEYS.length === 7 && carried(em.docForRead(built, { keepHistory: true, setup: {} })) === 7 &&
+      carried(em.docForRead(built, { setup: { triBudget: geo.FULL_DETAIL } })) === 0 && carried(em.docForRead(built, { savedModel: true, setup: {} })) === 0 &&
+      em.readKeepsBuild({ keepHistory: true }) && !em.readKeepsBuild({ savedModel: true }) && !em.readKeepsBuild({}),
+  );
+  const ed = readFileSync('src/robotImport/ui/ImportEditor.tsx', 'utf8').replace(/\r\n/g, '\n');
+  check(
+    'X1: the editor’s four ways out read the one gate, and a read lands through `docForRead` with a new `readId` (source pins)',
+    (ed.match(/disabled=\{!gate\.ok\}/g) ?? []).length === 4 && /\.\.\.docForRead\(baseDoc, opts\),/.test(ed) && /readId: \(baseDoc\.readId \?\? 0\) \+ 1,/.test(ed),
+  );
+  check(
+    'X1: an undo or redo clears the re-read line like any edit, and a re-read lands with its history folded (source pins)',
+    /setMotionNote\(null\);\s*setDraft\(\{ \.\.\.cur, doc: r\.doc, history: r\.history \}\)/.test(ed) &&
+      /history: opts\.keepHistory \? foldAcrossRead\(draftRef\.current\?\.history, baseDoc\) : undefined/.test(ed) && /rereadAsks\(lose\)/.test(ed),
+  );
+}
+/**
+ * V1: A STEP READ THAT COMES BACK BLANK IS READ AGAIN SMALLER, AND WHAT STAYS UNREADABLE IS SAID
+ * (2026-11-27). occt gives a whole read no triangles when ONE face of it will not mesh, and the editor
+ * refused such a file as "needs more memory". `readPieces` reads a blank piece root by root, a blank
+ * root by its faces in quarters, within a bound PER PIECE, and leaves out only what was read alone and
+ * still came back blank; what a bound stops is said as that. One re-read solid is one body a placement.
+ *
+ * V2: THE STEP READERS' MEMORY IS HELD READ BY READ (`HeapGate`, `CostlyPricing`, `runRound`). These
+ * checks drive the worker's own scheduler, `runRound`, with readers of their own in virtual time.
+ * Synthetic files throughout, no occt.
+ */
+{
+  const sv = await import('../src/robotImport/engine/stepSplit');
+  const fsV = await import('node:fs');
+  type UnitV = { root: number; face: number; bytes: number };
+  // a synthetic plan: whole unit r for root r; a root's face units appended when first asked for (as
+  // `faceUnitsOf` does). `bad(root, face)` is what occt cannot mesh
+  const makeV = (faceCount: number[], bad: (r: number, f: number) => boolean) => {
+    const units: UnitV[] = faceCount.map((n, r) => ({ root: r, face: -1, bytes: 10 * n }));
+    const cache = new Map<number, number[]>();
+    const facesOf = (r: number): number[] | null => {
+      if (faceCount[r] < 2) return null;
+      let f = cache.get(r);
+      if (!f) {
+        f = [];
+        for (let i = 0; i < faceCount[r]; i++) {
+          f.push(units.length);
+          units.push({ root: r, face: i, bytes: 10 });
+        }
+        cache.set(r, f);
+      }
+      return f;
+    };
+    const blank = (list: readonly number[]): boolean =>
+      list.some((u) => {
+        const x = units[u];
+        if (x.face >= 0) return bad(x.root, x.face);
+        for (let f = 0; f < faceCount[x.root]; f++) if (bad(x.root, f)) return true;
+        return false;
+      });
+    return { units, facesOf, blank };
+  };
+  // read `pieces` with a seeded order of settling; `skeleton` is what every read carries on top
+  const runV = async (faceCount: number[], bad: (r: number, f: number) => boolean, pieces: number[][], seed: number, perPiece?: { reads: number; geometry: number }, skeleton = 100, batch?: number) => {
+    const { units, facesOf, blank } = makeV(faceCount, bad);
+    let s = seed;
+    const rnd = (): number => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const frac: number[] = [];
+    const out = await sv.readPieces<{ units: number[]; parts: { body: Uint32Array }[] }>(
+      pieces,
+      {
+        cost: (list) => skeleton + list.reduce((t, u) => t + units[u].bytes, 0),
+        geometry: (list) => list.reduce((t, u) => t + units[u].bytes, 0),
+        split: (list) => sv.retrySplit(list, (u) => units[u].root, (u) => units[u].face >= 0, facesOf),
+        progress: (f) => frac.push(f),
+        batch,
+        run: async (jobs, _first, settle) => {
+          const order = jobs.map((_, i) => i).sort(() => rnd() - 0.5);
+          await Promise.all(
+            order.map(async (i, n) => {
+              for (let k = 0; k < (n * 7 + seed) % 5; k++) await Promise.resolve();
+              const list = jobs[i].units;
+              settle(i, { blank: blank(list), value: { units: list.slice(), parts: [{ body: Uint32Array.from(list.map((_, b) => b)) }] } });
+            }),
+          );
+        },
+      },
+      perPiece,
+    );
+    return { out, units, frac };
+  };
+  // six roots; bad: faces 7 and 31 of root 2, face 0 of root 4, root 5 (one face: no split)
+  const fc = [1, 9, 40, 3, 17, 1];
+  const badA = (r: number, f: number): boolean => (r === 2 && (f === 7 || f === 31)) || (r === 4 && f === 0) || r === 5;
+  const piecesA = [[0, 1, 2], [3], [4, 5]];
+  const a = await runV(fc, badA, piecesA, 1);
+  const b = await runV(fc, badA, piecesA, 77);
+  const c = await runV(fc, badA, piecesA, 12345);
+  const keptFaces = (r: Awaited<ReturnType<typeof runV>>, counts: number[]): string[] => {
+    const outF: string[] = [];
+    for (const k of r.out.kept)
+      for (const u of k.value.units) {
+        const x = r.units[u];
+        if (x.face >= 0) outF.push(`${x.root}.${x.face}`);
+        else for (let f = 0; f < counts[x.root]; f++) outF.push(`${x.root}.${f}`);
+      }
+    return outF.sort();
+  };
+  const wantKept: string[] = [];
+  fc.forEach((n, r) => {
+    for (let f = 0; f < n; f++) if (!badA(r, f)) wantKept.push(`${r}.${f}`);
+  });
+  wantKept.sort();
+  const jobsOf = (r: Awaited<ReturnType<typeof runV>>, list: { units: number[] }[]): string => list.map((j) => j.units.map((u) => `${r.units[u].root}.${r.units[u].face}`).join('+')).join(' ');
+  check(
+    'V1: a blank piece is read again root by root, a blank root by its faces, and only what was read alone and stayed blank is left out (two faces of root 2, one of root 4, root 5 that cannot split); nothing is stopped',
+    JSON.stringify(keptFaces(a, fc)) === JSON.stringify(wantKept) && jobsOf(a, a.out.lost) === '2.7 2.31 4.0 5.-1' && a.out.stopped.length === 0 && a.out.retryReads > 0,
+    `${jobsOf(a, a.out.lost)} | stopped ${jobsOf(a, a.out.stopped)} | kept ${keptFaces(a, fc).length} of ${wantKept.length}`,
+  );
+  check(
+    'V1: a blank root is split in RETRY_FAN parts, a run of faces too, one face or a root of one face is not split, several roots go root by root',
+    sv.RETRY_FAN === 4 &&
+      JSON.stringify(sv.retrySplit([0, 1, 2], (u) => u, () => false, () => null)) === '[[0],[1],[2]]' &&
+      JSON.stringify(sv.retrySplit([9], () => 3, () => false, () => [20, 21, 22, 23, 24, 25, 26, 27, 28])) === '[[20,21],[22,23],[24,25],[26,27,28]]' &&
+      JSON.stringify(sv.retrySplit([20, 21, 22], () => 3, () => true, () => null)) === '[[20],[21],[22]]' &&
+      sv.retrySplit([20], () => 3, () => true, () => null).length === 0 &&
+      sv.retrySplit([9], () => 3, () => false, () => null).length === 0,
+  );
+  const sig = (r: Awaited<ReturnType<typeof runV>>): string => {
+    const reads = r.out.kept.map((k) => ({ parts: k.value.parts.map((p) => ({ body: p.body.slice() })) }));
+    sv.renumberBodies(reads);
+    return JSON.stringify(r.out.kept.map((k, i) => [k.key, k.value.units, [...reads[i].parts[0].body]]));
+  };
+  const bodiesA = (() => {
+    const reads = a.out.kept.map((k) => ({ parts: k.value.parts.map((p) => ({ body: p.body.slice() })) }));
+    sv.renumberBodies(reads);
+    return reads.flatMap((r) => [...r.parts[0].body]);
+  })();
+  check(
+    'V1: the kept reads, their order and every body id are the same whatever order the readers finish in, and the body ids number every solid once',
+    sig(a) === sig(b) && sig(b) === sig(c) && bodiesA.every((v, i) => v === i),
+  );
+  check(
+    'V1: the bar never goes back, every read moves it, and it ends full with the retries counted',
+    a.frac.every((f, i) => i === 0 || f >= a.frac[i - 1]) && a.frac[a.frac.length - 1] === 1 && a.frac.length === a.out.kept.length + a.out.lost.length && a.frac.filter((f, i) => i > 0 && f > a.frac[i - 1]).length === a.frac.length - 1,
+    a.frac.map((f) => f.toFixed(3)).join(','),
+  );
+  // the bound per piece: none at all stops both blank pieces (NOT unreadable); a small one stops part-way, the same way each time
+  const none = await runV(fc, badA, piecesA, 5, { reads: 0, geometry: 0 });
+  const some1 = await runV(fc, badA, piecesA, 5, { reads: 6, geometry: 4 });
+  const some2 = await runV(fc, badA, piecesA, 99, { reads: 6, geometry: 4 });
+  check(
+    'V1: what a per-piece bound stops is kept apart from what is unreadable: no bound stops both blank pieces whole and calls nothing unreadable; a small one stops part-way, the same reads whatever the finishing order',
+    jobsOf(none, none.out.stopped) === '0.-1+1.-1+2.-1 4.-1+5.-1' && none.out.lost.length === 0 && none.out.retryReads === 0 &&
+      some1.out.stopped.length > 0 && jobsOf(some1, some1.out.stopped) === jobsOf(some2, some2.out.stopped) && jobsOf(some1, some1.out.lost) === jobsOf(some2, some2.out.lost) && sig(some1) === sig(some2),
+    `${jobsOf(none, none.out.stopped)} | ${jobsOf(some1, some1.out.stopped)} / ${jobsOf(some1, some1.out.lost)}`,
+  );
+  // MANY PIECES, ONE BAD FACE EACH: 20 pieces of 10 roots of 50 faces, a heavy skeleton; all 200 read, 20 surfaces left out
+  const manyFc = Array.from({ length: 200 }, () => 50);
+  const badMany = (r: number, f: number): boolean => r % 10 === 0 && f === 17;
+  const manyPieces = Array.from({ length: 20 }, (_, p) => Array.from({ length: 10 }, (_, r) => p * 10 + r));
+  const many = await runV(manyFc, badMany, manyPieces, 3, undefined, 3000);
+  const planMany = { units: many.units, roots: manyFc.map((n) => ({ bytes: 10 * n })) } as unknown as Parameters<typeof sv.unreadOf>[0];
+  const unMany = sv.unreadOf(planMany, many.out.lost);
+  let facesMany = 0;
+  for (const n of unMany.partial.values()) facesMany += n;
+  const geomMany = manyFc.reduce((t, n) => t + 10 * n, 0);
+  check(
+    'V1: twenty pieces each holding one bad face read all 200 parts again where needed and leave out exactly 20 surfaces of 20 parts: nothing whole, nothing stopped, not refused',
+    many.out.stopped.length === 0 && unMany.whole.length === 0 && unMany.partial.size === 20 && facesMany === 20 && !sv.unreadRefused(unMany.bytes, geomMany) &&
+      sv.unreadNote(unMany.whole.length, facesMany, unMany.partial.size, []) === 'Left out 20 surfaces of 20 parts: the STEP reader couldn’t turn them into triangles. The robot may have holes there.',
+    `stopped ${many.out.stopped.length}, whole ${unMany.whole.length}, partial ${unMany.partial.size}, faces ${facesMany}, reads ${many.out.retryReads}`,
+  );
+  const four = await runV(manyFc.slice(0, 40), badMany, manyPieces.slice(0, 4), 8, undefined, 3000);
+  const unFour = sv.unreadOf({ units: four.units, roots: manyFc.slice(0, 40).map((n) => ({ bytes: 10 * n })) } as never, four.out.lost);
+  check('V1: four such pieces leave out 4 surfaces of 4 parts, no whole part', four.out.stopped.length === 0 && unFour.whole.length === 0 && unFour.partial.size === 4, JSON.stringify([unFour.whole, [...unFour.partial]]));
+  // what is left out, and what it says
+  const planU = { units: a.units, roots: fc.map((n) => ({ bytes: 10 * n })) } as unknown as Parameters<typeof sv.unreadOf>[0];
+  const un = sv.unreadOf(planU, a.out.lost);
+  const st = sv.stoppedOf(planU, none.out.stopped);
+  check(
+    'V1: the unreadable reads are one part whole (root 5) and three faces of two others (roots 2 and 4), by bytes; what a bound stopped counts its parts and their bytes',
+    JSON.stringify(un.whole) === '[5]' && un.partial.get(2) === 2 && un.partial.get(4) === 1 && un.partial.size === 2 && un.bytes === 10 + 20 + 10 && JSON.stringify(st.whole) === '[0,1,2,4,5]' && st.partial.size === 0 && st.bytes === 10 + 90 + 400 + 170 + 10,
+    JSON.stringify([un.whole, [...un.partial], un.bytes, st.whole, st.bytes]),
+  );
+  const longName = 'A part name of more than forty characters, cut';
+  const n1 = sv.unreadNote(1, 3, 2, ['Plate', 'Tire', 'Mount', 'Bracket']);
+  const n2 = sv.unreadNote(0, 2, 2, [longName]);
+  const n3 = sv.unreadNote(2, 0, 0, []);
+  const s1 = sv.stoppedNote(3, 0, 0, ['Frame']);
+  const s2 = sv.stoppedNote(1, 2, 1, []);
+  check(
+    'V1: the notes say how many parts and surfaces, name up to three (forty characters at most), say what was not turned into triangles apart from what the bound stopped, in house copy',
+    n1 === 'Left out 1 part, and 3 surfaces of 2 other parts (Plate, Tire, Mount and 1 more): the STEP reader couldn’t turn them into triangles. The robot may have holes there.' &&
+      n2 === `Left out 2 surfaces of 2 parts (${longName.slice(0, 39).trimEnd()}…): the STEP reader couldn’t turn them into triangles. The robot may have holes there.` &&
+      n3 === 'Left out 2 parts: the STEP reader couldn’t turn them into triangles. The robot may have holes there.' &&
+      sv.unreadNote(0, 0, 0, ['x']) === null &&
+      s1 === 'Left out 3 parts (Frame): the STEP reader stopped reading them again at its limit for one piece, so they may be whole in the file. The robot may have gaps there.' &&
+      s2 === 'Left out 1 part, and 2 surfaces of 1 other part: the STEP reader stopped reading them again at its limit for one piece, so they may be whole in the file. The robot may have gaps there.' &&
+      sv.stoppedNote(0, 0, 0, []) === null,
+    `${n1} | ${n2} | ${n3} | ${s1}`,
+  );
+  const refused = sv.unreadRefusal('bot.step', 40, 0, 60, ['Plate', 'Tire'], 'AP242');
+  const refused2 = sv.unreadRefusal('bot.step', 1, 0, 1, [], null);
+  const refused3 = sv.unreadRefusal('bot.step', 2, 30, 60, [], 'AP214');
+  check(
+    'V1: refused only past half the geometry, and then truly: what was not turned into triangles and what a bound stopped, the parts named or not, the parts or the other STEP schema as the next step, never memory or the same export again',
+    sv.unreadRefused(51, 100) &&
+      !sv.unreadRefused(50, 100) &&
+      !sv.unreadRefused(0, 0) &&
+      refused.code === 'step-failed' &&
+      refused.message === 'Couldn’t read bot.step: the STEP reader couldn’t turn 40 of 60 parts into triangles (Plate and Tire). Check those parts in your CAD tool and repair or simplify them, or export the robot as STEP AP214 instead of AP242.' &&
+      refused2.message === 'Couldn’t read bot.step: the STEP reader couldn’t turn 1 of 1 part into triangles. Check the robot’s parts in your CAD tool and repair or simplify any that are damaged.' &&
+      refused3.message === 'Couldn’t read bot.step: the STEP reader couldn’t turn 2 of 60 parts into triangles and stopped reading 30 more again at its limit. Check the robot’s parts in your CAD tool and repair or simplify any that are damaged, or export the robot as STEP AP242 instead of AP214.' &&
+      !/memory|Export it again/.test(refused.message),
+    `${refused.message} | ${refused2.message} | ${refused3.message}`,
+  );
+  check(
+    'V1: STEP strings decode (a doubled quote, \\X\\ Latin-1, \\X2\\ UTF-16, and raw UTF-8 bytes that were read as Latin-1)',
+    sv.stepString("O''Brien") === "O'Brien" && sv.stepString('45\\X\\B0 bracket') === '45° bracket' && sv.stepString('caf\\X2\\00E9\\X0\\') === 'café' && sv.stepString('GrÃ¼n') === 'Grün' && sv.stepString('Grün') === 'Grün',
+  );
+  // on the repo's fixture: a root split for a retry writes a valid piece; names come from its products
+  const ixV = sv.indexStep(new Uint8Array(fsV.readFileSync('scripts/fixtures/robot-import/robot.step')));
+  const planV = sv.planPieces(ixV, { pieceBytes: 1 << 30 });
+  const k = planV.roots.findIndex((_, r) => (sv.faceUnitsOf(ixV, planV, r)?.length ?? 0) >= 4);
+  const f1 = k >= 0 ? sv.faceUnitsOf(ixV, planV, k)! : [];
+  const f2 = k >= 0 ? sv.faceUnitsOf(ixV, planV, k)! : [];
+  const half = f1.slice(0, f1.length >> 1);
+  let pieceOk = false;
+  try {
+    const sub = sv.indexStep(sv.unitsText(ixV, planV, half));
+    pieceOk = sub.refs.every((r) => r >= 0) && /SHELL_BASED_SURFACE_MODEL/.test(new TextDecoder('latin1').decode(sv.unitsText(ixV, planV, half)));
+  } catch {}
+  const names = sv.partNames(ixV, planV, planV.roots.map((_, r) => r));
+  check(
+    'V1: a root split for a retry gives the same face units when asked again and writes a piece that indexes with no dangling reference; part names come from the file’s products',
+    k >= 0 && f1.length >= 4 && JSON.stringify(f1) === JSON.stringify(f2) && pieceOk && names.some((nm) => !!nm),
+    `root ${k}, ${f1.length} faces, ok ${pieceOk}`,
+  );
+  const workerV = fsV.readFileSync('src/robotImport/engine/stepWorker.ts', 'utf8');
+  check(
+    'V1: the STEP worker reads blank pieces again (`readPieces`) on the shared scheduler (`runRound`), names what it left out and what a bound stopped, refuses only through `unreadRefusal`, and no longer calls a blank read “needs more memory”',
+    /readPieces</.test(workerV) && /runRound</.test(workerV) && /unreadNote\(/.test(workerV) && /stoppedNote\(/.test(workerV) && /unreadRefusal\(/.test(workerV) && !/needs more memory/.test(workerV) && /occtDied\(/.test(workerV),
+  );
+  // ONE SOLID IS ONE BODY AFTER A RE-READ, ONLY WHEN THE DATA PROVES IT. A synthetic solid of three
+  // shells (a triangle, a quad, a fan of three: different counts and areas), placed at x = 0, 100, 200
+  // (one of them turned a quarter, so boxes differ), its faces read again in two reads
+  {
+    const conv = await import('../src/robotImport/engine/stepConvert');
+    const shells = [
+      [[0, 0, 0], [4, 0, 0], [0, 3, 0]],
+      [[0, 0, 0], [6, 0, 0], [6, 2, 0], [0, 0, 0], [6, 2, 0], [0, 2, 0]],
+      [[1, 1, 0], [2, 1, 0], [1, 3, 0], [1, 1, 0], [1, 3, 0], [0, 2, 0], [1, 1, 0], [0, 2, 0], [0, 0, 0]],
+    ];
+    const mesh = (pts: number[][], at: number, turn: boolean) => {
+      const pos: number[] = [];
+      for (const [x, y, z] of pts) pos.push(...(turn ? [at - y, x, z] : [at + x, y, z]));
+      return { attributes: { position: { array: pos } }, index: { array: pos.map((_, i) => i).filter((i) => i < pos.length / 3) }, brep_faces: [{ first: 0, last: pts.length / 3 - 1, color: null }], name: '' };
+    };
+    const at = [0, 100, 200];
+    const occt = (order: [number, number][]) => ({ success: true, meshes: order.map(([p, s]) => mesh(shells[s], at[p], p === 1)), root: { name: '', meshes: order.map((_, i) => i), children: [] } });
+    // occt's order on the real file: placement by placement (runs); and shell by shell across placements
+    const runs: [number, number][] = [0, 1, 2].flatMap((p) => [0, 1, 2].map((s) => [p, s] as [number, number]));
+    const shellMajor: [number, number][] = [0, 1, 2].flatMap((s) => [0, 1, 2].map((p) => [p, s] as [number, number]));
+    const solid3 = { name: 'Tyre', placements: 3 };
+    const done = (r: ReturnType<typeof conv.stepToParts>) => (r.kind === 'done' ? r : null)!;
+    const readA = done(conv.stepToParts(occt(runs) as never, null, solid3));
+    const readB = done(conv.stepToParts(occt(runs.filter(([, s]) => s !== 1)) as never, null, solid3));
+    const major = done(conv.stepToParts(occt(shellMajor) as never, null, solid3));
+    const uneven = done(conv.stepToParts(occt([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [2, 2]]) as never, null, { name: 'Tyre', placements: 2 }));
+    const today = done(conv.stepToParts(occt(runs) as never, null));
+    const which = (parts: readonly { positions: Float32Array; body?: Uint32Array }[]) => {
+      const m = new Map<number, Set<number>>();
+      for (const p of parts) for (let v = 0; v < p.body!.length; v++) (m.get(p.body![v]) ?? m.set(p.body![v], new Set()).get(p.body![v])!).add(Math.round(p.positions[3 * v] / 100));
+      return m;
+    };
+    const merged = sv.mergeSolidReads([
+      { key: [3, 1], value: { ...readA, solid: 5 } },
+      { key: [3, 2, 0], value: { parts: [{ body: Uint32Array.from([0, 0, 0]) }] as never, trisIn: 1, solid: -1 } },
+      { key: [3, 2, 1], value: { ...readB, solid: 5 } },
+    ]);
+    const bodies = which(merged[0].value.parts as never);
+    check(
+      'V1: a solid read again by its faces, its meshes written placement by placement, comes back as ONE body per placement (each body in one placement only), named as the part, at the place of its first read; a read of no re-read solid keeps a body per mesh as before',
+      merged.length === 2 && merged[0].key.join('.') === '3.1' && bodies.size === 3 && [...bodies.values()].every((s) => s.size === 1) &&
+        merged[0].value.parts.every((p) => (p as { name?: string }).name === 'Tyre') && merged[1].value.solid === -1 && !today.placementOf && new Set(today.parts.flatMap((p) => [...p.body!])).size === 9,
+      JSON.stringify([...bodies].map(([b, s]) => [b, [...s]])),
+    );
+    // shell by shell across placements: the runs are not instances, so no merge, and nothing spans placements
+    const fromMajor = sv.mergeSolidReads([{ key: [0], value: { ...major, solid: 5 } }]);
+    const majorBodies = which(fromMajor[0].value.parts as never);
+    check(
+      'V1: meshes written shell by shell across placements (they still divide evenly) are not proved to be runs: no merge, a body per mesh, none spanning placements',
+      !major.placementOf && majorBodies.size === 9 && [...majorBodies.values()].every((s) => s.size === 1) && !uneven.placementOf,
+      JSON.stringify([major.placementOf ?? null, uneven.placementOf ?? null]),
+    );
+    // identical lumps 10 apart, the solid placed twice by translation (100 apart), written shell by shell:
+    // counts, areas and distances all match run for run, but each run holds lumps of both placements.
+    // A bridge face (a second read of the same solid) joins the lumps of each placement
+    const tri = (x: number, y: number, w: number, h: number) => mesh([[x, y, 0], [x + w, y, 0], [x, y + h, 0]], 0, false);
+    const lump = (x: number, y: number) => tri(x, y, 2, 2);
+    const scene = (meshes: unknown[]) => ({ success: true, meshes, root: { name: '', meshes: [], children: [] } });
+    const solid2 = { name: 'Tyre', placements: 2 };
+    const lumpsMajor = done(conv.stepToParts(scene([0, 10, 20, 30].flatMap((x) => [lump(x, 0), lump(x, 100)])) as never, null, solid2));
+    // a fresh read each time: a merge renumbers body ids in place
+    const lumpsRuns = () => done(conv.stepToParts(scene([0, 100].flatMap((y) => [0, 10, 20, 30].map((x) => lump(x, y)))) as never, null, solid2));
+    // the bridge sits half a unit off the lumps: the gap a face left out leaves, joined (`JOIN_GAP`)
+    const bridge = () => done(conv.stepToParts(scene([0, 100].map((y) => tri(0, y - 1.5, 32, 1))) as never, null, solid2));
+    const bodiesOf = (r: { value: { parts: readonly { body?: Uint32Array }[] } }[]) => new Set(r.flatMap((x) => x.value.parts.flatMap((p) => [...p.body!].map((b) => `${x === r[0] ? 0 : 1}:${b}`)))).size;
+    const lumpsAlone = sv.mergeSolidReads([{ key: [0], value: { ...lumpsMajor, solid: 5 } }]);
+    const lumpsBridged = sv.mergeSolidReads([{ key: [0], value: { ...lumpsMajor, solid: 5 } }, { key: [1], value: { ...bridge(), solid: 5 } }]);
+    const runsAlone = sv.mergeSolidReads([{ key: [0], value: { ...lumpsRuns(), solid: 5 } }]);
+    const runsBridged = sv.mergeSolidReads([{ key: [0], value: { ...lumpsRuns(), solid: 5 } }, { key: [1], value: { ...bridge(), solid: 5 } }]);
+    check(
+      'V1: identical lumps of a solid placed by translation and written shell by shell pass the runs’ counts but not as placed solids: no merge, even with the rest of the solid read; written run by run, a placement’s lumps merge once another read of the solid joins them (across the small gap a face left out leaves), and fall back alone (safe)',
+      !!lumpsMajor.placementOf && bodiesOf(lumpsAlone) === 8 && lumpsBridged.length === 2 && bodiesOf(lumpsBridged) === 10 &&
+        runsAlone.length === 1 && bodiesOf(runsAlone) === 8 && runsBridged.length === 1 && bodiesOf(runsBridged) === 2,
+      JSON.stringify([bodiesOf(lumpsAlone), lumpsBridged.length, bodiesOf(lumpsBridged), bodiesOf(runsAlone), runsBridged.length, bodiesOf(runsBridged)]),
+    );
+    // all or nothing: one read of the solid not proved, so none of its reads is merged
+    const mixed = sv.mergeSolidReads([
+      { key: [0, 0], value: { ...done(conv.stepToParts(occt(runs) as never, null, solid3)), solid: 5 } },
+      { key: [0, 1], value: { ...done(conv.stepToParts(occt(shellMajor) as never, null, solid3)), solid: 5 } },
+    ]);
+    check(
+      'V1: one solid’s reads merge all or nothing: when one of them is not proved, every read keeps its body per mesh (no solid half merged)',
+      mixed.length === 2 && new Set(mixed[0].value.parts.flatMap((p) => [...p.body!])).size === 9 && new Set(mixed[1].value.parts.flatMap((p) => [...p.body!])).size === 9,
+    );
+    // a count of ONE for a solid placed four times: the blank whole read and the assembly must agree
+    const fourPlaced = done(conv.stepToParts({ success: true, meshes: [0, 100, 200, 300].flatMap((x) => [mesh(shells[0], x, false), mesh(shells[1], x, false)]), root: { name: '', meshes: [], children: [] } } as never, null, { name: 'Tyre', placements: sv.trustedPlacements(1, 4) }));
+    const ixF = sv.indexStep(new Uint8Array(fsV.readFileSync('scripts/fixtures/robot-import/robot.step')));
+    const planF = sv.planPieces(ixF, { pieceBytes: 1 << 30 });
+    const counts = planF.roots.map((_, r) => sv.placementCount(ixF, planF, r));
+    check(
+      'V1: a solid’s placements are trusted only when its blank whole read and the assembly’s occurrences agree (one mesh for four placements is not), and the assembly’s count is read from the file',
+      sv.trustedPlacements(1, 4) === null && sv.trustedPlacements(4, 4) === 4 && sv.trustedPlacements(0, 0) === null && !fourPlaced.placementOf && counts.some((n) => n !== null && n >= 1) && counts.every((n) => n === null || n >= 1),
+      JSON.stringify(counts.slice(0, 12)),
+    );
+  }
+
+  // THE FILE-WIDE RULE, EXACT: blank pieces read again in key-ordered batches; refused early only once
+  // what is left out already refuses the file by the final test; every missing surface counted under its reason
+  {
+    const tenRoots = (pieceCount: number) => Array.from({ length: pieceCount }, (_, p) => Array.from({ length: 10 }, (_, r) => p * 10 + r));
+    const refusedBy = (r: Awaited<ReturnType<typeof runV>>, counts: number[]) => {
+      const planR = { units: r.units, roots: counts.map((n) => ({ bytes: 10 * n })) } as unknown as Parameters<typeof sv.unreadOf>[0];
+      const un2 = sv.unreadOf(planR, r.out.lost);
+      const st2 = sv.stoppedOf(planR, r.out.stopped);
+      return { refused: sv.unreadRefused(un2.bytes + st2.bytes, counts.reduce((t, n) => t + 10 * n, 0)), un: un2, st: st2 };
+    };
+    const allBadFc = Array.from({ length: 150 }, () => 50);
+    const allBad = await runV(allBadFc, () => true, tenRoots(15), 4, undefined, 3000);
+    const allBadR = refusedBy(allBad, allBadFc);
+    check(
+      'V1: a 15-piece file whose every face fails is refused early, after one batch of eight pieces read again, by the final refusal’s own test (what is left out is already over half)',
+      !!allBad.out.early && allBad.out.early.unread.length === 7 && allBadR.refused && allBad.out.retryReads <= 8 * sv.RETRY_READS_PER_PIECE,
+      `reads again ${allBad.out.retryReads}, unread ${allBad.out.early?.unread.length}`,
+    );
+    check('V1: the twenty-piece file with one bad face a piece is not refused early', !many.out.early);
+    // ten pieces: piece 0 all bad, pieces 1 to 6 one bad face each, 7 to 9 fine: 70 % blank at first, 10 % bad
+    const mixFc = Array.from({ length: 100 }, () => 50);
+    const mixBad = (r: number, f: number): boolean => r < 10 || (r < 70 && r % 10 === 0 && f === 17);
+    const mix2 = await runV(mixFc, mixBad, tenRoots(10), 9, undefined, 3000, 2);
+    const mix8 = await runV(mixFc, mixBad, tenRoots(10), 31, undefined, 3000, 8);
+    const mixR = refusedBy(mix2, mixFc);
+    let mixFaces = 0;
+    for (const n of mixR.un.partial.values()) mixFaces += n;
+    check(
+      'V1: a file 70 % blank at first but mostly good reads to its end in batches: not refused, piece 0 left out as stopped, six bad surfaces as unreadable, the same result whatever the batch size',
+      !mix2.out.early && !mixR.refused && mixFaces === 6 && mixR.un.partial.size === 6 && [...mixR.st.whole, ...mixR.st.partial.keys()].every((k) => k < 10) &&
+        jobsOf(mix2, mix2.out.lost) === jobsOf(mix8, mix8.out.lost) && jobsOf(mix2, mix2.out.stopped) === jobsOf(mix8, mix8.out.stopped) && sig(mix2) === sig(mix8),
+      `lost ${jobsOf(mix2, mix2.out.lost)} | stopped ${mix2.out.stopped.length} | refused ${mixR.refused}`,
+    );
+    // one solid of 120 faces with seven bad ones: the per-piece bound stops some of its faces; each missing one is counted once, under its reason
+    const fc1 = [120, 120, 120, 120];
+    const badSet = new Set([3, 14, 29, 33, 60, 71, 108]);
+    const one = await runV(fc1, (r, f) => r === 0 && badSet.has(f), [[0, 1, 2, 3]], 6, { reads: 56, geometry: 4 });
+    const plan1 = { units: one.units, roots: fc1.map((n) => ({ bytes: 10 * n })) } as unknown as Parameters<typeof sv.unreadOf>[0];
+    const lostU = sv.unreadOf(plan1, one.out.lost);
+    const stopU = sv.stoppedOf(plan1, one.out.stopped);
+    const kept1 = new Set(keptFaces(one, fc1));
+    let missing = 0;
+    for (let f = 0; f < 120; f++) if (!kept1.has(`0.${f}`)) missing++;
+    const counted = (lostU.partial.get(0) ?? 0) + (stopU.partial.get(0) ?? 0) + (lostU.whole.includes(0) || stopU.whole.includes(0) ? 120 : 0);
+    check(
+      'V1: when a bound stops some faces of a part that also has unreadable faces, every missing face is counted once: the unreadable ones as unreadable, the stopped ones as stopped',
+      one.out.stopped.length > 0 && (lostU.partial.get(0) ?? 0) > 0 && (stopU.partial.get(0) ?? 0) > 0 && missing === counted && (lostU.partial.get(0) ?? 0) === one.out.lost.length,
+      `missing ${missing}, unreadable ${lostU.partial.get(0) ?? 0}, stopped ${stopU.partial.get(0) ?? 0}`,
+    );
+  }
+
+  // ---- V2: the worker's scheduler (`runRound`) with readers of the check's own, in virtual time ----
+  const MBv = 1024 * 1024;
+  type PieceV = { text: number; heap: number; ms: number; costly: number };
+  const simV = async (pieces: PieceV[], cores: number, memGb: number, gated = true) => {
+    const n = sv.poolSize(pieces.length, cores, memGb);
+    const gate = new sv.HeapGate(gated ? sv.readerBudget(memGb) : Infinity, n);
+    const pricing = new sv.CostlyPricing(memGb < 8, gate.budget, n, sv.pieceHeap(Math.max(...pieces.map((p) => p.text))));
+    type R = { heap: number };
+    const slots: (R | null)[] = new Array(n).fill(null);
+    const live = new Set<R>();
+    let t = 0;
+    let peak = 0;
+    let opened = 0;
+    let unmeasuredSolidsAtOnce = 0;
+    const reading = new Map<number, number>();
+    const pending: { end: number; seq: number; go: () => void }[] = [];
+    let seq = 0;
+    let done = false;
+    const run = sv
+      .runRound<R, number>(
+        { gate, pricing, slots },
+        pieces.map((p) => ({ text: p.text, costly: gated ? p.costly : -1 })),
+        true,
+        {
+          open: () => {
+            const r = { heap: 0 };
+            live.add(r);
+            opened++;
+            return r;
+          },
+          close: (r) => live.delete(r),
+          heap: (h) => h,
+          read: (r, i) =>
+            new Promise<number>((res) => {
+              const p = pieces[i];
+              r.heap = Math.max(r.heap, p.heap);
+              let sum = 0;
+              for (const x of live) sum += x.heap;
+              peak = Math.max(peak, sum);
+              if (p.costly >= 0 && pricing.unknown(p.costly)) reading.set(p.costly, (reading.get(p.costly) ?? 0) + 1);
+              unmeasuredSolidsAtOnce = Math.max(unmeasuredSolidsAtOnce, [...reading.values()].filter((v) => v > 0).length);
+              pending.push({
+                end: t + p.ms,
+                seq: seq++,
+                go: () => {
+                  if (reading.has(p.costly)) reading.set(p.costly, reading.get(p.costly)! - 1);
+                  res(r.heap);
+                },
+              });
+            }),
+        },
+        () => {},
+      )
+      .then(() => {
+        done = true;
+      });
+    while (!done) {
+      for (let q = 0; q < 20; q++) await Promise.resolve();
+      if (done) break;
+      if (!pending.length) {
+        await new Promise((r) => setImmediate(r));
+        continue;
+      }
+      pending.sort((x, y) => x.end - y.end || x.seq - y.seq);
+      const p = pending.shift()!;
+      t = p.end;
+      p.go();
+    }
+    await run;
+    return { readers: n, peak, seconds: t / 1000, budget: gate.budget, opened, unmeasuredSolidsAtOnce };
+  };
+  // synthetic pieces: ordinary ones whose heap is what pieceHeap says, a costly solid that is cheap, and one that is dear
+  const ord = (count: number, mb: number, ms: number): PieceV[] => Array.from({ length: count }, (_, i) => ({ text: mb * MBv, heap: sv.pieceHeap(mb * MBv), ms: ms + 41 * i, costly: -1 }));
+  const solid = (root: number, count: number, heapMb: number, ms: number): PieceV[] => Array.from({ length: count }, (_, i) => ({ text: 7.2 * MBv, heap: heapMb * MBv, ms: ms + 13 * i, costly: root }));
+  const cheapThenDear = [...solid(0, 3, 160, 2600), ...solid(1, 6, 1950, 27000), ...ord(28, 7.4, 7500)];
+  const dearThenCheap = [...solid(1, 6, 1950, 27000), ...solid(0, 3, 160, 2600), ...ord(28, 7.4, 7500)];
+  const dearOnly = [...solid(1, 6, 1950, 27000), ...ord(28, 7.4, 7500)];
+  const results: string[] = [];
+  let strictOk = true;
+  let wideOk = true;
+  for (const [cores, mem] of [[16, 8], [8, 8], [8, 4], [4, 2]] as const) {
+    for (const [nm, set] of [['cheap, then dear', cheapThenDear], ['dear, then cheap', dearThenCheap], ['dear only', dearOnly]] as const) {
+      const r = await simV(set, cores, mem);
+      results.push(`${cores}c/${mem}GB ${nm}: ${Math.round(r.peak / MBv)} MB, solids ${r.unmeasuredSolidsAtOnce}`);
+      // the bound promised: under 8 GB the budget plus one read at the ceiling; at 8 GB the budget plus
+      // COSTLY_TOGETHER reads at the ceiling, and never two unmeasured solids at once
+      if (mem < 8) strictOk &&= r.peak <= r.budget + sv.HEAP_MAX;
+      else wideOk &&= r.peak <= r.budget + sv.COSTLY_TOGETHER * sv.HEAP_MAX && r.unmeasuredSolidsAtOnce === 1;
+    }
+  }
+  check('V2: under 8 GB a file with a cheap and a dear costly solid, in either order, holds the budget plus at most one read at the ceiling', strictOk, results.join(' | '));
+  check('V2: at 8 GB or more two unmeasured costly solids never read at once, and the heap passes the budget by at most COSTLY_TOGETHER reads at the ceiling, whichever solid comes first', wideOk, results.join(' | '));
+  const ctd = await simV(cheapThenDear, 16, 8);
+  const dOnly = await simV(dearOnly, 16, 8);
+  const open = await simV(dearOnly, 16, 8, false);
+  check(
+    'V2: a cheap solid measured first never lowers a dear one’s price (its six pieces never all run, alone or after a cheap one), and the gate holds far less than the open pool',
+    ctd.peak < 6 * 1950 * MBv && dOnly.peak < 6 * 1950 * MBv && dOnly.peak < 0.75 * open.peak,
+    `${Math.round(ctd.peak / MBv)} / ${Math.round(dOnly.peak / MBv)} / open ${Math.round(open.peak / MBv)} MB`,
+  );
+  // a costly solid whose pieces are slow but cheap must not wait on itself
+  const slowCheap: PieceV[] = [...ord(18, 6.8, 6500), ...[16000, 4200, 12500, 8800, 2600, 7300].map((ms) => ({ text: 6.9 * MBv, heap: 210 * MBv, ms, costly: 7 }))];
+  const sc = await simV(slowCheap, 32, 8);
+  const scOpen = await simV(slowCheap, 32, 8, false);
+  check('V2: a file whose one big solid is slow but cheap reads within 15 % of the open pool at 8 GB', sc.seconds <= 1.15 * scOpen.seconds, `${sc.seconds} s against ${scOpen.seconds} s`);
+  // an ordinary 60 MB file keeps its readers
+  const ordinary = ord(23, 6.5, 5000);
+  const o16 = await simV(ordinary, 16, 8);
+  const o8 = await simV(ordinary, 8, 8);
+  const o4 = await simV(ordinary, 8, 4);
+  const o16open = await simV(ordinary, 16, 8, false);
+  check(
+    'V2: the ordinary 60 MB file keeps its readers: as fast as the open pool on 16 cores at 8 GB, and inside its 1.1 GB budget on a 4 GB device',
+    o16.seconds <= o16open.seconds && o16.readers === 8 && o8.readers === 6 && o4.readers === 3 && o4.peak <= o4.budget,
+    JSON.stringify([o16.seconds, o16open.seconds, o4.peak / MBv]),
+  );
+  check(
+    'V2: the budget by reported memory is the design’s envelope (3.0 / 1.1 / 0.75 GB, none under 2 GB), and a piece’s heap is priced from its bytes up to occt’s 2 GB ceiling',
+    sv.readerBudget(8) === 3072 * MBv && sv.readerBudget(16) === 3072 * MBv && sv.readerBudget(4) === 1126 * MBv && sv.readerBudget(2) === 768 * MBv && sv.readerBudget(1) === Infinity &&
+      sv.pieceHeap(0) === sv.HEAP_BASE && sv.pieceHeap(10 * MBv) === sv.HEAP_BASE + 240 * MBv && sv.pieceHeap(1e12) === sv.HEAP_MAX,
+  );
+  const planJ = { units: [{ root: 0, face: 3, bytes: 0 }, { root: 1, face: -1, bytes: 0 }, { root: 2, face: 1, bytes: 0 }], roots: [{ bytes: sv.COSTLY_ROOT_BYTES + 1 }, { bytes: 9 * MBv }, { bytes: sv.COSTLY_ROOT_BYTES }] };
+  const pr = new sv.CostlyPricing(false, 3072 * MBv, 8, sv.pieceHeap(10 * MBv));
+  const own = sv.pieceHeap(5 * MBv);
+  const p0 = pr.price(0, 5 * MBv);
+  const us = Array.from({ length: sv.COSTLY_TOGETHER }, () => pr.start(0));
+  const pMore = pr.price(0, 5 * MBv);
+  const pOther = pr.price(9, 5 * MBv);
+  pr.end(0, 1700 * MBv, us[0]);
+  const pOtherStill = pr.price(9, 5 * MBv);
+  for (const u of us.slice(1)) pr.end(0, 200 * MBv, u);
+  const pSame = pr.price(0, 5 * MBv);
+  const pOtherAfter = pr.price(9, 5 * MBv);
+  pr.end(9, Number.NaN, pr.start(9));
+  check(
+    'V2: only faces of a solid over 6 MB are costly; an unmeasured solid’s pieces run together (COSTLY_TOGETHER at most) at their own price while another waits; a measured solid is priced at the most its OWN pieces took, never at another’s; a heap that is not a number prices as the ceiling',
+    sv.costlyRootOf(planJ, [0]) === 0 && sv.costlyRootOf(planJ, [1]) === -1 && sv.costlyRootOf(planJ, [2]) === -1 &&
+      p0 === own && us.every(Boolean) && pMore === Infinity && pOther === Infinity && pOtherStill === Infinity && pSame === 1700 * MBv && pOtherAfter === own &&
+      pr.price(9, 5 * MBv) === sv.HEAP_MAX &&
+      sv.firstCostlyHeap(5 * MBv, 3072 * MBv, 8, false, sv.pieceHeap(10 * MBv)) === 3072 * MBv - 7 * sv.pieceHeap(10 * MBv) &&
+      sv.firstCostlyHeap(5 * MBv, 3072 * MBv, 8, true, sv.pieceHeap(10 * MBv)) === sv.HEAP_MAX,
+    JSON.stringify([p0, pMore, pOther, pOtherStill, pSame / MBv, pOtherAfter, pr.price(9, 5 * MBv) / MBv]),
+  );
+  // a read of a costly solid, and any read again, gets a fresh reader; a heap that is not a number does not stop the pool
+  {
+    const gate = new sv.HeapGate(3072 * MBv, 2);
+    const pricing = new sv.CostlyPricing(false, gate.budget, 2, sv.pieceHeap(7 * MBv));
+    type R = { id: number };
+    const slots: (R | null)[] = [{ id: 80 }, { id: 81 }];
+    let made = 0;
+    const onWhich: number[] = [];
+    const jobs = [
+      { text: 7 * MBv, costly: -1 },
+      { text: 7 * MBv, costly: -1 },
+      { text: 7 * MBv, costly: 4 },
+      { text: 7 * MBv, costly: -1 },
+    ];
+    await sv.runRound<R, number>({ gate, pricing, slots }, jobs, true, { open: () => ({ id: made++ }), close: () => {}, heap: () => Number.NaN, read: async (r, i) => (onWhich[i] = r.id, Number.NaN) }, () => {});
+    const firstReaders = made;
+    made = 0;
+    const slots2: (R | null)[] = [{ id: 90 }, { id: 91 }];
+    await sv.runRound<R, number>({ gate: new sv.HeapGate(3072 * MBv, 2), pricing: new sv.CostlyPricing(false, 3072 * MBv, 2, 1), slots: slots2 }, [{ text: 1, costly: -1 }, { text: 1, costly: -1 }], false, { open: () => ({ id: made++ }), close: () => {}, heap: () => 1, read: async () => 1 }, () => {});
+    check(
+      'V2: a read of a costly solid’s faces gets a fresh occt (not a reused one), every read made again does too, and a heap that is not a number keeps the pool reading',
+      onWhich.length === 4 && onWhich[2] < 80 && firstReaders === 1 && made === 2,
+      JSON.stringify([onWhich, firstReaders, made]),
+    );
+  }
+  const gV = new sv.HeapGate(1000, 4);
+  gV.start(0, 600);
+  const fitsBig = gV.fits(1, 500);
+  const fitsSmall = gV.fits(1, 300);
+  const keepNo = gV.keepFor(500);
+  const keepYes = gV.keepFor(300);
+  const ended = gV.end(0, 400);
+  const kept = gV.end(1, 200);
+  check(
+    'V2: the gate admits what fits (always one read), keeps room for the read first in line only when it could run beside the biggest one, and ends a reader whose heap passed its share',
+    !fitsBig && fitsSmall && keepNo === 0 && keepYes === 300 && ended && !kept && gV.used === 200 && new sv.HeapGate(10, 2).fits(0, 1e9),
+    JSON.stringify([fitsBig, fitsSmall, keepNo, keepYes, ended, kept, gV.used]),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

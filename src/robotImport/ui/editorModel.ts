@@ -97,6 +97,15 @@ export interface EditorDoc {
   /** the placements the editor last DEFAULTED in, as it wrote them (MODEL frame, `mechAt`): one still
    *  equal to its default here was never moved, and is defaulted again (`withoutDefaults`) */
   mechAuto?: ImportedMech;
+  /**
+   * WHICH READ the model in memory is: a number `ImportEditor.readModel` raises each time a model LANDS
+   * (a new file, a Detail re-read, a saved robot opened). Every body id in the setup names a body of
+   * that read, so an undo or redo whose snapshot has another `readId` takes the body-keyed fields from
+   * the document in memory (`restoreDoc`). Kept in the draft with the model it names. Absent (a draft
+   * from before 2026-11-27): no read has landed since it was restored, so its snapshots and its model
+   * agree; the next read sets 1.
+   */
+  readId?: number;
   updated: number;
 }
 
@@ -321,7 +330,7 @@ export function reviewItems(
   const codes = new Set(m.checks.map((c) => c.code));
   for (const c of m.checks) {
     if (c.code === 'mesh-simplified' || c.code === 'hull-simplified' || c.code === 'wheels-picked') continue;
-    items.push({ id: c.code, level: c.level, text: c.message, fix: FIX[c.code] });
+    items.push({ id: c.code, level: c.level, text: c.message, fix: c.focus ? { step: 0, focus: c.focus } : FIX[c.code] });
   }
   // TOO SMALL is a block too: `coerceImported` refuses a footprint under 6 in a side (or 24 in²) and the
   // robot would silently play as its parametric fallback. Almost always a units mistake.
@@ -790,11 +799,12 @@ export interface ReadOpts {
 /**
  * The setup a read starts from. A new file is a new robot: how it stands, its wheels, its layout,
  * what moves and which bodies are deleted or left out are found again (the bodies are numbered per
- * file), unless `opts.setup` says otherwise. A saved robot's stored mesh has no deleted bodies.
+ * file), unless `opts.setup` says otherwise. A saved robot's stored mesh has no deleted bodies. No
+ * field that names a body of the last model survives (`REREAD_KEEPS`), named below or not.
  */
 export function readSetup(base: ImportSetup, opts: ReadOpts): ImportSetup {
   const setup: ImportSetup = {
-    ...base,
+    ...setupForReread(base, base.triBudget),
     units: 'auto',
     up: 'auto',
     yaw: 0,
@@ -809,17 +819,163 @@ export function readSetup(base: ImportSetup, opts: ReadOpts): ImportSetup {
   return opts.savedModel ? savedSetup(setup) : setup;
 }
 
-/** does the read keep what was built from the model (`cadBuild`)? Only the same file read again or a
- *  saved robot: a staged file's detail alone (`opts.setup.triBudget`) is a new file */
-export const readKeepsBuild = (opts: ReadOpts): boolean => !!(opts.keepHistory || opts.savedModel);
+/**
+ * Does the read keep what was read from the last model: the build (`cadBuild`) and the placements
+ * written in its frame (`BUILD_KEYS`)? Only the same file read again at another detail. Any other read
+ * is another robot (a new file, a share file set up for this game) or starts from a fresh document (a
+ * saved robot opened, which puts its own placements back afterwards).
+ */
+export const readKeepsBuild = (opts: ReadOpts): boolean => !!opts.keepHistory;
+
+/** what a read made of the last model, in its MODEL frame: carried only by a Detail re-read (`readKeepsBuild`) */
+export const BUILD_KEYS = ['cadBuild', 'cadMech', 'cadKey', 'cadReread', 'mechAuto', 'turretRing', 'mechAt'] as const satisfies readonly (keyof EditorDoc)[];
+
+/** the document a read starts from: the last model's build and placements gone unless the read keeps them */
+export function docForRead(base: EditorDoc, opts: ReadOpts): EditorDoc {
+  if (readKeepsBuild(opts)) return base;
+  const out: EditorDoc = { ...base };
+  for (const k of BUILD_KEYS) delete out[k];
+  return out;
+}
+
+/**
+ * ⚠️ **WHAT OF THE SETUP OUTLIVES THE MODEL IT WAS MADE ON**, field by field. `'drop'` is every field
+ * that names BODIES (`MeshPart.body` ids) of the model as read, and what describes them: a big STEP is
+ * read in pieces and Light leaves its small parts out, so an id names another solid at the other
+ * detail; most do not survive the change. Measured 2026-11-27 on real team CAD: moving parts kept across
+ * Light → Full named other solids, a deployed ramp was not folded, and Review blocked the robot as over
+ * 18 in, which it is not once folded. `'keep'` is the player's choices, valid on any read of the same
+ * file: units, up axis and turn, the placed wheels (MODEL frame, carried by `followFrame`), the
+ * drivetrain, tuning. A `Record` over every key, so a new `ImportSetup` field does not compile until it
+ * is classified here. Read by `setupForReread` (a Detail change), `readSetup` (any read) and
+ * `restoreDoc` (an undo or redo across reads, `EditorDoc.readId`).
+ */
+export const REREAD_KEEPS: Readonly<Record<keyof ImportSetup, 'keep' | 'drop'>> = {
+  v: 'keep',
+  units: 'keep',
+  up: 'keep',
+  yaw: 'keep',
+  hullMaxVerts: 'keep',
+  wheels: 'keep',
+  wheelLayout: 'keep',
+  bands: 'keep',
+  triBudget: 'keep',
+  drive: 'keep',
+  tune: 'keep',
+  motion: 'drop',
+  // the finders' version of the rows above: it goes with them, and a fresh search writes it again
+  motionFinder: 'drop',
+  removed: 'drop',
+  apart: 'drop',
+  keepFloating: 'drop',
+  // a count of the found rows above the player removed: it goes with them
+  removedFound: 'drop',
+};
+
+/** the setup fields that name bodies of the model as read (`REREAD_KEEPS`) */
+export const BODY_KEYED: readonly (keyof ImportSetup)[] = (Object.keys(REREAD_KEEPS) as (keyof ImportSetup)[]).filter((k) => REREAD_KEEPS[k] === 'drop');
+
+/**
+ * The setup a re-read of the same file at `triBudget` starts from: every field `REREAD_KEEPS` keeps, none
+ * that names a body. The moving parts are then found again the way a first read finds them (the editor's
+ * search runs on a setup that has none), and the floating parts are offered again.
+ */
+export function setupForReread(s: ImportSetup, triBudget: number): ImportSetup {
+  const out: ImportSetup = { ...s, triBudget };
+  for (const k of BODY_KEYED) delete (out as Partial<ImportSetup>)[k];
+  return out;
+}
+
+/**
+ * WHAT A DETAIL CHANGE CANNOT CARRY that the player chose by hand, every such choice counted: the
+ * moving-part rows they made or changed (no longer `found`), the found rows they removed (found again),
+ * the parts they deleted or left out of the footprint, and the parts they kept when the editor offered
+ * them for deleting (offered again). All name bodies of this read. `key` tells one such set from another
+ * (what the player agreed to lose, against what is there when the read lands).
+ */
+export function rereadLoses(
+  s: Pick<ImportSetup, 'motion' | 'removed' | 'apart' | 'removedFound' | 'keepFloating'>,
+): { rows: number; removedRows: number; parts: number; kept: number; key: string } {
+  const rows = (s.motion ?? []).filter((g) => !g.found);
+  const removedRows = s.removedFound ?? 0;
+  const parts = (s.removed?.length ?? 0) + (s.apart?.length ?? 0);
+  const kept = s.keepFloating?.length ?? 0;
+  return { rows: rows.length, removedRows, parts, kept, key: JSON.stringify([rows, removedRows, s.removed ?? [], s.apart ?? [], s.keepFloating ?? []]) };
+}
+
+/** does a Detail change lose any hand choice (`rereadLoses`), so it must be asked first? */
+export const rereadAsks = (l: ReturnType<typeof rereadLoses>): boolean => !!(l.rows || l.removedRows || l.parts || l.kept);
+
+/** what the status line says once a Detail re-read's moving parts are in (`rereadNote`) */
+export type RereadNote = 'rows' | 'parts' | 'refound' | 'failed';
+
+/**
+ * THE LINE AFTER A DETAIL RE-READ, from the document the read replaced (`before`, as it was when the
+ * model landed, so an edit made during the read counts), the rows found on the new read, whether that
+ * search failed, and the losses the player agreed to before it (`agreed`, `rereadLoses().key`):
+ * - `failed`: the search failed and there were rows before (never "found again" after a failure);
+ * - `rows` / `parts`: hand-made rows, or deleted or left-out parts, were replaced without the player
+ *   having agreed (made during the read, or no question was asked);
+ * - `refound`: rows were found again and the player should look: they had changed some (and agreed), or
+ *   the rows found differ in kind from the ones before (a found row they removed comes back, or the
+ *   finders see another part at this detail);
+ * - null: found rows found again alike, or nothing before.
+ */
+export function rereadNote(
+  before: Pick<ImportSetup, 'motion' | 'removed' | 'apart' | 'removedFound' | 'keepFloating'>,
+  after: readonly MotionGroup[],
+  opts: { failed?: boolean; agreed?: string | null } = {},
+): RereadNote | null {
+  const had = before.motion ?? [];
+  const lost = rereadLoses(before);
+  if (opts.failed) return had.length || lost.removedRows ? 'failed' : null;
+  if (opts.agreed !== lost.key) {
+    if (lost.rows || lost.removedRows) return 'rows';
+    if (lost.parts) return 'parts';
+  }
+  if (lost.rows || lost.removedRows) return 'refound';
+  const kinds = (gs: readonly MotionGroup[]): string => gs.map((g) => `${g.role}:${g.corner ?? ''}`).sort().join();
+  return had.length && kinds(had) !== kinds(after) ? 'refound' : null;
+}
+
+/**
+ * WHAT THE EDITOR READS BY ITSELF HAS LANDED: a new file's build, then its moving parts (each an effect a
+ * render after the last), and after a Detail change or a file read in an edit, the moving parts again. A
+ * saved robot opened as it was has nothing to wait for.
+ */
+export function autoDone(doc: Pick<EditorDoc, 'savedModel' | 'editId' | 'cadBuild' | 'setup'> | null): boolean {
+  return !!doc && (doc.savedModel || (doc.setup.motion !== undefined && (!!doc.editId || doc.cadBuild !== undefined)));
+}
+
+/**
+ * ⚠️ **ONE GATE FOR EVERY WAY A ROBOT LEAVES THE EDITOR** (Save in the header and on Review, Export, Test
+ * drive): not while a file is read (it replaces the model), the model is baked or measured, Review
+ * blocks, or what the editor reads by itself is still coming (`autoDone`: after a Detail change the rows
+ * are absent for a second or more, and a robot saved then has no moving parts). `why` is the title the
+ * buttons carry, null when nothing needs saying.
+ */
+export function leaveGate(s: { reading: boolean; busy: boolean; measuring: boolean; blocked: boolean; autoDone: boolean }): { ok: boolean; why: string | null } {
+  const ok = !s.reading && !s.busy && !s.measuring && !s.blocked && s.autoDone;
+  const why = s.reading ? COPY.waitRead : s.blocked ? COPY.fixFirst : !s.autoDone ? COPY.waitMoving : null;
+  return { ok, why };
+}
 
 /** the setup a saved robot keeps: no deleted bodies, since its stored mesh is made without them (and
- *  a body id names a body of the file as read, not of the stored mesh read back) */
+ *  a body id names a body of the file as read, not of the stored mesh read back), and none of the
+ *  editor's own bookkeeping (`removedFound`) */
 export function savedSetup(s: ImportSetup): ImportSetup {
-  if (!('removed' in s)) return s;
+  if (!('removed' in s) && !('removedFound' in s)) return s;
   const out = { ...s };
   delete out.removed;
+  delete out.removedFound;
   return out;
+}
+
+/** the found rows a moving-part edit removes (`ImportSetup.removedFound`): a row taken out of `prev` that
+ *  the editor had found. Only a removal counts; an edit of a found row makes it the player's (`found` goes) */
+export function foundRowsRemoved(prev: readonly MotionGroup[], next: readonly MotionGroup[]): number {
+  if (next.length >= prev.length) return 0;
+  return Math.max(0, prev.filter((g) => g.found).length - next.filter((g) => g.found).length);
 }
 
 /** each moving part's name: its kind (a wheel's corner), numbered when two share one */

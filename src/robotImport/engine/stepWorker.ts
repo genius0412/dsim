@@ -7,17 +7,55 @@
  * - past that, IN PIECES (`stepSplit.ts`): occt's wasm heap stops at 2 GB and needs about 35 bytes
  *   of it per byte of STEP text, so a 125 MB file cannot be read whole (it "succeeds" with no
  *   triangles), and pieces read in parallel. Pieces of `pieceBytesFor` go to a pool of occt workers
- *   (`poolSize`), biggest first. At Light detail parts under `MIN_PART_MM` (screws, nuts, washers)
- *   are left out, with a note saying so; Full reads every one (`keepSmall`).
+ *   (`poolSize` at most, their heaps held to the device's budget read by read: `HeapGate`), costliest
+ *   first. At Light detail parts under `MIN_PART_MM` (screws, nuts, washers) are left out, with a
+ *   note saying so; Full reads every one (`keepSmall`).
  *
  * A whole read that comes back with faces and no triangles (occt out of heap) is read again in
- * pieces. Every read carries a colour hint (`colourHint`): occt finds no colour for a body of a
+ * pieces. ⚠️ A PIECE that comes back so is NOT out of memory: one face occt cannot mesh blanks every
+ * triangle of its read, whatever the deflection, in a fresh occt (measured on a real team assembly,
+ * 2026-11-27). It is read again root by root, then by its faces (`readPieces`, `retrySplit`), within a
+ * bound per piece; what was read alone and never meshes is left out and the Review notes say so
+ * (`unreadNote`), what a bound stopped is said as that (`stoppedNote`), and the file is refused only
+ * when that is most of it (`unreadRefused`). Every read carries a colour hint (`colourHint`): occt finds no colour for a body of a
  * multi-body part placed in an assembly, and the file says what it is. Spawned by `stepReader.ts`;
  * terminating it terminates the occt workers it made.
  */
 import { EXPORT_HINT, ImportError, notStep, stepCutOff } from './importError';
-import { STEP_PARAMS, STEP_PIECE_PARAMS, type OcctRequest, type OcctResponse, type StepColourHint, type StepPart, type StepRequest, type StepResponse, type StepStage } from './stepConvert';
-import { StepSyntaxError, checkStepText, colourHint, indexStep, occtDied, pieceBytesFor, pieceText, planPieces, poolSize, wholeHint } from './stepSplit';
+import { STEP_PARAMS, STEP_PIECE_PARAMS, type OcctRequest, type OcctResponse, type StepColourHint, type StepPart, type StepRequest, type StepResponse, type StepSolidRead, type StepStage } from './stepConvert';
+import {
+  CostlyPricing,
+  HeapGate,
+  StepSyntaxError,
+  checkStepText,
+  colourHint,
+  costlyRootOf,
+  faceUnitsOf,
+  mergeSolidReads,
+  indexStep,
+  occtDied,
+  partNames,
+  placementCount,
+  pieceBytesFor,
+  pieceHeap,
+  planPieces,
+  poolSize,
+  readPieces,
+  readerBudget,
+  renumberBodies,
+  runRound,
+  stoppedNote,
+  stoppedOf,
+  retrySplit,
+  stepSchema,
+  trustedPlacements,
+  unitsText,
+  unreadNote,
+  unreadOf,
+  unreadRefusal,
+  unreadRefused,
+  wholeHint,
+} from './stepSplit';
 import { zipEntryBytes } from './zip';
 
 /**
@@ -36,16 +74,22 @@ const ctx = self as unknown as {
 
 const progress = (stage: StepStage, frac?: number): void => ctx.postMessage({ kind: 'progress', stage, frac });
 
+const nav = (): { hardwareConcurrency?: number; deviceMemory?: number } | undefined => (self as unknown as { navigator?: { hardwareConcurrency?: number; deviceMemory?: number } }).navigator;
+const deviceCores = (): number => nav()?.hardwareConcurrency ?? 4;
+const deviceMemoryGb = (): number => nav()?.deviceMemory ?? 8;
+
 function devicePool(pieces: number): number {
-  const nav = (self as unknown as { navigator?: { hardwareConcurrency?: number; deviceMemory?: number } }).navigator;
-  return poolSize(pieces, nav?.hardwareConcurrency ?? 4, nav?.deviceMemory ?? 8);
+  return poolSize(pieces, deviceCores(), deviceMemoryGb());
 }
+
+/** what one occt read gave; `heap` is the reader's wasm heap after it, bytes */
+type OcctRead = { parts: StepPart[]; trisIn: number; faces: number; heap: number; meshes: number; placementOf?: number[]; boxes?: number[] };
 
 /** one occt worker, read by read */
 class OcctReader {
   private worker: Worker;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (r: { parts: StepPart[]; trisIn: number; faces: number }) => void; reject: (e: Error) => void; onReading?: () => void }>();
+  private pending = new Map<number, { resolve: (r: OcctRead) => void; reject: (e: Error) => void; onReading?: () => void }>();
   /** occt loaded here and began a read (`reading`) */
   private started = false;
 
@@ -61,7 +105,7 @@ class OcctReader {
         return;
       }
       this.pending.delete(m.id);
-      if (m.kind === 'done') p.resolve({ parts: m.parts, trisIn: m.trisIn, faces: m.faces });
+      if (m.kind === 'done') p.resolve({ parts: m.parts, trisIn: m.trisIn, faces: m.faces, heap: Number(m.heap) || 0, meshes: Number(m.meshes) || 0, placementOf: m.placementOf, boxes: m.boxes });
       else p.reject(new Error(m.message));
     };
     this.worker.onerror = (e) => {
@@ -72,11 +116,11 @@ class OcctReader {
     };
   }
 
-  read(bytes: Uint8Array, whole: boolean, hint: StepColourHint | null, onReading?: () => void): Promise<{ parts: StepPart[]; trisIn: number; faces: number }> {
+  read(bytes: Uint8Array, whole: boolean, hint: StepColourHint | null, onReading?: () => void, solid?: StepSolidRead): Promise<OcctRead> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onReading });
-      this.worker.postMessage({ id, bytes, params: whole ? STEP_PARAMS : STEP_PIECE_PARAMS, ...(hint ? { hint } : {}) } satisfies OcctRequest, [bytes.buffer]);
+      this.worker.postMessage({ id, bytes, params: whole ? STEP_PARAMS : STEP_PIECE_PARAMS, ...(hint ? { hint } : {}), ...(solid ? { solid } : {}) } satisfies OcctRequest, [bytes.buffer]);
     });
   }
 
@@ -110,63 +154,107 @@ async function readInPieces(bytes: Uint8Array, name: string, keepSmall: boolean)
   if (!plan.pieces.length) {
     throw new ImportError('empty', `Couldn’t find any solids in ${name}. Export the robot as solids or surfaces and try again.`);
   }
-  const weights = plan.pieces.map((p) => p.reduce((s, u) => s + plan.units[u].bytes, 0) + plan.skeletonBytes);
-  const total = weights.reduce((s, w) => s + w, 0);
-  const results: { parts: StepPart[]; trisIn: number }[] = new Array(plan.pieces.length);
-  const readers = Array.from({ length: devicePool(plan.pieces.length) }, () => new OcctReader(name, keepSmall));
-  // the biggest pieces first, so the last one to start is a small one (a split root's faces can make
-  // a piece twice the others)
-  const order = plan.pieces.map((_, k) => k).sort((a, b) => weights[b] - weights[a] || a - b);
-  let next = 0;
-  let doneBytes = 0;
+  const cost = (units: readonly number[]): number => units.reduce((s, u) => s + plan.units[u].bytes, 0) + plan.skeletonBytes;
+  // `poolSize` readers at most, their heaps held to the device's budget read by read (`HeapGate`)
+  const readers = devicePool(plan.pieces.length);
+  const gate = new HeapGate(readerBudget(deviceMemoryGb()), readers);
+  const slots: (OcctReader | null)[] = new Array(readers).fill(null);
+  // what a costly solid's faces are priced at, from what this file has shown (`CostlyPricing`)
+  const pricing = new CostlyPricing(deviceMemoryGb() < 8, gate.budget, readers, pieceHeap(Math.max(...plan.pieces.map(cost))));
   let started = false;
+  const onReading = (): void => {
+    if (!started) {
+      started = true;
+      progress('step-parse', 0);
+    }
+  };
+  const names = new Map<number, string | null>();
+  // how many times a solid read again is placed, when its blank whole read and the assembly agree
+  const placements = new Map<number, number | null>();
+  const solidName = (k: number): string | null => {
+    if (!names.has(k)) names.set(k, partNames(ix, plan, [k])[0]);
+    return names.get(k)!;
+  };
   progress('step-wasm');
+  let out;
   try {
-    await Promise.all(
-      readers.map(async (reader) => {
-        for (;;) {
-          const i = next++;
-          if (i >= order.length) return;
-          const k = order[i];
-          const text = pieceText(ix, plan, k);
-          const r = await reader.read(text, false, colourHint(ix, plan, plan.pieces[k]), () => {
-            if (!started) {
-              started = true;
-              progress('step-parse', doneBytes / total);
+    out = await readPieces<{ parts: StepPart[]; trisIn: number; solid: number; placementOf?: number[]; boxes?: number[] }>(plan.pieces, {
+      cost,
+      geometry: (units) => units.reduce((s, u) => s + plan.units[u].bytes, 0),
+      split: (units) =>
+        retrySplit(
+          units,
+          (u) => plan.units[u].root,
+          (u) => plan.units[u].face >= 0,
+          (k) => faceUnitsOf(ix, plan, k),
+        ),
+      progress: (f) => progress('step-parse', f),
+      // the file-wide rule (`RETRY_BATCH`): refused early only by the final refusal's own test
+      refused: (lost, stopped) => unreadRefused(unreadOf(plan, lost).bytes + stoppedOf(plan, stopped).bytes, plan.geometryBytes),
+      batch: readers,
+      // the pool's own scheduler (`runRound`): what each read is, and how it is read
+      run: (jobs, first, settle) => {
+        const what = jobs.map((j) => {
+          const units = j.units;
+          const oneRoot = new Set(units.map((u) => plan.units[u].root)).size === 1;
+          // a read again of some of ONE solid's faces is one body per placement (`StepSolidRead`)
+          const solid = !first && oneRoot && units.every((u) => plan.units[u].face >= 0) ? plan.units[units[0]].root : -1;
+          return { units, oneRoot, solid, text: cost(units), costly: costlyRootOf(plan, units) };
+        });
+        return runRound<OcctReader, OcctRead>(
+          { gate, pricing, slots },
+          what,
+          first,
+          {
+            open: () => new OcctReader(name, keepSmall),
+            close: (r) => r.close(),
+            heap: (r) => r.heap,
+            read: (reader, i) => {
+              const w = what[i];
+              return reader.read(unitsText(ix, plan, w.units), false, colourHint(ix, plan, w.units, !first && w.oneRoot), onReading, w.solid >= 0 ? { name: solidName(w.solid), placements: placements.get(w.solid) ?? null } : undefined);
+            },
+          },
+          (i, r) => {
+            const w = what[i];
+            // a whole solid's blank read gives a mesh a placement: trusted only when the assembly counts the
+            // same placements (a count of one for many would merge them all)
+            if (w.units.length === 1 && plan.units[w.units[0]].face < 0 && r.trisIn === 0 && r.faces > 0) {
+              const k = plan.units[w.units[0]].root;
+              placements.set(k, trustedPlacements(r.meshes, placementCount(ix, plan, k)));
             }
-          });
-          if (r.trisIn === 0 && r.faces > 0) {
-            throw new ImportError('step-failed', `Couldn’t read ${name}: part of it needs more memory than the STEP reader has. ${EXPORT_HINT}`);
-          }
-          results[k] = { parts: r.parts, trisIn: r.trisIn };
-          doneBytes += weights[k];
-          progress('step-parse', doneBytes / total);
-        }
-      }),
-    );
+            settle(i, { blank: r.trisIn === 0 && r.faces > 0, value: { parts: r.parts, trisIn: r.trisIn, solid: w.solid, placementOf: r.placementOf, boxes: r.boxes } });
+          },
+        );
+      },
+    });
   } finally {
-    for (const r of readers) r.close();
+    for (const r of slots) r?.close();
   }
   const notes: string[] = [];
   if (plan.skipped.length) {
     notes.push(`Left out ${plural(plan.skipped.length, 'part', 'parts')} under ${MIN_PART_MM} mm across (screws, nuts and washers) to read this large file faster. They don’t change the footprint.`);
   }
-  // each piece numbers its bodies from 0: move every piece's past the last one's, so a body id names
-  // one solid across the whole file
-  let base = 0;
-  for (const r of results) {
-    let top = -1;
-    for (const p of r.parts) {
-      if (!p.body) continue;
-      for (let i = 0; i < p.body.length; i++) {
-        const b = p.body[i];
-        if (b > top) top = b;
-        p.body[i] = b + base;
-      }
+  const named = (ks: readonly number[]): string[] => [...new Set(partNames(ix, plan, [...ks]).filter((s): s is string => !!s))];
+  if (out.lost.length || out.stopped.length) {
+    // every missing surface is counted under its own reason: unreadable (read alone, blank) or stopped
+    const unread = unreadOf(plan, out.lost);
+    const stop = stoppedOf(plan, out.stopped);
+    const lostRoots = [...unread.whole, ...unread.partial.keys()].sort((a, b) => a - b);
+    const stopRoots = [...stop.whole, ...stop.partial.keys()].sort((a, b) => a - b);
+    const onlyStopped = stopRoots.filter((k) => !lostRoots.includes(k));
+    if (unreadRefused(unread.bytes + stop.bytes, plan.geometryBytes)) {
+      throw unreadRefusal(name, lostRoots.length, onlyStopped.length, plan.roots.length - plan.skipped.length, named([...lostRoots, ...onlyStopped]), stepSchema(ix));
     }
-    base += top + 1;
+    const faces = (m: Map<number, number>): number => [...m.values()].reduce((t, n) => t + n, 0);
+    const note = unreadNote(unread.whole.length, faces(unread.partial), unread.partial.size, named(lostRoots));
+    if (note) notes.push(note);
+    const stopNote = stoppedNote(stop.whole.length, faces(stop.partial), stop.partial.size, named(stopRoots));
+    if (stopNote) notes.push(stopNote);
   }
-  return { parts: results.flatMap((r) => r.parts), trisIn: results.reduce((s, r) => s + r.trisIn, 0), notes };
+  // the kept faces of each solid read again by its faces become one read, one body a placement
+  const reads = mergeSolidReads(out.kept).map((k) => k.value);
+  renumberBodies(reads);
+  return { parts: reads.flatMap((r) => r.parts), trisIn: reads.reduce((s, r) => s + r.trisIn, 0), notes };
 }
 
 ctx.onmessage = async (e: MessageEvent<StepRequest>) => {

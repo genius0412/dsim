@@ -181,6 +181,22 @@ export const COPY = {
     [selected ? `${selected} selected` : '', deleted ? `${deleted} deleted` : '', apart ? `${apart} left out` : ''].filter(Boolean).join(', '),
   floating: (n: number, near: number, far: number) =>
     `${n} ${n === 1 ? 'part floats' : 'parts float'} ${near.toFixed(1)}${far - near >= 0.05 ? ` to ${far.toFixed(1)}` : ''} in away from the robot. Delete ${n === 1 ? 'it' : 'them'}?`,
+  /** the offer when it holds more than floating parts: what floats apart, what HANGS below the floor the
+   *  robot stands on (`hangingParts`) and what looks like a game ball (`findGamePieces`), each counted
+   *  in bodies, then one question */
+  offer: (o: { floats?: { n: number; near: number; far: number }; hangs?: { n: number; lo: number; hi: number }; balls?: { n: number; d: number[] } }) => {
+    const span = (a: number, b: number): string => `${a.toFixed(1)}${b - a >= 0.05 ? ` to ${b.toFixed(1)}` : ''}`;
+    const said: string[] = [];
+    if (o.floats?.n) said.push(`${o.floats.n} ${o.floats.n === 1 ? 'part floats' : 'parts float'} ${span(o.floats.near, o.floats.far)} in away from the robot.`);
+    if (o.hangs?.n) said.push(`${o.hangs.n} ${o.hangs.n === 1 ? 'part hangs' : 'parts hang'} ${span(o.hangs.lo, o.hangs.hi)} in below the floor the robot stands on.`);
+    if (o.balls?.n) {
+      const ds = [...new Set(o.balls.d.map((d) => d.toFixed(1)))].sort((a, b) => Number(a) - Number(b));
+      const sizes = ds.length === 1 ? ds[0] : `${ds.slice(0, -1).join(', ')} and ${ds[ds.length - 1]}`;
+      said.push(o.balls.n === 1 ? `1 part looks like a game piece, a ${sizes} in ball.` : `${o.balls.n} parts look like game pieces, ${sizes} in balls.`);
+    }
+    const n = (o.floats?.n ?? 0) + (o.hangs?.n ?? 0) + (o.balls?.n ?? 0);
+    return `${said.join(' ')} Delete ${n === 1 ? 'it' : 'them'}?`;
+  },
   floatDelete: 'Delete',
   floatKeep: 'Keep',
   deleteParts: 'Select parts',
@@ -235,6 +251,28 @@ export const COPY = {
 
   /** the status line over an EDIT whose unsaved changes came back from this device, until the next edit */
   draftRestored: 'Restored your unsaved changes.',
+  /** the status line once a Detail re-read's moving parts are in (`rereadNote`), until the next edit or read */
+  rereadNote: {
+    refound: 'Moving parts were found again at this detail. Check them under Moving parts.',
+    rows: 'The moving parts you changed or removed don’t carry to another detail, so they were found again. Check them under Moving parts.',
+    parts: 'Deleted and left-out parts don’t carry to another detail. Delete or leave them out again on the Model step.',
+    failed: 'Couldn’t find the moving parts at this detail. Use Find moving parts under Moving parts, or add them yourself.',
+  },
+  /** asked before a Detail change that would lose what the player made by hand (`rereadLoses`) */
+  detailLoseTitle: 'Change the detail?',
+  detailLoseBody: (l: { rows: number; removedRows: number; parts: number; kept: number }) => {
+    const n = (k: number, one: string, many: string): string => (k === 1 ? `1 ${one}` : `${k} ${many}`);
+    const what = [
+      l.rows ? `your changes to ${n(l.rows, 'moving part', 'moving parts')}` : '',
+      l.removedRows ? `${n(l.removedRows, 'moving part', 'moving parts')} you removed, which may be found again` : '',
+      l.parts ? `${n(l.parts, 'part', 'parts')} you deleted or left out of the footprint` : '',
+      l.kept ? `${n(l.kept, 'part', 'parts')} you kept when the editor offered to delete ${l.kept === 1 ? 'it' : 'them'}, which will be offered again` : '',
+    ].filter(Boolean);
+    return `The file is read again at the new detail and its parts are numbered again. These don’t carry over, and Undo can’t bring them back: ${what.join('; ')}.`;
+  },
+  detailLoseConfirm: 'Change detail',
+  /** why Save, Export and Test drive wait after a Detail change or a new file (`leaveGate`) */
+  waitMoving: 'Wait for the moving parts to be found.',
 
   // ---- preview ----
   cameras: [
@@ -255,7 +293,7 @@ export const COPY = {
     moving: 'Blue: the selected part. Orange: the other moving parts.',
     deleting: 'Blue: the selected parts. Orange: the parts left out of the footprint.',
     apart: 'Orange: the parts left out of the footprint.',
-    floating: 'Blue: the parts that float apart from the robot.',
+    floating: 'Blue: the parts offered for deleting.',
   },
 
   // ---- Drivetrain ----

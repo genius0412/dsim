@@ -151,6 +151,23 @@ where; the engine's own rules are the sections above it.
   six signed axes. A robot stands on its wheels, so the right "down" has (a) floor contacts that
   spread across the footprint, (b) a centre of mass inside the support polygon, and (c) almost no
   flat, downward-facing area at the very bottom. A robot on its side fails (b) and (c).
+  ⚠️ **A SMALL PART BELOW THE WHEELS DECIDES NEITHER THE UP AXIS NOR THE FLOOR** (`standFloor`,
+  `geometry.ts`, 2026-11-27). When an axis's lowest point shows no wheels (the same floor-contact search
+  `orientParts` runs), the floor is looked for at each body's lowest point up to 3 in higher (levels
+  0.05 in apart, at most 60) and taken at the first level where four contacts stand in a rectangle at
+  least 4 in a side, EACH WHEEL-LIKE (a body on its own ground there, centred within 0.6 in, 1 to 8 in
+  tall and as long as it is tall along a level axis: four posts on a top plate are not), with what lies
+  below under 5 % of the surface area and 10 % of the plan box. **The raise is a fallback**: `detectUp`
+  scores all six axes as before and takes that winner; if the winner's own lowest point shows wheels
+  that is the answer bit for bit, and a lowest point that already shows wheels is never raised. Only
+  when it shows none is the FORMAT'S OWN up axis (`formatDefaultUp`: a STEP's +Z) scored from a raised
+  floor, and it may then win. **Once the axis is chosen, one rule for the floor**: `orientParts` puts
+  z = 0 at the raised floor in ONE shift (so `toModelFrame` stays bit for bit) for whichever axis was
+  chosen, by Auto or by hand, because a saved robot re-opens with the axis Auto chose set by hand and
+  must measure as it did on its first read; the height is measured from it and floor contacts leave out
+  what hangs below. What hangs there is offered for deleting ("Floating parts"). Measured on real team
+  assemblies, 2026-11-27; the cost is about 90 ms more per orientation on a 250k copy, in the worker
+  (worst case 0.3 s an axis on 20,000 bodies starting at as many heights).
 - **Front** (`detectFront`, `FrontDetection` in `types.ts`): the CAD front view (−Y front when Z is
   up, +Z front when Y is up) unless the geometry says otherwise with confidence. Three cues vote
   along the footprint's two axes, weighted 1 / 0.5 / 0.35: an INTAKE (geometry no higher than
@@ -446,7 +463,60 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   heap per byte of STEP text, measured. On REV's 125 MB file the heap hit 2 GB, 160,811 allocations
   failed inside BRepMesh, each was caught per face, and `ReadStepFile` returned `success: true`
   with 1,334 meshes, 118,734 faces and ZERO triangles. Deflection, units and parameters change
-  nothing. So: faces with no triangles is how a read says it ran out (`stepToParts` counts them).
+  nothing. So: faces with no triangles is how a read can say it ran out (`stepToParts` counts them),
+  but it is not proof of it: see the next rule.
+- ⚠️ **A PIECE THAT COMES BACK WITH FACES AND NO TRIANGLES IS NOT OUT OF MEMORY.** One face occt
+  cannot mesh blanks every triangle of its read, at any deflection, in a fresh occt. So a blank piece
+  is read again (`readPieces`, `retrySplit`, `RETRY_FAN`): root by root, then a blank root by its faces
+  in quarters, every read again in a fresh occt (measured on a real team assembly, 2026-11-27).
+  - **Bound per piece.** At most `RETRY_READS_PER_PIECE` (64) reads, reading at most
+    `RETRY_GEOMETRY_PER_PIECE` (4) times its own geometry. A file of many pieces that each hold one bad
+    face therefore never runs out.
+  - **File-wide rule, exact** (`RETRY_BATCH_DEFAULT`, `RetryIo.refused`/`batch`). While the blank pieces
+    could still hold more than half the geometry, they are read again in key-ordered batches the size of
+    the pool, each batch to its end. After every round, if what is already left out (unreadable, or
+    stopped by a piece's bound) makes the FINAL refusal's own test (`unreadRefused`) refuse, the file is
+    refused then: no later read can put it back. Once what is left out plus every unfinished blank piece
+    can no longer refuse, the rest is read again at once. A mostly good file is read to its end; a file
+    whose every face fails stops after about one batch of retries (fifteen pieces on eight readers: 15
+    plain reads and about 500 read again, where every piece read again was 930). The result does not
+    depend on the batch size.
+  - **Counting.** Every missing surface is counted once, under its reason: unreadable, or stopped by
+    the bound. Only what was READ ALONE and stayed blank (one face, or one solid that does not split)
+    is left out as "couldn’t turn into triangles" (`unreadNote`). What a bound stopped is said as that
+    (`stoppedNote`, no number), never as unreadable, and a healthy part is never left out of an
+    accepted model unless a bound stopped it.
+  - **Refusal only when what is left out is more than half the geometry by bytes** (`unreadRefused`).
+    It names the parts (`partNames`, decoded, 40 characters at most), or says to check the robot's
+    parts when none are named, and offers the other STEP schema. It does NOT end with `EXPORT_HINT`:
+    exporting again is how the file was made.
+  - Results go together in KEY order (`renumberBodies`), so body ids never depend on which reader
+    finished first. "Needs more memory" is said only by a reader that DIED (`occtDied`).
+- ⚠️ **ONE SOLID IS ONE BODY, ALSO AFTER A RE-READ.** occt heals an open shell of faces into many
+  shells, so a solid read again by its faces came back as dozens of bodies per placement, and the
+  rest of the importer assumes one body per solid (the wheel and ball finders, part counts, moving-part
+  rows). `mergeSolidReads` joins a solid's kept reads into one, placed where the whole read would have
+  been and named as its part, **only when the data proves it**, and for EVERY read of the solid; else
+  every read keeps a body per mesh. occt's tree does not separate placements, and the order it writes
+  meshes in is checked, never assumed:
+  - **Placement count** is trusted only when two sources agree (`trustedPlacements`): the meshes of the
+    solid's own blank whole read, and the assembly's occurrences of its part (`placementCount`). One
+    mesh for many placements would otherwise merge them all (`StepSolidRead.placements`).
+  - **Runs** (`placementRuns`): a face read's meshes are cut into that many runs only when every run is
+    the same instance as the first: mesh j of each run has run 0's mesh j's triangle and vertex counts
+    and area, and the same distance from its run's first mesh. A rotation or mirror leaves that
+    unchanged; meshes written shell by shell fail it.
+  - **One placed solid per placement, over ALL the solid's reads** (`placementsJoin`, `JOIN_GAP` 5 %).
+    Each placement's meshes, from every kept read together, must join into one group: boxes within 5 %
+    of the placement's size join, and placement centres must be distinct. Identical lumps placed by
+    translation and written shell by shell pass the runs (one read alone cannot tell the two cuts
+    apart), but a placement's lumps then sit a placement apart and do not join, so they fall back; a
+    solid of separate lumps falls back too, which is safe. Over all reads because one read's small faces
+    do not touch each other (a per-read test refused most reads); 5 % because a face left out leaves
+    gaps measured up to 2.3 % of the solid's size and boxes do not turn with a placement.
+  - Measured on a real team assembly, 2026-11-27: both re-read solids merged, 36 kept reads became 12,
+    one body per placement, with the same 48 retries and the same note. Reads with no re-read solid
+    are byte-identical to before.
 - **Up to 8 MB a STEP is read whole** (`DIRECT_MAX_BYTES`, `STEP_PARAMS`, bounding-box ratio), in
   one occt worker. A whole read that comes back with faces and no triangles is read again in pieces.
   It was 20 MB: past 8, pieces in parallel are faster (a 12.6 MB file: 10.0 s whole, 4.2 s in pieces).
@@ -481,12 +551,39 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   per top-level shape, and a piece's is a share of the robot. Meshing is not the cost: 2 mm and 1 rad
   cut a 24 MB piece's 29.3 s to 27.4 s. occt reads about 1 MB of STEP a second.
 - **A pool of occt workers** reads the pieces, biggest first (`poolSize`): every core but two, up to
-  six on a device that reports 8 GB (eight with 16 cores), three on 4 GB, two on 2 GB. Each keeps its
-  occt (and its heap's high-water mark) between pieces. The read is CPU-bound and splits evenly
-  (REV: 3 readers 64.6 s, 6 36.0 s, 8 30.5 s, 13 22.6 s, the summed occt time unchanged), so memory is
-  the limit: a reader peaks at 627 MB on 12 MB pieces and 368 MB on 6 MB ones, which is why pieces
-  are 6 MB at most (`STEP_PIECE_BYTES`; 24 MB at first, then 12). The skeleton every piece re-reads
-  costs occt ~0.26 s a piece (4–6 % of the read), so it is not trimmed per piece.
+  six on a device that reports 8 GB (eight with 16 cores), three on 4 GB, two on 2 GB; that is a
+  CEILING. Each keeps its occt (and its heap's high-water mark) between pieces. The read is CPU-bound
+  and splits evenly (REV: 3 readers 64.6 s, 6 36.0 s, 8 30.5 s, 13 22.6 s, the summed occt time
+  unchanged), so memory is the limit, and pieces are 6 MB at most (`STEP_PIECE_BYTES`; 24 MB at first,
+  then 12). The skeleton every piece re-reads costs occt ~0.26 s a piece (4–6 % of the read), so it is
+  not trimmed per piece.
+- **Memory is held READ BY READ by one pure scheduler, `runRound`** (the worker runs it; `npm test`
+  drives it with readers of its own). A read reserves its estimate on top of what its reader holds and
+  starts while the total fits `readerBudget` (3.0 / 1.1 / 0.75 GB at 8 / 4 / 2 GB). The estimate is
+  `pieceHeap`: 34 MB + 24 bytes per byte of STEP text, within 15 % summed over a file's pieces. A reader
+  whose heap ends over its share is ended; idle readers are ended when they are all that keeps a read
+  out. A read again, a read of a costly solid, and any read priced over a share get a FRESH occt, so the
+  same file gives the same model every run. A heap that is not a number counts as none for the gate and
+  as the ceiling for the pricing. Not built: a desktop build could pass the machine's real memory
+  instead of `deviceMemory`, which stops at 8.
+- ⚠️ **A reader's heap is not a constant.** The faces of a few large solids took a fresh occt to its
+  2 GB ceiling however they were packed. So the faces of a solid over `COSTLY_ROOT_BYTES` (6 MB) are
+  priced by `CostlyPricing`, from that solid's OWN reads only. Nothing another solid took ever lowers
+  the price: a cheap solid measured first once let a dear one's six pieces start together, 11.8 GB in
+  simulation (2026-11-27).
+  - **8 GB or more:** one unmeasured solid's pieces run together, at most `COSTLY_TOGETHER` (4), at
+    their own price; another unmeasured solid waits. Promised: two unmeasured solids never overlap, and
+    the readers' heap passes the budget by at most `COSTLY_TOGETHER` reads at the ceiling.
+  - **Under 8 GB:** one unmeasured costly read at a time, priced at the room the other readers leave.
+    Promised: the budget plus at most one read at the ceiling.
+  - **Why not a probe read:** a small read cannot predict a solid's cost; the first faces of a solid
+    whose pieces reached the ceiling took no more heap than a cheap solid's.
+  - **Why 4:** the smallest count at which every robot measured with such a solid read within 15 % of
+    the open pool (simulated with `runRound` over measured per-piece heaps and times). One at a time, a
+    solid whose biggest piece was slow but cheap held its siblings and the read took twice as long.
+  - **The cost:** on a large real team assembly this rule peaks near 5.6 GB of occt heap, against 8.7 GB
+    with no gate. A synthetic solid whose every piece is dear can reach the budget plus four ceilings at
+    8 GB.
 - **Planning is string-light.** `planPieces` sized parts by parsing their points with
   `String.fromCharCode(...bytes)`, a spread through the iterator protocol per byte: 6.7 s of a 420 MB
   file. `fromCharCode.apply` (`chars`) gives the same strings: 1.7 s, the plan bit-identical.
@@ -535,7 +632,8 @@ REV's is CC BY-NC-SA); `scripts/robot-import/realcadprobe.cjs` drives the real e
   is read as its STEP. The dev harness and the engine's own tests read a zip's model of any format.
 - **A file cut off is said before occt sees it** (`checkStepText`: a STEP opens with
   `ISO-10303-21;` and ends with `END-ISO-10303-21;`): "Couldn’t read …: the file is cut off …".
-  Every STEP failure ends with `EXPORT_HINT`, a fresh STEP export menu by menu for Onshape, Fusion,
+  Every STEP failure ends with `EXPORT_HINT` (the one exception is the refusal for most of the robot
+  being unreadable, above: exporting again is how the file was made), a fresh STEP export menu by menu for Onshape, Fusion,
   SolidWorks and Inventor (it named a GLB or STL export until the editor stopped taking them).
   `step-reader` (the reader did not load) is the only one with Try again. ⚠️ **An occt worker that DIES
   after it posted `reading` is `step-failed`**, never `step-reader` ("close other tabs and try again",
@@ -778,6 +876,17 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   editor guesses spots at the footprint's corners, and the catalogue wheel's outline there took an
   intake roller's ends standing well off the floor as "wheels". A corner none of whose bodies comes
   down to the floor is left out.
+- ⚠️ **A WHEEL STANDS AT ITS OWN LEVEL, AND A WHEEL ROW NEEDS A WHEEL** (`wheelGround`, `wheelRim`,
+  `rollerOn`, `motion.ts`, `MOTION_FINDER` 11, 2026-11-27). `wheelGround` is the lowest point of what
+  stands at the contact when that is 0.35 to 0.5 in above the model floor (a part drawn sprung down can
+  be the floor); radius, axle height and "comes down to the floor" are read from there, and under 0.35 in
+  the floor is used as before. A row is offered only where `wheelRim` finds a round ring centred on the
+  axle at the spot; the ring is never a radial bound (a mecanum's rollers reach past its side plates,
+  and bounding by the ring dropped them, and the whole row when the plates stop above 0.35 in). A corner
+  whose spot held no wheel takes the drive wheel on its side nearest it. An intake axle carries a drive
+  wheel only when a wheel body is centred and round on it (`rollerOn`); wheel pieces merely near the line
+  stay the wheel's and the roller is kept. `wheelOnLine` and `wheelAround` (a click) still read the floor
+  at z = 0.
 - ⚠️ **A LAUNCHER ON A TURRET, AND A RAMP THE FILE SHOWS DOWN** (2026-10-04, `MOTION_FINDER` 4):
   - **The flywheels before the turret.** The turret takes everything standing on its ring, the
     flywheel too, so the editor looked for the turret first and then offered the next disc in reach
@@ -820,7 +929,10 @@ is the front edge and its three rollers are found there. The finders took 0.6 to
   from older finders is looked for again when it is opened, its edited rows kept (`keepEditedMotion`):
   drafts started before the STEP body ids were kept still showed motors in their groups. Raise it with
   any change to what the finders find. A saved robot's re-open is left alone. 2: tubing, what a wheel's
-  shaft carries, the gears it drives, a wheel's axle along x. 5: the three rules below.
+  shaft carries, the gears it drives, a wheel's axle along x. 5: the three rules below. 11: a wheel read
+  from the level it stands at, a wheel row only where a ring stands, a corner with no wheel takes the wheel
+  on its side, an intake roller kept beside a wheel's pieces (2026-11-27; a draft found by 10 is searched
+  again on open).
 - ⚠️ **MOUNTED MEANS TOUCHING** (`mountedOn`, `touchingPairs`, `CONTACT_IN` 0.04 in, 2026-11-06). What
   is mounted on a plate (a click on it, and a deployed part's members, `findOverhang`) was every
   smaller body inside its box. A deployed ramp's arm can be a diagonal truss whose box holds the
@@ -1110,9 +1222,36 @@ lists the bodies the player deleted, as `MeshPart.body` ids of the model as read
   stored mesh's ids are the ones it was saved with, so `keepFloating` still names the same parts.
   A new file clears both. ⚠️ So does a Detail change: a big STEP is read in pieces and Light leaves
   its small parts out, so an id names another solid at the other detail (measured: of goBILDA's
-  BIOBUZZ bot's 7,235 Light ids, 4,585 name the same part at Full; REV 3,522 of 4,010). An undo
-  across a Detail change keeps the deletions the model was read with (`restoreDoc`). The moving parts
-  are kept across a Detail change and have that problem (open).
+  BIOBUZZ bot's 7,235 Light ids, 4,585 name the same part at Full; REV 3,522 of 4,010). The moving
+  parts are no exception, see the next rule.
+- ⚠️ **NOTHING THAT NAMES A BODY OUTLIVES THE READ IT WAS MADE ON** (`REREAD_KEEPS`, `editorModel.ts`).
+  Every `ImportSetup` field is classified there, `'keep'` or `'drop'`, in a `Record` over every key: a
+  new field does not compile until someone decides whether it names bodies. A Detail change starts from
+  `setupForReread`; the moving parts are then found exactly as a first read finds them; `readSetup`
+  drops the same fields for a new file. Measured on a real team assembly, 2026-11-27: keeping the moving
+  parts across Light to Full named the wrong solids, so a deployed part stayed unfolded and Review
+  blocked the robot as over 18 in.
+- ⚠️ **A DETAIL CHANGE ASKS BEFORE IT LOSES ANY HAND CHOICE** (`rereadLoses`, `rereadAsks`;
+  `ConfirmDialog`, Cancel leaves Detail as it was): rows made or changed by hand, found rows removed
+  (`ImportSetup.removedFound`, editor-only, never saved), parts deleted or left out, and a Keep on parts
+  offered for deleting (`keepFloating`). The question names only what is lost, and says removed rows
+  MAY be found again, because the finders need not see that row at the other detail; undo cannot bring
+  any of it back. A new hand choice that names bodies needs a count there. Once the new read's rows are
+  in, the status line says what happened (`rereadNote`, from the document as it was when the model
+  landed, so an edit made during the read counts): hand rows or parts lost unasked, rows found again
+  (asked, or different in kind), or the search failed. It lasts until the player's next edit or the next
+  read, not a step change, and never covers Review's "N to fix". A second Detail change before the
+  first one's rows are in carries the first one's line on.
+- ⚠️ **A MODEL LANDS ON THE DOCUMENT AS IT IS WHEN IT LANDS** (`readModel` re-reads `draftRef` after
+  measuring). The step rail stays live during a read, so a rename, a drivetrain change or a moved
+  placement made meanwhile must survive it; only what names the old read's bodies goes. A Detail re-read
+  keeps the placements, the front as found and the build (`docForRead`, `BUILD_KEYS`); every other read
+  (a new file, a share file set up for this game, a saved robot opened) starts without the last model's
+  build and placements.
+- ⚠️ **ONE GATE FOR EVERY WAY OUT** (`leaveGate`: header Save, Review's Save, Export, Test drive): not
+  while a file is read, a bake or measurement runs, Review blocks, or what the editor reads by itself is
+  not in (`autoDone`). After a Detail change the rows are absent for a second or more; a robot saved
+  then would have no moving parts.
 - **The UI** (Model step, Parts). Select parts (was Delete parts) turns on a mode in which a click in the preview selects
   a body (Shift adds or takes one out), tinted blue; Delete selected or the Delete or Backspace key
   (not in a field) deletes them. The cap counts what is deleted; Restore all brings every body back.
@@ -1134,7 +1273,7 @@ the drive base generated again without them. `ImportSetup.apart` lists the bodie
 - **Saved, unlike deleted.** The stored mesh keeps these bodies and their `_BODY` ids, and a re-open
   re-measures it, so `savedSetup` keeps `apart` (it drops `removed`); without it a re-save would put
   the ramp back into the footprint. A new file and a Detail change clear it (ids name another solid at
-  the other detail), `restoreDoc` keeps the current one across a Detail change like `removed`.
+  the other detail), and an undo across a read keeps the one in memory, like `removed` (`restoreDoc`).
 - **The frame.** Same rule as a deletion, asked of the drive base: `removalMovesFrame` over
   `apart` vs `apart + selection` (`leaveOutBodies`, `includeAllBodies`); when the base's box moves,
   placed wheels and placements are found again. Deleting a body drops it from `apart`.
@@ -1223,6 +1362,23 @@ its body, so the rule errs toward joining. The Model step offers them ("5 parts 
 the robot. Delete them?", tinted blue in the preview) with Keep and Delete; Keep adds them to
 `keepFloating` and they are not offered again. Nothing is deleted without a click.
 
+⚠️ **What hangs below the floor, and the games' balls, are offered as floating parts are**
+(`hangingParts`, `findGamePieces`, `floating.ts`, 2026-11-27). Same Keep and Delete, same
+`keepFloating`, never deleted without a click; `FloatingGroup.hangIn` / `pieceIn` say which, and the
+Model step says each as what it is. Kept, a hanging part stays below z = 0 and the robot stands on its
+wheels. A ball is ONE body within 6 % of a cube, its side within 5 % (or 0.1 in) of a ball the games'
+configs define (`GAME_BALL_DIAMETERS_IN`, `measureSession.ts`, passed as
+`MeasureOptions.pieceDiameters`), every vertex 0.40 to 0.54 of the side from the centre and some on the
+shell in all eight octants. The vertex test is what keeps a wheel with a near-cubic box out. Names never
+reach the measurement, and a ball modelled as several bodies is not found.
+
+**Review names the offer when it is why the robot is too big** (`offerCause`, `geometry.ts`; Review's
+"oversize"). When parts still offered (floating, hanging, game pieces; not kept) make the robot over
+18 in in any dimension and it fits without them, the block says what they are and the size without them,
+and its Fix goes to Parts (`ImportCheck.focus`, honoured by `reviewItems`). It is exact:
+`OrientedMeasure.offerBoxes` holds the rest's box and each group's, so the size without any subset is
+their union. Too big without them too, or the offer answered: the units sentence as before.
+
 Measured 2026-10-04 (Node, the editor's pipeline: `simplifyModel`, `measureParts`):
 
 | model (STEP) | Full: bodies, finder | Light: bodies, finder | flagged |
@@ -1270,7 +1426,8 @@ sampled, offscreen renders under the match's lighting):
 - **Detail** (Model step): **Full**, the default, keeps every triangle ("Full detail" below);
   **Light** reads at `LIGHT_TRI_BUDGET` (250k), for a slower computer. Maximum (400k) is gone: Full
   looks better and Light costs less. A new choice re-reads the dropped files, which the editor keeps
-  in memory while it is open, with the setup as it is, the placements put back and the front as it
+  in memory while it is open, with the setup as it is (less what names bodies, and asked first when
+  that loses a hand choice: "Deleting parts"), the placements put back and the front as it
   was found (an assumed front stayed "Detected" after a re-read); after a reload, or for a saved robot
   (its stored mesh is what there is), it applies the next time a CAD file is read.
 - **Finish by colour** (`robotImport/finish.ts`): light neutral → metal 1 / rough 0.4, mid neutral
@@ -1630,8 +1787,17 @@ pattern, or `import` reads as a section name). Four steps: Model, Drivetrain, Me
   - An undo restores the setup, the placements and the spec (`restoreDoc`); the measurement follows
     the setup as it does for any edit. The step stays where the player is, and so does what belongs to
     the file (`detected`, `source`, the notes). **Detail is not a step**: it re-reads the file, which
-    can take minutes, and the model is not in the document, so the history keeps the detail the model
-    was read at and goes on across the change.
+    can take minutes, and the model is not in the document, so the history goes on across the change.
+    ⚠️ **UNDO KEYS ON THE READ, NEVER ON THE DETAIL NUMBER** (`EditorDoc.readId`, raised by `readModel`
+    each time a model lands; `restoreDoc`). A snapshot of another read gets the body-keyed fields of
+    the document in memory; one of the same read is restored whole. The Detail is written when the
+    re-read STARTS, so an edit made while it runs holds the new number and the old ids (an undo after
+    landing put the Light rows back into the Full model), and a Detail change with no files (after a
+    test drive) changes the number but not the model. Absent `readId` (an older draft) means no read has
+    landed since it was restored. ⚠️ **AN UNDO STEP IS NEVER A NO-OP** (`foldAcrossRead`, applied when a
+    re-read lands): every snapshot then belongs to the old read, so a step whose only change was in its
+    body-keyed fields (a row edited while the read ran) would undo nothing under a label that names it;
+    such steps are folded out of both stacks. Undo and redo are edits: they clear the re-read line.
   - The history is `LiveDraft.history`, in memory only: a test drive keeps it; a reload, a new file
     or another library robot starts it empty. Undo and Redo wait while a file is read or the model
     baked.

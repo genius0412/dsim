@@ -5,11 +5,22 @@
  *
  * With no handler Electron GRANTS every permission request without a prompt, camera, microphone
  * and location included, to any frame the window shows (an injected script, a provider's page
- * after the account-link navigation). The game needs three: fullscreen, pointer lock and
- * writing to the clipboard (copy room code, copy link). A future feature that needs another
- * permission must be added here, deliberately.
+ * after the account-link navigation). The app needs five: fullscreen, pointer lock, writing to
+ * the clipboard (copy room code, copy link), `screen-wake-lock` (a LAN host keeps its screen awake,
+ * `src/lan/hostRuntime.ts`) and `persistent-storage` (`navigator.storage.persist()`, which the robot
+ * library asks for so its stored meshes are not evicted, `src/robotImport/library.ts`). The last two
+ * were refused by the first version of this list and found only by running it
+ * (`scripts/shellcheck.cjs`): Chromium puts them to the handler under those names, which is not
+ * something the type definitions say. A future feature that needs another permission must be added
+ * here, deliberately, and the feature battery in that script says what the handler was asked.
  */
-const ALLOWED_PERMISSIONS = Object.freeze(['fullscreen', 'pointerLock', 'clipboard-sanitized-write']);
+const ALLOWED_PERMISSIONS = Object.freeze([
+  'fullscreen',
+  'pointerLock',
+  'clipboard-sanitized-write',
+  'screen-wake-lock',
+  'persistent-storage',
+]);
 
 /** may a page have this permission? An unknown or absent name is a no. */
 function permissionAllowed(permission) {

@@ -21,6 +21,17 @@ import { runSearch, type Found, type Search } from '../findMoving';
 import type { ImportMeasurement, ImportSetup } from '../types';
 import type { MeasureRequest, MeasureResponse } from './measureProtocol';
 import type { PreparedModel } from './prepare';
+import { BALL_RADIUS } from '../../config';
+import { CHAIN_PARTICLE_R } from '../../games/chain/config';
+import { BB_POLLEN_R } from '../../games/biobuzz/config';
+
+/**
+ * THE BALLS OF EVERY GAME IN DSIM, inches across, from the games' own configs: DECODE's artifact,
+ * Chain Reaction's particle, BIOBUZZ's pollen. A body shaped as one of them is offered for deleting
+ * (`findGamePieces`) whatever game the robot is set up for: a team's CAD of another season can carry
+ * that season's balls.
+ */
+export const GAME_BALL_DIAMETERS_IN: readonly number[] = [2 * BALL_RADIUS, 2 * CHAIN_PARTICLE_R, 2 * BB_POLLEN_R];
 
 export interface NormalisedModel {
   measurement: ImportMeasurement;
@@ -68,7 +79,7 @@ export class Measurer {
   private readonly opts: MeasureOptions;
 
   constructor(readonly model: PreparedModel) {
-    this.opts = { format: model.format, fileUnit: model.fileUnit };
+    this.opts = { format: model.format, fileUnit: model.fileUnit, pieceDiameters: GAME_BALL_DIAMETERS_IN };
   }
 
   /** is the orientation `setup` needs cached (so `normalise` is cheap)? */

@@ -860,7 +860,13 @@ const BASELINE = {
   // `measureWorker-*.js` +23: the finders (`findMoving.ts` and the half of `motion.ts` the
   // measurement never called). On the page's thread the search froze the editor for 2.8 s on a big
   // robot. The engine keeps its own copy for the no-Worker fallback, so `importer` is unchanged.
-  importworker: { gzip: 182.25 * 1000 },
+  // 2026-11-27 (the measure worker's new detection): 182.25 -> 186.34, raised on purpose.
+  // `measureWorker-*.js` carries the new code: the floor a robot stands on when a part hangs below
+  // its wheels, wheels read from their own level, the ring a wheel row needs, the games' balls
+  // offered for deleting, and the robot's size without the parts offered. Measured: `measureWorker`
+  // 37.68, `importWorker` 103.48, `lite` 12.29, `meshoptEncoder` 8.13, `meshoptDecoder` 7.26,
+  // `threeMf` 7.96 + 7.91, `zip` 1.63. Fetched only when a file is dropped on the importer.
+  importworker: { gzip: 186.34 * 1000 },
   // 2026-10-01: NEW. `occt-import-js-*.wasm` 3110.91 (OpenCascade, 7.6 MB raw), `stepWorker-*.js`
   // 21.95 (the worker with occt's glue) and `stepReader-*.js` 0.42. Fetched only when a STEP file is
   // dropped; every other import, and every player who never imports a robot, pays nothing.

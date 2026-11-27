@@ -66,6 +66,15 @@ import {
   readKeepsBuild,
   stepAfterReread,
   readSetup,
+  setupForReread,
+  docForRead,
+  rereadLoses,
+  rereadAsks,
+  foundRowsRemoved,
+  rereadNote,
+  autoDone as autoDoneOf,
+  leaveGate,
+  type RereadNote,
   type ReadOpts,
   type ReviewItem,
   type StepIndex,
@@ -83,6 +92,7 @@ import {
   redoDoc,
   setupEdit,
   undoDoc,
+  foldAcrossRead,
   withEditMark,
   type EditHow,
 } from './editorHistory';
@@ -352,7 +362,10 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
-    { kind: 'discard' } | { kind: 'dup'; name: string; replace: () => void; keepBoth: () => void } | null
+    | { kind: 'discard' }
+    | { kind: 'dup'; name: string; replace: () => void; keepBoth: () => void }
+    | { kind: 'detail'; budget: number; lose: ReturnType<typeof rereadLoses> }
+    | null
   >(null);
   const gen = useRef(0);
   /** the import in flight: aborting it terminates its workers (Cancel, a new drop, leaving) */
@@ -367,6 +380,15 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   const [failedFor, setFailedFor] = useState<unknown>(null);
   /** an EDIT's unsaved changes came back from this device (MIMPUI-15): said in the status line until the next edit */
   const [restoredNote, setRestoredNote] = useState(false);
+  /** what a Detail re-read could not carry, once its moving parts are in (`rereadNote`): said in the status
+   *  line until the player's next edit or the next read */
+  const [motionNote, setMotionNote] = useState<RereadNote | null>(null);
+  /** a Detail re-read that has landed and whose rows are not in yet: the document it replaced (as it was
+   *  when the model landed, edits made during the read included), the losses the player agreed to, its
+   *  read, and whether the search for its rows failed */
+  const rereadFrom = useRef<{ before: Pick<ImportSetup, 'motion' | 'removed' | 'apart' | 'removedFound' | 'keepFloating'>; agreed: string | null; readId: number; failed?: boolean } | null>(null);
+  /** the losses the player agreed to in the Detail question (`rereadLoses().key`), until that read lands */
+  const agreedLoss = useRef<string | null>(null);
   /** the importer engine would not load, with a draft restored: there is nothing to measure it with */
   const [engineDown, setEngineDown] = useState(false);
 
@@ -391,6 +413,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
         // the player changed something: what the restore said is no longer news (the editor's own edits are 'auto'),
         // and the document is now worth keeping as a draft (`EditorDoc.edited`)
         if (how !== 'auto') setRestoredNote(false);
+        if (how !== 'auto') setMotionNote(null);
         setDraft({ ...cur, doc: withEditMark(r.doc, how), history: r.history });
       }
     },
@@ -424,6 +447,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
       setError(null);
       setActionError(null);
       setRestoredNote(false); // a file read over the draft replaces what was restored
+      setMotionNote(null); // the line about the last re-read lasts until the next read
       setPhase({ title: name, label: COPY.phase.engine });
       let e: ImporterEngine;
       try {
@@ -465,7 +489,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
         measuring = true;
         setPhase({ title: name, label: COPY.phase.measure });
         const cur = draftRef.current;
-        const baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
+        let baseDoc = cur?.doc ?? freshDoc(settings, key, editId);
         // a new file is a new robot: everything about how it stands, where its wheels are and what
         // moves is found again (`readSetup`), unless the caller says otherwise. A saved robot's stored
         // mesh is made without its deleted parts, and its body ids are not the file's
@@ -494,9 +518,22 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
         // so the catch gives it the measurement's sentence and lets the model go
         if (modelHasNoExtent(n.measurement, setup)) throw new Error('the model has no extent');
         const model = prepared;
+        // ⚠️ THE MODEL LANDS ON THE DOCUMENT AS IT IS NOW, not as it was when the read began: the step rail
+        // stays live during a read, and an edit made meanwhile (a rename, the drivetrain, a placement) was
+        // put back to the old document. What names the old read's bodies goes (`setupForReread`), and the
+        // line once the rows are in says what that took (`rereadNote`, from this document)
+        baseDoc = draftRef.current?.doc ?? baseDoc;
+        if (opts.keepHistory) setup = setupForReread(baseDoc.setup, setup.triBudget);
         const spec = opts.spec ?? baseDoc.spec;
+        // a re-read of the same file keeps how its front was found (detected or assumed, and any turn since),
+        // or the re-read, which keeps the setup's yaw, would call an assumed front detected
+        const keptFront = opts.keepHistory && baseDoc.detected ? { yaw: baseDoc.detected.yaw, front: baseDoc.detected.front, cue: baseDoc.detected.cue } : null;
         const doc: EditorDoc = {
-          ...baseDoc,
+          // a new robot's build and placements are read from it again (`docForRead`): the last model's,
+          // written in ITS frame, are not carried (a build search that failed used to default around them)
+          ...docForRead(baseDoc, opts),
+          // the read this model is: every body id in the setup names one of its bodies (`restoreDoc`)
+          readId: (baseDoc.readId ?? 0) + 1,
           // the same file read again (a Detail change) leaves the player on the step they are on (W-3); any
           // other read starts on the Model step
           step: opts.keepHistory ? stepAfterReread(baseDoc.step, n.measurement) : 0,
@@ -507,8 +544,11 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
             yaw: setup.yaw,
             front: findFront ? (front.detected ? 'detected' : 'assumed') : undefined,
             cue: findFront && front.detected ? front.cue : null,
+            ...(keptFront ?? {}),
           },
-          mech: null,
+          // the same file read again keeps its placements (MODEL frame, moved by `followFrame`); any other
+          // read places them again
+          mech: opts.keepHistory ? baseDoc.mech : null,
           // a NEW import is named after its file; an edit keeps its name
           spec: { ...spec, name: opts.spec?.name ?? (baseDoc.editId ? spec.name : baseName(model.name)) },
           source: opts.keepSource ?? {
@@ -533,9 +573,20 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
         setPlaying(false);
         setDeleting(false);
         setSelected([]);
+        setHoverMotion(null);
+        // a Detail re-read: what it could not carry is said once its rows are in. A second re-read that lands
+        // before the first one's rows are in carries the first one's document on, so its line is not lost
+        const pending = rereadFrom.current;
+        rereadFrom.current = opts.keepHistory
+          ? baseDoc.setup.motion === undefined && pending
+            ? { ...pending, readId: doc.readId!, failed: undefined }
+            : { before: { motion: baseDoc.setup.motion, removed: baseDoc.setup.removed, apart: baseDoc.setup.apart, removedFound: baseDoc.setup.removedFound, keepFloating: baseDoc.setup.keepFloating }, agreed: agreedLoss.current, readId: doc.readId! }
+          : null;
+        agreedLoss.current = null;
         sourceFiles.current = opts.savedModel ? null : files;
         held = null; // the draft owns it from here
-        setDraft({ doc, model: prepared, modelStored: false, baked: null, history: opts.keepHistory ? draftRef.current?.history : undefined });
+        // a re-read keeps the history, without the steps it left with nothing to do (`foldAcrossRead`)
+        setDraft({ doc, model: prepared, modelStored: false, baked: null, history: opts.keepHistory ? foldAcrossRead(draftRef.current?.history, baseDoc) : undefined });
         setPhase(null);
       } catch (err) {
         // a model that was read but never became the draft's: its measure worker holds a copy of every
@@ -1198,30 +1249,38 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   };
 
   // ---- detail: the triangle budget the file is read at -----------------------------------------
-  // A new detail re-reads the files still in memory, keeping everything set so far: the bodies are
-  // the file's own, so the moving parts still name the same ones, and the placements go back once
-  // the new model is measured. Without the files (a reload, a saved robot) it applies next read.
+  // A new detail re-reads the files still in memory, keeping the player's choices (`setupForReread`):
+  // units, up axis, turn, wheels, drivetrain, the build, and the placements once the new model is
+  // measured. ⚠️ NOT what names bodies: a big STEP is read in pieces and Light leaves its small parts
+  // out, so a body id names another solid at the other detail. The moving parts are found again as a
+  // first read finds them, and the status line says what that took (`rereadNote`). What the player made
+  // by hand and would lose (`rereadLoses`) is ASKED about first: it cannot be undone.
+  // Without the files (a reload, a test drive, a saved robot) it applies next read; the model is the same,
+  // so nothing is lost and undo goes on (`restoreDoc` keys on the read, not the Detail).
   // NOT AN UNDO STEP: the re-read can take minutes and the model is not in the document, so the
   // history keeps the detail the model was read at and goes on across the change (`restoreDoc`).
   // A file not read yet takes its detail from the drop box (`ModelStep`'s own state, passed to the
   // read), never through here: this changes the detail of the model the document HAS.
   const onDetail = (budget: number): void => {
     if (!doc || doc.savedModel || budget === doc.setup.triBudget) return;
+    const lose = rereadLoses(doc.setup);
+    if (sourceFiles.current && rereadAsks(lose)) {
+      setDialog({ kind: 'detail', budget, lose });
+      return;
+    }
+    rereadAt(budget, null);
+  };
+  /** the re-read itself, once nothing is lost or the player agreed to lose `agreed` (`rereadLoses().key`) */
+  const rereadAt = (budget: number, agreed: string | null): void => {
     const files = sourceFiles.current;
     update((d) => ({ ...d, setup: { ...d.setup, triBudget: budget } }), 'auto');
-    if (!files) return;
-    // ⚠️ the deleted parts are not carried over: a big STEP is read in pieces, and Light leaves its
-    // small parts out, so a body id names another solid at the other detail. The floating parts are
-    // offered again once it is read.
-    const setup: ImportSetup = { ...doc.setup, triBudget: budget, removed: undefined, apart: undefined, keepFloating: undefined };
-    const keepMech = doc.mech;
-    const keepAt = doc.mechAt;
-    // the same file read again: the front as it was found (detected or assumed, and any turn since)
-    // carries over, or the re-read, which keeps the setup's yaw, would call an assumed front detected
-    const keepFront = doc.detected ? { yaw: doc.detected.yaw, front: doc.detected.front, cue: doc.detected.cue } : null;
-    void readModel(files, { setup, spec: doc.spec, keepHistory: true }).then(() => {
-      update((d) => ({ ...d, ...(keepMech ? { mech: keepMech, mechAt: keepAt } : {}), detected: d.detected && keepFront ? { ...d.detected, ...keepFront } : d.detected }), 'auto');
-    });
+    if (!files || !doc) return;
+    agreedLoss.current = agreed;
+    // ⚠️ nothing that names a body is carried over (`REREAD_KEEPS`): the moving parts, the deleted,
+    // left-out and kept-floating parts. The floating parts are offered again once it is read. The model
+    // lands on the document as it is THEN, placements, front and edits made during the read included
+    const setup: ImportSetup = setupForReread(doc.setup, budget);
+    void readModel(files, { setup, keepHistory: true });
   };
 
   // ---- moving parts ----------------------------------------------------------------------------
@@ -1313,7 +1372,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
       search(s, (f, current) => {
         // a search that failed keeps the rows as they were, and is not tried again
         const again = f?.kind === 'motion' ? [...kept, ...f.motion] : motion0;
-        update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, motion: again, motionFinder: MOTION_FINDER } } : d), 'auto');
+        update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, removedFound: undefined, motion: again, motionFinder: MOTION_FINDER } } : d), 'auto');
       });
       return;
     }
@@ -1358,16 +1417,33 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
     const s = motionSearch([]);
     if (!s) return;
     search(s, (f, current) => {
-      // a search that failed finds nothing: the player can add the rows, or Find moving parts again
+      // a search that failed finds nothing: the player can add the rows, or Find moving parts again (and a
+      // re-read's line says it failed, never "found again")
       const found = f?.kind === 'motion' ? f.motion : [];
+      const from = rereadFrom.current;
+      if (from && from.readId === draftRef.current?.doc.readId) from.failed = f?.kind !== 'motion';
       update((d) => (d.setup.motion === undefined && current(d) ? { ...d, setup: { ...d.setup, motion: found, motionFinder: MOTION_FINDER } } : d), 'auto');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc?.setup.motion, doc?.setup.motionFinder, normalised, measuring, baseWheels, doc?.mech, doc?.cadBuild, doc?.cadReread]);
+  // a Detail re-read's rows are in: what it could not carry is said once (`rereadNote`), until the player's
+  // next edit or the next read (a failed read never lands, keeps its old rows, and says nothing)
+  const readIdNow = doc?.readId;
+  useEffect(() => {
+    const from = rereadFrom.current;
+    if (!from || readIdNow !== from.readId || motion === undefined) return;
+    rereadFrom.current = null;
+    setMotionNote(rereadNote(from.before, motion, { failed: from.failed, agreed: from.agreed }));
+  }, [readIdNow, motion]);
   /** a moving parts edit, named by the row it added, removed or changed */
   const setMotion = (next: MotionGroup[]): void => {
     const prev = motion ?? [];
-    update((d) => ({ ...d, setup: { ...d.setup, motion: next } }), motionEdit(prev, next, motionNames(prev)));
+    // a FOUND row removed is a hand choice a Detail change loses (it is found again): counted, so it is asked about
+    const gone = foundRowsRemoved(prev, next);
+    update(
+      (d) => ({ ...d, setup: { ...d.setup, motion: next, ...(gone ? { removedFound: (d.setup.removedFound ?? 0) + gone } : {}) } }),
+      motionEdit(prev, next, motionNames(prev)),
+    );
   };
   /** Find moving parts: every row the player has not touched goes, and is looked for again. The rows
    *  land when the search ends, unless the player changed them meanwhile */
@@ -1380,7 +1456,8 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
     setHoverMotion(null);
     search(s, (f, current) => {
       if (f?.kind !== 'motion') return;
-      update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, motion: [...kept, ...f.motion], motionFinder: MOTION_FINDER } } : d), { label: COPY.edits.findMoving });
+      // the found rows the player removed are found again: no longer removed
+      update((d) => (d.setup.motion === motion0 && current(d) ? { ...d, setup: { ...d.setup, motion: [...kept, ...f.motion], motionFinder: MOTION_FINDER, removedFound: undefined } } : d), { label: COPY.edits.findMoving });
     });
   };
   // a selected row is being edited: a click in the preview adds or takes out its parts
@@ -1516,6 +1593,8 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
     if (activeMotion !== null && !r.doc.setup.motion?.[activeMotion]) setActiveMotion(null);
     // the last step either way disables the button pressed, so focus goes to the other one
     if (fromButton && !(dir === 'undo' ? nextUndo(r.history) : nextRedo(r.history))) pendingFocus.current = dir === 'undo' ? 'ri-redo' : 'ri-undo';
+    // an undo or redo is an edit: what the last re-read said is no longer news
+    setMotionNote(null);
     setDraft({ ...cur, doc: r.doc, history: r.history });
   };
   const historyKeys = useRef(stepHistory);
@@ -1559,6 +1638,8 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
   // Not on Review, whose line is the count of what is left to fix (it is the sum of the rest). Only for a
   // draft with changes in it (`EditorDoc.edited`): one that was merely opened is the saved robot (RI-02)
   const restoredLine = hasModel && restoredNote && doc.edited ? COPY.draftRestored : null;
+  // the moving parts found again after a Detail change, when they may not be the player's (`motionNote`)
+  const motionLine = hasModel && motionNote ? COPY.rereadNote[motionNote] : null;
   const stepCounts = [0, 0, 0, 0];
   const stepBlocks = [0, 0, 0, 0];
   for (const it of items) {
@@ -1697,14 +1778,15 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
       />
     ) : null;
 
-  // a file being read holds Save, Export and Test drive: they would store or drive the model it is replacing
-  const why = phase ? COPY.waitRead : blocked ? COPY.fixFirst : undefined;
+  // ONE GATE for Save (header and Review), Export and Test drive (`leaveGate`): a file being read (it
+  // replaces the model), a bake or a measurement, a block, or what the editor reads by itself not yet in
+  // (`autoDone`: a new file's build and moving parts, a Detail change's moving parts), so nothing leaves
+  // the editor half-read
+  const gate = leaveGate({ reading: !!phase, busy, measuring, blocked, autoDone: autoDoneOf(doc) });
+  const why = gate.why ?? undefined;
   // a read goes on while the player is on another step (the rail stays live): its bar is on the Model step,
   // so the title of the step they are on says one is running, and Save says why it waits
   const readingNote = phase && step !== 0 ? COPY.phase.read(phase.title) : null;
-  // what the editor reads by itself has landed: a new file's build, then its moving parts (each an
-  // effect a render after the last), so a save from the header never stores a robot half-read
-  const autoDone = !!doc && (doc.savedModel || !!doc.editId || (doc.cadBuild !== undefined && doc.setup.motion !== undefined));
   return (
     <>
       <div className="ds-head">
@@ -1766,7 +1848,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
             type="button"
             id="ri-save-head"
             className="ds-btn small ds-import-headsave"
-            disabled={blocked || busy || measuring || !autoDone || !!phase}
+            disabled={!gate.ok}
             title={why}
             onClick={save}
           >
@@ -1828,17 +1910,17 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
           <div className="ds-panel-h">
             {step === REVIEW_STEP && hasModel ? (
               <h2 className={`ds-panel-title notice${blocked ? ' error' : ''}`} role="status">
-                {actionError ?? draftNote ?? (busy ? COPY.working : readingNote ?? (measuring ? COPY.phase.measure : reviewSummary(items)))}
+                {actionError ?? draftNote ?? (busy ? COPY.working : readingNote ?? (measuring ? COPY.phase.measure : ((blocked ? null : motionLine) ?? reviewSummary(items))))}
               </h2>
             ) : (
               // a measurement past `MEASURING_NOTICE_MS` takes the title's place, as a status does on
               // the Controls screen: the slot keeps its line, so nothing below it moves. So does a
               // draft that is not being kept (`draftNote`), which a reload would lose
               <h2
-                className={`ds-panel-title${measuringLong || draftNote || restoredLine || readingNote ? ' notice' : ''}`}
-                role={measuringLong || draftNote || restoredLine || readingNote ? 'status' : undefined}
+                className={`ds-panel-title${measuringLong || draftNote || restoredLine || readingNote || motionLine ? ' notice' : ''}`}
+                role={measuringLong || draftNote || restoredLine || readingNote || motionLine ? 'status' : undefined}
               >
-                {actionError ?? draftNote ?? restoredLine ?? (readingNote ?? (measuringLong ? COPY.phase.measure : COPY.steps[step]))}
+                {actionError ?? draftNote ?? restoredLine ?? (readingNote ?? (measuringLong ? COPY.phase.measure : (motionLine ?? COPY.steps[step])))}
               </h2>
             )}
           </div>
@@ -1973,14 +2055,14 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
             </button>
           ) : (
             <>
-              <button type="button" className="ds-btn" disabled={blocked || busy || measuring || !!phase} title={why} aria-describedby={why ? 'ri-why' : undefined} onClick={exportIt}>
+              <button type="button" className="ds-btn" disabled={!gate.ok} title={why} aria-describedby={why ? 'ri-why' : undefined} onClick={exportIt}>
                 {COPY.exportFile}
               </button>
               <button
                 type="button"
                 id="ri-testdrive"
                 className="ds-btn"
-                disabled={blocked || busy || measuring || !!phase}
+                disabled={!gate.ok}
                 title={why}
                 aria-describedby={why ? 'ri-why' : undefined}
                 onClick={testDrive}
@@ -1990,7 +2072,7 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
               <button
                 type="button"
                 className="ds-btn primary"
-                disabled={blocked || busy || measuring || !!phase}
+                disabled={!gate.ok}
                 title={why}
                 aria-describedby={why ? 'ri-why' : undefined}
                 onClick={save}
@@ -2016,6 +2098,19 @@ function ImportEditorInner({ settings, editId, onBack, onSaved, onTestDrive }: I
           confirm={COPY.discard}
           danger
           onConfirm={() => void discard()}
+          onClose={() => setDialog(null)}
+        />
+      ) : dialog?.kind === 'detail' ? (
+        // what a Detail change cannot carry and undo cannot bring back, asked first; Cancel leaves Detail as it was
+        <ConfirmDialog
+          title={COPY.detailLoseTitle}
+          body={<p className="ds-hint">{COPY.detailLoseBody(dialog.lose)}</p>}
+          confirm={COPY.detailLoseConfirm}
+          danger
+          onConfirm={() => {
+            setDialog(null);
+            rereadAt(dialog.budget, dialog.lose.key);
+          }}
           onClose={() => setDialog(null)}
         />
       ) : dialog?.kind === 'dup' ? (

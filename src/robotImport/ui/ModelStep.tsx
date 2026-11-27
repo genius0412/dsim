@@ -2,12 +2,12 @@ import { useRef, useState } from 'react';
 import type { Vec2 } from '../../types';
 import { OptRow } from '../../ui/OptRow';
 import { FULL_DETAIL, isFullDetail, isRectangle, LIGHT_TRI_BUDGET, WHEEL_SQUARE_TOL_IN } from '../geometry';
-import type { ImportMeasurement, ImportSetup, LengthUnit, QuarterTurns, UpAxis, WheelLayout } from '../types';
+import type { FloatingGroup, ImportMeasurement, ImportSetup, LengthUnit, QuarterTurns, UpAxis, WheelLayout } from '../types';
 import { LENGTH_UNITS, UP_AXES } from '../types';
 import { COPY, FORMAT_LABEL, UNIT_LABEL, sizeLabel, upLabel } from './copy';
 import { DropZone, type DropError, type Phase } from './DropZone';
 import { ACCEPT } from './fileSelection';
-import { rectNumbers, snapWheel, WHEEL_MIN_SPAN_IN, wheelHomes, type EditorDoc, type RectNumber } from './editorModel';
+import { floatingOffer, rectNumbers, snapWheel, WHEEL_MIN_SPAN_IN, wheelHomes, type EditorDoc, type RectNumber } from './editorModel';
 import { NumberField } from './NumberField';
 import { TopDownMap, type MapHandle } from './TopDownMap';
 
@@ -15,6 +15,26 @@ const fmt = (v: number): string => (Math.round(v * 10) / 10).toFixed(1);
 const ROBOT_MAX = 18;
 /** the wheel number fields' step, inches: every value on it is typed exactly */
 const WHEEL_STEP = 1 / 16;
+
+/**
+ * The offer's sentence: what floats apart (`facts`, as the editor counts it), what HANGS below the
+ * floor the robot stands on (`hangingParts`, `hangIn`) and what looks like a game ball
+ * (`findGamePieces`, `pieceIn`), each said as what it is. `offered` is the measurement's offer
+ * (`floatingOffer`). Only floating parts: the sentence as it always was.
+ */
+function offerSentence(facts: { count: number; near: number; far: number }, offered: readonly FloatingGroup[]): string {
+  const hang = offered.filter((g) => g.hangIn !== undefined);
+  const balls = offered.filter((g) => g.pieceIn !== undefined);
+  if (!hang.length && !balls.length) return COPY.floating(facts.count, facts.near, facts.far);
+  const floats = offered.filter((g) => g.hangIn === undefined && g.pieceIn === undefined);
+  const count = (gs: readonly FloatingGroup[]): number => gs.reduce((s, g) => s + g.bodies.length, 0);
+  const depth = hang.map((g) => g.hangIn ?? 0);
+  return COPY.offer({
+    floats: floats.length ? { n: count(floats), near: floats[0].gapIn, far: floats[floats.length - 1].gapIn } : undefined,
+    hangs: hang.length ? { n: count(hang), lo: Math.min(...depth), hi: Math.max(...depth) } : undefined,
+    balls: balls.length ? { n: count(balls), d: balls.map((g) => g.pieceIn ?? 0) } : undefined,
+  });
+}
 
 /**
  * DELETING PARTS (`docs/area/robot-import.md`, "Deleting parts"): the mode in which a click in the
@@ -280,7 +300,7 @@ export function ModelStep({
         {parts.floating ? (
           <>
             <p className="ds-hint" role="status">
-              {COPY.floating(parts.floating.count, parts.floating.near, parts.floating.far)}
+              {offerSentence(parts.floating, floatingOffer(m, doc?.setup ?? {}))}
             </p>
             <div className="ds-import-turns">
               <button type="button" className="ds-btn ghost small" onClick={parts.onKeepFloating}>

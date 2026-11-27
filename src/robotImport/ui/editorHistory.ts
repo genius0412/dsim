@@ -22,7 +22,7 @@
 import type { ImportedMech } from '../../types';
 import type { ImportSetup, MotionGroup } from '../types';
 import { COPY } from './copy';
-import type { EditorDoc } from './editorModel';
+import { BODY_KEYED, type EditorDoc } from './editorModel';
 
 /** the most steps kept; the oldest goes first */
 export const HISTORY_CAP = 100;
@@ -122,21 +122,24 @@ export function withEditMark(doc: EditorDoc, how: EditHow): EditorDoc {
  * for a big STEP, and the model in memory is not part of the document, so it is not an edit the
  * history can take back: the snapshots keep whatever Detail they were taken at, and restoring that
  * number without re-reading would leave the Detail control naming a detail the model was not read
- * at. Everything else the history holds is valid at either detail: placements and wheels are in the
- * model frame, and the moving parts name the file's own bodies.
+ * at. The player's choices are valid at either detail (placements and wheels are in the model frame);
+ * what names bodies is not, see below.
  */
 export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
-  const setup = { ...target.setup, triBudget: current.setup.triBudget };
-  // ⚠️ except the DELETED parts: a big STEP is read in pieces and Light leaves its small parts out, so
-  // a body id names another solid at the other Detail. A snapshot from before a Detail change keeps
-  // the deletions the model in memory was read with (`docs/area/robot-import.md`, "Deleting parts").
-  if (target.setup.triBudget !== current.setup.triBudget) {
-    setup.removed = current.setup.removed;
-    setup.keepFloating = current.setup.keepFloating;
-    setup.apart = current.setup.apart;
-    if (setup.apart === undefined) delete setup.apart;
-    if (setup.removed === undefined) delete setup.removed;
-    if (setup.keepFloating === undefined) delete setup.keepFloating;
+  const setup: ImportSetup = { ...target.setup, triBudget: current.setup.triBudget };
+  // ⚠️ NOTHING THAT NAMES A BODY comes back from another READ (`REREAD_KEEPS`: the moving parts, the
+  // deleted, left-out and kept-floating parts): a big STEP is read in pieces and Light leaves its small
+  // parts out, so a body id names another solid at the other Detail. A snapshot taken against another
+  // model takes those from the document in memory (`docs/area/robot-import.md`, "Deleting parts"). Keyed
+  // on the read (`EditorDoc.readId`), never on the Detail number: the Detail is written when the re-read
+  // STARTS, so an edit made while it runs holds the new number and the old ids; and a Detail change with
+  // no files to re-read (after a test drive) changes the number and not the model.
+  if (target.readId !== current.readId) {
+    const out = setup as unknown as Record<string, unknown>;
+    for (const k of BODY_KEYED) {
+      if (current.setup[k] === undefined) delete out[k];
+      else out[k] = current.setup[k];
+    }
   }
   // the placements come back WITH THE FRAME THEY ARE WRITTEN IN (`followFrame`): the setup restored
   // can fold or unfold a part and move the frame, and a frame kept from `current` would have them
@@ -147,6 +150,42 @@ export function restoreDoc(target: EditorDoc, current: EditorDoc): EditorDoc {
     else (out as unknown as Record<string, unknown>)[k] = target[k];
   }
   return out;
+}
+
+/** what an undo or redo to `d` from a document of ANOTHER read puts back (`restoreDoc`): its setup without
+ *  the Detail and the body-keyed fields, its placements with their frame, its spec */
+function restoredFromOtherRead(d: EditorDoc): string {
+  const setup = { ...d.setup } as Record<string, unknown>;
+  delete setup.triBudget;
+  for (const k of BODY_KEYED) delete setup[k];
+  return JSON.stringify([setup, d.mech, d.spec, d.mechAt ?? null, d.cadMech ?? null, d.turretRing ?? null, d.mechAuto ?? null]);
+}
+
+/**
+ * ⚠️ **AN UNDO STEP IS NEVER A NO-OP.** When a new model lands (`readModel`), every snapshot in the history is
+ * of the read it replaces, so an undo or redo to one of them takes its body-keyed fields from the new read
+ * (`restoreDoc`). A step whose only change was in those fields (a moving-part row edited while the re-read
+ * ran) would then change nothing while its button still named it. Such steps are FOLDED out: a snapshot
+ * that puts back what its neighbour toward the present already has is dropped, so the step before it
+ * undoes both. `replaced` is the document the new model replaces (the present the stacks lead to).
+ */
+export function foldAcrossRead(h: EditorHistory | undefined, replaced: EditorDoc): EditorHistory | undefined {
+  if (!h) return h;
+  const past: HistoryEntry<EditorDoc>[] = [];
+  let next = restoredFromOtherRead(replaced);
+  for (let i = h.past.length - 1; i >= 0; i--) {
+    const k = restoredFromOtherRead(h.past[i].doc);
+    if (k !== next) past.unshift(h.past[i]);
+    next = k;
+  }
+  const future: HistoryEntry<EditorDoc>[] = [];
+  let prev = restoredFromOtherRead(replaced);
+  for (let i = h.future.length - 1; i >= 0; i--) {
+    const k = restoredFromOtherRead(h.future[i].doc);
+    if (k !== prev) future.unshift(h.future[i]);
+    prev = k;
+  }
+  return { past, future, open: null };
 }
 
 /**

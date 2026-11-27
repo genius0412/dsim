@@ -120,8 +120,11 @@ installed app. The shell loads the live site, so every script on it can reach `w
   Change the allow list in both files together.
 - **Permissions and ads are decided on the default session before the window exists**
   (`lockDownSession`, lists in `electron/permissions.cjs`). With no handler Electron grants every
-  permission, camera and location included, to any frame. Only `fullscreen`, `pointerLock` and
-  `clipboard-sanitized-write` are granted; a feature that needs another must add it there. The AdSense,
+  permission, camera and location included, to any frame. Only `fullscreen`, `pointerLock`,
+  `clipboard-sanitized-write`, `screen-wake-lock` (a LAN host keeps its screen awake) and
+  `persistent-storage` (the robot library's `storage.persist()`) are granted; a feature that needs
+  another must add it there. The last two were refused by the first version of the list and found only
+  by running the shell: Chromium's names for a permission are not in the type definitions. The AdSense,
   DoubleClick, ad-services and ad-quality hosts are cancelled in `webRequest.onBeforeRequest`: the shell
   loads the live site, which carries the publisher tag for the web crawler, and ads never run in the
   desktop app (`docs/area/monetization.md`). The page still loads; a missing `adsbygoogle` reads as no ads.
@@ -143,3 +146,14 @@ installed app. The shell loads the live site, so every script on it can reach `w
   source's mtime so the next update compares against the build. A size check alone left a host running
   the previous release's server when an update kept the byte count. Whether a LAN host accepts imported
   robots is the server's rule (`importsOpen`, `docs/area/netcode.md`); this file sets no `ROBOT_IMPORT`.
+- **`scripts/shellcheck.cjs` RUNS ALL OF THE ABOVE FOR REAL** (2026-11-27), because none of it had ever run
+  in Electron and a wrong handler signature fails silently in a shell. It is the Electron entry point: it
+  hands `main.cjs` a wrapped `electron` module (every window hidden and muted, `shell.openExternal`, the
+  dialogs, `app.relaunch/quit`, the GitHub call and `child_process.spawn` replaced by recorders or stubs,
+  user data in a temp folder) and asserts the bridge on `file:`, the live site and untrusted pages, the
+  guard from a second window, permissions, ad hosts, links, the offline fallback, the update dialog rules
+  and the LAN copy rule. `ELECTRON=1 npx vite build`, then `env -u ELECTRON_RUN_AS_NODE npx electron
+  scripts/shellcheck.cjs` (`--offline` never loads the live site, `--auto` runs the auto-update wiring with a
+  fake updater). Run it after ANY change under `electron/`; it is not in `npm test`, like `contrast`. It
+  has been mutation-tested: breaking a handler makes the matching checks fail. Never run it with a visible
+  window, and keep every new patch in it a recorder.

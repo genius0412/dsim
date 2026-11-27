@@ -41,9 +41,12 @@ const norm = (a: V3): V3 => {
  * parts only where they stand on its ring (`onTheRing`), a box tube's last insert on its own stage
  * (2026-11-07). 9: an intake arm the file shows tucked in is the ramp (`findIntakeArm`), swinging on
  * the shaft it names (2026-11-08). 10: that ramp is the wedge's arms beside the intake's arm, which
- * stays with its roller, and the roller on the ramp's shaft does not ride it (2026-11-09).
+ * stays with its roller, and the roller on the ramp's shaft does not ride it (2026-11-09). 11: a wheel
+ * read from the level it stands at (`wheelGround`), a wheel row only where a ring stands (`wheelRim`),
+ * a corner whose spot held no wheel takes the wheel on its side, an intake roller kept beside a wheel's
+ * pieces (`rollerOn`) (2026-11-27).
  */
-export const MOTION_FINDER = 10;
+export const MOTION_FINDER = 11;
 
 export const isSpin = (r: MotionRole): boolean => SPIN_ROLES.includes(r);
 export const isHinge = (r: MotionRole): boolean => HINGE_ROLES.includes(r);
@@ -1358,6 +1361,26 @@ function wheelRing(fits: ReadonlyMap<number, AxleFit>, R: number): { lo: number;
   return null;
 }
 
+/**
+ * THE WHEEL'S OWN RADIUS among `fits`, or null when nothing there is a wheel: the outer radius of its
+ * ring CENTRED on the axle (`wheelRing`'s first pass, never its off-axle fallback, which a frame plate
+ * beside the spot can make), at least one of whose bodies is round about the axle (`roundAboutAxle`: a
+ * square beam or a plate that happens to sit on the axle line is not).
+ */
+function wheelRim(fits: ReadonlyMap<number, AxleFit>, R: number): number | null {
+  const centred = new Map([...fits].filter(([, f]) => f.off <= ON_AXLE_IN));
+  const ring = wheelRing(centred, R);
+  if (!ring) return null;
+  let top = 0;
+  let round = false;
+  for (const b of ring.bodies) {
+    const f = fits.get(b)!;
+    top = Math.max(top, f.rMax);
+    if (roundAboutAxle(f)) round = true;
+  }
+  return round ? top : null;
+}
+
 /** how far along a wheel's axle its motor is looked for, inches (the wheel's width and a motor's length) */
 const WHEEL_MOTOR_REACH_IN = WHEEL_HALF_WIDTH_IN + MOTOR_LEN_IN[1] + MOTOR_FREE_IN;
 
@@ -1367,8 +1390,16 @@ const WHEEL_MOTOR_REACH_IN = WHEEL_HALF_WIDTH_IN + MOTOR_LEN_IN[1] + MOTOR_FREE_
  * which runs past it) and its shaft, of which what turns with it (`turnsWithWheel`), less any motor on
  * the axle (`axleMotors`: a gearbox face against the hub stands inside the hub's allowance, and is the
  * motor's). Bodies in `taken` are never used.
+ *
+ * `bounded` (the wheel search, not a click): A WHEEL ROW NEEDS A WHEEL (2026-11-27). At a spot with no
+ * wheel the cylinder above held whatever chassis was inside it (measured on a real team assembly,
+ * 2026-11-27). The spot must hold a RING, round and centred on the axle (`wheelRim`: a
+ * tyre, a rim, a mecanum's side plates), or no row is offered there. The members are then chosen as
+ * before. The ring is NOT a radial bound: a mecanum's rollers reach past its side plates to the tread, so
+ * bounding by the ring dropped every roller, and the whole row when the plates stop above
+ * `WHEEL_FLOOR_IN`; chassis beside the wheel is kept out by `turnsWithWheel`'s width rule as it was.
  */
-function wheelBodies(parts: readonly MeshPart[], st: BodyStats, centre: V3, axis: V3, R: number, taken: ReadonlySet<number>, slack: number = WHEEL_SLACK_IN.catalogue): number[] {
+function wheelBodies(parts: readonly MeshPart[], st: BodyStats, centre: V3, axis: V3, R: number, taken: ReadonlySet<number>, slack: number = WHEEL_SLACK_IN.catalogue, bounded = false): number[] {
   const near = new Set<number>();
   const reach = R + 0.5;
   for (const b of st.ids) {
@@ -1391,6 +1422,9 @@ function wheelBodies(parts: readonly MeshPart[], st: BodyStats, centre: V3, axis
     const inside = f.rMax <= R + slack && f.lo >= -WHEEL_HALF_WIDTH_IN && f.hi <= WHEEL_HALF_WIDTH_IN;
     const shaft = f.off <= ON_AXLE_IN && f.rMax <= SHAFT_R_IN && f.hi - f.lo <= SHAFT_MAX_IN && f.lo <= WHEEL_HALF_WIDTH_IN && f.hi >= -WHEEL_HALF_WIDTH_IN;
     if (inside || shaft) pool.set(b, f);
+  }
+  if (bounded) {
+    if (wheelRim(pool, R) === null) return [];
   }
   const keep = turnsWithWheel(pool, R);
   const ring = wheelRing(pool, R);
@@ -1550,14 +1584,15 @@ export function findDriveGears(parts: readonly MeshPart[], motion: readonly Moti
  * round bodies standing on the floor there (a tyre, an omni's plate, a mecanum's side plate). The
  * drivetrain's wheel is what the player picked for the sim, often the default, and a 104 mm cylinder
  * on a 72 mm wheel takes in its frame (AndyMark's bot). `fallback` when nothing round stands there.
+ * Heights are read from `ground`, the level the wheel stands at (`wheelGround`), not the model's floor.
  */
-function wheelRadiusAt(st: BodyStats, w: Vec2, axis: V3, fallback: number): { R: number; measured: boolean } {
+function wheelRadiusAt(st: BodyStats, w: Vec2, axis: V3, fallback: number, ground = 0): { R: number; measured: boolean } {
   let best = 0;
   const tx = Math.abs(axis[1]);
   const ty = Math.abs(axis[0]);
   for (const b of st.ids) {
-    const z0 = st.min[3 * b + 2];
-    const z1 = st.max[3 * b + 2];
+    const z0 = st.min[3 * b + 2] - ground;
+    const z1 = st.max[3 * b + 2] - ground;
     if (z0 > 0.35 || z1 - z0 < 1 || z1 - z0 > 8) continue;
     // centred over the contact (a sheet that runs down to the floor there is not: AndyMark's hood)
     if (Math.hypot((st.min[3 * b] + st.max[3 * b]) / 2 - w.x, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2 - w.y) > 0.6) continue;
@@ -1590,9 +1625,44 @@ export function wheelAxleVotes(parts: readonly MeshPart[], wheels: readonly Vec2
   return { x, y };
 }
 
-function wheelAxleAt(st: BodyStats, w: Vec2, fallback: number): V3 {
-  if (wheelRadiusAt(st, w, [0, 1, 0], fallback).measured) return [0, 1, 0];
-  return wheelRadiusAt(st, w, [1, 0, 0], fallback).measured ? [1, 0, 0] : [0, 1, 0];
+function wheelAxleAt(st: BodyStats, w: Vec2, fallback: number, ground = 0): V3 {
+  if (wheelRadiusAt(st, w, [0, 1, 0], fallback, ground).measured) return [0, 1, 0];
+  return wheelRadiusAt(st, w, [1, 0, 0], fallback, ground).measured ? [1, 0, 0] : [0, 1, 0];
+}
+
+/** the deepest a floor contact can sit above the model's floor, inches (the measurement's widest slab,
+ *  `WHEEL_SLABS_IN` in `geometry.ts`: no wheel is found standing higher) */
+const WHEEL_CONTACT_MAX_IN = 0.5;
+
+/**
+ * THE LEVEL A WHEEL STANDS AT (2026-11-27): the lowest point of what stands at its contact `w` (a
+ * body whose box comes within 0.6 in of it, the reach `wheelRadiusAt` reads in), when that is more than
+ * `WHEEL_FLOOR_IN` above the model's floor and no more than `WHEEL_CONTACT_MAX_IN`; else 0, the floor,
+ * as before. The model's floor is its LOWEST point, and that need not be a drive wheel: an odometry
+ * pod drawn sprung down can sit below the drive wheels. The measurement still finds them (its 0.5-in
+ * slab), but every wheel rule here read heights from the floor (stands within 0.35 in of it; its axle
+ * at its radius), so all four were left out and none turned in the match (measured on a real team
+ * assembly, 2026-11-27).
+ */
+function wheelGround(st: BodyStats, w: Vec2): number {
+  let g = Infinity;
+  for (const b of st.ids) {
+    const z0 = st.min[3 * b + 2];
+    if (z0 > WHEEL_CONTACT_MAX_IN || z0 >= g) continue;
+    if (st.min[3 * b] > w.x + 0.6 || st.max[3 * b] < w.x - 0.6 || st.min[3 * b + 1] > w.y + 0.6 || st.max[3 * b + 1] < w.y - 0.6) continue;
+    g = z0;
+  }
+  return g > WHEEL_FLOOR_IN && g <= WHEEL_CONTACT_MAX_IN ? g : 0;
+}
+
+/** what the wheel search reads at a wheel spot (MODEL frame): the level it stands at, its axle, its
+ *  radius and whether that was read off the geometry. For checks and probes. */
+export function wheelSpot(parts: readonly MeshPart[], w: Vec2, wheelDiaIn: number): { ground: number; axis: V3; R: number; measured: boolean } {
+  const st = bodyStats(parts);
+  const R0 = Number.isFinite(wheelDiaIn) && wheelDiaIn > 0.5 ? wheelDiaIn / 2 : 2;
+  const ground = wheelGround(st, w);
+  const axis = wheelAxleAt(st, w, R0, ground);
+  return { ground, axis, ...wheelRadiusAt(st, w, axis, R0, ground) };
 }
 
 /** how far past its radius a wheel's parts may reach, inches: its own axle height measured, a tyre's
@@ -1609,7 +1679,8 @@ const WHEEL_FLOOR_IN = 0.35;
  * the footprint's corners) the catalogue wheel's outline took a roller's ends standing off the floor. Then any MORE wheels on a side
  * (a 6WD's middle pair, goBILDA's BIOBUZZ bot): a round wheel-sized body standing on the floor on the
  * side's line between its front and back wheels, found the same way, with no corner (it turns at its
- * own place's speed).
+ * own place's speed), unless a corner of that side found no wheel (below). Every row is bounded by its
+ * wheel (`wheelBodies`, `bounded`), and its heights are read from the level it stands at (`wheelGround`).
  */
 export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec2[], drivetrain: DrivetrainType, wheelDiaIn: number): MotionGroup[] {
   const st = bodyStats(parts);
@@ -1619,14 +1690,19 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
   const taken = new Set<number>();
   const out: MotionGroup[] = [];
   const radii: number[] = [];
+  const grounds: number[] = [];
   let square = true;
   wheels.forEach((w, corner) => {
-    const axis: V3 = drivetrain === 'xdrive' ? norm([w.x - cx, w.y - cy, 0]) : wheelAxleAt(st, w, R0);
+    // heights from the level this wheel stands at (`wheelGround`: 0, the floor, unless something
+    // under the floor contact's slab set the floor below it)
+    const g = wheelGround(st, w);
+    grounds[corner] = g;
+    const axis: V3 = drivetrain === 'xdrive' ? norm([w.x - cx, w.y - cy, 0]) : wheelAxleAt(st, w, R0, g);
     if (axis[1] !== 1) square = false;
-    const { R, measured } = wheelRadiusAt(st, w, axis, R0);
+    const { R, measured } = wheelRadiusAt(st, w, axis, R0, g);
     radii[corner] = R;
-    const bodies = wheelBodies(parts, st, [w.x, w.y, R], axis, R, taken, measured ? WHEEL_SLACK_IN.measured : WHEEL_SLACK_IN.catalogue);
-    if (!bodies.some((b) => st.min[3 * b + 2] <= WHEEL_FLOOR_IN)) return;
+    const bodies = wheelBodies(parts, st, [w.x, w.y, g + R], axis, R, taken, measured ? WHEEL_SLACK_IN.measured : WHEEL_SLACK_IN.catalogue, true);
+    if (!bodies.some((b) => st.min[3 * b + 2] <= g + WHEEL_FLOOR_IN)) return;
     for (const b of bodies) taken.add(b);
     out.push({ role: 'wheel', bodies, corner, found: true });
   });
@@ -1637,6 +1713,7 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
   ]) {
     const side = (wheels[f].y + wheels[k].y) / 2;
     const R = (radii[f] + radii[k]) / 2;
+    const gs = (grounds[f] + grounds[k]) / 2;
     const xLo = Math.min(wheels[f].x, wheels[k].x) + R;
     const xHi = Math.max(wheels[f].x, wheels[k].x) - R;
     const cands = st.ids
@@ -1647,17 +1724,31 @@ export function findWheelGroups(parts: readonly MeshPart[], wheels: readonly Vec
         const xx = st.max[3 * b] - st.min[3 * b];
         const yc = (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2;
         const xc = (st.min[3 * b] + st.max[3 * b]) / 2;
-        return z0 <= 0.35 && zx >= 1.2 * R && zx <= 2.6 * R && xx >= 0.8 * zx && xx <= 1.25 * zx && Math.abs(yc - side) <= 1 && st.max[3 * b + 1] - st.min[3 * b + 1] <= 2 * WHEEL_HALF_WIDTH_IN && xc >= xLo && xc <= xHi;
+        return z0 <= gs + 0.35 && zx >= 1.2 * R && zx <= 2.6 * R && xx >= 0.8 * zx && xx <= 1.25 * zx && Math.abs(yc - side) <= 1 && st.max[3 * b + 1] - st.min[3 * b + 1] <= 2 * WHEEL_HALF_WIDTH_IN && xc >= xLo && xc <= xHi;
       })
       .sort((a, b) => st.max[3 * b + 2] - st.min[3 * b + 2] - (st.max[3 * a + 2] - st.min[3 * a + 2]) || a - b);
+    const middle: { row: MotionGroup; x: number }[] = [];
     for (const b of cands) {
       if (taken.has(b)) continue;
       const r = (st.min[3 * b + 2] + st.max[3 * b + 2]) / 2;
       const c: V3 = [(st.min[3 * b] + st.max[3 * b]) / 2, (st.min[3 * b + 1] + st.max[3 * b + 1]) / 2, r];
-      const bodies = wheelBodies(parts, st, c, [0, 1, 0], r, taken, WHEEL_SLACK_IN.measured);
+      const bodies = wheelBodies(parts, st, c, [0, 1, 0], r - gs, taken, WHEEL_SLACK_IN.measured, true);
       if (!bodies.includes(b)) continue;
       for (const x of bodies) taken.add(x);
-      out.push({ role: 'wheel', bodies, found: true });
+      const row: MotionGroup = { role: 'wheel', bodies, found: true };
+      out.push(row);
+      middle.push({ row, x: c[0] });
+    }
+    // A CORNER WHOSE SPOT HELD NO WHEEL takes the wheel on its side nearest it (2026-11-27). The spots are
+    // the measurement's outermost floor contacts, and with a ramp the file shows down they can be the
+    // ramp's own small wheels (measured on a real team assembly, 2026-11-27). Those hold no ring a drive
+    // wheel's size, so no row, and the drive wheel between the spots is that corner's: it turns as the
+    // corner it is, not at a middle wheel's speed, which is wrong for a mecanum strafing.
+    for (const corner of [f, k]) {
+      if (out.some((g) => g.corner === corner)) continue;
+      let best: { row: MotionGroup; x: number } | null = null;
+      for (const m of middle) if (m.row.corner === undefined && (!best || Math.abs(m.x - wheels[corner].x) < Math.abs(best.x - wheels[corner].x))) best = m;
+      if (best) best.row.corner = corner;
     }
   }
   return out;
@@ -1870,8 +1961,23 @@ const ROLLER_STAGE_IN = 4;
  */
 function rollerOn(parts: readonly MeshPart[], seed: number, axis: V3, taken: ReadonlySet<number>, used: ReadonlySet<number>, line?: { axis: V3; pivot: V3 }): { bodies: number[]; pivot: V3 } | null {
   const g = spinAxle(parts, seed, line);
-  if (g.motor || g.bodies.some((x) => taken.has(x))) return null;
-  const bodies = g.bodies.filter((x) => !used.has(x));
+  if (g.motor) return null;
+  let grown = g.bodies;
+  const held = grown.filter((x) => taken.has(x));
+  if (held.length) {
+    // THE AXLE CARRIES A DRIVE WHEEL only when a body of one is centred on it and round about it (its
+    // hub, tyre or side plate: goBILDA's DECODE bot's front axle). Pieces of a wheel beside the axle are
+    // not (2026-11-27): an intake shaft passing near a mecanum wheel's rim takes the wheel's roller
+    // bodies whose box centres sit within `ON_AXLE_IN` of it, and with the wheel's row found first the
+    // whole intake roller was dropped (measured on a real team assembly).
+    const own = grown.filter((x) => !taken.has(x));
+    const fit = own.length ? fitRound(parts, own, axis) : null;
+    if (!fit) return null;
+    const onIt = axleFits(parts, bodyStats(parts), new Set(held), fit.pivot, fit.axis);
+    if ([...onIt.values()].some((f) => f.off <= ON_AXLE_IN && roundAboutAxle(f))) return null;
+    grown = own;
+  }
+  const bodies = grown.filter((x) => !used.has(x));
   const whole = fitRound(parts, bodies, axis);
   if (!whole || whole.radius < ROLLER_R_MIN_IN || whole.radius > ROLLER_R_MAX_IN) return null;
   if (!onShaft(parts, bodies, whole.axis, whole.pivot)) return null;

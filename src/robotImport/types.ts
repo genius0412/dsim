@@ -171,6 +171,9 @@ export interface ImportSetup {
   apart?: number[];
   /** the floating bodies (`findFloatingParts`) the player chose to keep, so they are not offered again */
   keepFloating?: number[];
+  /** how many FOUND moving-part rows the player removed since the rows were last found (editor only: a Detail
+   *  change brings them back, and asks first, `rereadLoses`). Never saved (`savedSetup`). Absent = none */
+  removedFound?: number;
 }
 
 // ---- moving parts ----------------------------------------------------------------------------
@@ -394,6 +397,8 @@ export interface ImportCheck {
   /** `block`: Save stays disabled. `warn`: shown, Save allowed. `info`: a note */
   level: 'block' | 'warn' | 'info';
   message: string;
+  /** the Model step control its Fix goes to, when it is not the one its code always goes to */
+  focus?: string;
 }
 
 export interface WheelDetection {
@@ -413,6 +418,11 @@ export interface FloatingGroup {
   gapIn: number;
   /** its box, inches */
   size: [number, number, number];
+  /** set when it HANGS below the floor the robot stands on (`hangingParts`), not floating: how far
+   *  its lowest point is under it, inches */
+  hangIn?: number;
+  /** set when it LOOKS LIKE A GAME BALL (`findGamePieces`), not floating: the ball's diameter, inches */
+  pieceIn?: number;
 }
 
 /** what `measureParts` (and the engine's `normalise`) reports */

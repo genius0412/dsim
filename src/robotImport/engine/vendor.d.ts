@@ -53,6 +53,8 @@ declare module 'occt-import-js' {
   }
   export interface Occt {
     ReadStepFile(content: Uint8Array, params: OcctParams | null): OcctResult;
+    /** the wasm heap (emscripten updates it as the heap grows; it never shrinks) */
+    HEAPU8?: Uint8Array;
   }
   const occtimportjs: (moduleArg?: { locateFile?: (path: string, dir: string) => string }) => Promise<Occt>;
   export default occtimportjs;
